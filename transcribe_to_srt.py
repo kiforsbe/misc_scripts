@@ -74,8 +74,13 @@ def main(argv):
 
         # Transcribe the file
         if(verbose): print(f"Transcribing: '{file}'... ", end="", flush=True)
+
+        # Make the transcription
         subs = subs_ai.transcribe(file, model)
+
+        # Save the transcription
         subs.save(outputFile)
+        
         if(verbose): print(f"Done")
 
 if __name__ == "__main__":
