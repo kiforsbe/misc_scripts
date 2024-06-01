@@ -51,7 +51,10 @@ def printHelp():
 
 def main(argv):
     # Get options
-    inputPath, outputPath, verbose = getOpts(argv)
+    #inputPath, outputPath, verbose = getOpts(argv)
+    inputPath = r"J:\Recordings\subs4\2024-05-22 15-23 Deep dive HMI.srt"
+    outputPath = "out"
+    verbose = True
 
     # Normalize paths
     inputPath = os.path.normpath(inputPath)
@@ -61,11 +64,8 @@ def main(argv):
     if not os.path.exists(outputPath):
         os.mkdir(outputPath)
 
-    # Get list of all files mathing inputPath (can use wild cards, e.g. "inputpath\*.mp4")
+    # Get list of all files mathing inputPath (can use wild cards, e.g. "inputpath\*.srt")
     files = glob.glob(inputPath)
-
-    # Create instance of the model
-
 
     # Execute operation on each file
     for file in files:
@@ -79,6 +79,19 @@ def main(argv):
         with open(file) as fp:
             subtitle_generator = srt.parse(fp)
             subtitles = list(subtitle_generator)
+
+        # Initialize an empty list for the unique subtitles
+        unique_subtitles = []
+
+        # Iterate over the subtitles
+        for i in range(len(subtitles)):
+            # If it's the last subtitle or the current subtitle's content doesn't match the next one's
+            if i == len(subtitles) - 1 or subtitles[i].content != subtitles[i+1].content:
+                # Add the subtitle to the unique_subtitles list
+                unique_subtitles.append(subtitles[i])
+
+        # Now unique_subtitles contains the subtitles without consecutive duplicates
+        subtitles = unique_subtitles
             
         # Write subtitles to plain text file
         with open(outputFile, 'w') as fp:

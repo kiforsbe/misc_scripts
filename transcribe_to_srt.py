@@ -8,11 +8,12 @@ def getOpts(argv):
     # Set some output defaults
     inputPath = ""
     outputPath = "out"
+    hfToken = ""
     verbose=False
 
     # Check command line args, and if available, override the defaults
     try:
-        opts, args = getopt.getopt(argv, "hi:o:v", ["input=", "output="])
+        opts, args = getopt.getopt(argv, "hi:o:t:v", ["input=", "output=", "token="])
     except getopt.GetoptError:
         print(r"transcribe.py [-i <inputPath>] [-o <outputPath>] [-v]")
         sys.exit(2)
@@ -26,32 +27,44 @@ def getOpts(argv):
             inputPath = arg
         elif opt in ("-o", "--output"):
             outputPath = arg
+        elif opt in ("-t", "--token"):
+            hfToken = arg
         elif opt in ("-v"):
             verbose = True
     
     # Return final output, either defaults or overridden ones
-    return inputPath, outputPath, verbose
+    return inputPath, outputPath, hfToken, verbose
 
 def printHelp():
-    print(r"transcribe.py [-i <inputPath>] [-o <outputPath>] [-f <ffmpegPath>] [-v]")
+    print(r"transcribe.py [-i <inputPath>] [-o <outputPath>] [-t <hf_token>] [-v]")
     print(r"")
     print(r"Transcribe all specified media files to .srt.")
     print(r"")
     print(r"Command-line options:")
     print(r"-i path")
     print(r"--input=path")
-    print(r"    Path to files to operate on. Wildcards can be applied. [default=*.ogg].")
+    print(r"    Path to files to operate on. Wildcards can be applied. [default=''].")
     print(r"")
     print(r"-o path")
     print(r"--output=path")
     print(r"    Path to output of files [default='out/'].")
+    print(r"")
+    print(r"-t token")
+    print(r"--token=hf_token")
+    print(r"    Token for speaker diarization [default=''].")
     print(r"")
     print(r"-v")
     print(r"    Enable verbose output.")
 
 def main(argv):
     # Get options
-    inputPath, outputPath, verbose = getOpts(argv)
+    #argv = r"-i 'J:\Recordings\2024-05-22 15-23 Deep dive HMI.mkv' -o 'J:\Recordings\subs4\' -t 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"
+    #inputPath, outputPath, hfToken, verbose = getOpts(argv)
+
+    inputPath = r"J:\Recordings\2024-05-22 15-23 Deep dive HMI.mkv"
+    outputPath = "out"
+    hfToken = r"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"
+    verbose = True
 
     # Normalize paths
     inputPath = os.path.normpath(inputPath)
@@ -66,7 +79,17 @@ def main(argv):
 
     # Create instance of the model
     subs_ai = SubsAI()
-    model = subs_ai.create_model('m-bain/whisperX', {'model_type': 'base', 'device': 'cuda', 'language': 'en'})
+    if len(hfToken) > 0:
+        model = subs_ai.create_model('m-bain/whisperX', {'model_type': 'base',
+                                                        'device': 'cuda',
+                                                        'language': 'en',
+                                                        'speaker_labels': True,
+                                                        'min_speakers': 1,
+                                                        'HF_TOKEN': hfToken})
+    else:
+        model = subs_ai.create_model('m-bain/whisperX', {'model_type': 'base',
+                                                        'device': 'cuda',
+                                                        'language': 'en'})
 
     # Execute operation on each file
     for file in files:
