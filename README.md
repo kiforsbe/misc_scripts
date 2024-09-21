@@ -10,9 +10,14 @@ Saves contents of the specified `.srt` files to a plain text transcripts.
 ## transcribe_to_srt.py
 Transcribes the specified media files such as `.mkv` to `.srt` subtitles.
 Defaults to model `WhisperX` and language `English` (`"en"`) for transcription.
+The model should automatically download and install when the script is run.
 
 ### Requires
-- SubsAI
+- SubsAI (https://github.com/abdeladim-s/subsai)
+  - Model: m-bain/whisperX
+
+### Recommended
+Torch with CUDA support is highly recommended if you have a CUDA capable machine. For SubsAI with `torch-2.0.1` requirement, install `torch-2.0.1+cu118` per instruction https://pytorch.org/get-started/previous-versions/#v201 instead of default one in SubsAI `requirements.txt` file.
 
 ## insanely-fast-whisper.py
 Minimalistic script to generate transcription using Whisper.
