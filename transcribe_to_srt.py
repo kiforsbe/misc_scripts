@@ -8,7 +8,7 @@ def getOpts(argv):
     # Set some output defaults
     inputPath = ""
     outputPath = "out"
-    hfToken = ""
+    hfToken = os.environ.get('HF_PYANNOTEAUDIO_KEY', hfToken) # Use environment variable if available for pyannote.audio 
     verbose=False
 
     # Check command line args, and if available, override the defaults
@@ -24,9 +24,9 @@ def getOpts(argv):
             printHelp()
             sys.exit()
         elif opt in ("-i", "--input"):
-            inputPath = arg
+            inputPath = os.path.normpath(arg)
         elif opt in ("-o", "--output"):
-            outputPath = arg
+            outputPath = os.path.normpath(arg)
         elif opt in ("-t", "--token"):
             hfToken = arg
         elif opt in ("-v"):
@@ -51,7 +51,7 @@ def printHelp():
     print(r"")
     print(r"-t token")
     print(r"--token=hf_token")
-    print(r"    Token for speaker diarization [default=''].")
+    print(r"    Token for speaker diarization (pyannote.audio) [default=''].")
     print(r"")
     print(r"-v")
     print(r"    Enable verbose output.")
@@ -59,10 +59,6 @@ def printHelp():
 def main(argv):
     # Get options
     inputPath, outputPath, hfToken, verbose = getOpts(argv)
-
-    # Normalize paths
-    inputPath = os.path.normpath(inputPath)
-    outputPath = os.path.normpath(outputPath)
 
     # If output path does not exist, create it
     if not os.path.exists(outputPath):
