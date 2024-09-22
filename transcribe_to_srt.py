@@ -58,13 +58,7 @@ def printHelp():
 
 def main(argv):
     # Get options
-    #argv = r"-i 'J:\Recordings\2024-05-22 15-23 Deep dive HMI.mkv' -o 'J:\Recordings\subs4\' -t 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"
-    #inputPath, outputPath, hfToken, verbose = getOpts(argv)
-
-    inputPath = r"J:\Recordings\2024-05-22 15-23 Deep dive HMI.mkv"
-    outputPath = "out"
-    hfToken = r"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"
-    verbose = True
+    inputPath, outputPath, hfToken, verbose = getOpts(argv)
 
     # Normalize paths
     inputPath = os.path.normpath(inputPath)
