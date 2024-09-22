@@ -102,3 +102,30 @@ Simple merge a bunch of `*.ogg` files into one single `.mp3` file. Jsut drag all
 
 ### Requires
 - pydub
+
+## udio-flask-webservice.py (udio-download_ext-button.user.js)
+A flask web service that adds metadata including cover art to your song files downloaded from Udio. It comes with a user script (e.g. Tampermonkey) that simplifies this process by adding a new button to the song pages "Download with metadata" that calls the webservice.
+
+The webservice exposes the following interfaces:
+| Interface | Methods | Functions | Parameters |
+| --- | --- | --- | --- |
+| /api/download_ext | POST & GET | download_ext | mp3_url, image_url, title, artist, album, genre, year, cannonical, lyrics |
+
+### /api/download_ext
+Downloads the specified `.mp3` file and adds the provided metadata to it.
+
+| Parameter | Tag | Description |
+| --- | --- | --- |
+| mp3_url | ***Not used*** | The URL of the `.mp3` file to be converted. |
+| image_url | Images (Cover) | The URL of the cover art in .jpg format to use. |
+| title | Title | The title of the track. |
+| artist | Artist | Artist name(s) and/or alias(es). |
+| album | Album | The title of the album. |
+| genre | Genre | The genre of the track. |
+| year | Year | Year of release. |
+| cannonical | WWWAUDIOFILE | The source url of the track where it can be found permanently. |
+| lyrics | UNSYNCEDLYRICS | Lyrics to add to the track. |
+
+### Requires
+- flask
+- eyed3
