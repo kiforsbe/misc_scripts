@@ -386,6 +386,9 @@ def convert_m3u8_to_mp4():
 
                 # Extract the response text
                 output_filename = f"{ollama_response['message']['content']}.mp4"
+
+                # If the output_filename contains multiple '.' then condense them down to max one in a row
+                output_filename = re.sub('\.+', '.', output_filename)
         except ollama.ResponseError as e:
             logging.error(f"Unexpected error: {e}")
 
