@@ -2,20 +2,33 @@ import os
 import re
 import uuid
 import subprocess
+from datetime import datetime, timezone
+import time
+import json
 import logging
+
+# Import Flask related modules
 from flask import Flask, request, send_file, render_template_string, jsonify
 import requests
 import m3u8
 from urllib.parse import urljoin
+
+# Impoorting threading library to handle cleaning up of temporary files
 import threading
-import time
-from datetime import datetime, timezone
-import json
+
+# Importing Ollama-specific libraries should be done last to avoid any naming conflicts
 import ollama
 
+# Setting up the app
 app = Flask(__name__)
-logging.basicConfig(level=logging.DEBUG)
+app.logger.setLevel(logging.WARN)
+logging.getLogger('werkzeug').setLevel(logging.WARN)
+logging.getLogger('httpx').setLevel(logging.WARN)
+logging.basicConfig(level=logging.INFO,
+                    format='\033[1;37m' + '[%(asctime)s]' + '[%(name)s]: ' + '\u001b[0m' + '%(message)s',
+                    datefmt='%H:%M')
 
+# Setting up some hard coded configuration variables
 TEMP_DIR = ".temp" # Temporary directory for downloaded files and generated streams
 DELETE_DELAY = 300  # 5 minutes in seconds
 FILENAME_MAX_LENGTH = 64 # Maximum length of filenames in bytes
@@ -36,18 +49,18 @@ def delayed_delete():
         current_time = time.time()
         # Filter out files older than DELETE_DELAY seconds
         files_to_delete = [f for f in delete_queue if current_time - f['time'] > DELETE_DELAY]
-        
+
         for file_info in files_to_delete:
             try:
                 # Attempt to remove the temporary file
                 os.remove(file_info['path'])
-                logging.info(f"Deleted temporary file: {file_info['path']}")
+                logging.debug(f"Deleted temporary file: {file_info['path']}")
                 # Remove the processed entry from the queue
                 delete_queue.remove(file_info)
             except Exception as e:
                 # Log any errors that occur during deletion
                 logging.error(f"Error deleting file {file_info['path']}: {e}")
-        
+
         # Sleep for 60 seconds before checking again
         time.sleep(60)  # Check every minute
 
@@ -73,14 +86,14 @@ def get_stream_info(m3u8_url):
         # Send a request to the M3U8 URL and ensure it's successful
         response = requests.get(m3u8_url)
         response.raise_for_status()
-        
+
         # Parse the M3U8 playlist data from the response
         playlist = m3u8.loads(response.text)
-        
+
         if playlist.is_variant:
             video_streams = []
             audio_streams = {}
-            
+
             # Process audio streams first
             for media in playlist.media:
                 if media.type == 'AUDIO':
@@ -97,12 +110,12 @@ def get_stream_info(m3u8_url):
                     if media.uri:
                         # Fetch the audio stream's metadata
                         audio_stream.update(get_audio_stream_info(audio_stream['uri']))
-                    
+
                     # Group audio streams by their group ID
                     if media.group_id not in audio_streams:
                         audio_streams[media.group_id] = []
                     audio_streams[media.group_id].append(audio_stream)
-            
+
             # Process video streams and associate them with audio streams
             for p in playlist.playlists:
                 stream_info = {
@@ -111,7 +124,7 @@ def get_stream_info(m3u8_url):
                     'codecs': p.stream_info.codecs,
                     'uri': urljoin(m3u8_url, p.uri)
                 }
-                
+
                 # Check if this stream has an associated audio group
                 if hasattr(p.stream_info, 'audio') and p.stream_info.audio in audio_streams:
                     stream_info['audio_group'] = p.stream_info.audio
@@ -121,10 +134,10 @@ def get_stream_info(m3u8_url):
                     best_audio = find_best_audio_stream([stream for group in audio_streams.values() for stream in group])
                     if best_audio:
                         stream_info['associated_audio'] = best_audio
-                
+
                 # Add the processed video stream to the list of video streams
                 video_streams.append(stream_info)
-            
+
             # Collect metadata about the playlist and its streams
             metadata = {
                 'duration': playlist.target_duration,
@@ -132,7 +145,7 @@ def get_stream_info(m3u8_url):
                 'video_stream_count': len(video_streams),
                 'audio_stream_count': sum(len(group) for group in audio_streams.values())
             }
-            
+
             # Return a dictionary containing video streams, audio streams, and metadata
             return {
                 'video_streams': video_streams,
@@ -143,7 +156,7 @@ def get_stream_info(m3u8_url):
             # If not a variant playlist, it's likely a simple playlist without different resolutions
             segments = playlist.segments
             duration = sum(segment.duration for segment in segments)
-            
+
             # Return basic information about the single video stream and the audio streams, if any
             return {
                 'video_streams': [{
@@ -175,17 +188,17 @@ def find_best_audio_stream(audio_streams):
     """
     if not audio_streams:
         return None
-    
+
     # First, try to find a default stream
     default_streams = [stream for stream in audio_streams if stream.get('default') == 'YES']
     if default_streams:
         return max(default_streams, key=lambda s: s.get('bandwidth', 0))
-    
+
     # If no default, try to find an autoselect stream
     autoselect_streams = [stream for stream in audio_streams if stream.get('autoselect') == 'YES']
     if autoselect_streams:
         return max(autoselect_streams, key=lambda s: s.get('bandwidth', 0))
-    
+
     # If neither default nor autoselect, just return the highest bandwidth stream
     return max(audio_streams, key=lambda s: s.get('bandwidth', 0))
 
@@ -203,14 +216,14 @@ def get_audio_stream_info(audio_m3u8_url):
         response = requests.get(audio_m3u8_url)
         response.raise_for_status()
         audio_playlist = m3u8.loads(response.text)
-        
+
         # If the playlist is a variant playlist, recursively find the best stream
         if audio_playlist.is_variant:
             return max(
                 (get_audio_stream_info(urljoin(audio_m3u8_url, p.uri)) for p in audio_playlist.playlists),
                 key=lambda x: x.get('bandwidth', 0)
             )
-        
+
         # Initialize variables to track the best byterange and its URI
         max_byterange = 0
         max_byterange_uri = None
@@ -220,19 +233,19 @@ def get_audio_stream_info(audio_m3u8_url):
             if segment.byterange:
                 # Split 'byterange' into offset and length using '@' as delimiter
                 length, offset = map(int, segment.byterange.split('@'))
-                
+
                 # Update max_byterange_uri if current segment has a larger byterange size
                 if offset + length > max_byterange:
                     max_byterange = offset + length
                     max_byterange_uri = segment.uri
-        
+
         # Once the largest byterange URI is found, return it with its estimated bitrate
         if max_byterange_uri:
             return {'bandwidth': estimate_bitrate(audio_playlist), 'uri': urljoin(audio_m3u8_url, max_byterange_uri)}
         else:
             # Fallback to using the M3U8 URL itself as the URI if no byterange is found
             return {'bandwidth': estimate_bitrate(audio_playlist), 'uri': audio_m3u8_url}
-        
+
     except requests.RequestException as e:
         logging.error(f"Error fetching audio M3U8: {e}")
         return {'bandwidth': None, 'uri': audio_m3u8_url}
@@ -249,7 +262,7 @@ def estimate_bitrate(playlist):
     """
     # Calculate total duration of all segments in the playlist
     total_duration = sum(segment.duration for segment in playlist.segments)
-    
+
     # Sum up the total byte range size (length) across all segments
     total_bytes = sum(int(segment.byterange.split('@')[0]) if segment.byterange else 0 for segment in playlist.segments)
 
@@ -282,7 +295,7 @@ def generate_filename(url):
 def urljoin(base, url):
     """
     Helper function to join URLs.
-    
+
     Parameters:
     - base (str): The base URL string.
     - url (str): The relative URL string.
@@ -361,28 +374,29 @@ def convert_m3u8_to_mp4():
 
     # If the url is not set, return Bad Request
     if not m3u8_url:
+        logging.error(f"No URL provided: {m3u8_url}")
         return {"error": "No URL provided"}, 400
 
     # Temporary filename to store the downloaded file
     temp_filename = None
 
     try:
-        logging.info(f"Received M3U8 URL: {m3u8_url}")
+        logging.debug(f"Received M3U8 URL: {m3u8_url}")
 
         # Get stream info
         stream_info = get_stream_info(m3u8_url)
-        
+
         # If no video stream is available, error out
         if not stream_info['video_streams']:
             return {"error": "No video streams found"}, 400
-        
+
         best_video_stream = max(stream_info['video_streams'], key=lambda s: s.get('bandwidth', 0))
-        
+
         try:
             # If Ollama is enabled then use it to summarize the title for a shorter filename
             if USE_OLLAMA:
                 # Call the Ollama model
-                ollama_response = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': f"Summarize this title into 64 characters or less, and return only that and nothing else: {title}"}])
+                ollama_response = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': f"Summarize this title in English, around 64 characters or less, and return only that and nothing else: {title}"}])
 
                 # Extract the response text
                 output_filename = f"{ollama_response['message']['content']}.mp4"
@@ -398,7 +412,7 @@ def convert_m3u8_to_mp4():
                 output_filename = f"{title[:FILENAME_MAX_LENGTH]}.mp4"
             else:
                 output_filename = generate_filename(m3u8_url)
-        
+
         # Create a temporary filename to store the downloaded video
         temp_filename = os.path.join(TEMP_DIR, f"temp_{uuid.uuid4()}.mp4")
 
@@ -439,9 +453,9 @@ def convert_m3u8_to_mp4():
         ])
 
         # Run ffmpeg command
-        logging.info(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
-        result = subprocess.run(ffmpeg_command, capture_output=True, text=True)
-        
+        logging.debug(f"Running FFmpeg command: {' '.join(ffmpeg_command)}")
+        result = subprocess.run(ffmpeg_command, capture_output=True, text=False)
+
         # Check error code and return it
         if result.returncode != 0:
             logging.error(f"FFmpeg error: {result.stderr}")
@@ -450,7 +464,8 @@ def convert_m3u8_to_mp4():
         # Queue the file for deletion
         delete_queue.append({'path': temp_filename, 'time': time.time()})
 
-        # Return the sile to the user
+        # Return the file to the user
+        logging.info(f"Returning '{output_filename}' to client.")
         return send_file(temp_filename, as_attachment=True, download_name=output_filename)
 
     except Exception as e:
@@ -458,4 +473,5 @@ def convert_m3u8_to_mp4():
         return {"error": str(e)}, 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
+
