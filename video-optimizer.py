@@ -4,14 +4,13 @@ import ffmpeg
 import inquirer
 import subprocess
 import logging
-from typing import List
 from tqdm import tqdm
 import sys
 import threading
 
 # Set up logging
 logging.basicConfig(
-    level=logging.ERROR,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("transcoder.log"),
@@ -54,7 +53,7 @@ def truncate_filename(filename, max_length=40):
     return filename
 
 # Helper function to transcode a file based on user settings
-def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
+def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise, audio_language_name, subtitle_language_name):
     audio_bitrate = settings['audio_bitrate']
     video_bitrate = settings['video_bitrate']
     resolution = settings['resolution']
@@ -79,29 +78,76 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     codec_preset = 'slow' if use_nvenc else 'medium'
     vf_options = f"scale={resolution}"
 
+    # Apply denoising filter
     if apply_denoise:
         vf_options += ",hqdn3d=3:2:6:4"  # Denoise filter with medium settings
+    
+    # Probe the input file to get stream information
+    probe = ffmpeg.probe(input_file)
+    audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
+    subtitle_streams = [s for s in probe['streams'] if s['codec_type'] == 'subtitle']
+
+    # Prepare audio mapping
+    audio_index = 0
+    audio_found = False
+    if audio_language_name:
+        for i, stream in enumerate(audio_streams):
+            # Check if the language matches
+            if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == audio_language_name:
+                audio_index = i
+                audio_found = True
+                logging.info(f"Default audio track set to language: {audio_language_name}")
+                break
+
+    # If no applicable audio stream is found, use the first one
+    if not audio_found and len(subtitle_streams) > 0:
+        logging.warning("No audio track found matching language, using first available")
+        logging.info(f"Default audio track set to language: {audio_streams[audio_index]['tags']['language']}")
+
+    # Prepare subtitle mapping
+    subtitle_index = 0
+    subtitle_found = False
+    if subtitle_language_name:
+        for i, stream in enumerate(subtitle_streams):
+            # Check if the language matches
+            if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == subtitle_language_name:
+                #subtitle_map.append(f"-map 0:s:{i}")  # Select specific subtitle track by index
+                subtitle_index = i
+                subtitle_found = True
+                logging.info(f"Default subtitle track set to language: {subtitle_language_name}")
+                break
+
+    # If no applicable subtitle is found, use the first one
+    if not subtitle_found and len(subtitle_streams) > 0:
+        logging.warning("No subtitle track found matching language, using first available")
+        logging.info(f"Default subtitle track set to language: {subtitle_streams[subtitle_index]['tags']['language']}")
 
     logging.info(f"Video codec: {video_codec}")
     logging.info(f"Denoise filter applied: {apply_denoise}")
 
-    # Build the ffmpeg command
-    ffmpeg_cmd = (
-        ffmpeg
-        .input(input_file)
-        .output(
-            output_file,
-            vcodec=video_codec,  # Video codec
-            acodec='aac',  # Audio codec
-            ab=audio_bitrate,  # Audio bitrate
-            vf=vf_options,  # Video filter options
-            pix_fmt='yuv420p10le',  # Pixel format
-            r=fps,  # Frame rate
-            preset=codec_preset,  # Codec preset
-            movflags='faststart',  # Faststart for streaming
-        )
-        .compile()
-    )
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-i', input_file,
+        #'-vcodec', video_codec,
+        #'-acodec', 'aac',
+        '-ab', audio_bitrate,
+        '-vf', vf_options,
+        '-pix_fmt', 'yuv420p10le',
+        #'-r', str(fps),
+        '-preset', codec_preset,
+        '-movflags', 'faststart',
+        '-map', '0:v',
+        '-map', '0:a',
+        '-map', '0:s',
+        '-c:v', video_codec,
+        '-c:a', 'aac',
+        '-c:s', 'mov_text',
+        f"-disposition:a:{audio_index}", 'default',
+        f"-disposition:s:{subtitle_index}", 'default',
+        '-y', output_file
+    ]
+
+    print(' '.join(ffmpeg_cmd))
 
     try:
         # Start the process
@@ -110,6 +156,7 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
         # Function to read from the stderr pipe
         def read_stderr(stderr, queue):
             for line in iter(stderr.readline, ''):
+                #print(line)
                 queue.put(line)
             stderr.close()
 
@@ -296,11 +343,27 @@ def main():
     file_paths = sys.argv[1:]  # Read file paths from command-line arguments
     logging.info(f"Files received for transcoding: {file_paths}")
 
-    # Analyze the files
+    # Determine aspect ratios from the input files
+    aspect_ratios = []
+    for file_path in file_paths:
+        aspect_ratio = get_aspect_ratio(file_path)
+        if aspect_ratio:
+            aspect_ratios.append(aspect_ratio)
+            logging.info(f"Aspect ratio for {file_path}: {aspect_ratio[0]}:{aspect_ratio[1]}")
+        else:
+            logging.warning(f"Could not determine aspect ratio for {file_path}")
+
+    if not aspect_ratios:
+        print("No valid aspect ratios found. Exiting...")
+        input("Press Enter to exit...")
+        sys.exit(1)
+
+    # Select default audio and subtitle tracks
     audio_language, subtitle_language = select_default_tracks(file_paths)
 
-    # Offer transcoding settings
-    settings = get_transcoding_settings()
+    # Offer transcoding settings using the first file's aspect ratio
+    first_file_path = file_paths[0]
+    settings = get_transcoding_settings(first_file_path)
 
     # Offer NVENC and denoise options
     use_nvenc, apply_denoise = get_encoding_and_filter_options()
@@ -309,7 +372,7 @@ def main():
     for file_path in file_paths:
         output_file = os.path.splitext(file_path)[0] + "_transcoded.mp4"
         logging.info(f"Starting transcoding for {file_path} with output {output_file}")
-        transcode_file(file_path, output_file, settings, use_nvenc, apply_denoise)
+        transcode_file(file_path, output_file, settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
 
     input("Transcoding finished. Press Enter to exit...")
 
