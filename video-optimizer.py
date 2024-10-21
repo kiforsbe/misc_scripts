@@ -10,7 +10,7 @@ import threading
 
 # Set up logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("transcoder.log"),
@@ -53,11 +53,15 @@ def truncate_filename(filename, max_length=40):
     return filename
 
 # Helper function to transcode a file based on user settings
-def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise, audio_language_name, subtitle_language_name):
+def transcode_file(input_file, output_file, extension, settings, use_nvenc, apply_denoise, audio_language_name, subtitle_language_name):
     audio_bitrate = settings['audio_bitrate']
     video_bitrate = settings['video_bitrate']
     resolution = settings['resolution']
+    crf = settings['crf']
     fps = settings['fps']
+
+    # Add extension to the output file
+    output_file = f"{output_file}.{extension}"
 
     # Extract only the filename from the path
     filename = os.path.basename(input_file)
@@ -125,15 +129,21 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise, 
     logging.info(f"Video codec: {video_codec}")
     logging.info(f"Denoise filter applied: {apply_denoise}")
 
+    # Set up subtitle format, if the output extension is 'mp4' then, and only then use 'mov_ext' otherwise just copy 'copy' the source
+    if extension == "mp4":
+        # Use mov_ext format for mp4 output files as nothing else but srt is supported in mp4 container
+        subtitle_format = "mov_ext"
+    else:
+        # Just copy the source if the target extension is anything other than 'mp4'
+        subtitle_format = "copy"
+
     ffmpeg_cmd = [
         'ffmpeg',
         '-i', input_file,
-        #'-vcodec', video_codec,
-        #'-acodec', 'aac',
         '-ab', audio_bitrate,
         '-vf', vf_options,
+        '-crf', crf,
         '-pix_fmt', 'yuv420p10le',
-        #'-r', str(fps),
         '-preset', codec_preset,
         '-movflags', 'faststart',
         '-map', '0:v',
@@ -141,13 +151,13 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise, 
         '-map', '0:s',
         '-c:v', video_codec,
         '-c:a', 'aac',
-        '-c:s', 'mov_text',
+        '-c:s', subtitle_format,
         f"-disposition:a:{audio_index}", 'default',
         f"-disposition:s:{subtitle_index}", 'default',
         '-y', output_file
     ]
 
-    print(' '.join(ffmpeg_cmd))
+    #print(' '.join(ffmpeg_cmd))
 
     try:
         # Start the process
@@ -248,7 +258,7 @@ def get_transcoding_settings(file_path):
             'fps': 25,
             'audio_bitrate': '96k',
             'video_bitrate': 'medium',
-            'target_size_mb_per_minute': 8
+            'crf': '35',
         }
     elif profile.startswith('remote-streaming'):
         target_width = 1280
@@ -258,7 +268,7 @@ def get_transcoding_settings(file_path):
             'fps': 30,
             'audio_bitrate': '128k',
             'video_bitrate': 'medium',
-            'target_size_mb_per_minute': 12
+            'crf': '27',
         }
     else:
         target_width = 1920
@@ -268,7 +278,7 @@ def get_transcoding_settings(file_path):
             'fps': 30,
             'audio_bitrate': '128k',
             'video_bitrate': 'low',
-            'target_size_mb_per_minute': 18
+            'crf': '17',
         }
 
 # Function to let the user select whether to use NVENC and apply denoise
@@ -370,9 +380,9 @@ def main():
 
     # Transcode each file
     for file_path in file_paths:
-        output_file = os.path.splitext(file_path)[0] + "_transcoded.mp4"
+        output_file = os.path.splitext(file_path)[0] + "_transcoded"
         logging.info(f"Starting transcoding for {file_path} with output {output_file}")
-        transcode_file(file_path, output_file, settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
+        transcode_file(file_path, output_file, 'mp4', settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
 
     input("Transcoding finished. Press Enter to exit...")
 
