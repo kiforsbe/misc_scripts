@@ -48,7 +48,7 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
     codec_preset = 'slow' if use_nvenc else 'medium'
     vf_options = f"scale={resolution}"
-    
+
     if apply_denoise:
         vf_options += ",hqdn3d=3:2:6:4"  # Denoise filter with medium settings
 
@@ -56,27 +56,28 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     logging.info(f"Denoise filter applied: {apply_denoise}")
 
     # Add progress bar
+    process = (
+        ffmpeg
+        .input(input_file)
+        .output(
+            output_file,
+            vcodec=video_codec,
+            acodec='aac',
+            audio_bitrate=audio_bitrate,  # Corrected option for audio bitrate
+            vf=vf_options,
+            pix_fmt='yuv420p10le',  # 10-bit color space
+            r=fps,
+            preset=codec_preset,
+            movflags='faststart'  # Optimize for streaming
+        )
+        .global_args('-progress', '-', '-nostats')
+        .run_async(pipe_stderr=True, pipe_stdout=True)
+    )
+
     total_duration = float(ffmpeg.probe(input_file)['format']['duration'])
     progress_bar = tqdm(total=total_duration, unit='s', desc=f'Transcoding {os.path.basename(input_file)}')
 
     try:
-        process = (
-            ffmpeg
-            .input(input_file)
-            .output(
-                output_file,
-                vcodec=video_codec,
-                acodec='aac',
-                audio_bitrate=audio_bitrate,  # Corrected option for audio bitrate
-                vf=vf_options,
-                pix_fmt='yuv420p10le',  # 10-bit color space
-                r=fps,
-                preset=codec_preset
-            )
-            .global_args('-progress', '-', '-nostats')
-            .run_async(pipe_stderr=True, pipe_stdout=True)
-        )
-
         while process.poll() is None:
             line = process.stderr.readline().decode('utf-8').strip()
             if line.startswith('out_time_ms'):
