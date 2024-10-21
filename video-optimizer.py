@@ -6,6 +6,7 @@ import logging
 from typing import List
 from tqdm import tqdm
 import time
+import sys
 
 # Set up logging
 logging.basicConfig(
@@ -43,7 +44,9 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     logging.info(f"Starting transcoding for {input_file}")
     logging.info(f"Target resolution: {resolution}, FPS: {fps}, Audio bitrate: {audio_bitrate}, Video bitrate: {video_bitrate}")
 
+    # Presets and codec selection
     video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
+    codec_preset = 'slow' if use_nvenc else 'medium'
     vf_options = f"scale={resolution}"
     
     if apply_denoise:
@@ -64,10 +67,11 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
                 output_file,
                 vcodec=video_codec,
                 acodec='aac',
-                b:a=audio_bitrate,
+                audio_bitrate=audio_bitrate,  # Corrected option for audio bitrate
                 vf=vf_options,
                 pix_fmt='yuv420p10le',  # 10-bit color space
-                r=fps
+                r=fps,
+                preset=codec_preset
             )
             .global_args('-progress', '-', '-nostats')
             .run_async(pipe_stderr=True, pipe_stdout=True)
@@ -91,6 +95,8 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     except ffmpeg.Error as e:
         logging.error(f"Error transcoding {input_file}: {e}")
         progress_bar.close()
+        input("An error occurred. Press Enter to exit...")
+        sys.exit(1)
 
 # Function to offer user settings and transcoding options
 def get_transcoding_settings():
@@ -154,10 +160,10 @@ def detect_nvenc_support():
     try:
         result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True)
         if 'hevc_nvenc' in result.stdout:
-            logging.info("NVENC hardware encoding supported")
+            logging.info("NVENC hardware encoding (H265) supported")
             return True
         else:
-            logging.info("NVENC hardware encoding not supported")
+            logging.info("NVENC hardware encoding (H265) not supported")
             return False
     except Exception as e:
         logging.error(f"Error detecting NVENC support: {e}")
@@ -199,8 +205,12 @@ def select_default_tracks(files):
 
 # Main function to handle files and transcoding
 def main():
-    print("Drag and drop your media files here (or input file paths manually):")
-    file_paths = input().split()
+    if len(sys.argv) < 2:
+        print("Drag and drop your media files onto this script to transcode them.")
+        input("Press Enter to exit...")
+        sys.exit(1)
+
+    file_paths = sys.argv[1:]  # Read file paths from command-line arguments
     logging.info(f"Files received for transcoding: {file_paths}")
 
     # Analyze the files
@@ -217,6 +227,8 @@ def main():
         output_file = os.path.splitext(file_path)[0] + "_transcoded.mp4"
         logging.info(f"Starting transcoding for {file_path} with output {output_file}")
         transcode_file(file_path, output_file, settings, use_nvenc, apply_denoise)
+
+    input("Transcoding finished. Press Enter to exit...")
 
 if __name__ == "__main__":
     logging.info("Starting transcoder script")
