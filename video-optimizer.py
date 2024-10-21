@@ -63,7 +63,7 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
             output_file,
             vcodec=video_codec,
             acodec='aac',
-            audio_bitrate=audio_bitrate,  # Corrected option for audio bitrate
+            audio_bitrate=audio_bitrate,
             vf=vf_options,
             pix_fmt='yuv420p10le',  # 10-bit color space
             r=fps,
@@ -80,10 +80,10 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     try:
         while process.poll() is None:
             line = process.stderr.readline().decode('utf-8').strip()
-            if line.startswith('out_time_ms'):
-                time_ms = int(line.split('=')[1])
-                progress_seconds = time_ms / 1_000_000
-                progress_bar.n = progress_seconds
+            if line.startswith('time='):
+                time_str = line.split('=')[1]
+                progress_seconds = time.strptime(time_str, '%H:%M:%S.%f')
+                progress_bar.n = progress_seconds.tm_sec + progress_seconds.tm_min * 60 + progress_seconds.tm_hour * 3600
                 progress_bar.refresh()
             time.sleep(0.1)
 
@@ -119,7 +119,7 @@ def get_transcoding_settings():
 
     if profile.startswith('phone'):
         return {
-            'resolution': '854x480',  # Landscape mode 480p
+            'resolution': '854x480',  # Maintain aspect ratio for 480p
             'fps': 25,
             'audio_bitrate': '96k',
             'video_bitrate': 'medium',
@@ -127,7 +127,7 @@ def get_transcoding_settings():
         }
     elif profile.startswith('remote-streaming'):
         return {
-            'resolution': '1280x720',
+            'resolution': '1280x720',  # Maintain aspect ratio for 720p
             'fps': 30,
             'audio_bitrate': '128k',
             'video_bitrate': 'medium',
@@ -135,7 +135,7 @@ def get_transcoding_settings():
         }
     else:
         return {
-            'resolution': '1920x1080',
+            'resolution': '1920x1080',  # Maintain aspect ratio for 1080p
             'fps': 30,
             'audio_bitrate': '128k',
             'video_bitrate': 'low',
@@ -147,7 +147,7 @@ def get_encoding_and_filter_options():
     nvenc_supported = detect_nvenc_support()
 
     nvenc_question = inquirer.Confirm('use_nvenc', message="Use NVENC hardware encoding (if available)?", default=nvenc_supported)
-    denoise_question = inquirer.Confirm('apply_denoise', message="Apply denoise filter (hqdn3d at medium settings)?", default=False)
+    denoise_question = inquirer.Confirm('apply_denoise', message="Apply denoise filter (hqdn3d at medium settings)?", default=True)  # Set denoise option to True by default
 
     answers = inquirer.prompt([nvenc_question, denoise_question])
 
@@ -235,3 +235,4 @@ if __name__ == "__main__":
     logging.info("Starting transcoder script")
     main()
     logging.info("Transcoder script finished")
+    
