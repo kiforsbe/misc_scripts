@@ -6,7 +6,6 @@ import subprocess
 import logging
 from typing import List
 from tqdm import tqdm
-import time
 import sys
 import threading
 
@@ -48,6 +47,12 @@ def monitor_progress(process, total_duration, progress_bar):
     progress_bar.n = total_duration
     progress_bar.refresh()
 
+def truncate_filename(filename, max_length=40):
+    if len(filename) > max_length:
+        half_length = (max_length - 3) // 2  # Subtract 3 for the "..."
+        return f"{filename[:half_length]}...{filename[-half_length:]}"
+    return filename
+
 # Helper function to transcode a file based on user settings
 def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     audio_bitrate = settings['audio_bitrate']
@@ -56,7 +61,17 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     fps = settings['fps']
 
     logging.info(f"Starting transcoding for {input_file}")
+    logging.info(f"Output path {output_file}")
     logging.info(f"Target resolution: {resolution}, FPS: {fps}, Audio bitrate: {audio_bitrate}, Video bitrate: {video_bitrate}")
+
+    # Extract only the filename from the path
+    filename = os.path.basename(input_file)
+
+    # Truncate filename if it's too long
+    display_filename = truncate_filename(filename)
+
+    # Print the processing file
+    print(f"Processing file: {display_filename}")
 
     # Presets and codec selection
     video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
@@ -70,19 +85,24 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     logging.info(f"Denoise filter applied: {apply_denoise}")
 
     # Build the ffmpeg command
-    ffmpeg_cmd = [
-        'ffmpeg',
-        '-i', input_file,
-        '-vcodec', video_codec,
-        '-acodec', 'aac',
-        '-ab', audio_bitrate,
-        '-vf', vf_options,
-        '-pix_fmt', 'yuv420p10le',
-        '-r', str(fps),
-        '-preset', codec_preset,
-        '-movflags', 'faststart',
-        '-f', 'null', '-'  # Output progress information to stdout
-    ]
+    ffmpeg_cmd = (
+        ffmpeg
+        .input(input_file)
+        .output(
+            output_file,
+            #'pipe:',  # Output progress information to stdout
+            vcodec=video_codec,  # Video codec
+            acodec='aac',  # Audio codec
+            ab=audio_bitrate,  # Audio bitrate
+            vf=vf_options,  # Video filter options
+            pix_fmt='yuv420p10le',  # Pixel format
+            r=fps,  # Frame rate
+            preset=codec_preset,  # Codec preset
+            movflags='faststart',  # Faststart for streaming
+            f='null'  # Format set to null
+        )
+        .compile()
+    )
 
     try:
         # Start the process
@@ -115,7 +135,7 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
             raise Exception('Could not determine total duration.')
 
         # Initialize the progress bar
-        pbar = tqdm(total=total_duration, unit='s')
+        pbar = tqdm(total=total_duration, unit='s', desc=f"Transcoding {display_filename}")
 
         # Read the stderr pipe and update progress bar
         while process.poll() is None:
