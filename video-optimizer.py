@@ -1,4 +1,5 @@
 import os
+import re
 import ffmpeg
 import inquirer
 import subprocess
@@ -7,6 +8,7 @@ from typing import List
 from tqdm import tqdm
 import time
 import sys
+import threading
 
 # Set up logging
 logging.basicConfig(
@@ -34,6 +36,18 @@ def extract_track_details(probe_data, stream_type):
     logging.info(f"Extracting {stream_type} tracks from media")
     return [stream for stream in probe_data['streams'] if stream['codec_type'] == stream_type]
 
+# Helper function to monitor the transcoding progress
+def monitor_progress(process, total_duration, progress_bar):
+    while process.poll() is None:
+        try:
+            duration = float(process.stdout.readline().decode('utf-8').strip())
+            progress_bar.n = duration
+            progress_bar.refresh()
+        except ValueError:
+            pass
+    progress_bar.n = total_duration
+    progress_bar.refresh()
+
 # Helper function to transcode a file based on user settings
 def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     audio_bitrate = settings['audio_bitrate']
@@ -55,47 +69,74 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     logging.info(f"Video codec: {video_codec}")
     logging.info(f"Denoise filter applied: {apply_denoise}")
 
-    # Add progress bar
-    process = (
-        ffmpeg
-        .input(input_file)
-        .output(
-            output_file,
-            vcodec=video_codec,
-            acodec='aac',
-            audio_bitrate=audio_bitrate,
-            vf=vf_options,
-            pix_fmt='yuv420p10le',  # 10-bit color space
-            r=fps,
-            preset=codec_preset,
-            movflags='faststart'  # Optimize for streaming
-        )
-        .global_args('-progress', '-', '-nostats')
-        .run_async(pipe_stderr=True, pipe_stdout=True)
-    )
-
-    total_duration = float(ffmpeg.probe(input_file)['format']['duration'])
-    progress_bar = tqdm(total=total_duration, unit='s', desc=f'Transcoding {os.path.basename(input_file)}')
+    # Build the ffmpeg command
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-i', input_file,
+        '-vcodec', video_codec,
+        '-acodec', 'aac',
+        '-ab', audio_bitrate,
+        '-vf', vf_options,
+        '-pix_fmt', 'yuv420p10le',
+        '-r', str(fps),
+        '-preset', codec_preset,
+        '-movflags', 'faststart',
+        '-f', 'null', '-'  # Output progress information to stdout
+    ]
 
     try:
+        # Start the process
+        process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+
+        # Function to read from the stderr pipe
+        def read_stderr(stderr, queue):
+            for line in iter(stderr.readline, ''):
+                queue.put(line)
+            stderr.close()
+
+        # Start thread to read stderr
+        import queue
+        stderr_queue = queue.Queue()
+        stderr_thread = threading.Thread(target=read_stderr, args=(process.stderr, stderr_queue))
+        stderr_thread.start()
+
+        # Get the total duration from the input file
+        total_duration = None
+        while True:
+            line = stderr_queue.get()
+            if 'Duration' in line:
+                match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})', line)
+                if match:
+                    hours, minutes, seconds, _ = match.groups()
+                    total_duration = int(hours) * 3600 + int(minutes) * 60 + int(seconds)
+                    break
+
+        if total_duration is None:
+            raise Exception('Could not determine total duration.')
+
+        # Initialize the progress bar
+        pbar = tqdm(total=total_duration, unit='s')
+
+        # Read the stderr pipe and update progress bar
         while process.poll() is None:
-            line = process.stderr.readline().decode('utf-8').strip()
-            if line.startswith('time='):
-                time_str = line.split('=')[1]
-                progress_seconds = time.strptime(time_str, '%H:%M:%S.%f')
-                progress_bar.n = progress_seconds.tm_sec + progress_seconds.tm_min * 60 + progress_seconds.tm_hour * 3600
-                progress_bar.refresh()
-            time.sleep(0.1)
+            try:
+                line = stderr_queue.get(timeout=1)
+                if 'time=' in line:
+                    match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})', line)
+                    if match:
+                        hours, minutes, seconds, _ = match.groups()
+                        elapsed_time = int(hours) * 3600 + int(minutes) * 60 + int(seconds)
+                        pbar.update(elapsed_time - pbar.n)  # Update progress bar
+            except queue.Empty:
+                continue
 
         process.wait()
-        progress_bar.n = total_duration
-        progress_bar.refresh()
-        progress_bar.close()
+        pbar.close()
 
         logging.info(f"Transcoding complete for {input_file}. Output saved to {output_file}")
-    except ffmpeg.Error as e:
+    except subprocess.CalledProcessError as e:
         logging.error(f"Error transcoding {input_file}: {e}")
-        progress_bar.close()
+        pbar.close()
         input("An error occurred. Press Enter to exit...")
         sys.exit(1)
 
