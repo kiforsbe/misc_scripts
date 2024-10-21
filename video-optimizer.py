@@ -11,7 +11,7 @@ import threading
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("transcoder.log"),
@@ -60,15 +60,16 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
     resolution = settings['resolution']
     fps = settings['fps']
 
-    logging.info(f"Starting transcoding for {input_file}")
-    logging.info(f"Output path {output_file}")
-    logging.info(f"Target resolution: {resolution}, FPS: {fps}, Audio bitrate: {audio_bitrate}, Video bitrate: {video_bitrate}")
-
     # Extract only the filename from the path
     filename = os.path.basename(input_file)
+    outfilename = os.path.basename(output_file)
 
     # Truncate filename if it's too long
     display_filename = truncate_filename(filename)
+
+    logging.info(f"Starting transcoding for {display_filename}")
+    logging.info(f"Output path {outfilename}")
+    logging.info(f"Target resolution: {resolution}, FPS: {fps}, Audio bitrate: {audio_bitrate}, Video bitrate: {video_bitrate}")
 
     # Print the processing file
     print(f"Processing file: {display_filename}")
@@ -90,7 +91,6 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
         .input(input_file)
         .output(
             output_file,
-            #'pipe:',  # Output progress information to stdout
             vcodec=video_codec,  # Video codec
             acodec='aac',  # Audio codec
             ab=audio_bitrate,  # Audio bitrate
@@ -99,7 +99,6 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
             r=fps,  # Frame rate
             preset=codec_preset,  # Codec preset
             movflags='faststart',  # Faststart for streaming
-            f='null'  # Format set to null
         )
         .compile()
     )
@@ -160,9 +159,25 @@ def transcode_file(input_file, output_file, settings, use_nvenc, apply_denoise):
         input("An error occurred. Press Enter to exit...")
         sys.exit(1)
 
+# Helper function to get the aspect ratio of a file
+def get_aspect_ratio(file_path):
+    media_info = get_media_info(file_path)
+    if media_info and 'streams' in media_info:
+        video_streams = [stream for stream in media_info['streams'] if stream['codec_type'] == 'video']
+        if video_streams:
+            width = video_streams[0]['width']
+            height = video_streams[0]['height']
+            return width, height
+    return None
+
 # Function to offer user settings and transcoding options
-def get_transcoding_settings():
+def get_transcoding_settings(file_path):
     logging.info("Offering transcoding profile options to the user")
+
+    width, height = get_aspect_ratio(file_path)
+    aspect_ratio = width / height
+
+    # Set default resolution based on selected profile
     profile_questions = [
         inquirer.List(
             'profile',
@@ -179,24 +194,30 @@ def get_transcoding_settings():
     logging.info(f"User selected profile: {profile}")
 
     if profile.startswith('phone'):
+        target_width = 854
+        target_height = int(target_width / aspect_ratio) if aspect_ratio else 480
         return {
-            'resolution': '854x480',  # Maintain aspect ratio for 480p
+            'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
             'fps': 25,
             'audio_bitrate': '96k',
             'video_bitrate': 'medium',
             'target_size_mb_per_minute': 8
         }
     elif profile.startswith('remote-streaming'):
+        target_width = 1280
+        target_height = int(target_width / aspect_ratio) if aspect_ratio else 720
         return {
-            'resolution': '1280x720',  # Maintain aspect ratio for 720p
+            'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
             'fps': 30,
             'audio_bitrate': '128k',
             'video_bitrate': 'medium',
             'target_size_mb_per_minute': 12
         }
     else:
+        target_width = 1920
+        target_height = int(target_width / aspect_ratio) if aspect_ratio else 1080
         return {
-            'resolution': '1920x1080',  # Maintain aspect ratio for 1080p
+            'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
             'fps': 30,
             'audio_bitrate': '128k',
             'video_bitrate': 'low',
