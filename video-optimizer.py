@@ -293,8 +293,8 @@ def get_transcoding_settings(file_path):
             'fps': 30,
             'audio_bitrate': '128k',
             'video_codec': 'h265',
-            'video_bitrate': 'low',
-            'codec_preset': '18MB/min',
+            'video_bitrate': '18MB/min',
+            'codec_preset': 'medium',
             'crf': 15,
         }
 
@@ -311,6 +311,15 @@ def get_encoding_and_filter_options():
     logging.info(f"Denoise selected: {answers['apply_denoise']}")
 
     return answers['use_nvenc'], answers['apply_denoise']
+
+# Function to let the user select whether to use NVENC and apply denoise
+def get_output_container():
+    question = inquirer.List('output_container', message='Select the output container:', choices=['mp4','mkv'])
+    answer = inquirer.prompt([question])
+
+    logging.info(f"NVENC selected: {answer['output_container']}")
+
+    return answer['output_container']
 
 # Detect if NVENC is supported on the machine
 def detect_nvenc_support():
@@ -395,11 +404,14 @@ def main():
     # Offer NVENC and denoise options
     use_nvenc, apply_denoise = get_encoding_and_filter_options()
 
+    # Select output container / extension
+    extension = get_output_container()
+
     # Transcode each file
     for file_path in file_paths:
         output_file = os.path.splitext(file_path)[0] + "_transcoded"
         logging.info(f"Starting transcoding for {file_path} with output {output_file}")
-        transcode_file(file_path, output_file, 'mp4', settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
+        transcode_file(file_path, output_file, extension, settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
 
     input("Transcoding finished. Press Enter to exit...")
 
