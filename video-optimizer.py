@@ -33,7 +33,7 @@ default_profiles = [
     },
     {
         'profile_id': '720p',
-        'description': '720p, H265, 128kbps audio, 12MB/min',
+        'description': '720p, H265, 128kbps audio, 9MB/min',
         'settings': {
             'horizontal_resolution': 1280,
             'audio_bitrate': '96k',
@@ -47,6 +47,17 @@ default_profiles = [
         'description': '1080p, H265, 128kbps audio, 18MB/min',
         'settings': {
             'horizontal_resolution': 1920,
+            'audio_bitrate': '128k',
+            'video_codec': 'h265',
+            'codec_preset': 'fast',
+            'constant_quality': 27,
+        }
+    },
+    {
+        'profile_id': '2160p',
+        'description': '2160p, H265, 128kbps audio, 36MB/min',
+        'settings': {
+            'horizontal_resolution': 3840,
             'audio_bitrate': '128k',
             'video_codec': 'h265',
             'codec_preset': 'fast',
