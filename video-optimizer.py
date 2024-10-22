@@ -34,18 +34,7 @@ def extract_track_details(probe_data, stream_type):
     logging.info(f"Extracting {stream_type} tracks from media")
     return [stream for stream in probe_data['streams'] if stream['codec_type'] == stream_type]
 
-# Helper function to monitor the transcoding progress
-def monitor_progress(process, total_duration, progress_bar):
-    while process.poll() is None:
-        try:
-            duration = float(process.stdout.readline().decode('utf-8').strip())
-            progress_bar.n = duration
-            progress_bar.refresh()
-        except ValueError:
-            pass
-    progress_bar.n = total_duration
-    progress_bar.refresh()
-
+# Helper function to extract video tracks from media
 def truncate_filename(filename, max_length=40):
     if len(filename) > max_length:
         half_length = (max_length - 3) // 2  # Subtract 3 for the "..."
@@ -59,7 +48,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     resolution = settings['resolution']
     video_codec = settings['video_codec']
     codec_preset = settings['codec_preset']
-    crf = settings['crf']
+    constant_quality = settings['constant_quality']
     fps = settings['fps']
 
     # Add extension to the output file
@@ -145,15 +134,14 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         # Just copy the source if the target extension is anything other than 'mp4'
         subtitle_format = "copy"
 
+    # Set up ffmpeg command
     ffmpeg_cmd = [
         'ffmpeg',
         '-i', input_file,
         '-ab', audio_bitrate,
         '-vf', vf_options,
         '-rc', 'vbr',
-        '-cq', str(crf),
-        '-qmin', str(int(crf*0.8)),
-        '-qmax', str(int(crf*1.2)),
+        '-cq', str(constant_quality),
         '-pix_fmt', 'yuv420p10le',
         '-preset', codec_preset,
         '-movflags', 'faststart',
@@ -168,6 +156,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         '-y', output_file
     ]
 
+    # Uncomment this line to figure out issues with the ffmpeg process. At some point I need to add some proper error handling.
     #print(' '.join(ffmpeg_cmd))
 
     try:
@@ -217,7 +206,10 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
             except queue.Empty:
                 continue
 
+        # Wait until the process is finished
         process.wait()
+
+        # Close the progress bar
         pbar.close()
 
         logging.info(f"Transcoding complete for {input_file}. Output saved to {output_file}")
@@ -251,9 +243,9 @@ def get_transcoding_settings(file_path):
             'profile',
             message="Select the transcoding profile:",
             choices=[
-                'phone (480p, 25fps, H265, 96kbps audio, 8MB/min)',
-                'remote-streaming (720p, H265, 128kbps audio, 12MB/min)',
-                'home-streaming (1080p, H265, 128kbps audio, 18MB/min)'
+                ('480p, H265, 96kbps audio, 8MB/min', 'phone'),
+                ('720p, H265, 128kbps audio, 12MB/min', 'remote-streaming'),
+                ('1080p, H265, 128kbps audio, 18MB/min', 'home-streaming'),
             ]
         )
     ]
@@ -261,7 +253,9 @@ def get_transcoding_settings(file_path):
     profile = profile_answers['profile']
     logging.info(f"User selected profile: {profile}")
 
-    if profile.startswith('phone'):
+    # Output a return object based on the answers from the user
+    # This should be extracted to a helper function instead of being hard coded here
+    if profile == 'phone':
         target_width = 854
         target_height = int(target_width / aspect_ratio) if aspect_ratio else 480
         return {
@@ -270,10 +264,10 @@ def get_transcoding_settings(file_path):
             'audio_bitrate': '96k',
             'video_codec': 'h265',
             'video_bitrate': '8MB/min',
-            'codec_preset': 'medium',
-            'crf': 25,
+            'codec_preset': 'fast',
+            'constant_quality': 27,
         }
-    elif profile.startswith('remote-streaming'):
+    elif profile == 'remote-streaming':
         target_width = 1280
         target_height = int(target_width / aspect_ratio) if aspect_ratio else 720
         return {
@@ -282,8 +276,8 @@ def get_transcoding_settings(file_path):
             'audio_bitrate': '128k',
             'video_codec': 'h265',
             'video_bitrate': '12MB/min',
-            'codec_preset': 'medium',
-            'crf': 20,
+            'codec_preset': 'fast',
+            'constant_quality': 27,
         }
     else:
         target_width = 1920
@@ -294,8 +288,8 @@ def get_transcoding_settings(file_path):
             'audio_bitrate': '128k',
             'video_codec': 'h265',
             'video_bitrate': '18MB/min',
-            'codec_preset': 'medium',
-            'crf': 15,
+            'codec_preset': 'fast',
+            'constant_quality': 27,
         }
 
 # Function to let the user select whether to use NVENC and apply denoise
