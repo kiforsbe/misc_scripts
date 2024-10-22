@@ -18,6 +18,43 @@ logging.basicConfig(
     ]
 )
 
+# Declare some default profiles in case there is no profiles.json available
+default_profiles = [
+    {
+        'profile_id': '480p',
+        'description': '480p, H265, 96kbps audio, 8MB/min',
+        'settings': {
+            'horizontal_resolution': 854,
+            'audio_bitrate': '96k',
+            'video_codec': 'h265',
+            'codec_preset': 'fast',
+            'constant_quality': 27,
+        }
+    },
+    {
+        'profile_id': '720p',
+        'description': '720p, H265, 128kbps audio, 12MB/min',
+        'settings': {
+            'horizontal_resolution': 1280,
+            'audio_bitrate': '96k',
+            'video_codec': 'h265',
+            'codec_preset': 'fast',
+            'constant_quality': 27,
+        }
+    },
+    {
+        'profile_id': '1080p',
+        'description': '1080p, H265, 128kbps audio, 18MB/min',
+        'settings': {
+            'horizontal_resolution': 1920,
+            'audio_bitrate': '128k',
+            'video_codec': 'h265',
+            'codec_preset': 'fast',
+            'constant_quality': 27,
+        }
+    },
+]
+
 # Helper function to get media information using ffmpeg
 def get_media_info(file_path):
     logging.info(f"Probing media info for file: {file_path}")
@@ -41,16 +78,127 @@ def truncate_filename(filename, max_length=40):
         return f"{filename[:half_length]}...{filename[-half_length:]}"
     return filename
 
+def get_aspect_ratio_corrected_resolution_string(settings, media_info):
+    """
+    Returns the aspect ratio corrected resolution when targeting a new horizontal resolution.
+
+    Args:
+        settings (dict): Settings dictionary containing 'horizontal_resolution'.
+        media_info: Media info object containing width and height information.
+
+    Returns:
+        str: Aspect ratio corrected resolution as a string.
+    """
+
+    # Get the original resolution of the input file
+    width, height = get_resolution(media_info)
+
+    if settings['horizontal_resolution'] == 'keep':
+        # If horizontal_resolution is set to keep, return the original resolution
+        return f"{width}x{height}"
+    else:
+        # Keep aspect ratio
+        target_width = settings['horizontal_resolution']
+        target_height = int(height * (target_width / width))
+
+        # Set the new resolution and vf_options
+        return f"{target_width}x{target_height}"
+
+def get_video_encoder(settings, use_nvenc):
+    """
+    Returns the correct video codec based on use_nvenc and settings.
+
+    Args:
+        use_nvenc (bool): Whether to use NVENC or not.
+        settings (dict): A dictionary containing 'video_codec' setting.
+
+    Returns:
+        str: The name of the video codec to use.
+    """
+
+    # Mapping table for video codecs
+    codec_mapping = {
+        'h265': {'nvenc': 'hevc_nvenc', 'non-nvenc': 'libx265'},
+        'h264': {'nvenc': 'h264_nvenc', 'non-nvenc': 'libx264'},
+        'av1': {'nvenc': 'av1_nvenc', 'non-nvenc': 'libaom-av1'},
+    }
+
+    video_codec = settings.get('video_codec', '')
+
+    # Get the corresponding NVENC or non-NVENC variant
+    encoder = codec_mapping[video_codec].get('nvenc' if use_nvenc else 'non-nvenc')
+
+    return encoder
+
+def get_audio_stream_index(audio_streams, language):
+    """
+    Returns the index of the audio stream matching the specified language.
+
+    Args:
+        audio_streams (list): List of dictionaries containing audio stream information.
+        language (str): The desired language for the audio stream.
+
+    Returns:
+        int: Index of the audio stream matching the specified language. If no match is found, returns 0.
+    """
+    # Prepare audio mapping
+    audio_index = 0
+    audio_found = False
+    if language:
+        for i, stream in enumerate(audio_streams):
+            # Check if the language matches
+            if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == language:
+                audio_index = i
+                audio_found = True
+                logging.info(f"Default audio track set to language: {language}")
+                break
+
+    # If no applicable audio stream is found, use the first one
+    if not audio_found and len(audio_streams) > 0:
+        logging.warning("No audio track found matching language, using first available")
+        logging.info(f"Default audio track set to language: {audio_streams[audio_index]['tags']['language']}")
+    
+    return audio_index
+
+def get_subtitle_stream_index(subtitle_streams, language):
+    """
+    Returns the index of the subtitle stream that matches the given language.
+
+    Args:
+        subtitle_streams (list): A list of subtitle streams.
+        language (str): The language to match against.
+
+    Returns:
+        int: The index of the matching subtitle stream, or 0 if no match is found.
+    """
+    # Prepare subtitle mapping
+    subtitle_index = 0
+    subtitle_found = False
+    if language:
+        for i, stream in enumerate(subtitle_streams):
+            # Check if the language matches
+            if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == language:
+                #subtitle_map.append(f"-map 0:s:{i}")  # Select specific subtitle track by index
+                subtitle_index = i
+                subtitle_found = True
+                logging.info(f"Default subtitle track set to language: {language}")
+                break
+
+    # If no applicable subtitle is found, use the first one
+    if not subtitle_found and len(subtitle_streams) > 0:
+        logging.warning("No subtitle track found matching language, using first available")
+        logging.info(f"Default subtitle track set to language: {subtitle_streams[subtitle_index]['tags']['language']}")
+
+    return subtitle_index
+
+def map_subtitle_for_transcode(container):
+    if container == 'mp4':
+            return 'mov_text'
+        
+    return 'copy'
+
 # Helper function to transcode a file based on user settings
 def transcode_file(input_file, output_file, extension, settings, use_nvenc, apply_denoise, audio_language_name, subtitle_language_name):
-    audio_bitrate = settings['audio_bitrate']
-    video_bitrate = settings['video_bitrate']
-    resolution = settings['resolution']
-    video_codec = settings['video_codec']
-    codec_preset = settings['codec_preset']
-    constant_quality = settings['constant_quality']
-    fps = settings['fps']
-
     # Add extension to the output file
     output_file = f"{output_file}.{extension}"
 
@@ -61,78 +209,41 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     # Truncate filename if it's too long
     display_filename = truncate_filename(filename)
 
-    logging.info(f"Starting transcoding for {display_filename}")
-    logging.info(f"Output path {outfilename}")
-    logging.info(f"Target resolution: {resolution}, FPS: {fps}, Audio bitrate: {audio_bitrate}, Video bitrate: {video_bitrate}")
-
     # Print the processing file
     print(f"Processing file: {display_filename}")
 
-    # Codec selection
-    if video_codec == 'h265':
-        video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
-    elif video_codec == 'h264':
-        video_codec = 'h264_nvenc' if use_nvenc else 'libx264'
-    else:
-        video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
+    # Probe the input file to get stream information
+    media_info = get_media_info(input_file)
+    audio_streams = [s for s in media_info['streams'] if s['codec_type'] == 'audio']
+    subtitle_streams = [s for s in media_info['streams'] if s['codec_type'] == 'subtitle']
 
-    # Scale / resolution
+    # Get the audio and subtitle stream index based on the prefered default language
+    audio_index = get_audio_stream_index(audio_streams, audio_language_name)
+    subtitle_index = get_subtitle_stream_index(subtitle_streams, subtitle_language_name)
+
+    # Encoder selection
+    encoder = get_video_encoder(settings, use_nvenc)
+
+    # Return aspect ratio corrected resolution when targeting a new horizontal resolution
+    resolution = get_aspect_ratio_corrected_resolution_string(settings, media_info)
     vf_options = f"scale={resolution}"
 
-    # Apply denoising filter
+    # Apply denoising filter to vf_options
     if apply_denoise:
         vf_options += ",hqdn3d=3:2:6:4"  # Denoise filter with medium settings
-    
-    # Probe the input file to get stream information
-    probe = ffmpeg.probe(input_file)
-    audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
-    subtitle_streams = [s for s in probe['streams'] if s['codec_type'] == 'subtitle']
 
-    # Prepare audio mapping
-    audio_index = 0
-    audio_found = False
-    if audio_language_name:
-        for i, stream in enumerate(audio_streams):
-            # Check if the language matches
-            if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == audio_language_name:
-                audio_index = i
-                audio_found = True
-                logging.info(f"Default audio track set to language: {audio_language_name}")
-                break
+    # Set up subtitle format, if the output extension is 'mp4' then, and only then use 'mov_text' otherwise just copy 'copy' the source
+    subtitle_format = map_subtitle_for_transcode(extension)
 
-    # If no applicable audio stream is found, use the first one
-    if not audio_found and len(subtitle_streams) > 0:
-        logging.warning("No audio track found matching language, using first available")
-        logging.info(f"Default audio track set to language: {audio_streams[audio_index]['tags']['language']}")
+    # Set up some locals based on settings to make things easier
+    constant_quality = settings['constant_quality']
+    audio_bitrate = settings['audio_bitrate']
+    codec_preset = settings['codec_preset']
 
-    # Prepare subtitle mapping
-    subtitle_index = 0
-    subtitle_found = False
-    if subtitle_language_name:
-        for i, stream in enumerate(subtitle_streams):
-            # Check if the language matches
-            if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == subtitle_language_name:
-                #subtitle_map.append(f"-map 0:s:{i}")  # Select specific subtitle track by index
-                subtitle_index = i
-                subtitle_found = True
-                logging.info(f"Default subtitle track set to language: {subtitle_language_name}")
-                break
-
-    # If no applicable subtitle is found, use the first one
-    if not subtitle_found and len(subtitle_streams) > 0:
-        logging.warning("No subtitle track found matching language, using first available")
-        logging.info(f"Default subtitle track set to language: {subtitle_streams[subtitle_index]['tags']['language']}")
-
-    logging.info(f"Video codec: {video_codec}")
-    logging.info(f"Denoise filter applied: {apply_denoise}")
-
-    # Set up subtitle format, if the output extension is 'mp4' then, and only then use 'mov_ext' otherwise just copy 'copy' the source
-    if extension == "mp4":
-        # Use mov_ext format for mp4 output files as nothing else but srt is supported in mp4 container
-        subtitle_format = "mov_text"
-    else:
-        # Just copy the source if the target extension is anything other than 'mp4'
-        subtitle_format = "copy"
+    # Output some logging before setting up the ffmpeg command
+    logging.info(f"Starting transcoding for {display_filename}")
+    logging.info(f"Output path {outfilename}")
+    logging.info(f"Video encoder: {encoder}, Target resolution: {resolution}, Audio bitrate: {audio_bitrate}, Quality setting: {constant_quality}, Denoise filter applied: {apply_denoise}")
 
     # Set up ffmpeg command
     ffmpeg_cmd = [
@@ -148,7 +259,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         '-map', '0:v',
         '-map', '0:a',
         '-map', '0:s',
-        '-c:v', video_codec,
+        '-c:v', encoder,
         '-c:a', 'aac',
         '-c:s', subtitle_format,
         f"-disposition:a:{audio_index}", 'default',
@@ -220,8 +331,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         sys.exit(1)
 
 # Helper function to get the aspect ratio of a file
-def get_aspect_ratio(file_path):
-    media_info = get_media_info(file_path)
+def get_resolution(media_info):
     if media_info and 'streams' in media_info:
         video_streams = [stream for stream in media_info['streams'] if stream['codec_type'] == 'video']
         if video_streams:
@@ -231,66 +341,28 @@ def get_aspect_ratio(file_path):
     return None
 
 # Function to offer user settings and transcoding options
-def get_transcoding_settings(file_path):
+def get_transcoding_settings(profiles):
     logging.info("Offering transcoding profile options to the user")
-
-    width, height = get_aspect_ratio(file_path)
-    aspect_ratio = width / height
 
     # Set default resolution based on selected profile
     profile_questions = [
         inquirer.List(
             'profile',
             message="Select the transcoding profile:",
-            choices=[
-                ('480p, H265, 96kbps audio, 8MB/min', 'phone'),
-                ('720p, H265, 128kbps audio, 12MB/min', 'remote-streaming'),
-                ('1080p, H265, 128kbps audio, 18MB/min', 'home-streaming'),
-            ]
+            # make list of choices from default_profiles using the description and profile_id
+            choices=[(profile['description'], profile['profile_id']) for profile in profiles]
         )
     ]
     profile_answers = inquirer.prompt(profile_questions)
-    profile = profile_answers['profile']
-    logging.info(f"User selected profile: {profile}")
+    profile_id = profile_answers['profile']
+    logging.info(f"User selected profile: {profile_id}")
 
-    # Output a return object based on the answers from the user
-    # This should be extracted to a helper function instead of being hard coded here
-    if profile == 'phone':
-        target_width = 854
-        target_height = int(target_width / aspect_ratio) if aspect_ratio else 480
-        return {
-            'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
-            'fps': 25,
-            'audio_bitrate': '96k',
-            'video_codec': 'h265',
-            'video_bitrate': '8MB/min',
-            'codec_preset': 'fast',
-            'constant_quality': 27,
-        }
-    elif profile == 'remote-streaming':
-        target_width = 1280
-        target_height = int(target_width / aspect_ratio) if aspect_ratio else 720
-        return {
-            'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
-            'fps': 30,
-            'audio_bitrate': '128k',
-            'video_codec': 'h265',
-            'video_bitrate': '12MB/min',
-            'codec_preset': 'fast',
-            'constant_quality': 27,
-        }
-    else:
-        target_width = 1920
-        target_height = int(target_width / aspect_ratio) if aspect_ratio else 1080
-        return {
-            'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
-            'fps': 30,
-            'audio_bitrate': '128k',
-            'video_codec': 'h265',
-            'video_bitrate': '18MB/min',
-            'codec_preset': 'fast',
-            'constant_quality': 27,
-        }
+    # Select the profile object from profiles based on the profile_id
+    profile_object = [profile for profile in profiles if profile['profile_id'] == profile_id][0]
+
+    # Return the selected profile settings from the profile_object
+    return profile_object['settings']
+
 
 # Function to let the user select whether to use NVENC and apply denoise
 def get_encoding_and_filter_options():
@@ -373,27 +445,11 @@ def main():
     file_paths = sys.argv[1:]  # Read file paths from command-line arguments
     logging.info(f"Files received for transcoding: {file_paths}")
 
-    # Determine aspect ratios from the input files
-    aspect_ratios = []
-    for file_path in file_paths:
-        aspect_ratio = get_aspect_ratio(file_path)
-        if aspect_ratio:
-            aspect_ratios.append(aspect_ratio)
-            logging.info(f"Aspect ratio for {file_path}: {aspect_ratio[0]}:{aspect_ratio[1]}")
-        else:
-            logging.warning(f"Could not determine aspect ratio for {file_path}")
-
-    if not aspect_ratios:
-        print("No valid aspect ratios found. Exiting...")
-        input("Press Enter to exit...")
-        sys.exit(1)
-
     # Select default audio and subtitle tracks
     audio_language, subtitle_language = select_default_tracks(file_paths)
 
     # Offer transcoding settings using the first file's aspect ratio
-    first_file_path = file_paths[0]
-    settings = get_transcoding_settings(first_file_path)
+    settings = get_transcoding_settings(default_profiles)
 
     # Offer NVENC and denoise options
     use_nvenc, apply_denoise = get_encoding_and_filter_options()
