@@ -57,6 +57,8 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     audio_bitrate = settings['audio_bitrate']
     video_bitrate = settings['video_bitrate']
     resolution = settings['resolution']
+    video_codec = settings['video_codec']
+    codec_preset = settings['codec_preset']
     crf = settings['crf']
     fps = settings['fps']
 
@@ -77,9 +79,15 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     # Print the processing file
     print(f"Processing file: {display_filename}")
 
-    # Presets and codec selection
-    video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
-    codec_preset = 'slow' if use_nvenc else 'medium'
+    # Codec selection
+    if video_codec == 'h265':
+        video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
+    elif video_codec == 'h264':
+        video_codec = 'h264_nvenc' if use_nvenc else 'libx264'
+    else:
+        video_codec = 'hevc_nvenc' if use_nvenc else 'libx265'
+
+    # Scale / resolution
     vf_options = f"scale={resolution}"
 
     # Apply denoising filter
@@ -132,7 +140,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     # Set up subtitle format, if the output extension is 'mp4' then, and only then use 'mov_ext' otherwise just copy 'copy' the source
     if extension == "mp4":
         # Use mov_ext format for mp4 output files as nothing else but srt is supported in mp4 container
-        subtitle_format = "mov_ext"
+        subtitle_format = "mov_text"
     else:
         # Just copy the source if the target extension is anything other than 'mp4'
         subtitle_format = "copy"
@@ -142,7 +150,10 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         '-i', input_file,
         '-ab', audio_bitrate,
         '-vf', vf_options,
-        '-crf', crf,
+        '-rc', 'vbr',
+        '-cq', str(crf),
+        '-qmin', str(int(crf*0.8)),
+        '-qmax', str(int(crf*1.2)),
         '-pix_fmt', 'yuv420p10le',
         '-preset', codec_preset,
         '-movflags', 'faststart',
@@ -257,8 +268,10 @@ def get_transcoding_settings(file_path):
             'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
             'fps': 25,
             'audio_bitrate': '96k',
-            'video_bitrate': 'medium',
-            'crf': '35',
+            'video_codec': 'h265',
+            'video_bitrate': '8MB/min',
+            'codec_preset': 'medium',
+            'crf': 25,
         }
     elif profile.startswith('remote-streaming'):
         target_width = 1280
@@ -267,8 +280,10 @@ def get_transcoding_settings(file_path):
             'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
             'fps': 30,
             'audio_bitrate': '128k',
-            'video_bitrate': 'medium',
-            'crf': '27',
+            'video_codec': 'h265',
+            'video_bitrate': '12MB/min',
+            'codec_preset': 'medium',
+            'crf': 20,
         }
     else:
         target_width = 1920
@@ -277,8 +292,10 @@ def get_transcoding_settings(file_path):
             'resolution': f'{target_width}x{target_height}',  # Adjusted based on aspect ratio
             'fps': 30,
             'audio_bitrate': '128k',
+            'video_codec': 'h265',
             'video_bitrate': 'low',
-            'crf': '17',
+            'codec_preset': '18MB/min',
+            'crf': 15,
         }
 
 # Function to let the user select whether to use NVENC and apply denoise
