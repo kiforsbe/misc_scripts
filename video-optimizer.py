@@ -55,7 +55,7 @@ default_profiles = [
     },
     {
         'profile_id': '2160p',
-        'description': '2160p, H265, 128kbps audio, 36MB/min',
+        'description': '2160p, H265, 128kbps audio, 38MB/min',
         'settings': {
             'horizontal_resolution': 3840,
             'audio_bitrate': '128k',
@@ -104,8 +104,10 @@ def get_aspect_ratio_corrected_resolution_string(settings, media_info):
     # Get the original resolution of the input file
     width, height = get_resolution(media_info)
 
+    # TODO: This can be simplified: https://trac.ffmpeg.org/wiki/Scaling#KeepingtheAspectRatio
     if settings['horizontal_resolution'] == 'keep':
         # If horizontal_resolution is set to keep, return the original resolution
+        # TODO: This can be simplified: https://trac.ffmpeg.org/wiki/Scaling#AvoidingUpscaling
         return f"{width}x{height}"
     else:
         # Keep aspect ratio
@@ -141,66 +143,28 @@ def get_video_encoder(settings, use_nvenc):
 
     return encoder
 
-def get_audio_stream_index(audio_streams, language):
+def get_stream_index_by_language(streams, language):
     """
-    Returns the index of the audio stream matching the specified language.
+    Returns the index of the stream matching the specified language.
 
     Args:
-        audio_streams (list): List of dictionaries containing audio stream information.
-        language (str): The desired language for the audio stream.
+        audio_streams (list): List of dictionaries containing stream information.
+        language (str): The desired language for the stream.
 
     Returns:
-        int: Index of the audio stream matching the specified language. If no match is found, returns 0.
+        int: Index of the stream matching the specified language. If no match is found, returns 0.
     """
-    # Prepare audio mapping
-    audio_index = 0
-    audio_found = False
+    index = -1  # Initialize index to an invalid value
+
+    # Try to find a matching language
     if language:
-        for i, stream in enumerate(audio_streams):
+        for i, stream in enumerate(streams):
             # Check if the language matches
             if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == language:
-                audio_index = i
-                audio_found = True
-                logging.info(f"Default audio track set to language: {language}")
+                index = i  # Update index if match found
                 break
 
-    # If no applicable audio stream is found, use the first one
-    if not audio_found and len(audio_streams) > 0:
-        logging.warning("No audio track found matching language, using first available")
-        logging.info(f"Default audio track set to language: {audio_streams[audio_index]['tags']['language']}")
-    
-    return audio_index
-
-def get_subtitle_stream_index(subtitle_streams, language):
-    """
-    Returns the index of the subtitle stream that matches the given language.
-
-    Args:
-        subtitle_streams (list): A list of subtitle streams.
-        language (str): The language to match against.
-
-    Returns:
-        int: The index of the matching subtitle stream, or 0 if no match is found.
-    """
-    # Prepare subtitle mapping
-    subtitle_index = 0
-    subtitle_found = False
-    if language:
-        for i, stream in enumerate(subtitle_streams):
-            # Check if the language matches
-            if 'tags' in stream and 'language' in stream['tags'] and stream['tags']['language'] == language:
-                #subtitle_map.append(f"-map 0:s:{i}")  # Select specific subtitle track by index
-                subtitle_index = i
-                subtitle_found = True
-                logging.info(f"Default subtitle track set to language: {language}")
-                break
-
-    # If no applicable subtitle is found, use the first one
-    if not subtitle_found and len(subtitle_streams) > 0:
-        logging.warning("No subtitle track found matching language, using first available")
-        logging.info(f"Default subtitle track set to language: {subtitle_streams[subtitle_index]['tags']['language']}")
-
-    return subtitle_index
+    return index
 
 def map_subtitle_for_transcode(container):
     if container == 'mp4':
@@ -229,8 +193,32 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     subtitle_streams = [s for s in media_info['streams'] if s['codec_type'] == 'subtitle']
 
     # Get the audio and subtitle stream index based on the prefered default language
-    audio_index = get_audio_stream_index(audio_streams, audio_language_name)
-    subtitle_index = get_subtitle_stream_index(subtitle_streams, subtitle_language_name)
+    audio_index = get_stream_index_by_language(audio_streams, audio_language_name)
+    subtitle_index = get_stream_index_by_language(subtitle_streams, subtitle_language_name)
+
+    # Check if an appropriate default stream was found as default, and if so output some information on it, and if not, change the audio_index to 0
+    if 0 <= audio_index < len(audio_streams):
+        # Use the audio_index directly to find the stream information
+        stream = audio_streams[audio_index]
+
+        # Summarize audio details into a string
+        details = f"Language: {stream['tags']['language']}, Codec Name: {stream['codec_name']}, Sample Rate: {stream['sample_rate']}, Channels: {stream['channels']} ({'stereo' if stream['channel_layout'] == 'stereo' else 'unknown'})"
+        logging.info(f"Audio details: {details}")
+    else:
+        logging.warning("No matching audio stream found.")
+        audio_index = 0
+
+    # Check if an appropriate default stream was found as default, and if so output some information on it, and if not, change the subtitle_index to 0
+    if 0 <= subtitle_index < len(subtitle_streams):
+        # Use the subtitle_index directly to find the stream information
+        stream = subtitle_streams[audio_index]
+
+        # Summarize audio details into a string
+        details = f"Language: {stream['tags']['language']}, Codec Name: {stream['codec_name']}"
+        logging.info(f"Subtitle details: {details}")
+    else:
+        logging.warning("No matching audio stream found.")
+        subtitle_index = 0
 
     # Encoder selection
     encoder = get_video_encoder(settings, use_nvenc)
