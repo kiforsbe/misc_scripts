@@ -31,8 +31,8 @@ logging.basicConfig(level=logging.INFO,
 # Setting up some hard coded configuration variables
 TEMP_DIR = ".temp" # Temporary directory for downloaded files and generated streams
 DELETE_DELAY = 300  # 5 minutes in seconds
-FILENAME_MAX_LENGTH = 64 # Maximum length of filenames in bytes
-OLLAMA_MODEL = "qwen2.5" # Qwen 2.5 model
+FILENAME_MAX_LENGTH = 96 # Maximum length of filenames in bytes
+OLLAMA_MODEL = "qwen2.5:latest" # The Ollama model to use for summary generation
 USE_OLLAMA = True # Use ollama to generate streams
 
 # Ensure the temporary directory exists
@@ -396,7 +396,15 @@ def convert_m3u8_to_mp4():
             # If Ollama is enabled then use it to summarize the title for a shorter filename
             if USE_OLLAMA:
                 # Call the Ollama model
-                ollama_response = ollama.chat(model=OLLAMA_MODEL, messages=[{'role': 'user', 'content': f"Summarize this title in English, around 64 characters or less, and return only that and nothing else: {title}"}])
+                ollama_response = ollama.chat(
+                    model=OLLAMA_MODEL,
+                    messages=[
+                        {
+                            'role': 'user',
+                            'content': f"Summarize this title, keep original details as much as possible, while staying within {FILENAME_MAX_LENGTH} characters or less, making sure it is all in English; return only the summary nothing else: {title}"
+                        }
+                    ]
+                )
 
                 # Extract the response text
                 output_filename = f"{ollama_response['message']['content']}.mp4"
@@ -406,7 +414,8 @@ def convert_m3u8_to_mp4():
         except ollama.ResponseError as e:
             logging.error(f"Unexpected error: {e}")
 
-        # If we have a response, use it as the filename. Otherwise, use the title as filename or if no title, try to create one from the URL.
+        # If we have a response, use it as the filename.
+        # Otherwise, use the title as filename or if no title, try to create one from the URL.
         if not output_filename:
             if title:
                 output_filename = f"{title[:FILENAME_MAX_LENGTH]}.mp4"
