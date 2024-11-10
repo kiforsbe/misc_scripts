@@ -97,11 +97,13 @@ Converts an input m3u8 file into a MP4 file. The input is sent as a multipart/fo
 - urllib
 - ollama
 
-## merge-ogg-files-to-one-mp3.py
-Simple merge a bunch of `*.ogg` files into one single `.mp3` file. Jsut drag all the input files onto the script and it will be output in the same folder as the first file with the name "`combined_output.mp3`".
+## merge-audio-files-to-one-output.py
+Simple merge a bunch of audio files into one single output file. Just drag all the input files onto the script and it will be output in the same folder as the first file with the name "`combined_output.<ext>`". The script will ask what format, bitrate etc the output shall get.
 
 ### Requires
 - pydub
+- inquirer
+- tqdm
 
 ## udio-flask-webservice.py (udio-download_ext-button.user.js)
 A flask web service that adds metadata including cover art to your song files downloaded from Udio. It comes with a user script (e.g. Tampermonkey) that simplifies this process by adding a new button to the song pages "Download with metadata" that calls the webservice.
