@@ -142,3 +142,19 @@ It is made specifically for transcoding for example tv-shows from your legacy me
 - ffmpeg-python
 - inquirer
 - tqdm
+
+## lyrics-timing-generator.py
+A script that generates timed lyric for music files containing non-timed lyrics or no pre-prepared lyrics. 
+
+### Requires
+- pydub
+- mutagen
+- numpy
+- librosa
+- tensorflow
+- spleeter
+- soundfile
+- whisper
+- tqdm
+- dataclasses
+- typing
