@@ -36,6 +36,9 @@ def delayed_delete():
 # Start the background deletion task
 threading.Thread(target=delayed_delete, daemon=True).start()
 
+def generate_uuid(url):
+    return uuid.uuid3(uuid.NAMESPACE_URL, url)
+
 @app.route('/', methods=['POST'])
 def index():
     return render_template_string('''
@@ -87,7 +90,7 @@ def download_ext():
         img_data = img_response.content
 
         # Create a temporary file to save the MP3
-        temp_mp3 = os.path.join(TEMP_DIR, f"temp_{uuid.uuid1()}.mp3")
+        temp_mp3 = os.path.join(TEMP_DIR, f"temp_{generate_uuid(mp3_url)}.mp3")
         with open(temp_mp3, 'wb') as f:
             f.write(mp3_data.getvalue())
 
@@ -127,7 +130,7 @@ def download_ext():
         elif title:
             filename = f"{title}.mp3"
         else:
-            filename = f"temp_{uuid.uuid1()}.mp3"
+            filename = f"temp_{generate_uuid(mp3_url)}.mp3"
 
         # Queue the file for deletion
         delete_queue.append({'path': temp_mp3, 'time': time.time()})

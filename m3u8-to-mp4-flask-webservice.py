@@ -273,6 +273,9 @@ def estimate_bitrate(playlist):
     # Return None if no segments or total duration is zero
     return None
 
+def generate_uuid(url):
+    return uuid.uuid3(uuid.NAMESPACE_URL, url)
+
 def generate_filename(url):
     """
     Generates a filename for the given URL.
@@ -290,7 +293,7 @@ def generate_filename(url):
     if url_filename.endswith('.m3u8'):
         return url_filename[:-5] + '.mp4'
 
-    return str(uuid.uuid4()) + '.mp4'
+    return str(generate_uuid(url)) + '.mp4'
 
 def urljoin(base, url):
     """
@@ -412,7 +415,7 @@ def convert_m3u8_to_mp4():
                 # If the output_filename contains multiple '.' then condense them down to max one in a row
                 output_filename = re.sub('\.+', '.', output_filename)
         except ollama.ResponseError as e:
-            logging.error(f"Unexpected error: {e}")
+            logging.error(f"Ollama unexpected error: {e}")
 
         # If we have a response, use it as the filename.
         # Otherwise, use the title as filename or if no title, try to create one from the URL.
@@ -423,7 +426,7 @@ def convert_m3u8_to_mp4():
                 output_filename = generate_filename(m3u8_url)
 
         # Create a temporary filename to store the downloaded video
-        temp_filename = os.path.join(TEMP_DIR, f"temp_{uuid.uuid4()}.mp4")
+        temp_filename = os.path.join(TEMP_DIR, f"temp_{generate_uuid(m3u8_url)}.mp4")
 
         # ffmpeg command to extract the video stream from the m3u8 file
         ffmpeg_command = ['ffmpeg', '-i', best_video_stream['uri']]
