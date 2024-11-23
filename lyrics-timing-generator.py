@@ -12,15 +12,17 @@ from demucs.pretrained import get_model
 from demucs.apply import apply_model
 import soundfile as sf
 import tempfile
-import whisper
+import whisperx
 import shutil
 from tqdm import tqdm
 from dataclasses import dataclass
-from typing import List
+from typing import List, TextIO
 import time
 import requests
 import json
 import re
+
+import whisperx.utils
 
 # Suppress unnecessary warnings
 warnings.filterwarnings('ignore')
@@ -35,6 +37,16 @@ logger = logging.getLogger(__name__)
 
 logging.getLogger('numpy').setLevel(logging.ERROR)
 logging.getLogger('numba').setLevel(logging.ERROR)
+
+whisper_model = "base"
+device = "cuda" 
+whisper_batch_size = 16 # reduce if low on GPU mem
+whisper_compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
+whisper_asr_options = {
+    "hotwords": [],
+    "multilingual": False,
+    "word_timestamps": True,
+}
 
 @dataclass
 class ProcessingResult:
@@ -119,7 +131,7 @@ class LyricsCleanerOllama:
         # Remove empty lines
         cleaned = re.sub(r'\n\s*\n', '\n', cleaned)
         return cleaned.strip()
-
+            
 class AudioProcessor:
     def __init__(self, input_path):
         self.input_path = input_path
@@ -127,7 +139,12 @@ class AudioProcessor:
         self.demucs_model.eval()
         if torch.cuda.is_available():
             self.demucs_model.cuda()
-        self.whisper_model = whisper.load_model("base")
+        self.whisper_model = whisperx.load_model(
+            "base",
+            device,
+            compute_type=whisper_compute_type,
+            asr_options=whisper_asr_options
+        )
         self.lyrics_cleaner = LyricsCleanerOllama()
         self.pbar = CustomTqdm(
             total=100,
@@ -150,15 +167,15 @@ class AudioProcessor:
         logger.info("Extracting lyrics using Whisper")
         self.pbar.set_description("Transcribing audio")
         
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-            sf.write(temp_wav.name, vocals, 16000)
-            # Use word-level timestamp feature
-            result = self.whisper_model.transcribe(
-                temp_wav.name,
-                word_timestamps=True,  # Enable word-level timestamps
-                language="en"  # Set language explicitly for better accuracy
-            )
-            #os.unlink(temp_wav.name)
+        result = self.whisper_model.transcribe(
+            vocals,
+            language="en",
+            batch_size=whisper_batch_size
+        )
+        
+        # 2. Align whisper output
+        model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
+        result = whisperx.align(result["segments"], model_a, metadata, vocals, device, return_char_alignments=False)
             
         return result
         
