@@ -27,11 +27,14 @@ warnings.filterwarnings('ignore')
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARNING,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - [%(name)s] %(message)s [%(module)s:%(funcName)s:%(lineno)d]',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+logging.getLogger('numpy').setLevel(logging.ERROR)
+logging.getLogger('numba').setLevel(logging.ERROR)
 
 @dataclass
 class ProcessingResult:
@@ -50,8 +53,8 @@ class CustomTqdm(tqdm):
 
     def format_meter(self, n, total, elapsed, ncols=None, prefix='', ascii=False, unit='it', unit_scale=False, rate=None, bar_format=None, postfix=None, unit_divisor=1000, initial=0, **extra_kwargs):
         # Convert float progress to integers
-        n = int(n)
-        total = int(total)
+        n = int(round(n,1))
+        total = int(round(total,1))
         return super().format_meter(n, total, elapsed, ncols, prefix, ascii, unit, unit_scale, rate, bar_format, postfix, unit_divisor, initial, **extra_kwargs)
 
 class LyricsCleanerOllama:
@@ -143,27 +146,21 @@ class AudioProcessor:
         return f"{base}_output{ext}"
         
     def extract_lyrics_from_audio(self, vocals):
-        """Extract lyrics from vocals using Whisper"""
+        """Extract lyrics from vocals using Whisper with word-level timestamps"""
         logger.info("Extracting lyrics using Whisper")
         self.pbar.set_description("Transcribing audio")
         
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
             sf.write(temp_wav.name, vocals, 16000)
-            result = self.whisper_model.transcribe(temp_wav.name)
-            os.unlink(temp_wav.name)
+            # Use word-level timestamp feature
+            result = self.whisper_model.transcribe(
+                temp_wav.name,
+                word_timestamps=True,  # Enable word-level timestamps
+                language="en"  # Set language explicitly for better accuracy
+            )
+            #os.unlink(temp_wav.name)
             
-        lyrics = []
-        timestamps = []
-        for segment in result["segments"]:
-            lyrics.append(segment["text"].strip())
-            timestamps.append(segment["start"])
-            
-        # Clean the extracted lyrics
-        cleaned_lyrics = self.lyrics_cleaner.clean_lyrics("\n".join(lyrics))
-        lyrics = [line.strip() for line in cleaned_lyrics.split('\n') if line.strip()]
-            
-        logger.debug(f"Extracted and cleaned {len(lyrics)} lyrics segments")
-        return lyrics, timestamps
+        return result
         
     def get_lyrics_from_tags(self):
         """Extract lyrics from audio file tags"""
@@ -218,125 +215,125 @@ class AudioProcessor:
         logger.debug(f"Isolated vocals: {len(vocals)} samples at {sr}Hz")
         return vocals, sr
             
-    def align_lyrics_with_audio(self, lyrics, vocals, sr):
-        """
-        Improved alignment of existing lyrics with audio using energy-based segmentation
-        """
+    def align_lyrics_with_audio(self, lyrics_lines, vocals):
+        """Align existing lyrics with audio using Whisper's word timestamps"""
         self.pbar.set_description("Aligning lyrics with audio")
         
-        # Calculate frame and hop lengths
-        hop_length = int(sr * 0.010)  # 10ms hop
-        frame_length = int(2**np.ceil(np.log2(sr * 0.025)))  # Next power of 2 of 25ms frame
+        # Get Whisper transcription with word timestamps
+        whisper_result = self.extract_lyrics_from_audio(vocals)
         
-        try:
-            # Get mel spectrogram with adjusted parameters
-            mel_spec = librosa.feature.melspectrogram(
-                y=vocals,
-                sr=sr,
-                n_mels=80,
-                n_fft=frame_length,
-                hop_length=hop_length,
-                win_length=frame_length
-            )
+        # Prepare lyrics for comparison
+        lyrics_words = []
+        lyrics_line_indices = []
+        for i, line in enumerate(lyrics_lines):
+            words = line.strip().split()
+            lyrics_words.extend(words)
+            lyrics_line_indices.extend([i] * len(words))
+        
+        # Extract word timestamps from Whisper
+        whisper_words = []
+        word_timestamps = []
+        
+        for segment in whisper_result["segments"]:
+            if "words" in segment:
+                for word_data in segment["words"]:
+                    whisper_words.append(word_data["word"].strip().lower())
+                    word_timestamps.append(word_data["start"])
+        
+        def clean_word(word):
+            """Clean word for comparison"""
+            return re.sub(r'[^\w\s]', '', word.lower())
+        
+        # Clean words for comparison
+        clean_lyrics_words = [clean_word(w) for w in lyrics_words]
+        clean_whisper_words = [clean_word(w) for w in whisper_words]
+        
+        # Dynamic Time Warping to align word sequences
+        def get_alignment_score(w1, w2):
+            """Calculate similarity score between two words"""
+            if not w1 or not w2:
+                return 0
+            return 1 if w1 == w2 else 0
+        
+        def dtw_align(seq1, seq2):
+            """Perform DTW alignment between two sequences"""
+            n, m = len(seq1), len(seq2)
+            dtw_matrix = np.zeros((n + 1, m + 1))
+            dtw_matrix[0, 1:] = float('inf')
+            dtw_matrix[1:, 0] = float('inf')
             
-            # Convert to log scale
-            mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-            mel_energy = np.mean(mel_spec, axis=0)
+            # Fill the DTW matrix
+            for i in range(1, n + 1):
+                for j in range(1, m + 1):
+                    cost = 1 - get_alignment_score(seq1[i-1], seq2[j-1])
+                    dtw_matrix[i, j] = cost + min(
+                        dtw_matrix[i-1, j],    # insertion
+                        dtw_matrix[i, j-1],    # deletion
+                        dtw_matrix[i-1, j-1]   # match
+                    )
             
-        except Exception as e:
-            logger.warning(f"Mel spectrogram calculation failed: {e}. Falling back to RMS energy.")
-            mel_energy = None
-        
-        # Calculate RMS energy
-        rms = librosa.feature.rms(
-            y=vocals, 
-            frame_length=frame_length,
-            hop_length=hop_length,
-            center=True
-        )[0]
-        
-        # Combine mel and RMS features if available
-        if mel_energy is not None:
-            # Normalize both features
-            mel_energy = (mel_energy - mel_energy.mean()) / mel_energy.std()
-            rms_norm = (rms - rms.mean()) / rms.std()
-            
-            # Combine features
-            energy = (mel_energy + rms_norm) / 2
-        else:
-            energy = rms
-        
-        # Smooth energy curve
-        window_size = int(sr * 0.1 / hop_length)  # 100ms window
-        energy_smooth = np.convolve(energy, np.ones(window_size)/window_size, mode='same')
-        
-        # Find potential line boundaries using peak detection
-        from scipy.signal import find_peaks
-        
-        # Calculate dynamic prominence threshold based on energy distribution
-        prominence_threshold = np.percentile(energy_smooth, 75) - np.percentile(energy_smooth, 25)
-        
-        # Find peaks (potential line starts)
-        peaks, _ = find_peaks(
-            energy_smooth,
-            distance=int(sr * 0.5 / hop_length),  # Minimum 0.5s between peaks
-            prominence=prominence_threshold,
-            height=np.mean(energy_smooth)
-        )
-        
-        # Convert peak frames to timestamps
-        timestamps = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
-        
-        # Ensure we have reasonable number of timestamps
-        if len(timestamps) < len(lyrics) * 0.5:  # Too few timestamps
-            logger.warning("Too few vocal segments detected, using time-based distribution")
-            # Create evenly spaced timestamps
-            total_duration = librosa.get_duration(y=vocals, sr=sr)
-            timestamps = np.linspace(0, total_duration * 0.95, len(lyrics))
-            
-        elif len(timestamps) > len(lyrics) * 2:  # Too many timestamps
-            logger.info("Merging nearby timestamps")
-            # Merge nearby timestamps
-            merged = []
-            current_group = [timestamps[0]]
-            
-            for t in timestamps[1:]:
-                if t - current_group[-1] < 0.3:  # Merge if gap is less than 300ms
-                    current_group.append(t)
+            # Backtrack to find alignment
+            alignment = []
+            i, j = n, m
+            while i > 0 and j > 0:
+                min_step = min(
+                    (dtw_matrix[i-1, j], 'insert'),
+                    (dtw_matrix[i, j-1], 'delete'),
+                    (dtw_matrix[i-1, j-1], 'match')
+                )
+                if min_step[1] == 'match':
+                    alignment.append((i-1, j-1))
+                    i -= 1
+                    j -= 1
+                elif min_step[1] == 'insert':
+                    i -= 1
                 else:
-                    merged.append(np.mean(current_group))
-                    current_group = [t]
+                    j -= 1
                     
-            if current_group:
-                merged.append(np.mean(current_group))
+            return list(reversed(alignment))
+        
+        # Perform alignment
+        word_alignments = dtw_align(clean_lyrics_words, clean_whisper_words)
+        
+        # Extract line timestamps based on word alignments
+        line_timestamps = []
+        current_line = -1
+        current_line_words = []
+        
+        for lyrics_idx, whisper_idx in word_alignments:
+            line_idx = lyrics_line_indices[lyrics_idx]
+            
+            if line_idx != current_line:
+                if current_line_words:
+                    # Use the earliest timestamp for the previous line
+                    line_timestamps.append(min(current_line_words))
+                current_line = line_idx
+                current_line_words = []
                 
-            timestamps = np.array(merged)
-            
-            # If still too many, take evenly spaced samples
-            if len(timestamps) > len(lyrics):
-                indices = np.round(np.linspace(0, len(timestamps) - 1, len(lyrics))).astype(int)
-                timestamps = timestamps[indices]
+            current_line_words.append(word_timestamps[whisper_idx])
         
-        # Ensure timestamps start near the beginning of the audio
-        if timestamps[0] > 1.0:  # If first timestamp is more than 1 second in
-            timestamps = np.insert(timestamps, 0, 0.0)  # Add timestamp at start
-            
-        # Trim to match number of lyrics
-        timestamps = timestamps[:len(lyrics)]
+        # Add the last line
+        if current_line_words:
+            line_timestamps.append(min(current_line_words))
         
-        # Ensure we have exactly one timestamp per lyric line
-        if len(timestamps) < len(lyrics):
-            # Fill remaining timestamps by interpolation
-            total_duration = librosa.get_duration(y=vocals, sr=sr)
-            missing_count = len(lyrics) - len(timestamps)
+        # Handle edge cases
+        if len(line_timestamps) < len(lyrics_lines):
+            # Fill in missing timestamps by interpolation
+            total_duration = whisper_result["segments"][-1]["end"]
+            missing_count = len(lyrics_lines) - len(line_timestamps)
+            if line_timestamps:
+                last_timestamp = line_timestamps[-1]
+            else:
+                last_timestamp = 0
+                
             additional_timestamps = np.linspace(
-                timestamps[-1] if len(timestamps) > 0 else 0,
+                last_timestamp,
                 total_duration * 0.95,
                 missing_count + 1
             )[1:]
-            timestamps = np.concatenate([timestamps, additional_timestamps])
+            line_timestamps.extend(additional_timestamps)
         
-        return timestamps
+        return line_timestamps
         
     def filter_timestamps(self, timestamps, min_gap=0.5):
         """Filter timestamps to remove those that are too close together"""
@@ -380,7 +377,7 @@ class AudioProcessor:
             
         return "\n".join(lrc_lines)
         
-    def process_file(self) -> ProcessingResult:
+    def process_file(self):
         """Process a single audio file"""
         start_time = time.time()
         
@@ -389,21 +386,29 @@ class AudioProcessor:
             
             # Extract vocals
             vocals, sr = self.isolate_vocals()
-            self.pbar.update(round(20))
+            self.pbar.update(20)
             
             # Get lyrics
             lyrics_text = self.get_lyrics_from_tags()
-            self.pbar.update(round(20))
+            self.pbar.update(20)
             
             if lyrics_text:
                 logger.info("Using lyrics from audio file tags")
                 lyrics = [line.strip() for line in lyrics_text.split('\n') if line.strip()]
-                timestamps = self.align_lyrics_with_audio(lyrics, vocals, sr)
+                timestamps = self.align_lyrics_with_audio(lyrics, vocals)
             else:
                 logger.info("Generating lyrics from audio")
-                lyrics, timestamps = self.extract_lyrics_from_audio(vocals)
+                result = self.extract_lyrics_from_audio(vocals)
+                
+                # Extract lyrics and timestamps from segments
+                lyrics = []
+                timestamps = []
+                for segment in result["segments"]:
+                    if segment["text"].strip():
+                        lyrics.append(segment["text"].strip())
+                        timestamps.append(segment["start"])
             
-            self.pbar.update(round(30))
+            self.pbar.update(30)
             
             # Generate LRC content
             lrc_content = self.generate_lrc_content(lyrics, timestamps)
