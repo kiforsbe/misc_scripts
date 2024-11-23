@@ -18,6 +18,9 @@ from tqdm import tqdm
 from dataclasses import dataclass
 from typing import List
 import time
+import requests
+import json
+import re
 
 # Suppress unnecessary warnings
 warnings.filterwarnings('ignore')
@@ -39,6 +42,81 @@ class ProcessingResult:
     output_file: str = None
     output_lrc: str = None
 
+from tqdm import tqdm
+
+class CustomTqdm(tqdm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def format_meter(self, n, total, elapsed, ncols=None, prefix='', ascii=False, unit='it', unit_scale=False, rate=None, bar_format=None, postfix=None, unit_divisor=1000, initial=0, **extra_kwargs):
+        # Convert float progress to integers
+        n = int(n)
+        total = int(total)
+        return super().format_meter(n, total, elapsed, ncols, prefix, ascii, unit, unit_scale, rate, bar_format, postfix, unit_divisor, initial, **extra_kwargs)
+
+class LyricsCleanerOllama:
+    def __init__(self, host="http://localhost:11434"):
+        """Initialize Ollama client with host URL"""
+        self.host = host
+        self.api_generate = f"{host}/api/generate"
+        
+    def clean_lyrics(self, lyrics: str) -> str:
+        """
+        Clean lyrics using Ollama with Llama model
+        Removes section markers and normalizes formatting
+        """
+        prompt = """
+        Clean up these song lyrics by:
+        1. Remove all section markers like [Verse], [Chorus], [Bridge], etc.
+        2. Remove any empty lines between sections
+        3. Keep only the actual lyrics
+        4. Maintain line breaks between different lines
+        5. Return only the cleaned lyrics, no explanations
+
+        Lyrics to clean:
+        {lyrics}
+        """.format(lyrics=lyrics)
+
+        try:
+            response = requests.post(
+                self.api_generate,
+                json={
+                    "model": "llama3.1",
+                    "prompt": prompt,
+                    "stream": False
+                },
+                timeout=30
+            )
+            response.raise_for_status()
+            
+            # Parse response and extract cleaned lyrics
+            result = response.json()
+            cleaned_lyrics = result.get('response', '').strip()
+            
+            # Additional cleaning with regex for any remaining brackets
+            cleaned_lyrics = re.sub(r'\[[^\]]*\]', '', cleaned_lyrics)
+            
+            # Remove multiple consecutive empty lines
+            cleaned_lyrics = re.sub(r'\n\s*\n', '\n', cleaned_lyrics)
+            
+            return cleaned_lyrics.strip()
+            
+        except Exception as e:
+            logger.warning(f"Error cleaning lyrics with Ollama: {str(e)}")
+            # If Ollama fails, fall back to basic regex cleaning
+            return self.basic_cleanup(lyrics)
+            
+    def basic_cleanup(self, lyrics: str) -> str:
+        """
+        Fallback cleanup method using regex
+        Used when Ollama is unavailable or fails
+        """
+        # Remove section markers
+        cleaned = re.sub(r'\[[^\]]*\]', '', lyrics)
+        # Remove empty lines
+        cleaned = re.sub(r'\n\s*\n', '\n', cleaned)
+        return cleaned.strip()
+
 class AudioProcessor:
     def __init__(self, input_path):
         self.input_path = input_path
@@ -47,7 +125,13 @@ class AudioProcessor:
         if torch.cuda.is_available():
             self.demucs_model.cuda()
         self.whisper_model = whisper.load_model("base")
-        self.pbar = None
+        self.lyrics_cleaner = LyricsCleanerOllama()
+        self.pbar = CustomTqdm(
+            total=100,
+            desc="Starting",
+            unit="%",
+            bar_format='{l_bar}{bar}| {n:.0f}/{total_fmt} [{elapsed}<{remaining}]'
+        )
         try:
             self.audio_file = EasyID3(input_path)
         except:
@@ -74,7 +158,11 @@ class AudioProcessor:
             lyrics.append(segment["text"].strip())
             timestamps.append(segment["start"])
             
-        logger.debug(f"Extracted {len(lyrics)} lyrics segments")
+        # Clean the extracted lyrics
+        cleaned_lyrics = self.lyrics_cleaner.clean_lyrics("\n".join(lyrics))
+        lyrics = [line.strip() for line in cleaned_lyrics.split('\n') if line.strip()]
+            
+        logger.debug(f"Extracted and cleaned {len(lyrics)} lyrics segments")
         return lyrics, timestamps
         
     def get_lyrics_from_tags(self):
@@ -87,7 +175,8 @@ class AudioProcessor:
                 for tag in audio.getall('USLT'):
                     if tag.text and tag.text.strip():
                         logger.info("Found lyrics in USLT tag")
-                        return tag.text
+                        # Clean the lyrics before returning
+                        return self.lyrics_cleaner.clean_lyrics(tag.text)
             
             logger.info("No lyrics found in audio tags")
             return None
@@ -129,34 +218,125 @@ class AudioProcessor:
         logger.debug(f"Isolated vocals: {len(vocals)} samples at {sr}Hz")
         return vocals, sr
             
-    def detect_vocal_segments(self, vocals, sr):
-        """Detect segments with vocal activity"""
-        self.pbar.set_description("Detecting vocal segments")
-        frame_length = int(sr * 0.05)  # 50ms frames
-        hop_length = int(sr * 0.025)   # 25ms hop
+    def align_lyrics_with_audio(self, lyrics, vocals, sr):
+        """
+        Improved alignment of existing lyrics with audio using energy-based segmentation
+        """
+        self.pbar.set_description("Aligning lyrics with audio")
+        
+        # Calculate frame and hop lengths
+        hop_length = int(sr * 0.010)  # 10ms hop
+        frame_length = int(2**np.ceil(np.log2(sr * 0.025)))  # Next power of 2 of 25ms frame
+        
+        try:
+            # Get mel spectrogram with adjusted parameters
+            mel_spec = librosa.feature.melspectrogram(
+                y=vocals,
+                sr=sr,
+                n_mels=80,
+                n_fft=frame_length,
+                hop_length=hop_length,
+                win_length=frame_length
+            )
+            
+            # Convert to log scale
+            mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
+            mel_energy = np.mean(mel_spec, axis=0)
+            
+        except Exception as e:
+            logger.warning(f"Mel spectrogram calculation failed: {e}. Falling back to RMS energy.")
+            mel_energy = None
         
         # Calculate RMS energy
-        rms = librosa.feature.rms(y=vocals, frame_length=frame_length, hop_length=hop_length)[0]
+        rms = librosa.feature.rms(
+            y=vocals, 
+            frame_length=frame_length,
+            hop_length=hop_length,
+            center=True
+        )[0]
         
-        # Dynamic thresholding
-        threshold = np.mean(rms) * 1.1 + np.std(rms) * 0.5
-        vocal_segments = rms > threshold
+        # Combine mel and RMS features if available
+        if mel_energy is not None:
+            # Normalize both features
+            mel_energy = (mel_energy - mel_energy.mean()) / mel_energy.std()
+            rms_norm = (rms - rms.mean()) / rms.std()
+            
+            # Combine features
+            energy = (mel_energy + rms_norm) / 2
+        else:
+            energy = rms
         
-        # Convert frames to timestamps
-        segment_times = librosa.frames_to_time(
-            np.arange(len(rms)),
-            sr=sr,
-            hop_length=hop_length
+        # Smooth energy curve
+        window_size = int(sr * 0.1 / hop_length)  # 100ms window
+        energy_smooth = np.convolve(energy, np.ones(window_size)/window_size, mode='same')
+        
+        # Find potential line boundaries using peak detection
+        from scipy.signal import find_peaks
+        
+        # Calculate dynamic prominence threshold based on energy distribution
+        prominence_threshold = np.percentile(energy_smooth, 75) - np.percentile(energy_smooth, 25)
+        
+        # Find peaks (potential line starts)
+        peaks, _ = find_peaks(
+            energy_smooth,
+            distance=int(sr * 0.5 / hop_length),  # Minimum 0.5s between peaks
+            prominence=prominence_threshold,
+            height=np.mean(energy_smooth)
         )
         
-        # Find onset frames
-        onset_frames = np.where(np.diff(vocal_segments.astype(int)) > 0)[0]
-        onset_times = segment_times[onset_frames]
+        # Convert peak frames to timestamps
+        timestamps = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
         
-        # Filter timestamps
-        filtered_times = self.filter_timestamps(onset_times)
-        logger.debug(f"Detected {len(filtered_times)} vocal segments")
-        return filtered_times
+        # Ensure we have reasonable number of timestamps
+        if len(timestamps) < len(lyrics) * 0.5:  # Too few timestamps
+            logger.warning("Too few vocal segments detected, using time-based distribution")
+            # Create evenly spaced timestamps
+            total_duration = librosa.get_duration(y=vocals, sr=sr)
+            timestamps = np.linspace(0, total_duration * 0.95, len(lyrics))
+            
+        elif len(timestamps) > len(lyrics) * 2:  # Too many timestamps
+            logger.info("Merging nearby timestamps")
+            # Merge nearby timestamps
+            merged = []
+            current_group = [timestamps[0]]
+            
+            for t in timestamps[1:]:
+                if t - current_group[-1] < 0.3:  # Merge if gap is less than 300ms
+                    current_group.append(t)
+                else:
+                    merged.append(np.mean(current_group))
+                    current_group = [t]
+                    
+            if current_group:
+                merged.append(np.mean(current_group))
+                
+            timestamps = np.array(merged)
+            
+            # If still too many, take evenly spaced samples
+            if len(timestamps) > len(lyrics):
+                indices = np.round(np.linspace(0, len(timestamps) - 1, len(lyrics))).astype(int)
+                timestamps = timestamps[indices]
+        
+        # Ensure timestamps start near the beginning of the audio
+        if timestamps[0] > 1.0:  # If first timestamp is more than 1 second in
+            timestamps = np.insert(timestamps, 0, 0.0)  # Add timestamp at start
+            
+        # Trim to match number of lyrics
+        timestamps = timestamps[:len(lyrics)]
+        
+        # Ensure we have exactly one timestamp per lyric line
+        if len(timestamps) < len(lyrics):
+            # Fill remaining timestamps by interpolation
+            total_duration = librosa.get_duration(y=vocals, sr=sr)
+            missing_count = len(lyrics) - len(timestamps)
+            additional_timestamps = np.linspace(
+                timestamps[-1] if len(timestamps) > 0 else 0,
+                total_duration * 0.95,
+                missing_count + 1
+            )[1:]
+            timestamps = np.concatenate([timestamps, additional_timestamps])
+        
+        return timestamps
         
     def filter_timestamps(self, timestamps, min_gap=0.5):
         """Filter timestamps to remove those that are too close together"""
@@ -206,12 +386,6 @@ class AudioProcessor:
         
         try:
             logger.info(f"Processing: {self.input_path}")
-            self.pbar = tqdm(
-                total=100,
-                desc="Starting",
-                unit="%",
-                bar_format='{l_bar}{bar}| {n:.0f}/{total_fmt} [{elapsed}<{remaining}]'
-            )
             
             # Extract vocals
             vocals, sr = self.isolate_vocals()
@@ -224,13 +398,7 @@ class AudioProcessor:
             if lyrics_text:
                 logger.info("Using lyrics from audio file tags")
                 lyrics = [line.strip() for line in lyrics_text.split('\n') if line.strip()]
-                timestamps = self.detect_vocal_segments(vocals, sr)
-                
-                # If we detect fewer vocal segments than lyrics lines,
-                # distribute timestamps evenly
-                if len(timestamps) < len(lyrics):
-                    total_duration = librosa.get_duration(y=vocals, sr=sr)
-                    timestamps = np.linspace(0, total_duration, len(lyrics))
+                timestamps = self.align_lyrics_with_audio(lyrics, vocals, sr)
             else:
                 logger.info("Generating lyrics from audio")
                 lyrics, timestamps = self.extract_lyrics_from_audio(vocals)
