@@ -2,13 +2,13 @@ import sys
 import os
 import logging
 from pydub import AudioSegment
-from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, USLT, SYLT, Encoding
+import music_tag
 import numpy as np
 import librosa
 import warnings
-import tensorflow as tf
-from spleeter.separator import Separator
+import torch
+from demucs.pretrained import get_model
+from demucs.apply import apply_model
 import soundfile as sf
 import tempfile
 import whisper
@@ -20,7 +20,6 @@ import time
 
 # Suppress unnecessary warnings
 warnings.filterwarnings('ignore')
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # Configure logging
 logging.basicConfig(
@@ -36,75 +35,52 @@ class ProcessingResult:
     success: bool
     error_message: str = None
     processing_time: float = 0
-    output_mp3: str = None
+    output_file: str = None
     output_lrc: str = None
 
-class LRCGenerator:
+class AudioProcessor:
     def __init__(self, input_path):
         self.input_path = input_path
-        self.separator = Separator('spleeter:2stems')
+        self.demucs_model = get_model('htdemucs')
+        self.demucs_model.eval()
+        if torch.cuda.is_available():
+            self.demucs_model.cuda()
         self.whisper_model = whisper.load_model("base")
         self.pbar = None
-        
-    def get_output_path(self):
-        """Generate output path by appending '_output' before the extension"""
-        base, ext = os.path.splitext(self.input_path)
-        return f"{base}_output{ext}"
-        
-    def extract_lyrics_from_audio(self, vocals):
-        """Extract lyrics from vocals using Whisper"""
-        logger.info("Extracting lyrics using Whisper")
-        self.pbar.set_description("Transcribing audio")
-        
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-            sf.write(temp_wav.name, vocals, 16000)
-            result = self.whisper_model.transcribe(temp_wav.name)
-            os.unlink(temp_wav.name)
-            
-        lyrics = []
-        timestamps = []
-        for segment in result["segments"]:
-            lyrics.append(segment["text"].strip())
-            timestamps.append(segment["start"])
-            
-        logger.debug(f"Extracted {len(lyrics)} lyrics segments")
-        return lyrics, timestamps
-        
-    def get_lyrics_from_tags(self):
-        """Extract lyrics from MP3 tags"""
-        self.pbar.set_description("Reading lyrics from tags")
-        try:
-            audio = MP3(self.input_path, ID3=ID3)
-            if audio.tags is None:
-                return None
-                
-            for tag in ['USLT::', 'LYRICS:', 'LYRICS']:
-                if tag in audio.tags:
-                    lyrics = str(audio.tags[tag].text)
-                    logger.info(f"Found lyrics in tag: {tag}")
-                    return lyrics
-                    
-            logger.info("No lyrics found in audio tags")
-            return None
-        except Exception as e:
-            logger.warning(f"Error reading lyrics from tags: {e}")
-            return None
-            
+        self.audio_file = music_tag.load_file(input_path)
+    
     def isolate_vocals(self):
-        """Extract vocals from the audio file using Spleeter"""
+        """Extract vocals from the audio file using Demucs"""
         self.pbar.set_description("Isolating vocals")
-        with tempfile.TemporaryDirectory() as temp_dir:
-            self.separator.separate_to_file(
-                self.input_path,
-                temp_dir,
-                filename_format='{instrument}.wav'
-            )
+        
+        # Load audio using librosa
+        audio, sr = librosa.load(self.input_path, sr=44100, mono=False)
+        if audio.ndim == 1:
+            audio = np.stack([audio, audio])
             
-            vocals_path = os.path.join(temp_dir, 'vocals.wav')
-            vocals, sr = librosa.load(vocals_path, sr=None, mono=True)
+        # Convert to torch tensor
+        audio_tensor = torch.tensor(audio, dtype=torch.float32)
+        
+        # Add batch dimension
+        audio_tensor = audio_tensor.unsqueeze(0)
+        
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            audio_tensor = audio_tensor.cuda()
             
-            logger.debug(f"Isolated vocals: {len(vocals)} samples at {sr}Hz")
-            return vocals, sr
+        # Apply Demucs
+        with torch.no_grad():
+            sources = apply_model(self.demucs_model, audio_tensor, progress=True)[0]
+            
+        # Get vocals (sources order: drums, bass, other, vocals)
+        vocals = sources[3].cpu().numpy()
+        
+        # Convert to mono if needed
+        if vocals.ndim > 1:
+            vocals = np.mean(vocals, axis=0)
+            
+        logger.debug(f"Isolated vocals: {len(vocals)} samples at {sr}Hz")
+        return vocals, sr
             
     def detect_vocal_segments(self, vocals, sr):
         """Detect segments with vocal activity"""
@@ -145,14 +121,16 @@ class LRCGenerator:
         self.pbar.set_description("Generating LRC content")
         lrc_lines = []
         
-        audio = MP3(self.input_path, ID3=ID3)
-        if audio.tags:
-            if 'TIT2' in audio.tags:
-                lrc_lines.append(f"[ti:{audio.tags['TIT2']}]")
-            if 'TPE1' in audio.tags:
-                lrc_lines.append(f"[ar:{audio.tags['TPE1']}]")
-            if 'TALB' in audio.tags:
-                lrc_lines.append(f"[al:{audio.tags['TALB']}]")
+        # Add metadata
+        metadata = {
+            'ti': self.audio_file.get('title', ''),
+            'ar': self.audio_file.get('artist', ''),
+            'al': self.audio_file.get('album', '')
+        }
+        
+        for tag, value in metadata.items():
+            if value:
+                lrc_lines.append(f"[{tag}:{value}]")
                 
         lrc_lines.append("[by:LRCGenerator]")
         lrc_lines.append("")
@@ -205,28 +183,23 @@ class LRCGenerator:
             # Copy original file
             shutil.copy2(self.input_path, output_path)
             
-            # Add synchronized lyrics
-            audio = MP3(output_path, ID3=ID3)
-            if audio.tags is None:
-                audio.add_tags()
-                
-            # Add USLT tag
-            audio.tags.add(
-                USLT(encoding=3, lang='eng', desc='', text='\n'.join(lyrics))
-            )
+            # Update output file with new tags
+            output_file = music_tag.load_file(output_path)
             
-            # Add SYLT tag
-            sylt_data = []
+            # Add lyrics
+            output_file['lyrics'] = '\n'.join(lyrics)
+            
+            # Create SYLT-style timing data
+            timing_data = []
             for timestamp, lyric in zip(timestamps, lyrics):
                 time_ms = int(timestamp * 1000)
-                sylt_data.append((lyric.encode(), time_ms))
-                
-            audio.tags.add(
-                SYLT(encoding=Encoding.UTF8, lang='eng', format=2, type=1,
-                     text=sylt_data)
-            )
+                timing_data.append(f"{time_ms}:{lyric}")
             
-            audio.save()
+            # Store timing data in a custom tag
+            output_file['syncedlyrics'] = '\n'.join(timing_data)
+            
+            # Save changes
+            output_file.save()
             
             # Save LRC file
             lrc_path = os.path.splitext(output_path)[0] + '.lrc'
@@ -243,7 +216,7 @@ class LRCGenerator:
                 filename=os.path.basename(self.input_path),
                 success=True,
                 processing_time=processing_time,
-                output_mp3=output_path,
+                output_file=output_path,
                 output_lrc=lrc_path
             )
             
@@ -257,7 +230,31 @@ class LRCGenerator:
                 error_message=str(e),
                 processing_time=time.time() - start_time
             )
-
+    
+    def get_output_path(self):
+        """Generate output path by appending '_output' before the extension"""
+        base, ext = os.path.splitext(self.input_path)
+        return f"{base}_output{ext}"
+        
+    def extract_lyrics_from_audio(self, vocals):
+        """Extract lyrics from vocals using Whisper"""
+        logger.info("Extracting lyrics using Whisper")
+        self.pbar.set_description("Transcribing audio")
+        
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+            sf.write(temp_wav.name, vocals, 16000)
+            result = self.whisper_model.transcribe(temp_wav.name)
+            os.unlink(temp_wav.name)
+            
+        lyrics = []
+        timestamps = []
+        for segment in result["segments"]:
+            lyrics.append(segment["text"].strip())
+            timestamps.append(segment["start"])
+            
+        logger.debug(f"Extracted {len(lyrics)} lyrics segments")
+        return lyrics, timestamps
+    
 def print_summary(results: List[ProcessingResult]):
     """Print a summary of processing results"""
     print("\nProcessing Summary:")
@@ -275,7 +272,7 @@ def print_summary(results: List[ProcessingResult]):
         for result in successful:
             print(f"\n- {result.filename}")
             print(f"  Processing time: {result.processing_time:.1f} seconds")
-            print(f"  Output MP3: {os.path.basename(result.output_mp3)}")
+            print(f"  Output file: {os.path.basename(result.output_file)}")
             print(f"  Output LRC: {os.path.basename(result.output_lrc)}")
     
     if failed:
@@ -306,17 +303,16 @@ def main():
             ))
             continue
             
-        if not file_path.lower().endswith('.mp3'):
-            logger.error(f"Unsupported file format: {file_path}")
+        try:
+            processor = AudioProcessor(file_path)
+            results.append(processor.process_file())
+        except Exception as e:
+            logger.error(f"Error initializing processor for {file_path}: {str(e)}")
             results.append(ProcessingResult(
                 filename=file_path,
                 success=False,
-                error_message="Unsupported file format"
+                error_message=f"Failed to initialize processor: {str(e)}"
             ))
-            continue
-            
-        generator = LRCGenerator(file_path)
-        results.append(generator.process_file())
     
     # Print summary
     print_summary(results)
