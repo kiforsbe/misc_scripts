@@ -1,3 +1,4 @@
+from pathlib import Path
 import sys
 import os
 import logging
@@ -161,21 +162,24 @@ class AudioProcessor:
         """Generate output path by appending '_output' before the extension"""
         base, ext = os.path.splitext(self.input_path)
         return f"{base}_output{ext}"
-        
-    def extract_lyrics_from_audio(self, vocals):
+    
+    def extract_lyrics_from_audio(self, vocals, sr):
         """Extract lyrics from vocals using Whisper with word-level timestamps"""
         logger.info("Extracting lyrics using Whisper")
         self.pbar.set_description("Transcribing audio")
+
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            vocals_16k = librosa.resample(vocals, orig_sr=sr, target_sr=16000)
+            sf.write(temp_file.name, vocals_16k, 16000)  # WhisperX expects 16kHz
+
+            result = self.whisper_model.transcribe(
+                temp_file.name,
+                batch_size=whisper_batch_size
+            )
         
-        result = self.whisper_model.transcribe(
-            vocals,
-            language="en",
-            batch_size=whisper_batch_size
-        )
-        
-        # 2. Align whisper output
-        model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
-        result = whisperx.align(result["segments"], model_a, metadata, vocals, device, return_char_alignments=False)
+            # 2. Align whisper output
+            model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
+            result = whisperx.align(result["segments"], model_a, metadata, temp_file.name, device, return_char_alignments=False)
             
         return result
         
@@ -228,129 +232,124 @@ class AudioProcessor:
         # Convert to mono if needed
         if vocals.ndim > 1:
             vocals = np.mean(vocals, axis=0)
-            
+        
+        # Normalize audio
+        vocals = vocals / np.max(np.abs(vocals))
+        
+        # Apply some basic audio preprocessing
+        # High-pass filter to remove low frequency noise
+        vocals = librosa.effects.preemphasis(vocals)
+        
         logger.debug(f"Isolated vocals: {len(vocals)} samples at {sr}Hz")
         return vocals, sr
             
-    def align_lyrics_with_audio(self, lyrics_lines, vocals):
-        """Align existing lyrics with audio using Whisper's word timestamps"""
+    def align_lyrics_with_audio(self, lyrics_lines, vocals, sr):
+        """Align existing lyrics with audio using WhisperX's word timestamps"""
         self.pbar.set_description("Aligning lyrics with audio")
         
-        # Get Whisper transcription with word timestamps
-        whisper_result = self.extract_lyrics_from_audio(vocals)
+        # Get WhisperX transcription with word timestamps
+        whisper_result = self.extract_lyrics_from_audio(vocals, sr)
         
-        # Prepare lyrics for comparison
+        # Prepare lyrics for comparison by cleaning and tokenizing
+        def clean_text(text):
+            """Clean text for comparison by removing punctuation and converting to lowercase"""
+            return re.sub(r'[^\w\s]', '', text.lower()).strip()
+        
+        def get_words_from_line(line):
+            """Split line into words and clean each word"""
+            return [clean_text(word) for word in line.split() if clean_text(word)]
+        
+        # Process lyrics lines into cleaned words with line indices
         lyrics_words = []
         lyrics_line_indices = []
         for i, line in enumerate(lyrics_lines):
-            words = line.strip().split()
+            words = get_words_from_line(line)
             lyrics_words.extend(words)
             lyrics_line_indices.extend([i] * len(words))
         
-        # Extract word timestamps from Whisper
+        # Extract words and timestamps from WhisperX result
         whisper_words = []
         word_timestamps = []
         
         for segment in whisper_result["segments"]:
             if "words" in segment:
                 for word_data in segment["words"]:
-                    whisper_words.append(word_data["word"].strip().lower())
-                    word_timestamps.append(word_data["start"])
+                    cleaned_word = clean_text(word_data["word"])
+                    if cleaned_word:  # Only add non-empty words
+                        whisper_words.append(cleaned_word)
+                        word_timestamps.append(word_data["start"])
         
-        def clean_word(word):
-            """Clean word for comparison"""
-            return re.sub(r'[^\w\s]', '', word.lower())
-        
-        # Clean words for comparison
-        clean_lyrics_words = [clean_word(w) for w in lyrics_words]
-        clean_whisper_words = [clean_word(w) for w in whisper_words]
-        
-        # Dynamic Time Warping to align word sequences
-        def get_alignment_score(w1, w2):
-            """Calculate similarity score between two words"""
-            if not w1 or not w2:
-                return 0
-            return 1 if w1 == w2 else 0
-        
-        def dtw_align(seq1, seq2):
-            """Perform DTW alignment between two sequences"""
-            n, m = len(seq1), len(seq2)
-            dtw_matrix = np.zeros((n + 1, m + 1))
-            dtw_matrix[0, 1:] = float('inf')
-            dtw_matrix[1:, 0] = float('inf')
-            
-            # Fill the DTW matrix
-            for i in range(1, n + 1):
-                for j in range(1, m + 1):
-                    cost = 1 - get_alignment_score(seq1[i-1], seq2[j-1])
-                    dtw_matrix[i, j] = cost + min(
-                        dtw_matrix[i-1, j],    # insertion
-                        dtw_matrix[i, j-1],    # deletion
-                        dtw_matrix[i-1, j-1]   # match
-                    )
-            
-            # Backtrack to find alignment
-            alignment = []
-            i, j = n, m
-            while i > 0 and j > 0:
-                min_step = min(
-                    (dtw_matrix[i-1, j], 'insert'),
-                    (dtw_matrix[i, j-1], 'delete'),
-                    (dtw_matrix[i-1, j-1], 'match')
-                )
-                if min_step[1] == 'match':
-                    alignment.append((i-1, j-1))
-                    i -= 1
-                    j -= 1
-                elif min_step[1] == 'insert':
-                    i -= 1
-                else:
-                    j -= 1
-                    
-            return list(reversed(alignment))
-        
-        # Perform alignment
-        word_alignments = dtw_align(clean_lyrics_words, clean_whisper_words)
-        
-        # Extract line timestamps based on word alignments
+        # Sliding window matching to find best alignment for each lyrics line
         line_timestamps = []
-        current_line = -1
-        current_line_words = []
+        current_whisper_idx = 0
         
-        for lyrics_idx, whisper_idx in word_alignments:
-            line_idx = lyrics_line_indices[lyrics_idx]
+        for line_idx in range(len(lyrics_lines)):
+            # Get words for current line
+            line_start_idx = lyrics_line_indices.index(line_idx)
+            try:
+                line_end_idx = len(lyrics_line_indices) - 1 - lyrics_line_indices[::-1].index(line_idx)
+            except ValueError:
+                line_end_idx = line_start_idx
             
-            if line_idx != current_line:
-                if current_line_words:
-                    # Use the earliest timestamp for the previous line
-                    line_timestamps.append(min(current_line_words))
-                current_line = line_idx
-                current_line_words = []
+            line_words = lyrics_words[line_start_idx:line_end_idx + 1]
+            if not line_words:
+                continue
+            
+            # Find best match for current line in remaining whisper words
+            best_match_score = 0
+            best_match_idx = current_whisper_idx
+            
+            # Look ahead in whisper words to find best match
+            for i in range(current_whisper_idx, len(whisper_words) - len(line_words) + 1):
+                current_score = 0
+                whisper_segment = whisper_words[i:i + len(line_words)]
                 
-            current_line_words.append(word_timestamps[whisper_idx])
-        
-        # Add the last line
-        if current_line_words:
-            line_timestamps.append(min(current_line_words))
-        
-        # Handle edge cases
-        if len(line_timestamps) < len(lyrics_lines):
-            # Fill in missing timestamps by interpolation
-            total_duration = whisper_result["segments"][-1]["end"]
-            missing_count = len(lyrics_lines) - len(line_timestamps)
-            if line_timestamps:
-                last_timestamp = line_timestamps[-1]
+                # Calculate matching score
+                for w1, w2 in zip(line_words, whisper_segment):
+                    if w1 == w2:
+                        current_score += 1
+                    elif w1 in w2 or w2 in w1:  # Partial match
+                        current_score += 0.5
+                
+                # Normalize score by line length
+                current_score /= len(line_words)
+                
+                if current_score > best_match_score:
+                    best_match_score = current_score
+                    best_match_idx = i
+            
+            # If we found a good match, use its timestamp
+            if best_match_score > 0.3:  # Threshold for accepting a match
+                line_timestamps.append(word_timestamps[best_match_idx])
+                current_whisper_idx = best_match_idx + len(line_words)
             else:
-                last_timestamp = 0
-                
+                # If no good match found, interpolate timestamp
+                if line_timestamps:
+                    # Interpolate based on previous timestamp
+                    last_timestamp = line_timestamps[-1]
+                    avg_line_duration = 2.0  # Assume average line duration of 2 seconds
+                    line_timestamps.append(last_timestamp + avg_line_duration)
+                else:
+                    # For first line with no match, use beginning of audio
+                    line_timestamps.append(word_timestamps[0] if word_timestamps else 0.0)
+        
+        # Handle case where we have fewer timestamps than lyrics lines
+        if len(line_timestamps) < len(lyrics_lines):
+            missing_count = len(lyrics_lines) - len(line_timestamps)
+            last_timestamp = line_timestamps[-1] if line_timestamps else 0
+            total_duration = whisper_result["segments"][-1]["end"] if whisper_result["segments"] else last_timestamp + 2.0
+            
+            # Generate evenly spaced timestamps for remaining lines
             additional_timestamps = np.linspace(
-                last_timestamp,
-                total_duration * 0.95,
+                last_timestamp + 2.0,  # Start 2 seconds after last timestamp
+                total_duration * 0.95,  # End slightly before audio end
                 missing_count + 1
-            )[1:]
+            )[:-1]  # Remove last point to avoid going too close to end
+            
             line_timestamps.extend(additional_timestamps)
         
-        return line_timestamps
+        # Filter timestamps to ensure minimum gap
+        return self.filter_timestamps(line_timestamps, min_gap=0.5)
         
     def filter_timestamps(self, timestamps, min_gap=0.5):
         """Filter timestamps to remove those that are too close together"""
@@ -412,7 +411,7 @@ class AudioProcessor:
             if lyrics_text:
                 logger.info("Using lyrics from audio file tags")
                 lyrics = [line.strip() for line in lyrics_text.split('\n') if line.strip()]
-                timestamps = self.align_lyrics_with_audio(lyrics, vocals)
+                timestamps = self.align_lyrics_with_audio(lyrics, vocals, sr)
             else:
                 logger.info("Generating lyrics from audio")
                 result = self.extract_lyrics_from_audio(vocals)
