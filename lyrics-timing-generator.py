@@ -1,8 +1,9 @@
 import sys
 import os
 import logging
-from pydub import AudioSegment
-import music_tag
+from mutagen import File
+from mutagen.easyid3 import EasyID3
+from mutagen.id3 import ID3, USLT, SYLT, Encoding
 import numpy as np
 import librosa
 import warnings
@@ -47,8 +48,54 @@ class AudioProcessor:
             self.demucs_model.cuda()
         self.whisper_model = whisper.load_model("base")
         self.pbar = None
-        self.audio_file = music_tag.load_file(input_path)
+        try:
+            self.audio_file = EasyID3(input_path)
+        except:
+            self.audio_file = File(input_path)
     
+    def get_output_path(self):
+        """Generate output path by appending '_output' before the extension"""
+        base, ext = os.path.splitext(self.input_path)
+        return f"{base}_output{ext}"
+        
+    def extract_lyrics_from_audio(self, vocals):
+        """Extract lyrics from vocals using Whisper"""
+        logger.info("Extracting lyrics using Whisper")
+        self.pbar.set_description("Transcribing audio")
+        
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+            sf.write(temp_wav.name, vocals, 16000)
+            result = self.whisper_model.transcribe(temp_wav.name)
+            os.unlink(temp_wav.name)
+            
+        lyrics = []
+        timestamps = []
+        for segment in result["segments"]:
+            lyrics.append(segment["text"].strip())
+            timestamps.append(segment["start"])
+            
+        logger.debug(f"Extracted {len(lyrics)} lyrics segments")
+        return lyrics, timestamps
+        
+    def get_lyrics_from_tags(self):
+        """Extract lyrics from audio file tags"""
+        self.pbar.set_description("Reading lyrics from tags")
+        try:
+            # Try to get lyrics from ID3 tags
+            if isinstance(self.audio_file, EasyID3):
+                audio = ID3(self.input_path)
+                for tag in audio.getall('USLT'):
+                    if tag.text and tag.text.strip():
+                        logger.info("Found lyrics in USLT tag")
+                        return tag.text
+            
+            logger.info("No lyrics found in audio tags")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error reading lyrics from tags: {e}")
+            return None
+            
     def isolate_vocals(self):
         """Extract vocals from the audio file using Demucs"""
         self.pbar.set_description("Isolating vocals")
@@ -85,22 +132,28 @@ class AudioProcessor:
     def detect_vocal_segments(self, vocals, sr):
         """Detect segments with vocal activity"""
         self.pbar.set_description("Detecting vocal segments")
-        frame_length = int(sr * 0.05)
-        hop_length = int(sr * 0.025)
+        frame_length = int(sr * 0.05)  # 50ms frames
+        hop_length = int(sr * 0.025)   # 25ms hop
         
+        # Calculate RMS energy
         rms = librosa.feature.rms(y=vocals, frame_length=frame_length, hop_length=hop_length)[0]
-        threshold = np.mean(rms) * 1.1
+        
+        # Dynamic thresholding
+        threshold = np.mean(rms) * 1.1 + np.std(rms) * 0.5
         vocal_segments = rms > threshold
         
+        # Convert frames to timestamps
         segment_times = librosa.frames_to_time(
             np.arange(len(rms)),
             sr=sr,
             hop_length=hop_length
         )
         
+        # Find onset frames
         onset_frames = np.where(np.diff(vocal_segments.astype(int)) > 0)[0]
         onset_times = segment_times[onset_frames]
         
+        # Filter timestamps
         filtered_times = self.filter_timestamps(onset_times)
         logger.debug(f"Detected {len(filtered_times)} vocal segments")
         return filtered_times
@@ -122,19 +175,22 @@ class AudioProcessor:
         lrc_lines = []
         
         # Add metadata
-        metadata = {
-            'ti': self.audio_file.get('title', ''),
-            'ar': self.audio_file.get('artist', ''),
-            'al': self.audio_file.get('album', '')
-        }
-        
-        for tag, value in metadata.items():
-            if value:
-                lrc_lines.append(f"[{tag}:{value}]")
+        if isinstance(self.audio_file, EasyID3):
+            title = self.audio_file.get('title', [''])[0]
+            artist = self.audio_file.get('artist', [''])[0]
+            album = self.audio_file.get('album', [''])[0]
+            
+            if title:
+                lrc_lines.append(f"[ti:{title}]")
+            if artist:
+                lrc_lines.append(f"[ar:{artist}]")
+            if album:
+                lrc_lines.append(f"[al:{album}]")
                 
         lrc_lines.append("[by:LRCGenerator]")
         lrc_lines.append("")
         
+        # Add synchronized lyrics
         for timestamp, line in zip(timestamps, lyrics):
             minutes = int(timestamp // 60)
             seconds = int(timestamp % 60)
@@ -150,21 +206,28 @@ class AudioProcessor:
         
         try:
             logger.info(f"Processing: {self.input_path}")
-            self.pbar = tqdm(total=100, desc="Starting", unit="%")
+            self.pbar = tqdm(
+                total=100,
+                desc="Starting",
+                unit="%",
+                bar_format='{l_bar}{bar}| {n:.0f}/{total_fmt} [{elapsed}<{remaining}]'
+            )
             
             # Extract vocals
             vocals, sr = self.isolate_vocals()
-            self.pbar.update(20)
+            self.pbar.update(round(20))
             
             # Get lyrics
             lyrics_text = self.get_lyrics_from_tags()
-            self.pbar.update(20)
+            self.pbar.update(round(20))
             
             if lyrics_text:
                 logger.info("Using lyrics from audio file tags")
                 lyrics = [line.strip() for line in lyrics_text.split('\n') if line.strip()]
                 timestamps = self.detect_vocal_segments(vocals, sr)
                 
+                # If we detect fewer vocal segments than lyrics lines,
+                # distribute timestamps evenly
                 if len(timestamps) < len(lyrics):
                     total_duration = librosa.get_duration(y=vocals, sr=sr)
                     timestamps = np.linspace(0, total_duration, len(lyrics))
@@ -172,7 +235,7 @@ class AudioProcessor:
                 logger.info("Generating lyrics from audio")
                 lyrics, timestamps = self.extract_lyrics_from_audio(vocals)
             
-            self.pbar.update(30)
+            self.pbar.update(round(30))
             
             # Generate LRC content
             lrc_content = self.generate_lrc_content(lyrics, timestamps)
@@ -184,29 +247,36 @@ class AudioProcessor:
             shutil.copy2(self.input_path, output_path)
             
             # Update output file with new tags
-            output_file = music_tag.load_file(output_path)
+            try:
+                audio = ID3(output_path)
+            except:
+                audio = File(output_path)
+                if audio is None:
+                    raise ValueError("Unsupported audio format")
             
-            # Add lyrics
-            output_file['lyrics'] = '\n'.join(lyrics)
+            # Add unsynced lyrics
+            uslt = USLT(encoding=Encoding.UTF8, lang='eng', desc='', text='\n'.join(lyrics))
+            audio.add(uslt)
             
-            # Create SYLT-style timing data
-            timing_data = []
+            # Add synced lyrics
+            # Convert timestamps to milliseconds and create tuples
+            sylt_frames = []
             for timestamp, lyric in zip(timestamps, lyrics):
-                time_ms = int(timestamp * 1000)
-                timing_data.append(f"{time_ms}:{lyric}")
+                time_ms = int(timestamp * 1000)  # Convert to milliseconds
+                sylt_frames.append((lyric, time_ms))
             
-            # Store timing data in a custom tag
-            output_file['syncedlyrics'] = '\n'.join(timing_data)
+            sylt = SYLT(encoding=Encoding.UTF8, lang='eng', format=2, type=1, desc='', text=sylt_frames)
+            audio.add(sylt)
             
             # Save changes
-            output_file.save()
+            audio.save()
             
             # Save LRC file
             lrc_path = os.path.splitext(output_path)[0] + '.lrc'
             with open(lrc_path, 'w', encoding='utf-8') as f:
                 f.write(lrc_content)
                 
-            self.pbar.update(30)
+            self.pbar.update(round(30))
             self.pbar.close()
             
             processing_time = time.time() - start_time
@@ -230,31 +300,7 @@ class AudioProcessor:
                 error_message=str(e),
                 processing_time=time.time() - start_time
             )
-    
-    def get_output_path(self):
-        """Generate output path by appending '_output' before the extension"""
-        base, ext = os.path.splitext(self.input_path)
-        return f"{base}_output{ext}"
-        
-    def extract_lyrics_from_audio(self, vocals):
-        """Extract lyrics from vocals using Whisper"""
-        logger.info("Extracting lyrics using Whisper")
-        self.pbar.set_description("Transcribing audio")
-        
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-            sf.write(temp_wav.name, vocals, 16000)
-            result = self.whisper_model.transcribe(temp_wav.name)
-            os.unlink(temp_wav.name)
-            
-        lyrics = []
-        timestamps = []
-        for segment in result["segments"]:
-            lyrics.append(segment["text"].strip())
-            timestamps.append(segment["start"])
-            
-        logger.debug(f"Extracted {len(lyrics)} lyrics segments")
-        return lyrics, timestamps
-    
+
 def print_summary(results: List[ProcessingResult]):
     """Print a summary of processing results"""
     print("\nProcessing Summary:")
