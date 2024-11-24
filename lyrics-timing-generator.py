@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 import os
 import logging
+import gc
 from mutagen import File
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3, USLT, SYLT, Encoding
@@ -39,14 +40,44 @@ logger = logging.getLogger(__name__)
 logging.getLogger('numpy').setLevel(logging.ERROR)
 logging.getLogger('numba').setLevel(logging.ERROR)
 
-whisper_model = "base"
+ollama_model_name = "llama3.1" 
+whisper_model_name = "base"
 device = "cuda" 
 whisper_batch_size = 16 # reduce if low on GPU mem
 whisper_compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
-whisper_asr_options = {
-    "hotwords": [],
-    "multilingual": False,
+# Check https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/transcribe.py for details
+whisper_default_asr_options = {
+    "beam_size": 5,
+    "best_of": 5,
+    "patience": 1,
+    "length_penalty": 1,
+    "repetition_penalty": 1.0,
+    "no_repeat_ngram_size": 0,
+
+    # We assume the voice is valid after VAD, log_prob_threshold is not reliable, set these 3 to None to prevent
+    # miss-transcription, see https://github.com/openai/whisper/discussions/29#discussioncomment-3726710 for details
+    "compression_ratio_threshold": None,
+    "log_prob_threshold": None,
+    "no_speech_threshold": None,
+
+    "initial_prompt": None,
+    "prefix": None,
+    "suppress_blank": True,
+    "suppress_tokens": [-1],
+    "without_timestamps": False,
+
     "word_timestamps": True,
+    "prepend_punctuations": "\"'“¿([{-",
+    "append_punctuations": "\"'.。,，!！?？:：”)]}、",
+    # "hallucination_silence_threshold": 2,
+    "hotwords": None,
+    "multilingual": False,
+}
+
+# Check https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/transcribe.py#L123 for details
+whisper_default_vad_options = {
+    "vad_onset": 0.1,
+    "vad_offset": 0.1,
 }
 
 @dataclass
@@ -97,7 +128,7 @@ class LyricsCleanerOllama:
             response = requests.post(
                 self.api_generate,
                 json={
-                    "model": "llama3.1",
+                    "model": ollama_model_name,
                     "prompt": prompt,
                     "stream": False
                 },
@@ -136,16 +167,6 @@ class LyricsCleanerOllama:
 class AudioProcessor:
     def __init__(self, input_path):
         self.input_path = input_path
-        self.demucs_model = get_model('htdemucs')
-        self.demucs_model.eval()
-        if torch.cuda.is_available():
-            self.demucs_model.cuda()
-        self.whisper_model = whisperx.load_model(
-            "base",
-            device,
-            compute_type=whisper_compute_type,
-            asr_options=whisper_asr_options
-        )
         self.lyrics_cleaner = LyricsCleanerOllama()
         self.pbar = CustomTqdm(
             total=100,
@@ -168,11 +189,20 @@ class AudioProcessor:
         logger.info("Extracting lyrics using Whisper")
         self.pbar.set_description("Transcribing audio")
 
+        # Load whisper model
+        whisper_model = whisperx.load_model(
+            whisper_model_name,
+            device,
+            compute_type=whisper_compute_type,
+            asr_options=whisper_default_asr_options,
+            vad_options=whisper_default_vad_options
+        )
+
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
             vocals_16k = librosa.resample(vocals, orig_sr=sr, target_sr=16000)
             sf.write(temp_file.name, vocals_16k, 16000)  # WhisperX expects 16kHz
 
-            result = self.whisper_model.transcribe(
+            result = whisper_model.transcribe(
                 temp_file.name,
                 batch_size=whisper_batch_size
             )
@@ -180,7 +210,12 @@ class AudioProcessor:
             # 2. Align whisper output
             model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
             result = whisperx.align(result["segments"], model_a, metadata, temp_file.name, device, return_char_alignments=False)
-            
+        
+        # Clean up whisper model
+        del whisper_model
+        gc.collect()
+        torch.cuda.empty_cache()
+
         return result
         
     def get_lyrics_from_tags(self):
@@ -221,14 +256,25 @@ class AudioProcessor:
         # Move to GPU if available
         if torch.cuda.is_available():
             audio_tensor = audio_tensor.cuda()
-            
+        
+        # Load demucs model
+        demucs_model = get_model('htdemucs')
+        demucs_model.eval()
+        if torch.cuda.is_available():
+            demucs_model.cuda()
+
         # Apply Demucs
         with torch.no_grad():
-            sources = apply_model(self.demucs_model, audio_tensor, progress=True)[0]
+            sources = apply_model(demucs_model, audio_tensor, progress=True)[0]
             
         # Get vocals (sources order: drums, bass, other, vocals)
         vocals = sources[3].cpu().numpy()
         
+        # Clean up from demucs
+        del demucs_model
+        gc.collect()
+        torch.cuda.empty_cache()
+
         # Convert to mono if needed
         if vocals.ndim > 1:
             vocals = np.mean(vocals, axis=0)
@@ -393,8 +439,60 @@ class AudioProcessor:
             
         return "\n".join(lrc_lines)
         
+    def improve_lyrics_with_llm(self, transcribed_lyrics: str, original_lyrics: str = None) -> str:
+        """
+        Use Ollama to improve transcribed lyrics by comparing with original lyrics if available
+        """
+        if not original_lyrics:
+            return transcribed_lyrics
+            
+        prompt = """
+        I have transcribed lyrics and original lyrics for a song. Please improve the transcribed version by:
+        1. Use the original lyrics as reference to correct any transcription errors
+        2. Maintain the exact number of lines from the transcribed lyrics
+        3. Return only the improved lyrics, no explanations, only the lyrics and nothing else
+        
+        Transcribed lyrics:
+        {transcribed}
+        
+        Original lyrics:
+        {original}
+        """.format(
+            transcribed=transcribed_lyrics,
+            original=original_lyrics
+        )
+        
+        try:
+            response = requests.post(
+                self.lyrics_cleaner.api_generate,
+                json={
+                    "model": ollama_model_name,
+                    "prompt": prompt,
+                    "stream": False
+                },
+                timeout=30
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            improved_lyrics = result.get('response', '').strip()
+            
+            # Ensure we maintain the same number of lines
+            improved_lines = improved_lyrics.split('\n')
+            transcribed_lines = transcribed_lyrics.split('\n')
+            
+            if len(improved_lines) != len(transcribed_lines):
+                logger.warning("LLM output has different number of lines. Falling back to transcribed lyrics.")
+                return transcribed_lyrics
+                
+            return improved_lyrics
+            
+        except Exception as e:
+            logger.warning(f"Error improving lyrics with Ollama: {str(e)}")
+            return transcribed_lyrics
+
     def process_file(self):
-        """Process a single audio file"""
+        """Process a single audio file with improved lyrics handling"""
         start_time = time.time()
         
         try:
@@ -404,27 +502,37 @@ class AudioProcessor:
             vocals, sr = self.isolate_vocals()
             self.pbar.update(20)
             
-            # Get lyrics
-            lyrics_text = self.get_lyrics_from_tags()
-            self.pbar.update(20)
+            # Get original lyrics if available
+            original_lyrics = self.get_lyrics_from_tags()
+            if original_lyrics:
+                original_lyrics = self.lyrics_cleaner.clean_lyrics(original_lyrics)
+            self.pbar.update(10)
             
-            if lyrics_text:
-                logger.info("Using lyrics from audio file tags")
-                lyrics = [line.strip() for line in lyrics_text.split('\n') if line.strip()]
-                timestamps = self.align_lyrics_with_audio(lyrics, vocals, sr)
-            else:
-                logger.info("Generating lyrics from audio")
-                result = self.extract_lyrics_from_audio(vocals)
-                
-                # Extract lyrics and timestamps from segments
-                lyrics = []
-                timestamps = []
-                for segment in result["segments"]:
-                    if segment["text"].strip():
-                        lyrics.append(segment["text"].strip())
-                        timestamps.append(segment["start"])
+            # Extract lyrics and timestamps from audio
+            logger.info("Generating initial transcription from audio")
+            result = self.extract_lyrics_from_audio(vocals, sr)
             
+            # Extract lyrics and timestamps from segments
+            transcribed_lines = []
+            timestamps = []
+            
+            for segment in result["segments"]:
+                if segment["text"].strip():
+                    transcribed_lines.append(segment["text"].strip())
+                    timestamps.append(segment["start"])
+            
+            transcribed_text = '\n'.join(transcribed_lines)
             self.pbar.update(30)
+            
+            # Improve transcribed lyrics using LLM if original lyrics are available
+            if original_lyrics:
+                logger.info("Improving transcription using original lyrics")
+                improved_text = self.improve_lyrics_with_llm(transcribed_text, original_lyrics)
+                lyrics = improved_text.split('\n')
+            else:
+                lyrics = transcribed_lines
+            
+            self.pbar.update(20)
             
             # Generate LRC content
             lrc_content = self.generate_lrc_content(lyrics, timestamps)
@@ -448,10 +556,9 @@ class AudioProcessor:
             audio.add(uslt)
             
             # Add synced lyrics
-            # Convert timestamps to milliseconds and create tuples
             sylt_frames = []
             for timestamp, lyric in zip(timestamps, lyrics):
-                time_ms = int(timestamp * 1000)  # Convert to milliseconds
+                time_ms = int(timestamp * 1000)
                 sylt_frames.append((lyric, time_ms))
             
             sylt = SYLT(encoding=Encoding.UTF8, lang='eng', format=2, type=1, desc='', text=sylt_frames)
@@ -465,7 +572,7 @@ class AudioProcessor:
             with open(lrc_path, 'w', encoding='utf-8') as f:
                 f.write(lrc_content)
                 
-            self.pbar.update(round(30))
+            self.pbar.update(20)
             self.pbar.close()
             
             processing_time = time.time() - start_time
@@ -489,7 +596,7 @@ class AudioProcessor:
                 error_message=str(e),
                 processing_time=time.time() - start_time
             )
-
+    
 def print_summary(results: List[ProcessingResult]):
     """Print a summary of processing results"""
     print("\nProcessing Summary:")
