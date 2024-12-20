@@ -6,6 +6,7 @@ import time
 from flask import Flask, request, send_file, render_template_string, jsonify
 import requests
 import eyed3
+import magic
 from io import BytesIO
 
 app = Flask(__name__)
@@ -89,6 +90,10 @@ def download_ext():
         img_response.raise_for_status()
         img_data = img_response.content
 
+        # Detect the mime-type of the cover image
+        mime = magic.Magic(mime=True)
+        mime_type = mime.from_buffer(img_data)
+
         # Create a temporary file to save the MP3
         temp_mp3 = os.path.join(TEMP_DIR, f"temp_{generate_uuid(mp3_url)}.mp3")
         with open(temp_mp3, 'wb') as f:
@@ -100,7 +105,7 @@ def download_ext():
             audio.initTag()
 
         # Add cover art
-        audio.tag.images.set(3, img_data, 'image/jpeg', u'Cover')
+        audio.tag.images.set(eyed3.id3.frames.ImageFrame.FRONT_COVER, img_data, mime_type, u'Cover')
 
         # Add other metadata
         title = data.get('title', '')

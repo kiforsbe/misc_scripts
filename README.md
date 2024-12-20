@@ -131,6 +131,7 @@ Downloads the specified `.mp3` file and adds the provided metadata to it.
 ### Requires
 - flask
 - eyed3
+- magic (python-magic-bin on windows)
 
 ## video-optimizer.py
 A script that allows for quick and eazy optimization of videos. Just supply a list of videos on the command line or drag and drop them onto the script. You get a list of choices based on the contents of the videos such as which subtitles to make default, and which audio to make default along with target quality and resolution.
