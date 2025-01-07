@@ -542,6 +542,8 @@ class DLNAServer(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+                self.send_header('Ext', '')
+                self.send_header('Server', 'Windows/1.0 UPnP/1.0 MiniDLNA/1.0')
                 self.send_header('Content-Length', len(soap_response))
                 self.end_headers()
                 self.wfile.write(soap_response.encode('utf-8'))
