@@ -97,6 +97,29 @@ Converts an input m3u8 file into a MP4 file. The input is sent as a multipart/fo
 - urllib
 - ollama
 
+## m3u8-to-mp4-flask-webservice-simple.py
+A flask web service that takes a m3u8 file as input and converts it into an MP4 file.
+
+The webservice exposes the following interfaces:
+| Interface | Methods | Functions | Parameters |
+| --- | --- | --- | --- |
+| get | POST & GET | convert_m3u8_to_mp4 | url, filename |
+
+### get
+Streams a m3u8 to save it as a mp4, real-time saving only, so will take as long as the stream itself is.
+
+| Parameter | Description |
+| --- | --- |
+| url | The URL of the m3u8 file to be converted. |
+| filename | Target filename (optional). |
+
+### Requires
+- uuid
+- flask
+- requests
+- m3u8
+- urllib
+
 ## merge-audio-files-to-one-output.py
 Simple merge a bunch of audio files into one single output file. Just drag all the input files onto the script and it will be output in the same folder as the first file with the name "`combined_output.<ext>`". The script will ask what format, bitrate etc the output shall get.
 
@@ -159,3 +182,28 @@ A script that generates timed lyric for music files containing non-timed lyrics 
 - tqdm
 - dataclasses
 - typing
+
+# Experimental
+
+## mini-dlna-server.py
+A script that runs a local dlna server instance on the computer, taking as input a command line argument pointing out the folder to serve to clients.
+
+It is intended if I get time to do it, to stabilize it to properly handle conenctions, work better with Windows 11, and transcode media to the client using ffmpeg.
+
+**Note!** Currently it is extremely unstable and mostly doesn't work. If anyone wants to refactor it and fix some of the remaining issues that would be cool. :)
+
+### Requires
+- mutagen
+
+## lyrics-timing-generator.py
+Intended to generate timed lyrics for audio files (.lrc). Uses whisper library to generate timed lyrics, and ollama and an llm to structure them.
+
+But it is not good. Really not good. It's a start, but not quite there yet. Need to restart from a known base to generate the timed subtitles which is a known working thing, and then convert that to lyrics, using an llm to format them.
+
+- ollama
+- whisper
+- mutagen
+- numpy
+- typing
+- soundfile
+etc...
