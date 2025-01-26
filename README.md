@@ -90,11 +90,9 @@ Converts an input m3u8 file into a MP4 file. The input is sent as a multipart/fo
 | description | A description of the video. |
 
 ### Requires
-- uuid
 - flask
 - requests
 - m3u8
-- urllib
 - ollama
 
 ## m3u8-to-mp4-flask-webservice-simple.py
@@ -114,11 +112,9 @@ Streams a m3u8 to save it as a mp4, real-time saving only, so will take as long 
 | filename | Target filename (optional). |
 
 ### Requires
-- uuid
 - flask
 - requests
 - m3u8
-- urllib
 
 ## merge-audio-files-to-one-output.py
 Simple merge a bunch of audio files into one single output file. Just drag all the input files onto the script and it will be output in the same folder as the first file with the name "`combined_output.<ext>`". The script will ask what format, bitrate etc the output shall get.
@@ -162,10 +158,26 @@ A script that allows for quick and eazy optimization of videos. Just supply a li
 It is made specifically for transcoding for example tv-shows from your legacy media in a quick and simple way. Jsut drag a whole season onto the script and easily convert it for use on your phone.
 
 ### Requires
-- ffmpeg (in the system path)
+- ffmpeg
 - ffmpeg-python
 - inquirer
 - tqdm
+
+## rss-feed-downloader.py
+A script to parse RSS feeds and download enclosures (e.g., audio, video, or other files) with a console-based GUI for selection and progress tracking.
+
+### Features
+- Parses RSS feeds from local files or URLs.
+- Extracts enclosures and allows users to select files for download.
+- Downloads files with progress tracking and optional HTTP Basic Authentication.
+- Saves downloaded files to a specified directory and generates a mapping file in JSON format.
+
+### Requires
+- curses
+- urllib
+- json
+
+# Experimental
 
 ## lyrics-timing-generator.py
 A script that generates timed lyric for music files containing non-timed lyrics or no pre-prepared lyrics. 
@@ -181,9 +193,6 @@ A script that generates timed lyric for music files containing non-timed lyrics 
 - whisper
 - tqdm
 - dataclasses
-- typing
-
-# Experimental
 
 ## mini-dlna-server.py
 A script that runs a local dlna server instance on the computer, taking as input a command line argument pointing out the folder to serve to clients.
@@ -204,6 +213,4 @@ But it is not good. Really not good. It's a start, but not quite there yet. Need
 - whisper
 - mutagen
 - numpy
-- typing
 - soundfile
-etc...
