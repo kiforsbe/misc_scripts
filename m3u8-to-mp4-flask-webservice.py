@@ -428,6 +428,10 @@ def convert_m3u8_to_mp4():
         # Create a temporary filename to store the downloaded video
         temp_filename = os.path.join(TEMP_DIR, f"temp_{generate_uuid(m3u8_url)}.mp4")
 
+        # If the temp_filename file already exists, return an error instead
+        if os.path.isfile(temp_filename):
+            return {"error": f"File {temp_filename} already exists."}, 409
+
         # ffmpeg command to extract the video stream from the m3u8 file
         ffmpeg_command = ['ffmpeg', '-i', best_video_stream['uri']]
 
