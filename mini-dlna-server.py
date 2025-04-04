@@ -32,30 +32,48 @@ IMAGE_EXTENSIONS = {'.jpg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gi
 def setup_logging():
     """Set up logging configuration with both file and console handlers"""
     logger = logging.getLogger('DLNAServer')
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.DEBUG)  # Set root logger to DEBUG
 
     log_dir = Path('logs')
     log_dir.mkdir(exist_ok=True)
 
+    # Detailed debug log file
+    debug_handler = RotatingFileHandler(
+        log_dir / 'dlna_server_debug.log',
+        maxBytes=5*1024*1024,
+        backupCount=5
+    )
+    debug_handler.setLevel(logging.DEBUG)
+    debug_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(levelname)s - [%(threadName)s] %(message)s')
+    )
+
+    # Regular log file with INFO and above
     file_handler = RotatingFileHandler(
         log_dir / 'dlna_server.log',
         maxBytes=5*1024*1024,
         backupCount=5
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(
-        logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     )
 
+    # Console with warnings and errors only
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(
         logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     )
 
+    logger.addHandler(debug_handler)
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
 
+    # Add request tracking metrics
+    logger.request_count = 0
+    logger.last_request_time = time.time()
+    
     return logger
 
 class NetworkErrorHandler:
@@ -1269,61 +1287,185 @@ class DLNAServer(BaseHTTPRequestHandler):
         self.wfile.write(av_transport_xml.encode('utf-8'))
 
     def send_file_with_error_handling(self, file_path):
-        """Send file with proper error handling"""
+        """Send file with improved buffering, timeouts and connection handling"""
         try:
+            # Set socket timeout for streaming operations
+            self.connection.settimeout(30.0)  # 30 second timeout for network operations
+            
+            # Use larger buffer for network operations
+            buffer_size = 256 * 1024  # 256KB buffer
+            total_sent = 0
+            last_activity = time.time()
+            
             with open(file_path, 'rb') as f:
                 while True:
-                    chunk = f.read(64 * 1024)
-                    if not chunk:
-                        break
                     try:
-                        self.wfile.write(chunk)
-                    except (ConnectionError, socket.error) as e:
-                        self.logger.error(f"Connection error while sending file: {str(e)}")
+                        chunk = f.read(buffer_size)
+                        if not chunk:
+                            break
+                            
+                        # Track activity and check timeouts
+                        current_time = time.time()
+                        if current_time - last_activity > 60:  # 60 second inactivity timeout
+                            self.logger.warning(f"Client inactive for 60 seconds, closing connection")
+                            return False
+                            
+                        # Track activity
+                        bytes_sent = 0
+                        while bytes_sent < len(chunk):
+                            try:
+                                sent = self.wfile.write(chunk[bytes_sent:])
+                                if sent is None:  # Non-blocking socket might return None
+                                    sent = 0
+                                bytes_sent += sent
+                                total_sent += sent
+                                last_activity = time.time()
+                                
+                            except (socket.error, ConnectionError) as e:
+                                error_code = getattr(e, 'errno', None) or getattr(e, 'winerror', None)
+                                if error_code in (10053, 10054, errno.EPIPE):  # Expected client disconnection
+                                    self.logger.debug(f"Client closed connection after receiving {total_sent} bytes")
+                                    return False
+                                raise  # Re-raise unexpected socket errors
+                                
+                    except socket.timeout:
+                        self.logger.warning(f"Socket timeout while sending file {file_path}")
                         return False
-                    except Exception as e:
-                        self.logger.error(f"Error while sending file: {str(e)}")
+                    except (socket.error, ConnectionError) as e:
+                        if isinstance(e, ConnectionAbortedError) or \
+                           getattr(e, 'winerror', None) in (10053, 10054):
+                            self.logger.debug(f"Client disconnected after {total_sent} bytes: {str(e)}")
+                        else:
+                            self.logger.warning(f"Connection error sending file {file_path}: {str(e)}")
                         return False
-            return True
+                        
+                self.logger.debug(f"Successfully sent {total_sent} bytes")
+                return True
+                
         except IOError as e:
-            self.logger.error(f"IO error while reading file {file_path}: {str(e)}")
+            self.logger.error(f"IO error reading {file_path}: {str(e)}")
             return False
         except Exception as e:
-            self.logger.error(f"Unexpected error while sending file {file_path}: {str(e)}")
+            self.logger.error(f"Unexpected error sending {file_path}: {str(e)}")
             return False
+        finally:
+            try:
+                # Reset socket timeout to default
+                self.connection.settimeout(None)
+            except:
+                pass
 
     def serve_media_file(self, path):
         """Serve a media file with enhanced error handling and range request support."""
         try:
+            # Parse query parameters for thumbnails
+            from urllib.parse import urlparse, parse_qs
+            parsed_url = urlparse(self.path)
+            query_params = parse_qs(parsed_url.query)
+            is_thumbnail = 'thumbnail' in query_params
+            is_album_art = 'albumArt' in query_params
+            
             # Decode the path component from the URL *once*
             decoded_path_segment = unquote(path)
-
-            # Find the absolute path based on the decoded segment relative to shared folders
             abs_path = None
             shared_root_found = None
+
+            # Find the absolute path
             for shared_folder in self.server.media_folders:
                 potential_path = os.path.abspath(os.path.join(shared_folder, decoded_path_segment))
-                # Security check
                 shared_folder_abs = os.path.abspath(shared_folder)
                 if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
-                     if os.path.exists(potential_path) and os.path.isfile(potential_path):
-                          abs_path = potential_path
-                          shared_root_found = shared_folder_abs
-                          break
+                    if os.path.exists(potential_path) and os.path.isfile(potential_path):
+                        abs_path = potential_path
+                        shared_root_found = shared_folder_abs
+                        break
 
             if abs_path is None:
-                self.logger.warning(f"Media file not found or invalid: requested='{path}', decoded='{decoded_path_segment}'")
+                self.logger.warning(f"Media file not found: {path}")
                 self.send_error(404, "File not found")
                 return
 
-            # Check if file type is supported (redundant check, but safe)
             ext = os.path.splitext(abs_path)[1].lower()
             content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
-            if not content_type:
-                self.logger.warning(f"Attempt to serve unsupported file type: {abs_path}")
-                self.send_error(415, "Unsupported media type")
-                return
+            
+            # Handle thumbnail/album art requests
+            if (is_thumbnail or is_album_art) and content_type.startswith('image/'):
+                try:
+                    thumbnail_data = None
+                    if is_album_art and ext.lower() in AUDIO_EXTENSIONS:
+                        # Extract embedded album art from audio file
+                        audio = File(abs_path)
+                        if hasattr(audio, 'tags'):
+                            apic = audio.tags.getall('APIC')[0] if hasattr(audio.tags, 'getall') and audio.tags.getall('APIC') else None
+                            if apic and apic.data:
+                                thumbnail_data = apic.data
+                                content_type = 'image/jpeg'
+                    elif is_thumbnail:
+                        if ext.lower() in VIDEO_EXTENSIONS:
+                            # Generate video thumbnail using ffmpeg if available
+                            try:
+                                import ffmpeg
+                                probe = ffmpeg.probe(abs_path)
+                                duration = float(probe['streams'][0]['duration'])
+                                thumbnail_time = min(5.0, duration / 3)  # Take frame at 5 seconds or 1/3 duration
+                                out, _ = (
+                                    ffmpeg.input(abs_path, ss=thumbnail_time)
+                                    .filter('scale', 320, -1)  # Scale to 320px width
+                                    .output('pipe:', format='mjpeg', vframes=1)
+                                    .run(capture_stdout=True, quiet=True)
+                                )
+                                thumbnail_data = out
+                                content_type = 'image/jpeg'
+                            except ImportError:
+                                self.logger.debug("ffmpeg-python not installed, cannot generate video thumbnails")
+                        elif ext.lower() in IMAGE_EXTENSIONS:
+                            # Generate image thumbnail using PIL
+                            try:
+                                from PIL import Image
+                                from io import BytesIO
+                                Image.MAX_IMAGE_PIXELS = None  # Disable DecompressionBomb warning
+                                with Image.open(abs_path) as img:
+                                    # Convert RGBA to RGB if needed
+                                    if img.mode in ('RGBA', 'LA'):
+                                        background = Image.new('RGB', img.size, (255, 255, 255))
+                                        background.paste(img, mask=img.split()[-1])
+                                        img = background
+                                    elif img.mode not in ('RGB', 'L'):
+                                        img = img.convert('RGB')
+                                    
+                                    # Calculate new size maintaining aspect ratio
+                                    width = 320  # DLNA thumbnail standard
+                                    wpercent = (width/float(img.size[0]))
+                                    height = int((float(img.size[1])*float(wpercent)))
+                                    img = img.resize((width, height), Image.Resampling.LANCZOS)
+                                    
+                                    # Save to memory
+                                    buffer = BytesIO()
+                                    img.save(buffer, format='JPEG', quality=85)
+                                    thumbnail_data = buffer.getvalue()
+                                    content_type = 'image/jpeg'
+                            except ImportError:
+                                self.logger.debug("Pillow not installed, cannot generate image thumbnails")
+                    
+                    if thumbnail_data:
+                        self.send_response(200)
+                        self.send_header('Content-Type', content_type)
+                        self.send_header('Content-Length', str(len(thumbnail_data)))
+                        self.send_header('Cache-Control', 'max-age=3600')  # Cache thumbnails for 1 hour
+                        self.end_headers()
+                        self.wfile.write(thumbnail_data)
+                        return
+                    else:
+                        # If we couldn't generate thumbnail, return 404
+                        self.send_error(404, "Thumbnail not available")
+                        return
+                        
+                except Exception as thumb_err:
+                    self.logger.error(f"Error generating thumbnail for {abs_path}: {thumb_err}")
+                    self.send_error(500, "Error generating thumbnail")
+                    return
 
+            # Regular file serving
             try:
                 file_size = os.path.getsize(abs_path)
             except OSError as e:
