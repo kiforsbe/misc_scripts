@@ -169,28 +169,37 @@ class SSDPServer:
         self.send_notification('ssdp:byebye')
 
     def periodic_announce(self):
-        """Periodically send presence announcements"""
-        initial_interval = 1  # Start with more frequent announcements
-        max_interval = 5    # Maximum interval between announcements
-        current_interval = initial_interval
+        """Periodically send presence announcements with optimized timing"""
+        initial_interval = 0.5  # Start with more frequent announcements (was 1)
+        max_interval = 2      # Maximum interval between announcements (was 5)
+        burst_count = 3       # Number of initial rapid announcements
         
+        # Initial burst of announcements
+        for _ in range(burst_count):
+            try:
+                self.error_handler.with_retry(self.send_alive_notification)
+                time.sleep(0.25)  # Short delay between initial announcements
+            except Exception as e:
+                self.logger.error(f"Error in initial announce burst: {str(e)}")
+
+        current_interval = initial_interval
         while self.running:
             try:
                 self.error_handler.with_retry(self.send_alive_notification)
                 
                 # Sleep with interruption check
-                for _ in range(int(current_interval)):
+                for _ in range(int(current_interval * 4)):  # *4 because we use 0.25s sleep chunks
                     if not self.running:
                         break
-                    time.sleep(1)
+                    time.sleep(0.25)  # Use shorter sleep intervals to allow faster shutdown
                 
                 # Gradually increase interval up to max_interval
                 if current_interval < max_interval:
-                    current_interval = min(current_interval * 1.5, max_interval)
+                    current_interval = min(current_interval * 1.2, max_interval)
                     
             except Exception as e:
                 self.logger.error(f"Error in periodic announce: {str(e)}")
-                time.sleep(1)  # Prevent tight loop on error
+                time.sleep(0.25)  # Prevent tight loop on error
 
     def get_all_interfaces(self):
         """Get all IPv4 addresses of all network interfaces with error handling"""
@@ -366,7 +375,7 @@ class SSDPServer:
             self.logger.error(f"Error handling SSDP request from {addr[0]}:{addr[1]}: {e}", exc_info=True)
 
     def send_discovery_response(self, addr, st):
-        """Send SSDP discovery response with error handling"""
+        """Send SSDP discovery response with optimized timing"""
         try:
             self.discovery_count += 1
             self.logger.info(f"Sending discovery response for ST '{st}' to {addr[0]}:{addr[1]} (Count: {self.discovery_count})")
@@ -374,8 +383,9 @@ class SSDPServer:
             location = f'http://{self.http_server_address[0]}:{self.http_server_address[1]}/description.xml'
             usn = f'uuid:{DEVICE_UUID}'
             if st != 'upnp:rootdevice' and not st.startswith('uuid:'):
-                 usn += f'::{st}' # Correct USN format
+                 usn += f'::{st}'
 
+            # Enhanced response with more detailed headers
             response = '\r\n'.join([
                 'HTTP/1.1 200 OK',
                 'CACHE-CONTROL: max-age=1800',
@@ -387,16 +397,29 @@ class SSDPServer:
                 f'USN: {usn}',
                 'BOOTID.UPNP.ORG: 1',
                 'CONFIGID.UPNP.ORG: 1',
-                'X-DLNADOC: DMS-1.50', # Optional but good practice
-                '',
+                'X-DLNADOC: DMS-1.50',
+                'X-DLNACAP: av-upload,image-upload,audio-upload',
+                '', # Empty line required by HTTP
                 ''
             ])
 
-            # Use the main listening socket to send the unicast response directly back to the client
-            self.error_handler.with_retry(
-                 lambda: self.socket.sendto(response.encode('utf-8'), addr)
-            )
-            self.logger.debug(f"Discovery response sent successfully to {addr[0]}:{addr[1]}")
+            # Minimal delay based on discovery count to prevent flooding
+            delay = min(0.1, 0.02 * self.discovery_count)  # Max 100ms delay
+            time.sleep(delay)
+
+            # Send response immediately for the first few discoveries
+            if self.discovery_count <= 3:
+                self.error_handler.with_retry(
+                    lambda: self.socket.sendto(response.encode('utf-8'), addr)
+                )
+                self.logger.debug(f"Initial discovery response sent immediately to {addr[0]}:{addr[1]}")
+            else:
+                # For subsequent discoveries, use a small random delay
+                time.sleep(random.uniform(0.01, 0.1))
+                self.error_handler.with_retry(
+                    lambda: self.socket.sendto(response.encode('utf-8'), addr)
+                )
+                self.logger.debug(f"Discovery response sent with delay to {addr[0]}:{addr[1]}")
 
         except socket.error as sock_err:
              self.logger.error(f"Socket error sending discovery response to {addr[0]}:{addr[1]}: {sock_err}")
@@ -472,7 +495,46 @@ class DLNAServer(BaseHTTPRequestHandler):
         self.logger = logging.getLogger('DLNAServer')
         self.protocol_version = 'HTTP/1.1'
         self.timeout = 60  # Set timeout to 60 seconds
+        self.headers_sent = False  # Track if headers have been sent
         super().__init__(*args, **kwargs)
+
+    def send_response(self, *args, **kwargs):
+        """Override to track headers sent state"""
+        super().send_response(*args, **kwargs)
+        self.headers_sent = True
+
+    def send_error(self, *args, **kwargs):
+        """Override to handle socket errors when sending error responses"""
+        try:
+            super().send_error(*args, **kwargs)
+        except (socket.error, ConnectionError) as e:
+            self.logger.debug(f"Socket error while sending error response: {str(e)}")
+        except Exception as e:
+            self.logger.debug(f"Error while sending error response: {str(e)}")
+        finally:
+            self.headers_sent = True
+
+    def handle_one_request(self):
+        """Override to add better error handling for socket operations"""
+        try:
+            return super().handle_one_request()
+        except (socket.error, ConnectionError) as e:
+            # Don't log common client disconnection errors at error level
+            if isinstance(e, ConnectionAbortedError) or \
+               getattr(e, 'winerror', None) in (10053, 10054):  # Connection aborted/reset
+                self.logger.debug(f"Client connection closed: {str(e)}")
+            else:
+                self.logger.error(f"Socket error during request: {str(e)}")
+            try:
+                self.close_connection = True
+            except Exception:
+                pass
+        except Exception as e:
+            self.logger.error(f"Error handling request: {str(e)}", exc_info=True)
+            try:
+                self.close_connection = True
+            except Exception:
+                pass
     
     def do_GET(self):
         """Handle GET requests with improved error handling"""
