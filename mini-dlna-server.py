@@ -13,6 +13,10 @@ from logging.handlers import RotatingFileHandler
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 from datetime import datetime
 from mutagen import File
+import json
+import argparse
+import re
+import random
 
 # DLNA/UPnP Constants
 DEVICE_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())
@@ -86,68 +90,83 @@ class SSDPServer:
         self.socket = None
         self.announce_socket = None
 
-    def send_alive_notification(self):
-        """Send SSDP presence notification with enhanced Samsung compatibility"""
+    def send_notification(self, nts_type):
+        """Send SSDP notification (alive or byebye) with enhanced Samsung compatibility"""
         services = [
             'upnp:rootdevice',
+            f'uuid:{DEVICE_UUID}', # Add device UDN itself
             'urn:schemas-upnp-org:device:MediaServer:1',
             'urn:schemas-upnp-org:service:ContentDirectory:1',
-            'urn:schemas-upnp-org:service:ConnectionManager:1'
+            'urn:schemas-upnp-org:service:ConnectionManager:1',
+            'urn:schemas-upnp-org:service:AVTransport:1' # Added AVTransport
         ]
-        
+
         location = f'http://{self.http_server_address[0]}:{self.http_server_address[1]}/description.xml'
-        
+
         for service in services:
+            usn = f'uuid:{DEVICE_UUID}'
+            if service != 'upnp:rootdevice' and not service.startswith('uuid:'):
+                 usn += f'::{service}' # Correct USN format
+
             try:
                 notify_msg = '\r\n'.join([
                     'NOTIFY * HTTP/1.1',
                     f'HOST: {SSDP_ADDR}:{SSDP_PORT}',
-                    'CACHE-CONTROL: max-age=1800',
+                    'CACHE-CONTROL: max-age=1800' if nts_type == 'ssdp:alive' else '', # Only for alive
                     f'LOCATION: {location}',
-                    'NT: ' + service,
-                    'NTS: ssdp:alive',
-                    'SERVER: Windows/10.0 UPnP/1.0 Python-DLNA/1.0',  # Changed server string
-                    f'USN: uuid:{DEVICE_UUID}::{service}',
-                    'BOOTID.UPNP.ORG: 1',
-                    'CONFIGID.UPNP.ORG: 1',
-                    'SEARCHPORT.UPNP.ORG: 1900',
-                    # Samsung-specific headers
+                    f'NT: {service}',
+                    f'NTS: {nts_type}',
+                    'SERVER: Windows/10 UPnP/1.0 Python-DLNA/1.0', # Simplified Server header
+                    f'USN: {usn}',
+                    'BOOTID.UPNP.ORG: 1', # Keep BootID
+                    'CONFIGID.UPNP.ORG: 1', # Keep ConfigID
+                    # Samsung-specific headers (optional but potentially helpful)
                     'X-DLNADOC: DMS-1.50',
-                    'X-DLNACAP: av-upload,time-seek,connection-stalling,range',  # Added range
+                    'X-DLNACAP: av-upload,image-upload,audio-upload', # Capabilities
                     'Content-Length: 0',
                     '',
                     ''
-                ])
-                
-                # Send notification on all interfaces
+                ]).strip() # Remove empty lines if CACHE-CONTROL is absent
+
+                # Send notification using the announce socket bound to a specific interface
                 interfaces = self.get_all_interfaces()
-                for interface in interfaces:
+                for interface_ip in interfaces:
                     try:
-                        # Bind to specific interface
-                        self.announce_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-                        self.announce_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        self.announce_socket.bind((interface, 0))
-                        
-                        # Set TTL to 4 for better network traversal
-                        self.announce_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
-                        
-                        # Send the notification
-                        self.error_handler.with_retry(
-                            lambda: self.announce_socket.sendto(notify_msg.encode(), (SSDP_ADDR, SSDP_PORT))
-                        )
-                        self.logger.info(f"Sent alive notification for service ['{service}'] on interface ['{interface}']")
-                            
+                        # Create a temporary socket for sending on this interface
+                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as send_sock:
+                            send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            # Try binding to the interface IP - might fail if port is in use, but that's okay for sending
+                            try:
+                                send_sock.bind((interface_ip, 0)) # Bind to ephemeral port
+                            except socket.error as bind_err:
+                                self.logger.debug(f"Could not bind send socket to {interface_ip}: {bind_err}")
+                                # Continue anyway, OS might route correctly
+
+                            # Set TTL
+                            send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
+                            # Set outgoing interface
+                            send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(interface_ip))
+
+                            self.error_handler.with_retry(
+                                lambda: send_sock.sendto(notify_msg.encode('utf-8'), (SSDP_ADDR, SSDP_PORT))
+                            )
+                            self.logger.info(f"Sent {nts_type} notification for service ['{service}'] via interface ['{interface_ip}']")
+
+                    except socket.error as sock_err:
+                         # Log specific socket errors during sending
+                         self.logger.warning(f"Socket error sending {nts_type} on {interface_ip} for {service}: {sock_err}")
                     except Exception as e:
-                        self.logger.warning(f"Failed to send notification on interface {interface}: {str(e)}")
-                    finally:
-                        try:
-                            self.announce_socket.close()
-                        except:
-                            pass
-                        
+                        self.logger.warning(f"Failed to send {nts_type} notification on interface {interface_ip} for {service}: {str(e)}")
+
             except Exception as e:
-                self.logger.error(f"Failed to send notification for service {service}: {str(e)}")
+                self.logger.error(f"Failed to prepare/send {nts_type} notification for service {service}: {str(e)}")
                 continue
+
+    def send_alive_notification(self):
+        self.send_notification('ssdp:alive')
+
+    def send_byebye_notification(self):
+        self.send_notification('ssdp:byebye')
 
     def periodic_announce(self):
         """Periodically send presence announcements"""
@@ -214,45 +233,31 @@ class SSDPServer:
     def initialize_sockets(self):
         """Initialize network sockets with Windows-specific handling"""
         try:
-            # Create main multicast socket with specific options for Windows
+            # Create main multicast listening socket
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            # Allow reuse of the address, crucial for multicast and coexistence
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            
-            # Set multicast TTL
-            self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
-            
-            # Allow multiple bindings for Windows
-            if hasattr(socket, 'SO_REUSEPORT'):  # Not available on Windows
-                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                
-            # Create separate socket for sending with specific options
-            self.announce_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-            self.announce_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.announce_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
-            
-            # Bind to all interfaces
+
+            # Bind to the SSDP port on all available interfaces
             try:
                 self.socket.bind(('', SSDP_PORT))
+                self.logger.info(f"Successfully bound listening socket to ('', {SSDP_PORT})")
             except socket.error as e:
-                if e.errno == errno.EADDRINUSE:
-                    # Port in use is expected on Windows - we can still send/receive
-                    self.logger.info("SSDP port already in use (Windows UPnP). Continuing in shared mode.")
-                    return True
+                # EADDRINUSE (10048 on Windows) is expected if another service (like Windows Discovery) is running
+                if e.errno == errno.WSAEADDRINUSE or e.errno == errno.EADDRINUSE:
+                    self.logger.warning(f"SSDP port {SSDP_PORT} is already in use (Likely Windows Discovery Service). Will attempt to listen in shared mode.")
+                    # We can still often receive multicast packets even if binding fails with WSAEADDRINUSE on Windows when SO_REUSEADDR is set.
                 else:
-                    raise
-            
-            # Set multicast interface for the announce socket
-            interfaces = self.get_all_interfaces()
-            if interfaces:
-                self.announce_socket.setsockopt(
-                    socket.IPPROTO_IP,
-                    socket.IP_MULTICAST_IF,
-                    socket.inet_aton(interfaces[0])
-                )
-            
-            self.logger.info(f"SSDP server initialized successfully")
+                    self.logger.error(f"Failed to bind listening socket to ('', {SSDP_PORT}): {e}")
+                    self.cleanup_sockets()
+                    return False
+
+            # Set socket timeout for receiving
+            self.socket.settimeout(1.0) # Timeout allows checking self.running periodically
+
+            self.logger.info(f"SSDP listening socket initialized.")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to initialize SSDP sockets: {str(e)}")
             self.cleanup_sockets()
@@ -269,31 +274,32 @@ class SSDPServer:
             self.logger.error(f"Error during socket cleanup: {str(e)}")
 
     def join_multicast_group(self):
-        """Join multicast group with Windows-specific handling"""
-        successful_joins = 0
+        """Join multicast group on all interfaces"""
+        joined_any = False
         interfaces = self.get_all_interfaces()
-        
+        if not interfaces:
+            self.logger.error("No network interfaces found to join multicast group.")
+            return False
+
         for addr in interfaces:
             try:
-                # Windows-specific: Join group on specific interface
+                # Construct the multicast request structure
                 mreq = socket.inet_aton(SSDP_ADDR) + socket.inet_aton(addr)
+                # Join the multicast group for the listening socket
                 self.socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-                
-                # Set multicast interface
-                self.socket.setsockopt(
-                    socket.IPPROTO_IP,
-                    socket.IP_MULTICAST_IF,
-                    socket.inet_aton(addr)
-                )
-                
-                self.logger.info(f"Successfully joined multicast group on interface: {addr}")
-                successful_joins += 1
+                self.logger.info(f"Successfully joined SSDP multicast group on interface: {addr}")
+                joined_any = True
+            except socket.error as e:
+                # Common errors: WSAENOBUFS (no buffer space), EADDRNOTAVAIL (bad interface IP)
+                self.logger.warning(f"Failed to join multicast group on interface {addr}: {e}")
             except Exception as e:
-                self.logger.warning(f"Failed to join multicast group on interface {addr}: {str(e)}")
-                
-        if successful_joins == 0:
-            self.logger.error("Failed to join multicast group on any interface")
-            return False
+                 self.logger.warning(f"Unexpected error joining multicast group on interface {addr}: {e}")
+
+        if not joined_any:
+             self.logger.error("Failed to join multicast group on ANY interface.")
+             return False
+
+        self.logger.info("Successfully joined multicast group on at least one interface.")
         return True
 
     def safe_send(self, data, addr):
@@ -309,138 +315,157 @@ class SSDPServer:
     def handle_request(self, data, addr):
         """Handle incoming SSDP requests with error handling"""
         try:
-            request = data.decode().split('\r\n')
-            self.logger.info(f"Received SSDP request from {addr[0]}:{addr[1]}")
-            self.logger.debug(f"Full request: {request}")
-            
-            if 'M-SEARCH * HTTP/1.1' in request[0]:
-                try:
-                    # Parse headers
-                    headers = {}
-                    for line in request:
-                        if ': ' in line:
-                            key, value = line.split(': ', 1)
-                            headers[key.upper()] = value
-                    
-                    self.logger.debug(f"M-SEARCH headers: {headers}")
-                    
-                    # Check various search targets
-                    st = headers.get('ST', '')
-                    search_targets = [
-                        'ssdp:all',
-                        'upnp:rootdevice',
-                        f'uuid:{DEVICE_UUID}',
-                        'urn:schemas-upnp-org:device:MediaServer:1',
-                        'urn:schemas-upnp-org:service:ContentDirectory:1'
-                    ]
-                    
-                    if st in search_targets:
-                        self.logger.info(f"Matching search target: {st}")
-                        self.send_discovery_response(addr, st)
-                    else:
-                        self.logger.debug(f"Ignoring search request with ST: {st}")
-                        
-                except Exception as e:
-                    self.logger.error(f"Error processing M-SEARCH request: {str(e)}")
-                    
+            request_line, *header_lines = data.decode('utf-8', errors='ignore').split('\r\n')
+            self.logger.info(f"Received SSDP request from {addr[0]}:{addr[1]}: {request_line}")
+            # self.logger.debug(f"Full request data: {data!r}") # Log raw data if needed
+
+            if 'M-SEARCH * HTTP/1.1' in request_line:
+                headers = {}
+                for line in header_lines:
+                    if ': ' in line:
+                        key, value = line.split(': ', 1)
+                        headers[key.upper()] = value.strip()
+
+                st = headers.get('ST', '')
+                man = headers.get('MAN', '') # Mandatory header for discovery
+
+                if not st or man != '"ssdp:discover"':
+                    self.logger.debug(f"Ignoring M-SEARCH from {addr}: Missing ST or invalid MAN header. ST='{st}', MAN='{man}'")
+                    return
+
+                self.logger.debug(f"M-SEARCH from {addr} for ST: {st}")
+
+                # Check if the search target matches our services
+                matching_services = [
+                    'upnp:rootdevice',
+                    f'uuid:{DEVICE_UUID}',
+                    'urn:schemas-upnp-org:device:MediaServer:1',
+                    'urn:schemas-upnp-org:service:ContentDirectory:1',
+                    'urn:schemas-upnp-org:service:ConnectionManager:1',
+                    'urn:schemas-upnp-org:service:AVTransport:1'
+                ]
+
+                respond = False
+                if st == 'ssdp:all':
+                    respond = True
+                    response_st = 'upnp:rootdevice' # Respond with root device for ssdp:all
+                elif st in matching_services:
+                    respond = True
+                    response_st = st # Respond with the specific ST requested
+
+                if respond:
+                    # Add a small random delay to avoid flooding (RFC requirement)
+                    time.sleep(random.uniform(0.1, 0.5))
+                    self.send_discovery_response(addr, response_st)
+                else:
+                    self.logger.debug(f"Ignoring M-SEARCH from {addr}: ST '{st}' does not match our services.")
+
         except UnicodeDecodeError as e:
-            self.logger.warning(f"Received malformed SSDP request from {addr[0]}:{addr[1]}: {str(e)}")
+            self.logger.warning(f"Received malformed SSDP request (UnicodeDecodeError) from {addr[0]}:{addr[1]}: {e}")
         except Exception as e:
-            self.logger.error(f"Error handling SSDP request from {addr[0]}:{addr[1]}: {str(e)}")
+            self.logger.error(f"Error handling SSDP request from {addr[0]}:{addr[1]}: {e}", exc_info=True)
 
     def send_discovery_response(self, addr, st):
         """Send SSDP discovery response with error handling"""
         try:
             self.discovery_count += 1
-            self.logger.info(f"Sending discovery response to {addr[0]}:{addr[1]} (Total responses: {self.discovery_count})")
+            self.logger.info(f"Sending discovery response for ST '{st}' to {addr[0]}:{addr[1]} (Count: {self.discovery_count})")
+
+            location = f'http://{self.http_server_address[0]}:{self.http_server_address[1]}/description.xml'
+            usn = f'uuid:{DEVICE_UUID}'
+            if st != 'upnp:rootdevice' and not st.startswith('uuid:'):
+                 usn += f'::{st}' # Correct USN format
 
             response = '\r\n'.join([
                 'HTTP/1.1 200 OK',
                 'CACHE-CONTROL: max-age=1800',
                 'DATE: ' + time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime()),
-                'EXT:',
-                f'LOCATION: http://{self.http_server_address[0]}:{self.http_server_address[1]}/description.xml',
-                'SERVER: Windows/10.0 UPnP/1.0 Python-DLNA/1.0',
+                'EXT:', # Required header
+                f'LOCATION: {location}',
+                'SERVER: Windows/10 UPnP/1.0 Python-DLNA/1.0',
                 f'ST: {st}',
-                f'USN: uuid:{DEVICE_UUID}::{st}',
+                f'USN: {usn}',
                 'BOOTID.UPNP.ORG: 1',
                 'CONFIGID.UPNP.ORG: 1',
-                'X-DLNADOC: DMS-1.50',
+                'X-DLNADOC: DMS-1.50', # Optional but good practice
                 '',
                 ''
             ])
 
-            try:
-                self.error_handler.with_retry(
-                    lambda: self.socket.sendto(response.encode(), addr)
-                )
-                self.logger.debug(f"Discovery response sent successfully to {addr[0]}:{addr[1]}")
-            except Exception as e:
-                raise Exception(f"Failed to send discovery response: {str(e)}")
+            # Use the main listening socket to send the unicast response directly back to the client
+            self.error_handler.with_retry(
+                 lambda: self.socket.sendto(response.encode('utf-8'), addr)
+            )
+            self.logger.debug(f"Discovery response sent successfully to {addr[0]}:{addr[1]}")
 
+        except socket.error as sock_err:
+             self.logger.error(f"Socket error sending discovery response to {addr[0]}:{addr[1]}: {sock_err}")
         except Exception as e:
-            self.logger.error(f"Error preparing/sending discovery response to {addr[0]}:{addr[1]}: {str(e)}")
+            self.logger.error(f"Error preparing/sending discovery response to {addr[0]}:{addr[1]}: {e}", exc_info=True)
 
     def start(self):
         """Start SSDP server with error handling"""
         if not self.initialize_sockets():
-            self.logger.error("Failed to initialize SSDP server")
+            self.logger.error("Failed to initialize SSDP server sockets.")
             return
-            
+
         if not self.join_multicast_group():
-            self.logger.error("Failed to join multicast group")
+            self.logger.error("Failed to join SSDP multicast group.")
             self.cleanup_sockets()
             return
-            
+
         self.running = True
-        self.logger.info(f"SSDP server started on {SSDP_ADDR}:{SSDP_PORT}")
-        
-        # Start announcement thread with error handling
-        self.announcement_thread = threading.Thread(target=self.periodic_announce)
+        self.logger.info(f"SSDP server started, listening on port {SSDP_PORT}")
+
+        # Start announcement thread
+        self.announcement_thread = threading.Thread(target=self.periodic_announce, name="SSDPeriodicAnnounce")
         self.announcement_thread.daemon = True
         self.announcement_thread.start()
-        
+
+        # Send initial alive notification *after* starting listener and announcer
         try:
-            self.send_alive_notification()  # Send initial announcement
+            # Give a slight delay for network stack to settle
+            time.sleep(1)
+            self.send_alive_notification()
         except Exception as e:
-            self.logger.error(f"Failed to send initial announcement: {str(e)}")
-        
+            self.logger.error(f"Failed to send initial alive announcement: {e}")
+
         while self.running:
             try:
-                data, addr = self.socket.recvfrom(1024)
-                self.handle_request(data, addr)
+                # Receive data using the main listening socket
+                data, addr = self.socket.recvfrom(2048) # Increased buffer size
+                if data:
+                    # Handle request in a separate thread to avoid blocking listener?
+                    # For now, handle directly. If performance becomes an issue, consider threading.
+                    self.handle_request(data, addr)
             except socket.timeout:
+                # Timeout is expected, just loop again to check self.running
                 continue
             except socket.error as e:
-                if self.running:
-                    self.logger.error(f"Socket error during receive: {str(e)}")
-                    # Try to recover from socket error
-                    if not self.recover_from_error():
-                        break
+                # Handle specific socket errors if needed
+                if self.running: # Avoid logging errors during shutdown
+                    # WSAECONNRESET might occur if client disconnects abruptly
+                    if e.errno == errno.WSAECONNRESET:
+                         self.logger.warning(f"Socket connection reset by peer: {e}")
+                    else:
+                         self.logger.error(f"Socket error during receive: {e}")
+                    # Consider if recovery is needed/possible here
+                    time.sleep(0.1) # Small delay before retrying receive
             except Exception as e:
                 if self.running:
-                    self.logger.error(f"Unexpected error in SSDP server: {str(e)}")
-                    if not self.recover_from_error():
-                        break
+                    self.logger.error(f"Unexpected error in SSDP receive loop: {e}", exc_info=True)
+                    time.sleep(0.1) # Small delay
 
-        self.cleanup_sockets()
-
-    def recover_from_error(self):
-        """Attempt to recover from network errors"""
+        # Shutdown sequence
+        self.logger.info("SSDP server stopping...")
         try:
-            self.logger.info("Attempting to recover from network error...")
-            self.cleanup_sockets()
-            time.sleep(1)  # Wait before attempting recovery
-            
-            if self.initialize_sockets() and self.join_multicast_group():
-                self.logger.info("Successfully recovered from network error")
-                return True
-            else:
-                self.logger.error("Failed to recover from network error")
-                return False
+            self.send_byebye_notification() # Send byebye before closing sockets
+            time.sleep(1) # Allow time for byebye to propagate
         except Exception as e:
-            self.logger.error(f"Error during recovery attempt: {str(e)}")
-            return False
+            self.logger.error(f"Failed to send byebye notification: {e}")
+        finally:
+            self.cleanup_sockets()
+            self.logger.info("SSDP server stopped.")
 
 class DLNAServer(BaseHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -501,312 +526,104 @@ class DLNAServer(BaseHTTPRequestHandler):
                 return
 
     def handle_content_directory_control(self):
-        """Handle POST requests to /ContentDirectory/control with improved XML handling"""
+        """Handle POST requests to /ContentDirectory/control with improved XML handling and browsing logic"""
         try:
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
-            self.logger.info(f"Received POST data: {post_data}")
+            self.logger.info(f"Received ContentDirectory control request (length: {content_length})")
+            self.logger.debug(f"SOAP Request Body: {post_data.decode('utf-8', errors='ignore')}")
 
-            # Parse the SOAP request
-            envelope = fromstring(post_data)
-            body = envelope.find('{http://schemas.xmlsoap.org/soap/envelope/}Body')
-            browse = body.find('{urn:schemas-upnp-org:service:ContentDirectory:1}Browse')
-
-            if browse is not None:
-                object_id = browse.find('ObjectID').text
-                browse_flag = browse.find('BrowseFlag').text
-                filter = browse.find('Filter').text
-                starting_index = int(browse.find('StartingIndex').text)
-                requested_count = int(browse.find('RequestedCount').text)
-                sort_criteria = browse.find('SortCriteria').text
-
-                # Handle root container specially
-                if object_id == '0' or object_id == '':
-                    result = self.handle_root_container(browse_flag, starting_index, requested_count)
-                else:
-                    # Handle regular browse requests
-                    result = self.handle_browse_request(object_id, browse_flag, starting_index, requested_count)
-
-                # Create SOAP response
-                soap_response = f'''<?xml version="1.0" encoding="utf-8"?>
-                <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-                    <s:Body>
-                        <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
-                            <Result>{result['Result']}</Result>
-                            <NumberReturned>{result['NumberReturned']}</NumberReturned>
-                            <TotalMatches>{result['TotalMatches']}</TotalMatches>
-                            <UpdateID>1</UpdateID>
-                        </u:BrowseResponse>
-                    </s:Body>
-                </s:Envelope>'''
-
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-                self.send_header('Ext', '')
-                self.send_header('Server', 'Windows/1.0 UPnP/1.0 MiniDLNA/1.0')
-                self.send_header('Content-Length', len(soap_response))
-                self.end_headers()
-                self.wfile.write(soap_response.encode('utf-8'))
-            else:
-                self.send_error(400, "Invalid SOAP request")
-
-        except Exception as e:
-            self.logger.error(f"Error handling content directory control: {str(e)}")
-            self.send_error(500, "Internal server error")
-
-    def handle_root_container(self, browse_flag, starting_index, requested_count):
-        """Handle browsing of the root container"""
-        try:
-            root = Element('DIDL-Lite', {
-                'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
-                'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
-                'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
-                'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0'
-            })
-
-            if browse_flag == 'BrowseMetadata':
-                # Return root container metadata
-                container = SubElement(root, 'container', {
-                    'id': '0',
-                    'parentID': '-1',
-                    'restricted': '1',
-                    'searchable': '1'
-                })
-                SubElement(container, 'dc:title').text = 'Root'
-                SubElement(container, 'upnp:class').text = 'object.container'
-                SubElement(container, 'upnp:storageUsed').text = '-1'
-                
-                return {
-                    'Result': tostring(root, encoding='unicode'),
-                    'NumberReturned': 1,
-                    'TotalMatches': 1
-                }
-                
-            elif browse_flag == 'BrowseDirectChildren':
-                # List contents of the media folder
-                items = sorted(os.listdir(self.server.media_folder))
-                total_matches = len(items)
-                
-                # Apply pagination
-                items = items[starting_index:starting_index + requested_count if requested_count > 0 else None]
-                
-                for item in items:
-                    item_path = os.path.join(self.server.media_folder, item)
-                    if os.path.isdir(item_path):
-                        self.add_container_to_didl(root, item_path, item, '0')
-                    else:
-                        self.add_item_to_didl(root, item_path, item, '0')
-                
-                return {
-                    'Result': tostring(root, encoding='unicode'),
-                    'NumberReturned': len(items),
-                    'TotalMatches': total_matches
-                }
-                
-        except Exception as e:
-            self.logger.error(f"Error handling root container: {str(e)}")
-            raise
-
-    def handle_browse_request(self, object_id, browse_flag, starting_index, requested_count):
-        """Handle browsing of non-root containers and items"""
-        try:
-            root = Element('DIDL-Lite', {
-                'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
-                'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
-                'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
-                'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0'
-            })
-
-            path = os.path.join(self.server.media_folder, unquote(object_id))
-            
-            if not os.path.exists(path):
-                raise ValueError(f"Path does not exist: {path}")
-                
-            if browse_flag == 'BrowseMetadata':
-                # Return metadata for the specific item/container
-                if os.path.isdir(path):
-                    self.add_container_to_didl(root, path, os.path.basename(path), os.path.dirname(object_id))
-                else:
-                    self.add_item_to_didl(root, path, os.path.basename(path), os.path.dirname(object_id))
-                    
-                return {
-                    'Result': tostring(root, encoding='unicode'),
-                    'NumberReturned': 1,
-                    'TotalMatches': 1
-                }
-                
-            elif browse_flag == 'BrowseDirectChildren' and os.path.isdir(path):
-                # List contents of the directory
-                items = sorted(os.listdir(path))
-                total_matches = len(items)
-                
-                # Apply pagination
-                items = items[starting_index:starting_index + requested_count if requested_count > 0 else None]
-                
-                for item in items:
-                    item_path = os.path.join(path, item)
-                    if os.path.isdir(item_path):
-                        self.add_container_to_didl(root, item_path, item, object_id)
-                    else:
-                        self.add_item_to_didl(root, item_path, item, object_id)
-                
-                return {
-                    'Result': tostring(root, encoding='unicode'),
-                    'NumberReturned': len(items),
-                    'TotalMatches': total_matches
-                }
-                
-        except Exception as e:
-            self.logger.error(f"Error handling browse request: {str(e)}")
-            raise
-
-    def add_container_to_didl(self, root, path, title, parent_id):
-        """Add a container (directory) to the DIDL-Lite XML"""
-        try:
-            container = SubElement(root, 'container', {
-                'id': quote(os.path.relpath(path, self.server.media_folder)),
-                'parentID': quote(parent_id),
-                'restricted': '1',
-                'searchable': '1',
-                'childCount': str(len(os.listdir(path)))
-            })
-            
-            SubElement(container, 'dc:title').text = title
-            SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
-            
-            # Add creation date
-            creation_time = datetime.fromtimestamp(os.path.getctime(path))
-            SubElement(container, 'dc:date').text = creation_time.isoformat()
-            
-        except Exception as e:
-            self.logger.error(f"Error adding container to DIDL: {str(e)}")
-            raise
-
-    def add_item_to_didl(self, root, path, title, parent_id):
-        """Add an item (file) to the DIDL-Lite XML with improved metadata"""
-        try:
-            mime_type, upnp_class = self.get_mime_and_upnp_class(title)
-            relative_path = os.path.relpath(path, self.server.media_folder)
-            
-            item = SubElement(root, 'item', {
-                'id': quote(relative_path),
-                'parentID': quote(parent_id),
-                'restricted': '1'
-            })
-            
-            SubElement(item, 'dc:title').text = title
-            SubElement(item, 'upnp:class').text = upnp_class
-            
-            # Add resource element
-            res = SubElement(item, 'res')
-            file_size = os.path.getsize(path)
-            url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{quote(relative_path)}'
-            res.text = url
-            
-            # Add protocol info with DLNA parameters
-            protocol_info = f'http-get:*:{mime_type}:'
-            protocol_info += 'DLNA.ORG_OP=01;' # Allow range requests
-            protocol_info += 'DLNA.ORG_CI=0;'   # No conversion
-            protocol_info += 'DLNA.ORG_FLAGS=01700000000000000000000000000000' # Standard DLNA flags
-            
-            res.set('protocolInfo', protocol_info)
-            res.set('size', str(file_size))
-            
-            # Add media-specific metadata
-            if upnp_class.startswith('object.item.audioItem'):
-                self.add_audio_metadata(path, item)
-            elif upnp_class.startswith('object.item.videoItem'):
-                self.add_video_metadata(path, item)
-            elif upnp_class.startswith('object.item.imageItem'):
-                self.add_image_metadata(path, item)
-            
-            # Add creation date
-            creation_time = datetime.fromtimestamp(os.path.getctime(path))
-            SubElement(item, 'dc:date').text = creation_time.isoformat()
-            
-        except Exception as e:
-            self.logger.error(f"Error adding item to DIDL: {str(e)}")
-            raise
-
-    def get_metadata_for_object(self, object_id):
-        try:
-            path = os.path.abspath(object_id)
-            if not os.path.exists(path):
-                return self.create_default_metadata(object_id)
-
-            if os.path.isdir(path):
-                return self.get_directory_metadata(path)
-            else:
-                return self.get_file_metadata(path)
-        except Exception as e:
-            self.logger.error(f"Error handling content directory control: {str(e)}")
-            self.send_error(500, "Internal server error")
-
-    def get_file_metadata(self, path):
-        metadata = {
-            'id': path,
-            'parentID': os.path.dirname(path),
-            'title': os.path.basename(path),
-            'date': datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
-            'size': str(os.path.getsize(path)),
-            'class': 'object.item'
-        }
-        
-        if path.lower().endswith(('.mp3', '.flac', '.m4a', '.wma')):
+            # Parse the SOAP request robustly
             try:
-                audio = File(path)
-                if audio:
-                    metadata.update({
-                        'artist': audio.get('artist', ['Unknown'])[0],
-                        'album': audio.get('album', ['Unknown'])[0],
-                        'genre': audio.get('genre', ['Unknown'])[0],
-                        'class': 'object.item.audioItem.musicTrack'
-                    })
-            except:
-                pass
-        
-        return metadata
+                envelope = fromstring(post_data)
+                # Namespace handling might be needed depending on client request format
+                ns = {
+                    's': 'http://schemas.xmlsoap.org/soap/envelope/',
+                    'u': 'urn:schemas-upnp-org:service:ContentDirectory:1'
+                }
+                body = envelope.find('s:Body', ns)
+                if body is None: # Try without namespace if first fails
+                     body = envelope.find('{http://schemas.xmlsoap.org/soap/envelope/}Body')
 
-    def get_directory_metadata(self, path):
-        return {
-            'id': path,
-            'parentID': os.path.dirname(path),
-            'title': os.path.basename(path),
-            'date': datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
-            'class': 'object.container.storageFolder'
-        }
+                if body is None:
+                     self.logger.error("Could not find SOAP Body in request")
+                     self.send_error(400, "Invalid SOAP request: Missing Body")
+                     return
 
-    def create_default_metadata(self, object_id):
-        return {
-            'id': object_id,
-            'parentID': '0',
-            'title': 'Unknown',
-            'date': datetime.now().isoformat(),
-            'class': 'object.item',
-            'artist': 'Unknown',
-            'album': 'Unknown',
-            'genre':  'Unknown'
-        }
+                browse = body.find('u:Browse', ns)
+                if browse is None: # Try without namespace
+                     browse = body.find('{urn:schemas-upnp-org:service:ContentDirectory:1}Browse')
 
-    def create_browse_metadata_response(self, metadata):
-        # Implement the logic to create a response for BrowseMetadata
-        response = f"""
-        <DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"
-                xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"
-                xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">
-            <item id="{metadata['id']}" parentID="0" restricted="1">
-                <dc:title>{metadata['title']}</dc:title>
-                <upnp:artist>{metadata['artist']}</upnp:artist>
-                <upnp:album>{metadata['album']}</upnp:album>
-                <upnp:genre>{metadata['genre']}</upnp:genre>
-                <dc:date>{metadata['date']}</dc:date>
-            </item>
-        </DIDL-Lite>
-        """
-        return response
+                if browse is None:
+                     self.logger.error("Could not find Browse action in SOAP Body")
+                     self.send_error(400, "Invalid SOAP request: Missing Browse action")
+                     return
 
-    def generate_browse_response(self, object_id, starting_index, requested_count):
-        """Generate a DIDL-Lite XML response for the Browse request"""
+            except Exception as xml_err:
+                self.logger.error(f"Error parsing SOAP XML: {xml_err}")
+                self.send_error(400, "Invalid SOAP XML")
+                return
+
+            # Extract parameters safely
+            object_id_elem = browse.find('ObjectID')
+            browse_flag_elem = browse.find('BrowseFlag')
+            # Optional parameters with defaults
+            filter_elem = browse.find('Filter')
+            starting_index_elem = browse.find('StartingIndex')
+            requested_count_elem = browse.find('RequestedCount')
+            sort_criteria_elem = browse.find('SortCriteria')
+
+            object_id = object_id_elem.text if object_id_elem is not None else '0' # Default to root
+            browse_flag = browse_flag_elem.text if browse_flag_elem is not None else 'BrowseDirectChildren'
+            filter_str = filter_elem.text if filter_elem is not None else '*'
+            starting_index = int(starting_index_elem.text) if starting_index_elem is not None and starting_index_elem.text.isdigit() else 0
+            requested_count = int(requested_count_elem.text) if requested_count_elem is not None and requested_count_elem.text.isdigit() else 0 # 0 means all
+            sort_criteria = sort_criteria_elem.text if sort_criteria_elem is not None else ''
+
+            self.logger.info(f"Browse Request: ObjectID='{object_id}', BrowseFlag='{browse_flag}', StartIndex={starting_index}, Count={requested_count}, Filter='{filter_str}', Sort='{sort_criteria}'")
+
+            # --- Browsing Logic ---
+            result_didl, number_returned, total_matches = self.generate_browse_didl(
+                object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria
+            )
+            # --- End Browsing Logic ---
+
+
+            # Create SOAP response
+            soap_response_xml = f'''<?xml version="1.0" encoding="utf-8"?>
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                <s:Body>
+                    <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+                        <Result>{result_didl}</Result>
+                        <NumberReturned>{number_returned}</NumberReturned>
+                        <TotalMatches>{total_matches}</TotalMatches>
+                        <UpdateID>1</UpdateID>
+                    </u:BrowseResponse>
+                </s:Body>
+            </s:Envelope>'''
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+            self.send_header('Ext', '') # Required by UPnP spec for SOAP responses
+            self.send_header('Server', 'Windows/10 UPnP/1.0 Python-DLNA/1.0')
+            # Calculate content length based on bytes
+            response_bytes = soap_response_xml.encode('utf-8')
+            self.send_header('Content-Length', str(len(response_bytes)))
+            self.end_headers()
+            self.wfile.write(response_bytes)
+            self.logger.info(f"Sent BrowseResponse for ObjectID '{object_id}' ({number_returned}/{total_matches} items)")
+
+        except Exception as e:
+            self.logger.error(f"Error handling content directory control: {e}", exc_info=True)
+            # Avoid sending error if headers already sent
+            if not self.headers_sent:
+                 try:
+                      self.send_error(500, "Internal server error processing Browse request")
+                 except Exception as send_err:
+                      self.logger.error(f"Could not send error response to client: {send_err}")
+
+    def generate_browse_didl(self, object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria):
+        """Generates the DIDL-Lite XML string and counts based on browse parameters."""
         root = Element('DIDL-Lite', {
             'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
             'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
@@ -814,79 +631,276 @@ class DLNAServer(BaseHTTPRequestHandler):
             'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0'
         })
 
-        media_path = os.path.abspath(os.path.join(self.server.media_folder, object_id))
-        items = []
-        total_matches = 0
-        
+        items_list = [] # List to hold (path, is_directory) tuples
+        parent_id_for_children = object_id # Parent ID for items found in this browse
+
+        # --- Determine Path and Parent ---
+        # object_id '0' is the virtual root container
+        if object_id == '0':
+            parent_path = None # No real filesystem path for root
+            parent_id = '-1' # UPnP convention for root's parent
+            # Children of root are the top-level shared folders
+            for shared_folder in self.server.media_folders:
+                 items_list.append((shared_folder, True)) # Treat shared folders as containers
+
+        else:
+            # object_id represents a relative path from *one* of the media_folders roots
+            # We need to find the absolute path
+            abs_path = None
+            relative_path_decoded = unquote(object_id) # Decode the object ID
+
+            for shared_folder in self.server.media_folders:
+                potential_path = os.path.abspath(os.path.join(shared_folder, relative_path_decoded))
+                # Security check: Ensure path stays within the shared folder root
+                if os.path.commonpath([shared_folder, potential_path]) == os.path.abspath(shared_folder):
+                     if os.path.exists(potential_path):
+                          abs_path = potential_path
+                          # Determine parent ID based on the relative path
+                          parent_relative_path = os.path.dirname(relative_path_decoded)
+                          if not parent_relative_path: # If it was a top-level item/folder
+                               parent_id = '0'
+                          else:
+                               parent_id = quote(parent_relative_path) # Parent is the dirname of the relative path
+                          break # Found the path
+
+            if abs_path is None:
+                self.logger.warning(f"Could not find valid path for ObjectID: {object_id} (decoded: {relative_path_decoded})")
+                # Return empty result
+                return self.encode_didl(root), 0, 0
+
+            # If browsing metadata, just add the item itself
+            if browse_flag == 'BrowseMetadata':
+                is_dir = os.path.isdir(abs_path)
+                items_list.append((abs_path, is_dir))
+                # For metadata browse, parent_id is the actual parent, not the object itself
+                # parent_id_for_children remains the object_id passed in
+
+            # If browsing children, list directory contents
+            elif browse_flag == 'BrowseDirectChildren' and os.path.isdir(abs_path):
+                try:
+                    for entry in os.scandir(abs_path):
+                        # Check if file is supported (based on index logic)
+                        ext = os.path.splitext(entry.name)[1].lower()
+                        is_supported = ext in (VIDEO_EXTENSIONS.keys() | AUDIO_EXTENSIONS.keys() | IMAGE_EXTENSIONS.keys())
+
+                        if entry.is_dir() or (entry.is_file() and is_supported):
+                             items_list.append((entry.path, entry.is_dir()))
+                except OSError as e:
+                    self.logger.error(f"Error listing directory {abs_path}: {e}")
+                    # Return empty result
+                    return self.encode_didl(root), 0, 0
+            else:
+                 # Cannot browse children of a file or invalid browse flag
+                 self.logger.warning(f"Invalid browse request: BrowseFlag='{browse_flag}' for path='{abs_path}' (is_dir={os.path.isdir(abs_path)})")
+                 return self.encode_didl(root), 0, 0
+
+
+        # --- Sorting (Basic Example: by name) ---
+        # TODO: Implement proper sort_criteria parsing if needed
+        items_list.sort(key=lambda x: os.path.basename(x[0]))
+
+        # --- Pagination ---
+        total_matches = len(items_list)
+        if requested_count == 0: # 0 means all items
+            paged_items = items_list[starting_index:]
+        else:
+            paged_items = items_list[starting_index : starting_index + requested_count]
+
+        number_returned = len(paged_items)
+
+        # --- Generate DIDL for paged items ---
+        for item_path, is_directory in paged_items:
+            # Determine the correct parent ID for this item
+            # If browsing root (object_id '0'), parent is '0'
+            # If browsing metadata, parent is the actual parent derived earlier
+            # If browsing children, parent is the object_id of the container being browsed
+            current_parent_id = '0' if object_id == '0' else parent_id if browse_flag == 'BrowseMetadata' else parent_id_for_children
+
+            if is_directory:
+                self.add_container_to_didl(root, item_path, os.path.basename(item_path), current_parent_id)
+            else:
+                self.add_item_to_didl(root, item_path, os.path.basename(item_path), current_parent_id)
+
+        return self.encode_didl(root), number_returned, total_matches
+
+    def encode_didl(self, root_element):
+        """Encodes the ElementTree DIDL-Lite to a string suitable for SOAP response."""
+        # Convert to string and escape XML special characters for embedding in SOAP
+        xml_string = tostring(root_element, encoding='unicode')
+        # Basic escaping for embedding in XML. More robust escaping might be needed.
+        return xml_string.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    def find_shared_folder_root(self, abs_path):
+        """Finds which shared folder an absolute path belongs to."""
+        abs_path = os.path.abspath(abs_path)
+        for shared_folder in self.server.media_folders:
+             shared_folder_abs = os.path.abspath(shared_folder)
+             if os.path.commonpath([shared_folder_abs, abs_path]) == shared_folder_abs:
+                  return shared_folder_abs
+        return None # Path not found within any shared folder
+
+    def add_container_to_didl(self, root, path, title, parent_id):
+        """Add a container (directory) to the DIDL-Lite XML"""
         try:
-            if os.path.isdir(media_path):
-                items = sorted(os.listdir(media_path))
-                total_matches = len(items)
-                items = items[starting_index:starting_index + requested_count]
-                
-                for item in items:
-                    item_path = os.path.join(media_path, item)
-                    item_id = os.path.relpath(item_path, self.server.media_folder)
-                    
-                    if os.path.isdir(item_path):
-                        container = SubElement(root, 'container', {
-                            'id': quote(item_id),
-                            'parentID': quote(object_id),
-                            'restricted': '1',
-                            'searchable': '1',
-                            'childCount': str(len(os.listdir(item_path)))
-                        })
-                        SubElement(container, 'dc:title').text = item
-                        SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
-                        
-                    else:
-                        # File handling
-                        item_element = SubElement(root, 'item', {
-                            'id': quote(item_id),
-                            'parentID': quote(object_id),
-                            'restricted': '1'
-                        })
-                        
-                        SubElement(item_element, 'dc:title').text = item
-                        
-                        # Determine media type and set appropriate class
-                        mime_type, upnp_class = self.get_mime_and_upnp_class(item)
-                        SubElement(item_element, 'upnp:class').text = upnp_class
-                        
-                        # Add resource element with proper DLNA attributes
-                        res = SubElement(item_element, 'res')
-                        file_size = os.path.getsize(item_path)
-                        url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{quote(item_id)}'
-                        res.text = url
-                        res.set('protocolInfo', f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;')
-                        res.set('size', str(file_size))
-                        
-                        # Add media-specific metadata
-                        if upnp_class.startswith('object.item.audioItem'):
-                            self.add_audio_metadata(item_path, item_element)
-                        elif upnp_class.startswith('object.item.videoItem'):
-                            self.add_video_metadata(item_path, item_element)
-                        elif upnp_class.startswith('object.item.imageItem'):
-                            self.add_image_metadata(item_path, item_element)
+            shared_root = self.find_shared_folder_root(path)
+            if not shared_root:
+                 self.logger.warning(f"Cannot determine relative path for container: {path}")
+                 return # Skip item if it's not in a shared folder somehow
+
+            relative_path = os.path.relpath(path, shared_root)
+            # Handle case where path IS the shared root (relative path is '.')
+            if relative_path == '.':
+                 # Use the basename of the shared root as its ID if needed, or handle differently
+                 # For simplicity, let's use the basename of the absolute path
+                 relative_path = os.path.basename(path)
+                 parent_id = '0' # Parent of a shared root is the virtual root '0'
+
+
+            container_id = quote(relative_path.replace('\\', '/')) # Use forward slashes for IDs
+
+            # Calculate child count safely
+            child_count = 0
+            try:
+                # Count only items that would be visible (dirs or supported files)
+                for entry in os.scandir(path):
+                     ext = os.path.splitext(entry.name)[1].lower()
+                     is_supported = ext in (VIDEO_EXTENSIONS.keys() | AUDIO_EXTENSIONS.keys() | IMAGE_EXTENSIONS.keys())
+                     if entry.is_dir() or (entry.is_file() and is_supported):
+                          child_count += 1
+            except OSError:
+                pass # Ignore errors listing children for count
+
+            container = SubElement(root, 'container', {
+                'id': container_id,
+                'parentID': parent_id, # Parent ID should already be quoted if needed
+                'restricted': '1',
+                'searchable': '1', # Typically true for containers
+                'childCount': str(child_count)
+            })
+
+            SubElement(container, 'dc:title').text = title
+            SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
+
+            # Add modification date (more relevant than creation date for UPnP)
+            try:
+                mod_time = datetime.fromtimestamp(os.path.getmtime(path))
+                SubElement(container, 'dc:date').text = mod_time.isoformat()
+            except OSError:
+                 pass # Ignore if cannot get mod time
 
         except Exception as e:
-            self.logger.error(f"Error generating browse response: {str(e)}")
-            raise
+            self.logger.error(f"Error adding container to DIDL for path {path}: {e}", exc_info=True)
 
-        response = f'''<?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-            <s:Body>
-                <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
-                    <Result>{tostring(root, encoding='unicode')}</Result>
-                    <NumberReturned>{len(items)}</NumberReturned>
-                    <TotalMatches>{total_matches}</TotalMatches>
-                    <UpdateID>1</UpdateID>
-                </u:BrowseResponse>
-            </s:Body>
-        </s:Envelope>'''
-        
-        return response
-    
+    def add_item_to_didl(self, root, path, title, parent_id):
+        """Add an item (file) to the DIDL-Lite XML with improved metadata"""
+        try:
+            shared_root = self.find_shared_folder_root(path)
+            if not shared_root:
+                 self.logger.warning(f"Cannot determine relative path for item: {path}")
+                 return # Skip item
+
+            relative_path = os.path.relpath(path, shared_root)
+            item_id = quote(relative_path.replace('\\', '/')) # Use forward slashes
+
+            mime_type, upnp_class = self.get_mime_and_upnp_class(title)
+            if upnp_class == 'object.item': # Skip if type couldn't be determined or isn't media
+                 self.logger.debug(f"Skipping item with unknown/non-media type: {path}")
+                 return
+
+            item = SubElement(root, 'item', {
+                'id': item_id,
+                'parentID': parent_id, # Should be quoted already
+                'restricted': '1'
+            })
+
+            SubElement(item, 'dc:title').text = title
+            SubElement(item, 'upnp:class').text = upnp_class
+
+            # Add resource element
+            res = SubElement(item, 'res')
+            try:
+                file_size = os.path.getsize(path)
+            except OSError:
+                file_size = 0 # Default size if error
+
+            # Construct URL carefully - relative path needs to be quoted *again* for the URL part
+            url_path_part = quote(relative_path.replace('\\', '/'))
+            url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{url_path_part}'
+            res.text = url
+
+            # Add protocol info with DLNA parameters
+            # Example: http-get:*:video/mp4:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=...
+            # OP=01 (Range support), CI=0 (No transcoding)
+            # Flags: See DLNA spec, 017... often used for basic streaming
+            protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
+
+            res.set('protocolInfo', protocol_info)
+            res.set('size', str(file_size))
+
+            # Add media-specific metadata
+            if upnp_class.startswith('object.item.audioItem'):
+                self.add_audio_metadata(path, item)
+                # Add duration if possible
+                duration = self.get_media_duration(path)
+                if (duration):
+                     res.set('duration', duration)
+            elif upnp_class.startswith('object.item.videoItem'):
+                self.add_video_metadata(path, item)
+                duration = self.get_media_duration(path)
+                if duration:
+                     res.set('duration', duration)
+                # Add resolution if possible (requires library like Pillow or ffmpeg)
+                # resolution = self.get_video_resolution(path)
+                # if resolution:
+                #    res.set('resolution', resolution)
+            elif upnp_class.startswith('object.item.imageItem'):
+                self.add_image_metadata(path, item)
+                # Add resolution if possible
+                resolution = self.get_image_resolution(path)
+                if resolution:
+                     res.set('resolution', resolution)
+
+
+            # Add modification date
+            try:
+                mod_time = datetime.fromtimestamp(os.path.getmtime(path))
+                SubElement(item, 'dc:date').text = mod_time.isoformat()
+            except OSError:
+                 pass
+
+        except Exception as e:
+            self.logger.error(f"Error adding item to DIDL for path {path}: {e}", exc_info=True)
+
+    def get_media_duration(self, file_path):
+        """Get media duration using mutagen (works for audio/some video)"""
+        try:
+            media = File(file_path)
+            if media and media.info and hasattr(media.info, 'length') and media.info.length > 0:
+                duration_sec = int(media.info.length)
+                hours = duration_sec // 3600
+                minutes = (duration_sec % 3600) // 60
+                seconds = duration_sec % 60
+                # Format as H:MM:SS.ms (UPnP standard) - add .000 for milliseconds
+                return f"{hours}:{minutes:02}:{seconds:02}.000"
+        except Exception as e:
+            self.logger.debug(f"Could not get duration for {file_path}: {e}")
+        return None
+
+    def get_image_resolution(self, file_path):
+         """Get image resolution using Pillow"""
+         try:
+             from PIL import Image
+             # Suppress DecompressionBomb warning if images are large
+             Image.MAX_IMAGE_PIXELS = None
+             with Image.open(file_path) as img:
+                 width, height = img.size
+                 return f"{width}x{height}"
+         except ImportError:
+             self.logger.debug("Pillow not installed, cannot get image resolution.")
+         except Exception as e:
+             self.logger.warning(f"Could not get resolution for image {file_path}: {e}")
+         return None
+
     def get_mime_and_upnp_class(self, filename):
         """Determine MIME type and UPnP class based on file extension"""
         ext = os.path.splitext(filename)[1].lower()
@@ -1169,82 +1183,140 @@ class DLNAServer(BaseHTTPRequestHandler):
             return False
 
     def serve_media_file(self, path):
-        """Serve a media file with enhanced error handling"""
+        """Serve a media file with enhanced error handling and range request support."""
         try:
-            decoded_path = unquote(path)
-            
-            # Clean the path of any URL components
-            decoded_path = decoded_path.split('?')[0]  # Remove query parameters
-            decoded_path = decoded_path.replace('http://', '')  # Remove protocol
-            decoded_path = decoded_path.split('/', 1)[-1] if '/' in decoded_path else decoded_path  # Remove domain
-            
-            file_path = os.path.abspath(os.path.join(self.server.media_folder, decoded_path))
-            
-            # Security check - ensure the path is within media_folder
-            if not file_path.startswith(os.path.abspath(self.server.media_folder)):
-                self.logger.warning(f"Attempted access to file outside media folder: {file_path}")
-                self.send_error(403, "Access denied")
-                return
-                
-            if not os.path.exists(file_path) or not os.path.isfile(file_path):
-                self.logger.warning(f"File not found: {file_path}")
+            # Decode the path component from the URL *once*
+            decoded_path_segment = unquote(path)
+
+            # Find the absolute path based on the decoded segment relative to shared folders
+            abs_path = None
+            shared_root_found = None
+            for shared_folder in self.server.media_folders:
+                potential_path = os.path.abspath(os.path.join(shared_folder, decoded_path_segment))
+                # Security check
+                shared_folder_abs = os.path.abspath(shared_folder)
+                if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
+                     if os.path.exists(potential_path) and os.path.isfile(potential_path):
+                          abs_path = potential_path
+                          shared_root_found = shared_folder_abs
+                          break
+
+            if abs_path is None:
+                self.logger.warning(f"Media file not found or invalid: requested='{path}', decoded='{decoded_path_segment}'")
                 self.send_error(404, "File not found")
                 return
 
+            # Check if file type is supported (redundant check, but safe)
+            ext = os.path.splitext(abs_path)[1].lower()
+            content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
+            if not content_type:
+                self.logger.warning(f"Attempt to serve unsupported file type: {abs_path}")
+                self.send_error(415, "Unsupported media type")
+                return
+
             try:
-                file_size = os.path.getsize(file_path)
+                file_size = os.path.getsize(abs_path)
             except OSError as e:
-                self.logger.error(f"Error getting file size: {str(e)}")
+                self.logger.error(f"Error getting file size for {abs_path}: {e}")
                 self.send_error(500, "Internal server error")
                 return
 
-            content_type = self.determine_content_type(path)
-            
+            # --- Range Request Handling ---
+            range_header = self.headers.get('Range')
+            start_byte = 0
+            end_byte = file_size - 1
+            is_range_request = False
+
+            if range_header:
+                self.logger.info(f"Range request received: {range_header}")
+                range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+                if range_match:
+                    start_byte = int(range_match.group(1))
+                    end_byte_str = range_match.group(2)
+                    if end_byte_str:
+                        end_byte = int(end_byte_str)
+                    # Ensure range is valid
+                    if start_byte >= file_size or start_byte > end_byte:
+                        self.logger.warning(f"Invalid range requested: {range_header}, size={file_size}")
+                        self.send_response(416) # Range Not Satisfiable
+                        self.send_header("Content-Range", f"bytes */{file_size}")
+                        self.end_headers()
+                        return
+                    is_range_request = True
+                    self.logger.info(f"Serving range: bytes {start_byte}-{end_byte}/{file_size}")
+                else:
+                    self.logger.warning(f"Malformed range header: {range_header}")
+                    # Proceed with full file if range is malformed? Or send error?
+                    # For simplicity, serve full file if range is invalid format.
+
+            # --- Send Headers ---
             try:
-                self.send_response(200)
+                status_code = 206 if is_range_request else 200
+                self.send_response(status_code)
                 self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(file_size))
                 self.send_header("Connection", "keep-alive")
-                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Accept-Ranges", "bytes") # Indicate range support
+                # DLNA headers
                 self.send_header("transferMode.dlna.org", "Streaming")
-                self.send_header("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_CI=0")
+                self.send_header("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_CI=0") # OP=01 means range supported
+
+                if is_range_request:
+                    content_length = end_byte - start_byte + 1
+                    self.send_header("Content-Length", str(content_length))
+                    self.send_header("Content-Range", f"bytes {start_byte}-{end_byte}/{file_size}")
+                else:
+                    self.send_header("Content-Length", str(file_size))
+
                 self.end_headers()
             except ConnectionAbortedError:
-                self.logger.warning("Client connection was aborted while sending headers")
+                self.logger.warning(f"Client connection aborted while sending headers for {abs_path}")
                 return
             except Exception as e:
-                self.logger.error(f"Error sending headers: {str(e)}")
-                return
+                self.logger.error(f"Error sending headers for {abs_path}: {e}")
+                return # Cannot continue if headers failed
 
-            if not self.send_file_with_error_handling(file_path):
-                try:
-                    self.send_error(500, "Error sending file")
-                except:
-                    self.logger.error("Could not send error response to client")
-                    return
+            # --- Send File Content ---
+            try:
+                with open(abs_path, 'rb') as f:
+                    if is_range_request:
+                        f.seek(start_byte)
+                        bytes_to_send = end_byte - start_byte + 1
+                    else:
+                        bytes_to_send = file_size
+
+                    sent_bytes = 0
+                    chunk_size = 64 * 1024 # 64KB chunks
+                    while bytes_to_send > 0:
+                        read_size = min(chunk_size, bytes_to_send)
+                        chunk = f.read(read_size)
+                        if not chunk:
+                            self.logger.warning(f"Unexpected EOF reading {abs_path} at offset {f.tell()}")
+                            break # Unexpected end of file
+                        try:
+                            self.wfile.write(chunk)
+                            sent_bytes += len(chunk)
+                            bytes_to_send -= len(chunk)
+                        except (ConnectionError, socket.error) as conn_err:
+                            self.logger.warning(f"Connection error sending file {abs_path}: {conn_err}")
+                            return # Stop sending if connection breaks
+            except IOError as io_err:
+                self.logger.error(f"IOError reading file {abs_path}: {io_err}")
+                # Don't try to send error if headers already sent
+            except Exception as e:
+                 self.logger.error(f"Unexpected error sending file content for {abs_path}: {e}")
+                 # Don't try to send error if headers already sent
+
+            self.logger.debug(f"Finished sending {sent_bytes} bytes for {abs_path}")
 
         except ConnectionAbortedError:
-            self.logger.warning(f"Client connection was aborted while serving file {path}")
-            return
+            self.logger.warning(f"Client connection aborted while serving file {path}")
         except Exception as e:
-            self.logger.error(f"Error serving file {path}: {str(e)}")
-            try:
-                self.send_error(500, "Internal server error")
-            except:
-                self.logger.error("Could not send error response to client")
-                return
-        
-    def determine_content_type(self, path):
-        """Determine content type with error handling"""
-        try:
-            if path.lower().endswith(('.mp4', '.mkv', '.avi')):
-                return "video/mp4"
-            elif path.lower().endswith(('.mp3', '.wav')):
-                return "audio/mpeg"
-            return "application/octet-stream"
-        except Exception as e:
-            self.logger.error(f"Error determining content type: {str(e)}")
-            return "application/octet-stream"
+            self.logger.error(f"Unhandled error serving file {path}: {e}", exc_info=True)
+            if not self.headers_sent:
+                try:
+                    self.send_error(500, "Internal server error serving file")
+                except Exception as send_err:
+                    self.logger.error(f"Could not send error response to client: {send_err}")
 
 def get_local_ip():
     """Get the local IP address"""
@@ -1257,13 +1329,63 @@ def get_local_ip():
     finally:
         s.close()
 
-def start_server(media_folder):
+def load_config():
+    parser = argparse.ArgumentParser(description="Mini DLNA Server")
+    parser.add_argument('--config', type=str, help='Path to configuration JSON file', default='config.json')
+    args = parser.parse_args()
+
+    config_path = args.config
+    try:
+        with open(config_path, 'r') as config_file:
+            config = json.load(config_file)
+            return config
+    except FileNotFoundError:
+        print(f"Configuration file not found: {config_path}")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing configuration file: {e}")
+        sys.exit(1)
+
+# Add file indexing and compatibility checks
+
+def index_files(media_folders):
+    supported_extensions = VIDEO_EXTENSIONS.keys() | AUDIO_EXTENSIONS.keys() | IMAGE_EXTENSIONS.keys()
+    indexed_files = {}
+    log_file = Path('logs/non_compatible_files.log')
+    log_file.parent.mkdir(exist_ok=True, parents=True)
+
+    with log_file.open('w') as log:
+        for folder in media_folders:
+            for root, _, files in os.walk(folder):
+                relative_root = os.path.relpath(root, folder)
+                indexed_files[relative_root] = []
+                for file in files:
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext in supported_extensions:
+                        indexed_files[relative_root].append(file)
+                    else:
+                        log.write(f"Unsupported file: {os.path.join(root, file)}\n")
+
+    return indexed_files
+
+# Update start_server to include file indexing
+
+def start_server(config):
     """Start the DLNA media server with Windows compatibility"""
     logger = setup_logging()
 
-    if not os.path.exists(media_folder):
-        logger.error(f"Media folder does not exist: {media_folder}")
+    media_folders = config.get('shared_paths', [])
+    if not media_folders:
+        logger.error("No shared paths specified in configuration.")
         sys.exit(1)
+
+    for folder in media_folders:
+        if not os.path.exists(folder):
+            logger.error(f"Media folder does not exist: {folder}")
+            sys.exit(1)
+
+    indexed_files = index_files(media_folders)
+    logger.info(f"Indexed files: {indexed_files}")
 
     local_ip = get_local_ip()
     
@@ -1286,33 +1408,38 @@ def start_server(media_folder):
         logger.error(f"Could not find available port between {base_port} and {max_port}")
         sys.exit(1)
 
-    server.media_folder = media_folder
+    server.media_folders = media_folders
+    server.indexed_files = indexed_files
     
     # Start SSDP server in a separate thread
-    ssdp_server = SSDPServer((local_ip, port))
-    ssdp_thread = threading.Thread(target=ssdp_server.start)
+    ssdp_server = SSDPServer((local_ip, port)) # Pass logger if needed
+    ssdp_thread = threading.Thread(target=ssdp_server.start, name="SSDPServerThread")
     ssdp_thread.daemon = True
     ssdp_thread.start()
 
     try:
         logger.info(f"DLNA server started at http://{local_ip}:{port}")
-        logger.info(f"Serving media from: {media_folder}")
+        logger.info(f"Serving media from: {', '.join(server.media_folders)}") # Access via server instance
         logger.info("Press Ctrl+C to stop the server")
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("\nShutting down server...")
+        # Signal SSDP server to stop and send byebye
         ssdp_server.running = False
-        ssdp_thread.join(timeout=1)
+        # Wait briefly for SSDP thread to potentially send byebye and clean up
+        ssdp_thread.join(timeout=2.0) # Increased timeout slightly
+        # Close HTTP server
         server.server_close()
+        logger.info("HTTP server closed.")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"Critical error: {str(e)}", exc_info=True)
+        logger.critical(f"Critical error in main server loop: {e}", exc_info=True)
+        # Attempt graceful shutdown even on critical error
+        ssdp_server.running = False
+        ssdp_thread.join(timeout=2.0)
+        server.server_close()
         sys.exit(1)
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python dlna_server.py <media_folder>")
-        sys.exit(1)
-
-    media_folder = os.path.abspath(sys.argv[1])
-    start_server(media_folder)
+    config = load_config()
+    start_server(config)
