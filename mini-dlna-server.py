@@ -509,6 +509,76 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.logger.error("Could not send error response to client")
                 return
 
+    def do_HEAD(self):
+        """Handle HEAD requests by performing the same logic as GET but without sending the body"""
+        try:
+            # Parse the path properly
+            from urllib.parse import urlparse
+            parsed_path = urlparse(self.path)
+            clean_path = parsed_path.path  # This removes any http:// prefixes
+
+            if clean_path == '/description.xml':
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+                self.send_header('Server', 'Python DLNA/1.0 UPnP/1.0')
+                self.end_headers()
+            elif clean_path == '/ContentDirectory.xml':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/xml')
+                self.end_headers()
+            elif clean_path == '/ConnectionManager.xml':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/xml')
+                self.end_headers()
+            elif clean_path == '/AVTransport.xml':
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+                self.end_headers()
+            else:
+                # For media files, we'll set up all the same headers we would for GET
+                path = clean_path[1:]
+                if path:
+                    # Find the file path
+                    abs_path = None
+                    for shared_folder in self.server.media_folders:
+                        potential_path = os.path.abspath(os.path.join(shared_folder, unquote(path)))
+                        shared_folder_abs = os.path.abspath(shared_folder)
+                        if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
+                            if os.path.exists(potential_path) and os.path.isfile(potential_path):
+                                abs_path = potential_path
+                                break
+
+                    if abs_path is None:
+                        self.send_error(404, "File not found")
+                        return
+
+                    # Check file type and set appropriate headers
+                    ext = os.path.splitext(abs_path)[1].lower()
+                    content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
+                    if not content_type:
+                        self.send_error(415, "Unsupported media type")
+                        return
+
+                    try:
+                        file_size = os.path.getsize(abs_path)
+                        self.send_response(200)
+                        self.send_header("Content-Type", content_type)
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.send_header("Content-Length", str(file_size))
+                        self.send_header("Connection", "keep-alive")
+                        # DLNA headers
+                        self.send_header("transferMode.dlna.org", "Streaming")
+                        self.send_header("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
+                        self.end_headers()
+                    except Exception as e:
+                        self.logger.error(f"Error getting file info for HEAD request: {str(e)}")
+                        self.send_error(500, "Internal server error")
+                else:
+                    self.send_error(404, "File not found")
+        except Exception as e:
+            self.logger.error(f"Error handling HEAD request: {str(e)}")
+            self.send_error(500, "Internal server error")
+
     def do_POST(self):
         """Handle POST requests"""
         try:
@@ -776,64 +846,75 @@ class DLNAServer(BaseHTTPRequestHandler):
 
             item = SubElement(root, 'item', {
                 'id': item_id,
-                'parentID': parent_id, # Should be quoted already
+                'parentID': parent_id,
                 'restricted': '1'
             })
 
             SubElement(item, 'dc:title').text = title
             SubElement(item, 'upnp:class').text = upnp_class
 
-            # Add resource element
+            # Add resource element for main content
             res = SubElement(item, 'res')
             try:
                 file_size = os.path.getsize(path)
             except OSError:
-                file_size = 0 # Default size if error
+                file_size = 0
 
-            # Construct URL carefully - relative path needs to be quoted *again* for the URL part
+            # Main content URL
             url_path_part = quote(relative_path.replace('\\', '/'))
             url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{url_path_part}'
             res.text = url
 
             # Add protocol info with DLNA parameters
-            # Example: http-get:*:video/mp4:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=...
-            # OP=01 (Range support), CI=0 (No transcoding)
-            # Flags: See DLNA spec, 017... often used for basic streaming
             protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
-
             res.set('protocolInfo', protocol_info)
             res.set('size', str(file_size))
 
-            # Add media-specific metadata
+            # Add media-specific metadata and thumbnails
             if upnp_class.startswith('object.item.audioItem'):
                 self.add_audio_metadata(path, item)
-                # Add duration if possible
                 duration = self.get_media_duration(path)
-                if (duration):
-                     res.set('duration', duration)
+                if duration:
+                    res.set('duration', duration)
+                # Try to get album art for audio files
+                try:
+                    audio = File(path)
+                    if hasattr(audio, 'tags') and hasattr(audio.tags, 'getall'):
+                        apic = audio.tags.getall('APIC') if hasattr(audio.tags, 'getall') else []
+                        if apic:
+                            # Add albumArtURI for embedded artwork
+                            art_uri = SubElement(item, 'upnp:albumArtURI')
+                            art_uri.set('dlna:profileID', 'JPEG_TN')
+                            art_uri.text = f'{url}?albumArt=true'
+                except Exception as e:
+                    self.logger.debug(f"Could not extract album art: {e}")
+
             elif upnp_class.startswith('object.item.videoItem'):
                 self.add_video_metadata(path, item)
                 duration = self.get_media_duration(path)
                 if duration:
-                     res.set('duration', duration)
-                # Add resolution if possible (requires library like Pillow or ffmpeg)
-                # resolution = self.get_video_resolution(path)
-                # if resolution:
-                #    res.set('resolution', resolution)
+                    res.set('duration', duration)
+                # Add thumbnail resource for video
+                thumbnail_res = SubElement(item, 'upnp:albumArtURI')
+                thumbnail_res.set('dlna:profileID', 'JPEG_TN')
+                thumbnail_res.text = f'{url}?thumbnail=true'
+
             elif upnp_class.startswith('object.item.imageItem'):
                 self.add_image_metadata(path, item)
-                # Add resolution if possible
                 resolution = self.get_image_resolution(path)
                 if resolution:
-                     res.set('resolution', resolution)
-
+                    res.set('resolution', resolution)
+                # For images, add thumbnail version
+                thumbnail_res = SubElement(item, 'upnp:albumArtURI')
+                thumbnail_res.set('dlna:profileID', 'JPEG_TN')
+                thumbnail_res.text = f'{url}?thumbnail=true'
 
             # Add modification date
             try:
                 mod_time = datetime.fromtimestamp(os.path.getmtime(path))
                 SubElement(item, 'dc:date').text = mod_time.isoformat()
             except OSError:
-                 pass
+                pass
 
         except Exception as e:
             self.logger.error(f"Error adding item to DIDL for path {path}: {e}", exc_info=True)
