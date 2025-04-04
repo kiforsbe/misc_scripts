@@ -782,60 +782,79 @@ class DLNAServer(BaseHTTPRequestHandler):
         })
 
         items_list = []  # List to hold (path, is_directory) tuples
-
-        # --- Determine Path and Parent ---
-        if object_id == '0':
-            if browse_flag == 'BrowseMetadata':
-                # For root metadata, just add root container
-                container = SubElement(root, 'container', {
-                    'id': '0',
-                    'parentID': '-1',
-                    'restricted': '1',
-                    'searchable': '1',
-                    'childCount': str(len(self.server.media_folders))
-                })
-                SubElement(container, 'dc:title').text = "Root"
-                SubElement(container, 'upnp:class').text = 'object.container'
-                return self.encode_didl(root), 1, 1
-            else:  # BrowseDirectChildren
-                try:
+        
+        # Track current playlist context
+        current_dir = None
+        audio_files = []
+        
+        try:
+            # For root browsing
+            if object_id == '0':
+                if browse_flag == 'BrowseMetadata':
+                    container = SubElement(root, 'container', {
+                        'id': '0',
+                        'parentID': '-1',
+                        'restricted': '1',
+                        'searchable': '1',
+                        'childCount': str(len(self.server.media_folders))
+                    })
+                    SubElement(container, 'dc:title').text = "Root"
+                    SubElement(container, 'upnp:class').text = 'object.container'
+                    return self.encode_didl(root), 1, 1
+                else:  # BrowseDirectChildren
                     if self.server.media_folders:
-                        shared_folder = self.server.media_folders[0]  # Use first shared folder
+                        shared_folder = self.server.media_folders[0]
+                        current_dir = shared_folder
+                        
+                        # Group audio files together for playlist support
                         entries = os.scandir(shared_folder)
                         for entry in entries:
                             if entry.is_file():
                                 ext = os.path.splitext(entry.name)[1].lower()
-                                if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                                if ext in AUDIO_EXTENSIONS:
+                                    audio_files.append(entry.path)
+                                elif ext in VIDEO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
                                     items_list.append((entry.path, False))
-                                    self.logger.debug(f"Added file to list: {entry.path}")
                             elif entry.is_dir():
                                 items_list.append((entry.path, True))
-                                self.logger.debug(f"Added directory to list: {entry.path}")
-                except OSError as e:
-                    self.logger.error(f"Error listing directory {shared_folder}: {e}")
-                    return self.encode_didl(root), 0, 0
-
-        # --- Sort items (directories first, then by name) ---
-        items_list.sort(key=lambda x: (not x[1], os.path.basename(x[0]).lower()))
-
-        # --- Pagination ---
-        total_matches = len(items_list)
-        if requested_count == 0:  # 0 means all items
-            paged_items = items_list[starting_index:]
-        else:
-            paged_items = items_list[starting_index:starting_index + requested_count]
-
-        number_returned = len(paged_items)
-
-        # --- Generate DIDL for paged items ---
-        parent_id = '-1' if object_id == '0' else object_id
-        for item_path, is_directory in paged_items:
-            if is_directory:
-                self.add_container_to_didl(root, item_path, os.path.basename(item_path), object_id)
+                                
+                        # Add audio files with playlist context
+                        for idx, audio_path in enumerate(audio_files):
+                            items_list.append((audio_path, False))
+            
+            # Sort items (directories first, then by name)
+            items_list.sort(key=lambda x: (not x[1], os.path.basename(x[0]).lower()))
+            
+            total_matches = len(items_list)
+            if requested_count == 0:
+                paged_items = items_list[starting_index:]
             else:
-                self.add_item_to_didl(root, item_path, os.path.basename(item_path), object_id)
+                paged_items = items_list[starting_index:starting_index + requested_count]
+            
+            number_returned = len(paged_items)
+            
+            # Generate DIDL for paged items
+            parent_id = '-1' if object_id == '0' else object_id
+            for idx, (item_path, is_directory) in enumerate(paged_items):
+                if is_directory:
+                    self.add_container_to_didl(root, item_path, os.path.basename(item_path), object_id)
+                else:
+                    # Add nextAV hint for audio files in playlists
+                    next_id = None
+                    if item_path in audio_files:
+                        current_idx = audio_files.index(item_path)
+                        if current_idx < len(audio_files) - 1:
+                            next_id = quote(os.path.relpath(audio_files[current_idx + 1], 
+                                                          self.find_shared_folder_root(audio_files[current_idx + 1])))
+                    
+                    self.add_item_to_didl(root, item_path, os.path.basename(item_path), 
+                                        object_id, next_id=next_id)
 
-        return self.encode_didl(root), number_returned, total_matches
+            return self.encode_didl(root), number_returned, total_matches
+            
+        except Exception as e:
+            self.logger.error(f"Error in generate_browse_didl: {e}", exc_info=True)
+            return self.encode_didl(root), 0, 0
 
     def encode_didl(self, root_element):
         """Encodes the ElementTree DIDL-Lite to a string suitable for SOAP response."""
@@ -908,21 +927,21 @@ class DLNAServer(BaseHTTPRequestHandler):
         except Exception as e:
             self.logger.error(f"Error adding container to DIDL for path {path}: {e}", exc_info=True)
 
-    def add_item_to_didl(self, root, path, title, parent_id):
-        """Add an item (file) to the DIDL-Lite XML with improved metadata"""
+    def add_item_to_didl(self, root, path, title, parent_id, next_id=None):
+        """Add an item to the DIDL-Lite XML with improved metadata and playlist support"""
         try:
             shared_root = self.find_shared_folder_root(path)
             if not shared_root:
-                 self.logger.warning(f"Cannot determine relative path for item: {path}")
-                 return # Skip item
+                self.logger.warning(f"Cannot determine relative path for item: {path}")
+                return
 
             relative_path = os.path.relpath(path, shared_root)
-            item_id = quote(relative_path.replace('\\', '/')) # Use forward slashes
+            item_id = quote(relative_path.replace('\\', '/'))
 
             mime_type, upnp_class = self.get_mime_and_upnp_class(title)
-            if upnp_class == 'object.item': # Skip if type couldn't be determined or isn't media
-                 self.logger.debug(f"Skipping item with unknown/non-media type: {path}")
-                 return
+            if upnp_class == 'object.item':
+                self.logger.debug(f"Skipping item with unknown type: {path}")
+                return
 
             item = SubElement(root, 'item', {
                 'id': item_id,
@@ -933,61 +952,51 @@ class DLNAServer(BaseHTTPRequestHandler):
             SubElement(item, 'dc:title').text = title
             SubElement(item, 'upnp:class').text = upnp_class
 
-            # Add resource element for main content
+            # Add resource element
             res = SubElement(item, 'res')
             try:
                 file_size = os.path.getsize(path)
             except OSError:
                 file_size = 0
 
-            # Main content URL
+            # Construct URL
             url_path_part = quote(relative_path.replace('\\', '/'))
             url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{url_path_part}'
             res.text = url
 
-            # Add protocol info with DLNA parameters
-            protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
-            res.set('protocolInfo', protocol_info)
-            res.set('size', str(file_size))
-
-            # Add media-specific metadata and thumbnails
+            # Add DLNA attributes
             if upnp_class.startswith('object.item.audioItem'):
-                self.add_audio_metadata(path, item)
-                duration = self.get_media_duration(path)
+                protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000'
+                duration = self.get_media_duration_seconds(path)
                 if duration:
-                    res.set('duration', duration)
-                # Try to get album art for audio files
-                try:
-                    audio = File(path)
-                    if hasattr(audio, 'tags') and hasattr(audio.tags, 'getall'):
-                        apic = audio.tags.getall('APIC') if hasattr(audio.tags, 'getall') else []
-                        if apic:
-                            # Add albumArtURI for embedded artwork
-                            art_uri = SubElement(item, 'upnp:albumArtURI')
-                            art_uri.set('dlna:profileID', 'JPEG_TN')
-                            art_uri.text = f'{url}?albumArt=true'
-                except Exception as e:
-                    self.logger.debug(f"Could not extract album art: {e}")
+                    res.set('duration', str(datetime.timedelta(seconds=int(duration))))
+                # Add next item for playlists
+                if next_id:
+                    next_url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{next_id}'
+                    next_res = SubElement(item, 'res', {
+                        'protocolInfo': protocol_info,
+                        'nextAV': next_url
+                    })
 
             elif upnp_class.startswith('object.item.videoItem'):
-                self.add_video_metadata(path, item)
-                duration = self.get_media_duration(path)
+                protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
+                duration = self.get_media_duration_seconds(path)
                 if duration:
-                    res.set('duration', duration)
-                # Add thumbnail resource for video
-                thumbnail_res = SubElement(item, 'upnp:albumArtURI')
-                thumbnail_res.set('dlna:profileID', 'JPEG_TN')
-                thumbnail_res.text = f'{url}?thumbnail=true'
+                    res.set('duration', str(datetime.timedelta(seconds=int(duration))))
+                # Add thumbnail
+                thumb_uri = SubElement(item, 'upnp:albumArtURI')
+                thumb_uri.set('dlna:profileID', 'JPEG_TN')
+                thumb_uri.text = f'{url}?thumbnail=true'
 
             elif upnp_class.startswith('object.item.imageItem'):
-                self.add_image_metadata(path, item)
-                resolution = self.get_image_resolution(path)
-                if resolution:
-                    res.set('resolution', resolution)
-                # For images, add thumbnail version
-                thumbnail_res = SubElement(item, 'upnp:albumArtURI')
-                thumbnail_res.set('dlna:profileID', 'JPEG_TN')
-                thumbnail_res.text = f'{url}?thumbnail=true'
+                protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000'
+                # Add thumbnail for images
+                thumb_uri = SubElement(item, 'upnp:albumArtURI')
+                thumb_uri.set('dlna:profileID', 'JPEG_TN')
+                thumb_uri.text = f'{url}?thumbnail=true'
+
+            res.set('protocolInfo', protocol_info)
+            res.set('size', str(file_size))
 
             # Add modification date
             try:
@@ -1033,19 +1042,18 @@ class DLNAServer(BaseHTTPRequestHandler):
         """Determine MIME type and UPnP class based on file extension"""
         ext = os.path.splitext(filename)[1].lower()
         
-        # Video files
-        if ext in ['.mp4', '.mkv', '.avi', '.mov']:
-            return 'video/mp4', 'object.item.videoItem'
+        # Video files with proper DLNA profile
+        if ext in VIDEO_EXTENSIONS:
+            return VIDEO_EXTENSIONS[ext], 'object.item.videoItem.Movie'
         
-        # Audio files
-        elif ext in ['.mp3', '.flac', '.wav', '.m4a']:
-            return 'audio/mpeg', 'object.item.audioItem.musicTrack'
+        # Audio files with proper DLNA profile
+        elif ext in AUDIO_EXTENSIONS:
+            return AUDIO_EXTENSIONS[ext], 'object.item.audioItem.musicTrack'
         
-        # Image files
-        elif ext in ['.jpg', '.jpeg', '.png', '.gif']:
-            return 'image/jpeg', 'object.item.imageItem.photo'
+        # Image files with proper DLNA profile
+        elif ext in IMAGE_EXTENSIONS:
+            return IMAGE_EXTENSIONS[ext], 'object.item.imageItem.photo'
         
-        # Default
         return 'application/octet-stream', 'object.item'
 
     def add_audio_metadata(self, file_path, item_element):
@@ -1081,7 +1089,7 @@ class DLNAServer(BaseHTTPRequestHandler):
                 width, height = img.size
                 SubElement(item_element, 'upnp:resolution').text = f"{width}x{height}"
         except Exception as e:
-            self.logger.warning(f"Error reading image metadata: {str(e)}")
+            self.logger.warning(f"Error reading image metadata: {e}")
 
     def send_device_description(self):
         """Send DLNA device description XML with Samsung compatibility"""
@@ -1356,243 +1364,242 @@ class DLNAServer(BaseHTTPRequestHandler):
                 pass
 
     def serve_media_file(self, path):
-        """Serve a media file with enhanced error handling and range request support."""
+        """Enhanced media file serving with improved seeking and playlist support"""
         try:
-            # Parse query parameters for thumbnails
+            # Parse query parameters for thumbnails and seeking
             from urllib.parse import urlparse, parse_qs
             parsed_url = urlparse(self.path)
             query_params = parse_qs(parsed_url.query)
-            is_thumbnail = 'thumbnail' in query_params
-            is_album_art = 'albumArt' in query_params
             
-            # Decode the path component from the URL *once*
             decoded_path_segment = unquote(path)
             abs_path = None
-            shared_root_found = None
 
-            # Find the absolute path
+            # Find the file
             for shared_folder in self.server.media_folders:
                 potential_path = os.path.abspath(os.path.join(shared_folder, decoded_path_segment))
                 shared_folder_abs = os.path.abspath(shared_folder)
                 if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
                     if os.path.exists(potential_path) and os.path.isfile(potential_path):
                         abs_path = potential_path
-                        shared_root_found = shared_folder_abs
                         break
 
             if abs_path is None:
-                self.logger.warning(f"Media file not found: {path}")
                 self.send_error(404, "File not found")
                 return
 
             ext = os.path.splitext(abs_path)[1].lower()
-            content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
-            
-            # Handle thumbnail/album art requests
-            if (is_thumbnail or is_album_art) and content_type.startswith('image/'):
-                try:
-                    thumbnail_data = None
-                    if is_album_art and ext.lower() in AUDIO_EXTENSIONS:
-                        # Extract embedded album art from audio file
-                        audio = File(abs_path)
-                        if hasattr(audio, 'tags'):
-                            apic = audio.tags.getall('APIC')[0] if hasattr(audio.tags, 'getall') and audio.tags.getall('APIC') else None
-                            if apic and apic.data:
-                                thumbnail_data = apic.data
-                                content_type = 'image/jpeg'
-                    elif is_thumbnail:
-                        if ext.lower() in VIDEO_EXTENSIONS:
-                            # Generate video thumbnail using ffmpeg if available
-                            try:
-                                import ffmpeg
-                                probe = ffmpeg.probe(abs_path)
-                                duration = float(probe['streams'][0]['duration'])
-                                thumbnail_time = min(5.0, duration / 3)  # Take frame at 5 seconds or 1/3 duration
-                                out, _ = (
-                                    ffmpeg.input(abs_path, ss=thumbnail_time)
-                                    .filter('scale', 320, -1)  # Scale to 320px width
-                                    .output('pipe:', format='mjpeg', vframes=1)
-                                    .run(capture_stdout=True, quiet=True)
-                                )
-                                thumbnail_data = out
-                                content_type = 'image/jpeg'
-                            except ImportError:
-                                self.logger.debug("ffmpeg-python not installed, cannot generate video thumbnails")
-                        elif ext.lower() in IMAGE_EXTENSIONS:
-                            # Generate image thumbnail using PIL
-                            try:
-                                from PIL import Image
-                                from io import BytesIO
-                                Image.MAX_IMAGE_PIXELS = None  # Disable DecompressionBomb warning
-                                with Image.open(abs_path) as img:
-                                    # Convert RGBA to RGB if needed
-                                    if img.mode in ('RGBA', 'LA'):
-                                        background = Image.new('RGB', img.size, (255, 255, 255))
-                                        background.paste(img, mask=img.split()[-1])
-                                        img = background
-                                    elif img.mode not in ('RGB', 'L'):
-                                        img = img.convert('RGB')
-                                    
-                                    # Calculate new size maintaining aspect ratio
-                                    width = 320  # DLNA thumbnail standard
-                                    wpercent = (width/float(img.size[0]))
-                                    height = int((float(img.size[1])*float(wpercent)))
-                                    img = img.resize((width, height), Image.Resampling.LANCZOS)
-                                    
-                                    # Save to memory
-                                    buffer = BytesIO()
-                                    img.save(buffer, format='JPEG', quality=85)
-                                    thumbnail_data = buffer.getvalue()
-                                    content_type = 'image/jpeg'
-                            except ImportError:
-                                self.logger.debug("Pillow not installed, cannot generate image thumbnails")
-                    
-                    if thumbnail_data:
-                        self.send_response(200)
-                        self.send_header('Content-Type', content_type)
-                        self.send_header('Content-Length', str(len(thumbnail_data)))
-                        self.send_header('Cache-Control', 'max-age=3600')  # Cache thumbnails for 1 hour
-                        self.end_headers()
-                        self.wfile.write(thumbnail_data)
-                        return
-                    else:
-                        # If we couldn't generate thumbnail, return 404
-                        self.send_error(404, "Thumbnail not available")
-                        return
-                        
-                except Exception as thumb_err:
-                    self.logger.error(f"Error generating thumbnail for {abs_path}: {thumb_err}")
-                    self.send_error(500, "Error generating thumbnail")
-                    return
+            content_type = (VIDEO_EXTENSIONS.get(ext) or 
+                           AUDIO_EXTENSIONS.get(ext) or 
+                           IMAGE_EXTENSIONS.get(ext))
 
-            # Regular file serving
+            # Handle thumbnails
+            if 'thumbnail' in query_params or 'albumArt' in query_params:
+                if ext in VIDEO_EXTENSIONS:
+                    self.handle_thumbnail_request(abs_path, is_video=True)
+                elif ext in IMAGE_EXTENSIONS:
+                    self.handle_thumbnail_request(abs_path, is_video=False)
+                return
+
+            # Get file size
             try:
                 file_size = os.path.getsize(abs_path)
             except OSError as e:
-                self.logger.error(f"Error getting file size for {abs_path}: {e}")
+                self.logger.error(f"Error getting file size: {e}")
                 self.send_error(500, "Internal server error")
                 return
 
-            # --- Range Request Handling ---
-            range_header = self.headers.get('Range')
+            # Handle time-based seeking for audio/video
+            seek_time, _ = self.handle_time_seek_request()
             start_byte = 0
             end_byte = file_size - 1
-            is_range_request = False
 
-            if range_header:
-                self.logger.info(f"Range request received: {range_header}")
-                range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
-                if range_match:
-                    start_byte = int(range_match.group(1))
-                    end_byte_str = range_match.group(2)
-                    if end_byte_str:
-                        end_byte = int(end_byte_str)
-                    # Ensure range is valid
-                    if start_byte >= file_size or start_byte > end_byte:
-                        self.logger.warning(f"Invalid range requested: {range_header}, size={file_size}")
-                        self.send_response(416) # Range Not Satisfiable
-                        self.send_header("Content-Range", f"bytes */{file_size}")
-                        self.end_headers()
-                        return
-                    is_range_request = True
-                    self.logger.info(f"Serving range: bytes {start_byte}-{end_byte}/{file_size}")
-                else:
-                    self.logger.warning(f"Malformed range header: {range_header}")
-                    # Proceed with full file if range is malformed? Or send error?
-                    # For simplicity, serve full file if range is invalid format.
+            # If seeking is requested, calculate byte position
+            if seek_time is not None and (ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS):
+                try:
+                    import ffmpeg
+                    probe = ffmpeg.probe(abs_path)
+                    duration = float(probe['format']['duration'])
+                    bitrate = int(probe['format'].get('bit_rate', 0))
+                    if bitrate > 0:
+                        start_byte = int((seek_time / duration) * file_size)
+                        start_byte = max(0, min(start_byte, file_size - 1))
+                except Exception as e:
+                    self.logger.warning(f"Could not calculate seek position: {e}")
 
-            # --- Send Headers ---
-            try:
-                status_code = 206 if is_range_request else 200
-                self.send_response(status_code)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Connection", "keep-alive")
-                self.send_header("Accept-Ranges", "bytes") # Indicate range support
-                # DLNA headers
-                self.send_header("transferMode.dlna.org", "Streaming")
-                self.send_header("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_CI=0") # OP=01 means range supported
+        # Set response headers
+            self.send_response(206 if start_byte > 0 else 200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Connection", "keep-alive")
+            
+            # Add media-specific headers
+            if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS:
+                duration = self.get_media_duration_seconds(abs_path)
+                if duration:
+                    self.send_header("TimeSeekRange.dlna.org", f"npt=0.0-{duration}")
+                    self.send_header("X-Content-Duration", str(duration))
+                    self.send_header("transferMode.dlna.org", "Streaming")
+                    self.send_header("contentFeatures.dlna.org", 
+                        "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
 
-                if is_range_request:
-                    content_length = end_byte - start_byte + 1
-                    self.send_header("Content-Length", str(content_length))
-                    self.send_header("Content-Range", f"bytes {start_byte}-{end_byte}/{file_size}")
-                else:
-                    self.send_header("Content-Length", str(file_size))
+            # Set content length and range headers
+            content_length = end_byte - start_byte + 1
+            self.send_header("Content-Length", str(content_length))
+            if start_byte > 0:
+                self.send_header("Content-Range", f"bytes {start_byte}-{end_byte}/{file_size}")
 
-                self.end_headers()
-            except ConnectionAbortedError:
-                self.logger.warning(f"Client connection aborted while sending headers for {abs_path}")
-                return
-            except Exception as e:
-                self.logger.error(f"Error sending headers for {abs_path}: {e}")
-                return # Cannot continue if headers failed
+            self.end_headers()
 
-            # --- Send File Content ---
+            # Stream the file with improved buffering
             try:
                 with open(abs_path, 'rb') as f:
-                    if is_range_request:
+                    if start_byte > 0:
                         f.seek(start_byte)
-                        bytes_to_send = end_byte - start_byte + 1
-                    else:
-                        bytes_to_send = file_size
-
-                    sent_bytes = 0
-                    chunk_size = 64 * 1024 # 64KB chunks
-                    connection_closed = False
+                    bytes_to_send = content_length
+                    buff_size = 64 * 1024
 
                     while bytes_to_send > 0:
-                        try:
-                            read_size = min(chunk_size, bytes_to_send)
-                            chunk = f.read(read_size)
-                            if not chunk:  # EOF
-                                break
-
-                            self.wfile.write(chunk)
-                            sent_bytes += len(chunk)
-                            bytes_to_send -= len(chunk)
-
-                        except (ConnectionError, socket.error) as e:
-                            # Check specific error codes that indicate client disconnection
-                            error_code = getattr(e, 'errno', None) or getattr(e, 'winerror', None)
-                            if error_code in (10053, 10054, errno.EPIPE):  # Connection aborted/reset
-                                self.logger.debug(f"Client closed connection while streaming {abs_path}: {e}")
-                                connection_closed = True
-                                break
-                            else:
-                                self.logger.warning(f"Network error streaming {abs_path}: {e}")
-                                break
-
-                        except Exception as e:
-                            self.logger.error(f"Error streaming {abs_path}: {e}")
+                        chunk = f.read(min(buff_size, bytes_to_send))
+                        if not chunk:
                             break
+                        try:
+                            self.wfile.write(chunk)
+                            bytes_to_send -= len(chunk)
+                        except (ConnectionError, socket.error) as e:
+                            if isinstance(e, ConnectionAbortedError) or \
+                               getattr(e, 'winerror', None) in (10053, 10054):
+                                self.logger.debug("Client disconnected")
+                                return
+                            raise
 
-                    if not connection_closed:
-                        if sent_bytes == file_size or (is_range_request and sent_bytes == (end_byte - start_byte + 1)):
-                            self.logger.debug(f"Successfully sent {sent_bytes} bytes for {abs_path}")
-                        else:
-                            self.logger.debug(f"Incomplete transfer: sent {sent_bytes}/{file_size} bytes for {abs_path}")
-
-            except IOError as io_err:
-                self.logger.error(f"IO error reading {abs_path}: {io_err}")
-                if not self.headers_sent:
-                    self.send_error(500, "Error reading file")
-                return
-                
             except Exception as e:
-                self.logger.error(f"Unexpected error serving {abs_path}: {e}")
-                if not self.headers_sent:
-                    self.send_error(500, "Internal server error")
-                return
+                self.logger.error(f"Error streaming file: {e}")
 
-        except ConnectionAbortedError as e:
-            self.logger.debug(f"Client connection aborted while serving {path}: {e}")
         except Exception as e:
-            self.logger.error(f"Unhandled error serving {path}: {e}", exc_info=True)
+            self.logger.error(f"Error serving media: {e}")
             if not self.headers_sent:
+                self.send_error(500, "Internal server error")
+
+    def handle_time_seek_request(self):
+        """Handle TimeSeekRange.dlna.org header for seeking in media files"""
+        seek_header = self.headers.get('TimeSeekRange.dlna.org')
+        if not seek_header:
+            return None, None
+            
+        try:
+            # Parse npt (normal play time) format: npt=123.45-
+            match = re.match(r'npt=(\d+\.?\d*)-', seek_header)
+            if match:
+                seek_time = float(match.group(1))
+                return seek_time, None
+        except Exception as e:
+            self.logger.error(f"Error parsing seek time: {e}")
+        return None, None
+
+    def get_media_duration_seconds(self, file_path):
+        """Get media duration in seconds using ffmpeg"""
+        try:
+            import ffmpeg
+            probe = ffmpeg.probe(file_path)
+            duration = float(probe['format']['duration'])
+            return duration
+        except Exception as e:
+            self.logger.warning(f"Could not get media duration: {e}")
+            return None
+
+    def generate_video_thumbnail(self, file_path):
+        """Generate video thumbnail using ffmpeg"""
+        try:
+            import ffmpeg
+            probe = ffmpeg.probe(file_path)
+            duration = float(probe['format']['duration'])
+            thumbnail_time = min(5.0, duration / 3)  # Take frame at 5 seconds or 1/3 duration
+            
+            # Use a temporary file for the thumbnail
+            temp_thumb = os.path.join(os.path.dirname(file_path), '.thumb_' + os.path.basename(file_path) + '.jpg')
+            
+            try:
+                (
+                    ffmpeg
+                    .input(file_path, ss=thumbnail_time)
+                    .filter('scale', 320, -1)  # Scale to 320px width, maintain aspect ratio
+                    .output(temp_thumb, vframes=1)
+                    .overwrite_output()
+                    .run(capture_stdout=True, capture_stderr=True)
+                )
+                
+                with open(temp_thumb, 'rb') as f:
+                    thumbnail_data = f.read()
+                
                 try:
-                    self.send_error(500, "Internal server error serving file")
-                except Exception as send_err:
-                    self.logger.error(f"Could not send error response to client: {send_err}")
+                    os.remove(temp_thumb)
+                except:
+                    pass
+                    
+                return thumbnail_data, 'image/jpeg'
+                
+            except ffmpeg.Error as e:
+                self.logger.error(f"FFmpeg error generating thumbnail: {e.stderr.decode()}")
+                return None, None
+                
+        except Exception as e:
+            self.logger.error(f"Error generating video thumbnail: {e}")
+            return None, None
+
+    def handle_thumbnail_request(self, file_path, is_video=False):
+        """Generate and serve thumbnails for videos and images"""
+        try:
+            from PIL import Image
+            import io
+            
+            if is_video:
+                try:
+                    import ffmpeg
+                    # Extract frame at 1 second mark for video thumbnail
+                    out, _ = (
+                        ffmpeg
+                        .input(file_path, ss="00:00:01")
+                        .filter('scale', 320, -1)
+                        .output('pipe:', vframes=1, format='image2', vcodec='mjpeg')
+                        .run(capture_stdout=True, capture_stderr=True)
+                    )
+                    image = Image.open(io.BytesIO(out))
+                except Exception as e:
+                    self.logger.error(f"Error generating video thumbnail: {e}")
+                    self.send_error(500, "Could not generate thumbnail")
+                    return
+            else:
+                # For images, just load and resize
+                image = Image.open(file_path)
+            
+            # Resize maintaining aspect ratio
+            max_size = (320, 320)
+            image.thumbnail(max_size, Image.Resampling.LANCZOS)
+            
+            # Convert to RGB if necessary
+            if image.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                background.paste(image, mask=image.split()[-1])
+                image = background
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
+                
+            # Save to buffer
+            thumb_io = io.BytesIO()
+            image.save(thumb_io, 'JPEG', quality=85)
+            thumb_io.seek(0)
+            
+            # Send response
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', str(thumb_io.getbuffer().nbytes))
+            self.end_headers()
+            self.wfile.write(thumb_io.getvalue())
+            
+        except Exception as e:
+            self.logger.error(f"Error handling thumbnail: {e}")
+            if not self.headers_sent:
+                self.send_error(500, "Could not generate thumbnail")
 
 def get_local_ip():
     """Get the local IP address"""
