@@ -1396,32 +1396,56 @@ class DLNAServer(BaseHTTPRequestHandler):
 
                     sent_bytes = 0
                     chunk_size = 64 * 1024 # 64KB chunks
+                    connection_closed = False
+
                     while bytes_to_send > 0:
-                        read_size = min(chunk_size, bytes_to_send)
-                        chunk = f.read(read_size)
-                        if not chunk:
-                            self.logger.warning(f"Unexpected EOF reading {abs_path} at offset {f.tell()}")
-                            break # Unexpected end of file
                         try:
+                            read_size = min(chunk_size, bytes_to_send)
+                            chunk = f.read(read_size)
+                            if not chunk:  # EOF
+                                break
+
                             self.wfile.write(chunk)
                             sent_bytes += len(chunk)
                             bytes_to_send -= len(chunk)
-                        except (ConnectionError, socket.error) as conn_err:
-                            self.logger.warning(f"Connection error sending file {abs_path}: {conn_err}")
-                            return # Stop sending if connection breaks
+
+                        except (ConnectionError, socket.error) as e:
+                            # Check specific error codes that indicate client disconnection
+                            error_code = getattr(e, 'errno', None) or getattr(e, 'winerror', None)
+                            if error_code in (10053, 10054, errno.EPIPE):  # Connection aborted/reset
+                                self.logger.debug(f"Client closed connection while streaming {abs_path}: {e}")
+                                connection_closed = True
+                                break
+                            else:
+                                self.logger.warning(f"Network error streaming {abs_path}: {e}")
+                                break
+
+                        except Exception as e:
+                            self.logger.error(f"Error streaming {abs_path}: {e}")
+                            break
+
+                    if not connection_closed:
+                        if sent_bytes == file_size or (is_range_request and sent_bytes == (end_byte - start_byte + 1)):
+                            self.logger.debug(f"Successfully sent {sent_bytes} bytes for {abs_path}")
+                        else:
+                            self.logger.debug(f"Incomplete transfer: sent {sent_bytes}/{file_size} bytes for {abs_path}")
+
             except IOError as io_err:
-                self.logger.error(f"IOError reading file {abs_path}: {io_err}")
-                # Don't try to send error if headers already sent
+                self.logger.error(f"IO error reading {abs_path}: {io_err}")
+                if not self.headers_sent:
+                    self.send_error(500, "Error reading file")
+                return
+                
             except Exception as e:
-                 self.logger.error(f"Unexpected error sending file content for {abs_path}: {e}")
-                 # Don't try to send error if headers already sent
+                self.logger.error(f"Unexpected error serving {abs_path}: {e}")
+                if not self.headers_sent:
+                    self.send_error(500, "Internal server error")
+                return
 
-            self.logger.debug(f"Finished sending {sent_bytes} bytes for {abs_path}")
-
-        except ConnectionAbortedError:
-            self.logger.warning(f"Client connection aborted while serving file {path}")
+        except ConnectionAbortedError as e:
+            self.logger.debug(f"Client connection aborted while serving {path}: {e}")
         except Exception as e:
-            self.logger.error(f"Unhandled error serving file {path}: {e}", exc_info=True)
+            self.logger.error(f"Unhandled error serving {path}: {e}", exc_info=True)
             if not self.headers_sent:
                 try:
                     self.send_error(500, "Internal server error serving file")
