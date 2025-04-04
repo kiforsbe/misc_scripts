@@ -631,95 +631,59 @@ class DLNAServer(BaseHTTPRequestHandler):
             'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0'
         })
 
-        items_list = [] # List to hold (path, is_directory) tuples
-        parent_id_for_children = object_id # Parent ID for items found in this browse
+        items_list = []  # List to hold (path, is_directory) tuples
 
         # --- Determine Path and Parent ---
-        # object_id '0' is the virtual root container
         if object_id == '0':
-            parent_path = None # No real filesystem path for root
-            parent_id = '-1' # UPnP convention for root's parent
-            # Children of root are the top-level shared folders
-            for shared_folder in self.server.media_folders:
-                 items_list.append((shared_folder, True)) # Treat shared folders as containers
-
-        else:
-            # object_id represents a relative path from *one* of the media_folders roots
-            # We need to find the absolute path
-            abs_path = None
-            relative_path_decoded = unquote(object_id) # Decode the object ID
-
-            for shared_folder in self.server.media_folders:
-                potential_path = os.path.abspath(os.path.join(shared_folder, relative_path_decoded))
-                # Security check: Ensure path stays within the shared folder root
-                if os.path.commonpath([shared_folder, potential_path]) == os.path.abspath(shared_folder):
-                     if os.path.exists(potential_path):
-                          abs_path = potential_path
-                          # Determine parent ID based on the relative path
-                          parent_relative_path = os.path.dirname(relative_path_decoded)
-                          if not parent_relative_path: # If it was a top-level item/folder
-                               parent_id = '0'
-                          else:
-                               parent_id = quote(parent_relative_path) # Parent is the dirname of the relative path
-                          break # Found the path
-
-            if abs_path is None:
-                self.logger.warning(f"Could not find valid path for ObjectID: {object_id} (decoded: {relative_path_decoded})")
-                # Return empty result
-                return self.encode_didl(root), 0, 0
-
-            # If browsing metadata, just add the item itself
             if browse_flag == 'BrowseMetadata':
-                is_dir = os.path.isdir(abs_path)
-                items_list.append((abs_path, is_dir))
-                # For metadata browse, parent_id is the actual parent, not the object itself
-                # parent_id_for_children remains the object_id passed in
-
-            # If browsing children, list directory contents
-            elif browse_flag == 'BrowseDirectChildren' and os.path.isdir(abs_path):
+                # For root metadata, just add root container
+                container = SubElement(root, 'container', {
+                    'id': '0',
+                    'parentID': '-1',
+                    'restricted': '1',
+                    'searchable': '1',
+                    'childCount': str(len(self.server.media_folders))
+                })
+                SubElement(container, 'dc:title').text = "Root"
+                SubElement(container, 'upnp:class').text = 'object.container'
+                return self.encode_didl(root), 1, 1
+            else:  # BrowseDirectChildren
                 try:
-                    for entry in os.scandir(abs_path):
-                        # Check if file is supported (based on index logic)
-                        ext = os.path.splitext(entry.name)[1].lower()
-                        is_supported = ext in (VIDEO_EXTENSIONS.keys() | AUDIO_EXTENSIONS.keys() | IMAGE_EXTENSIONS.keys())
-
-                        if entry.is_dir() or (entry.is_file() and is_supported):
-                             items_list.append((entry.path, entry.is_dir()))
+                    if self.server.media_folders:
+                        shared_folder = self.server.media_folders[0]  # Use first shared folder
+                        entries = os.scandir(shared_folder)
+                        for entry in entries:
+                            if entry.is_file():
+                                ext = os.path.splitext(entry.name)[1].lower()
+                                if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                                    items_list.append((entry.path, False))
+                                    self.logger.debug(f"Added file to list: {entry.path}")
+                            elif entry.is_dir():
+                                items_list.append((entry.path, True))
+                                self.logger.debug(f"Added directory to list: {entry.path}")
                 except OSError as e:
-                    self.logger.error(f"Error listing directory {abs_path}: {e}")
-                    # Return empty result
+                    self.logger.error(f"Error listing directory {shared_folder}: {e}")
                     return self.encode_didl(root), 0, 0
-            else:
-                 # Cannot browse children of a file or invalid browse flag
-                 self.logger.warning(f"Invalid browse request: BrowseFlag='{browse_flag}' for path='{abs_path}' (is_dir={os.path.isdir(abs_path)})")
-                 return self.encode_didl(root), 0, 0
 
-
-        # --- Sorting (Basic Example: by name) ---
-        # TODO: Implement proper sort_criteria parsing if needed
-        items_list.sort(key=lambda x: os.path.basename(x[0]))
+        # --- Sort items (directories first, then by name) ---
+        items_list.sort(key=lambda x: (not x[1], os.path.basename(x[0]).lower()))
 
         # --- Pagination ---
         total_matches = len(items_list)
-        if requested_count == 0: # 0 means all items
+        if requested_count == 0:  # 0 means all items
             paged_items = items_list[starting_index:]
         else:
-            paged_items = items_list[starting_index : starting_index + requested_count]
+            paged_items = items_list[starting_index:starting_index + requested_count]
 
         number_returned = len(paged_items)
 
         # --- Generate DIDL for paged items ---
+        parent_id = '-1' if object_id == '0' else object_id
         for item_path, is_directory in paged_items:
-            # Determine the correct parent ID for this item
-            # If browsing root (object_id '0'), parent is '0'
-            # If browsing metadata, parent is the actual parent derived earlier
-            # If browsing children, parent is the object_id of the container being browsed
-            current_parent_id = '0' if object_id == '0' else parent_id if browse_flag == 'BrowseMetadata' else parent_id_for_children
-
             if is_directory:
-                self.add_container_to_didl(root, item_path, os.path.basename(item_path), current_parent_id)
+                self.add_container_to_didl(root, item_path, os.path.basename(item_path), object_id)
             else:
-                self.add_item_to_didl(root, item_path, os.path.basename(item_path), current_parent_id)
+                self.add_item_to_didl(root, item_path, os.path.basename(item_path), object_id)
 
         return self.encode_didl(root), number_returned, total_matches
 
@@ -742,51 +706,54 @@ class DLNAServer(BaseHTTPRequestHandler):
     def add_container_to_didl(self, root, path, title, parent_id):
         """Add a container (directory) to the DIDL-Lite XML"""
         try:
-            shared_root = self.find_shared_folder_root(path)
-            if not shared_root:
-                 self.logger.warning(f"Cannot determine relative path for container: {path}")
-                 return # Skip item if it's not in a shared folder somehow
+            # For root-level container (shared folder)
+            if parent_id == '0':
+                container_id = quote(os.path.basename(path))
+            else:
+                shared_root = self.find_shared_folder_root(path)
+                if not shared_root:
+                    self.logger.warning(f"Cannot determine relative path for container: {path}")
+                    return
 
-            relative_path = os.path.relpath(path, shared_root)
-            # Handle case where path IS the shared root (relative path is '.')
-            if relative_path == '.':
-                 # Use the basename of the shared root as its ID if needed, or handle differently
-                 # For simplicity, let's use the basename of the absolute path
-                 relative_path = os.path.basename(path)
-                 parent_id = '0' # Parent of a shared root is the virtual root '0'
+                relative_path = os.path.relpath(path, shared_root)
+                if relative_path == '.':
+                    container_id = quote(os.path.basename(path))
+                else:
+                    container_id = quote(relative_path.replace('\\', '/'))
 
-
-            container_id = quote(relative_path.replace('\\', '/')) # Use forward slashes for IDs
-
-            # Calculate child count safely
+            # Calculate child count
             child_count = 0
             try:
-                # Count only items that would be visible (dirs or supported files)
-                for entry in os.scandir(path):
-                     ext = os.path.splitext(entry.name)[1].lower()
-                     is_supported = ext in (VIDEO_EXTENSIONS.keys() | AUDIO_EXTENSIONS.keys() | IMAGE_EXTENSIONS.keys())
-                     if entry.is_dir() or (entry.is_file() and is_supported):
-                          child_count += 1
-            except OSError:
-                pass # Ignore errors listing children for count
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        if entry.is_dir():
+                            child_count += 1
+                        elif entry.is_file():
+                            ext = os.path.splitext(entry.name)[1].lower()
+                            if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                                child_count += 1
+            except OSError as e:
+                self.logger.error(f"Error counting children for {path}: {e}")
+                child_count = 0
 
             container = SubElement(root, 'container', {
                 'id': container_id,
-                'parentID': parent_id, # Parent ID should already be quoted if needed
+                'parentID': parent_id,
                 'restricted': '1',
-                'searchable': '1', # Typically true for containers
+                'searchable': '1',
                 'childCount': str(child_count)
             })
 
             SubElement(container, 'dc:title').text = title
             SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
 
-            # Add modification date (more relevant than creation date for UPnP)
             try:
                 mod_time = datetime.fromtimestamp(os.path.getmtime(path))
                 SubElement(container, 'dc:date').text = mod_time.isoformat()
             except OSError:
-                 pass # Ignore if cannot get mod time
+                pass
+
+            self.logger.debug(f"Added container: id='{container_id}', parentID='{parent_id}', title='{title}', childCount={child_count}")
 
         except Exception as e:
             self.logger.error(f"Error adding container to DIDL for path {path}: {e}", exc_info=True)
