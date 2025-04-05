@@ -1408,91 +1408,43 @@ class DLNAServer(BaseHTTPRequestHandler):
 
             # Parse the SOAP request robustly
             try:
-                envelope = fromstring(post_data)
-                ns = {
-                    's': 'http://schemas.xmlsoap.org/soap/envelope/',
-                    'u': 'urn:schemas-upnp-org:service:ContentDirectory:1'
-                }
-                body = envelope.find('s:Body', ns)
-                if body is None: # Try without namespace if first fails
-                    body = envelope.find('{http://schemas.xmlsoap.org/soap/envelope/}Body')
+                # Extract browse parameters
+                params = self.request_parser.parse_browse_request(post_data)
+                
+                self.logger.info(f"Browse Request: ObjectID='{params['object_id']}', BrowseFlag='{params['browse_flag']}', "
+                               f"StartIndex={params['starting_index']}, Count={params['requested_count']}, "
+                               f"Filter='{params['filter']}', Sort='{params['sort_criteria']}'")
 
-                if body is None:
-                    self.logger.error("Could not find SOAP Body in request")
-                    self.send_error(400, "Invalid SOAP request: Missing Body")
-                    return
+                # Generate browse response
+                result_didl, number_returned, total_matches = self.generate_browse_didl(
+                    params['object_id'], 
+                    params['browse_flag'],
+                    params['starting_index'], 
+                    params['requested_count'],
+                    params['filter'],
+                    params['sort_criteria']
+                )
+                
+                # Send SOAP response using handler
+                response_content = f'''
+                    <Result>{result_didl}</Result>
+                    <NumberReturned>{number_returned}</NumberReturned>
+                    <TotalMatches>{total_matches}</TotalMatches>
+                    <UpdateID>1</UpdateID>'''
+                
+                self.soap_handler.send_soap_response(
+                    response_content,
+                    'Browse',
+                    'urn:schemas-upnp-org:service:ContentDirectory:1'
+                )
+                
+                self.logger.info(f"Sent BrowseResponse for ObjectID '{params['object_id']}' ({number_returned}/{total_matches} items)")
 
-                browse = body.find('u:Browse', ns)
-                if browse is None: # Try without namespace
-                    browse = body.find('{urn:schemas-upnp-org:service:ContentDirectory:1}Browse')
-
-                if browse is None:
-                    self.logger.error("Could not find Browse action in SOAP Body")
-                    self.send_error(400, "Invalid SOAP request: Missing Browse action")
-                    return
-
-            except Exception as xml_err:
-                self.logger.error(f"Error parsing SOAP XML: {xml_err}")
-                self.send_error(400, "Invalid SOAP XML")
-                return
-
-            # Extract parameters safely
-            object_id_elem = browse.find('ObjectID')
-            browse_flag_elem = browse.find('BrowseFlag')
-            # Optional parameters with defaults
-            filter_elem = browse.find('Filter')
-            starting_index_elem = browse.find('StartingIndex')
-            requested_count_elem = browse.find('RequestedCount')
-            sort_criteria_elem = browse.find('SortCriteria')
-
-            object_id = object_id_elem.text if object_id_elem is not None else '0' # Default to root
-            browse_flag = browse_flag_elem.text if browse_flag_elem is not None else 'BrowseDirectChildren'
-            filter_str = filter_elem.text if filter_elem is not None else '*'
-            starting_index = int(starting_index_elem.text) if starting_index_elem is not None and starting_index_elem.text.isdigit() else 0
-            requested_count = int(requested_count_elem.text) if requested_count_elem is not None and requested_count_elem.text.isdigit() else 0 # 0 means all
-            sort_criteria = sort_criteria_elem.text if sort_criteria_elem is not None else ''
-
-            self.logger.info(f"Browse Request: ObjectID='{object_id}', BrowseFlag='{browse_flag}', StartIndex={starting_index}, Count={requested_count}, Filter='{filter_str}', Sort='{sort_criteria}'")
-
-            # --- Browsing Logic ---
-            result_didl, number_returned, total_matches = self.generate_browse_didl(
-                object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria
-            )
-            # --- End Browsing Logic ---
-
-
-            # Create SOAP response
-            soap_response_xml = f'''<?xml version="1.0" encoding="utf-8"?>
-            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-                <s:Body>
-                    <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
-                        <Result>{result_didl}</Result>
-                        <NumberReturned>{number_returned}</NumberReturned>
-                        <TotalMatches>{total_matches}</TotalMatches>
-                        <UpdateID>1</UpdateID>
-                    </u:BrowseResponse>
-                </s:Body>
-            </s:Envelope>'''
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-            self.send_header('Ext', '') # Required by UPnP spec for SOAP responses
-            self.send_header('Server', 'Windows/10 UPnP/1.0 Python-DLNA/1.0')
-            # Calculate content length based on bytes
-            response_bytes = soap_response_xml.encode('utf-8')
-            self.send_header('Content-Length', str(len(response_bytes)))
-            self.end_headers()
-            self.wfile.write(response_bytes)
-            self.logger.info(f"Sent BrowseResponse for ObjectID '{object_id}' ({number_returned}/{total_matches} items)")
+            except ValueError as ve:
+                self.error_handler.handle_request_error(self, ve, 400)
 
         except Exception as e:
-            self.logger.error(f"Error handling content directory control: {e}", exc_info=True)
-            # Avoid sending error if headers already sent
-            if not self.headers_sent:
-                 try:
-                      self.send_error(500, "Internal server error processing Browse request")
-                 except Exception as send_err:
-                      self.logger.error(f"Could not send error response to client: {send_err}")
+            self.error_handler.handle_request_error(self, e)
 
     def generate_browse_didl(self, object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria):
         """Generates the DIDL-Lite XML string for Samsung TV compatibility"""
@@ -1896,20 +1848,17 @@ class DLNAServer(BaseHTTPRequestHandler):
     def get_mime_and_upnp_class(self, filename):
         """Determine MIME type and UPnP class based on file extension"""
         ext = os.path.splitext(filename)[1].lower()
+        # Use single dictionary for mapping
+        EXTENSION_MAP = {
+            **{ext: (mime, 'object.item.videoItem.Movie') 
+               for ext, mime in VIDEO_EXTENSIONS.items()},
+            **{ext: (mime, 'object.item.audioItem.musicTrack') 
+               for ext, mime in AUDIO_EXTENSIONS.items()},
+            **{ext: (mime, 'object.item.imageItem.photo') 
+               for ext, mime in IMAGE_EXTENSIONS.items()}
+        }
         
-        # Video files with proper DLNA profile
-        if ext in VIDEO_EXTENSIONS:
-            return VIDEO_EXTENSIONS[ext], 'object.item.videoItem.Movie'
-        
-        # Audio files with proper DLNA profile
-        elif ext in AUDIO_EXTENSIONS:
-            return AUDIO_EXTENSIONS[ext], 'object.item.audioItem.musicTrack'
-        
-        # Image files with proper DLNA profile
-        elif ext in IMAGE_EXTENSIONS:
-            return IMAGE_EXTENSIONS[ext], 'object.item.imageItem.photo'
-        
-        return 'application/octet-stream', 'object.item'
+        return EXTENSION_MAP.get(ext, ('application/octet-stream', 'object.item'))
 
     def add_audio_metadata(self, file_path, item_element):
         """Add audio-specific metadata"""
@@ -2386,24 +2335,26 @@ class DLNAServer(BaseHTTPRequestHandler):
             if not self.headers_sent:
                 self.send_error(500, "Could not generate thumbnail")
 
-    def get_dlna_profile(self, ext, content_type):
-        """Get DLNA profile and protocol info based on file type with Samsung TV support"""
-        if ext in VIDEO_EXTENSIONS:
-            if ext == '.mp4':
-                return 'AVC_MP4_HP_HD_AAC', f'http-get:*:{content_type}:DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
-            elif ext == '.mkv':
-                return 'MKV', f'http-get:*:{content_type}:DLNA.ORG_PN=MKV;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
-            return 'AVC_MP4_HP_HD_AAC', f'http-get:*:{content_type}:DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
-        elif ext in AUDIO_EXTENSIONS:
-            if ext == '.mp3':
-                return 'MP3', f'http-get:*:{content_type}:DLNA.ORG_PN=MP3;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000'
-            elif ext == '.flac':
-                return 'FLAC', f'http-get:*:{content_type}:DLNA.ORG_PN=FLAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000'
-            return 'MP3', f'http-get:*:{content_type}:DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000'
-        elif ext in IMAGE_EXTENSIONS:
-            # Samsung TVs prefer JPEG_LRG profile for images
-            return 'JPEG_LRG', f'http-get:*:{content_type}:DLNA.ORG_PN=JPEG_LRG;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000;DLNA.ORG_OP=01'
-        return None, None
+    def get_dlna_profile(self, ext, mime_type):
+        """Get DLNA profile and protocol info based on file type"""
+        DLNA_PROFILES = {
+            '.mp4': ('AVC_MP4_HP_HD_AAC', 'video', '01700000000000000000000000000000'),
+            '.mkv': ('MKV', 'video', '01700000000000000000000000000000'),
+            '.mp3': ('MP3', 'audio', '01500000000000000000000000000000'),
+            '.flac': ('FLAC', 'audio', '01500000000000000000000000000000'),
+            '.jpg': ('JPEG_LRG', 'image', '00f00000000000000000000000000000'),
+            '.jpeg': ('JPEG_LRG', 'image', '00f00000000000000000000000000000'),
+            '.png': ('PNG_LRG', 'image', '00f00000000000000000000000000000')
+        }
+        
+        if ext not in DLNA_PROFILES:
+            return None, None
+            
+        profile, media_type, flags = DLNA_PROFILES[ext]
+        protocol_info = (f'http-get:*:{mime_type}:DLNA.ORG_PN={profile};'
+                        f'DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS={flags}')
+        
+        return profile, protocol_info
 
     def serve_descriptor_file(self, file_path):
         """Serve UPnP/DLNA XML descriptor files with enhanced error handling"""
@@ -2467,36 +2418,6 @@ class DLNAServer(BaseHTTPRequestHandler):
         except Exception as e:
             self.logger.debug(f"Error parsing time seek request: {e}")
         return None, None
-
-    def get_protocol_info(self, mime_type, ext):
-        """Get Samsung TV compatible protocol info string"""
-        flags = {
-            'video': '01700000000000000000000000000000',  # Video flags
-            'audio': '01500000000000000000000000000000',  # Audio flags
-            'image': '00f00000000000000000000000000000'   # Image flags
-        }
-        
-        if ext in VIDEO_EXTENSIONS:
-            profile = 'AVC_MP4_HP_HD_AAC' if ext == '.mp4' else 'MKV' if ext == '.mkv' else ''
-            protocol_info = f'http-get:*:{mime_type}:'
-            if profile:
-                protocol_info += f'DLNA.ORG_PN={profile};'
-            protocol_info += f'DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS={flags["video"]}'
-            
-        elif ext in AUDIO_EXTENSIONS:
-            profile = 'MP3' if ext == '.mp3' else 'FLAC' if ext == '.flac' else ''
-            protocol_info = f'http-get:*:{mime_type}:'
-            if profile:
-                protocol_info += f'DLNA.ORG_PN={profile};'
-            protocol_info += f'DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS={flags["audio"]}'
-            
-        elif ext in IMAGE_EXTENSIONS:
-            protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_PN=JPEG_LRG;DLNA.ORG_CI=0;DLNA.ORG_FLAGS={flags["image"]};DLNA.ORG_OP=01'
-            
-        else:
-            protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0'
-            
-        return protocol_info
 
 def get_local_ip():
     """Get the local IP address"""
