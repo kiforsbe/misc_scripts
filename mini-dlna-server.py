@@ -7,6 +7,7 @@ import time
 import uuid
 import threading
 import subprocess
+import shutil
 from urllib.parse import unquote, quote, urlparse, parse_qs
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -624,15 +625,17 @@ class DLNAServer(BaseHTTPRequestHandler):
                     break
 
     def do_GET(self):
-        """Handle GET requests with improved media type detection"""
         try:
+            # Parse the path properly
             parsed_path = urlparse(self.path)
-            file_path = unquote(parsed_path.path[1:])  # Remove leading /
+            file_path = unquote(parsed_path.path)
             
-            if not file_path:
-                self.list_directory()
+            # Special handling for DLNA/UPnP descriptor files
+            if file_path in ['/description.xml', '/ContentDirectory.xml', 
+                           '/ConnectionManager.xml', '/AVTransport.xml']:
+                self.serve_descriptor_file(file_path)
                 return
-
+            
             # Find the file in shared folders
             abs_path = None
             for shared_folder in self.server.media_folders:
@@ -655,7 +658,17 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.send_error(415, "Unsupported media type")
                 return
 
-            self.serve_media_file(file_path)
+            # Send response headers
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(os.path.getsize(abs_path)))
+            self.send_header('transferMode.dlna.org', 'Streaming')
+            self.send_header('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0')
+            self.end_headers()
+
+            # Stream the file
+            with open(abs_path, 'rb') as f:
+                shutil.copyfileobj(f, self.wfile)
 
         except Exception as e:
             self.logger.error(f"Error handling GET request: {e}")
@@ -668,67 +681,39 @@ class DLNAServer(BaseHTTPRequestHandler):
             parsed_path = urlparse(self.path)
             clean_path = parsed_path.path  # This removes any http:// prefixes
 
+            # Content type and size check for media files
+            if not clean_path.endswith('.xml'):
+                file_path = unquote(clean_path)
+                abs_path = self.get_file_path(file_path)
+                
+                if abs_path:
+                    ext = os.path.splitext(abs_path)[1].lower()
+                    content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
+                    
+                    if content_type:
+                        self.send_response(200)
+                        self.send_header('Content-Type', content_type)
+                        self.send_header('Content-Length', str(os.path.getsize(abs_path)))
+                        self.send_header('transferMode.dlna.org', 'Streaming')
+                        self.send_header('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0')
+                        self.end_headers()
+                        return
+
+            # Handle descriptor files
             if clean_path == '/description.xml':
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-                self.send_header('Server', 'Python DLNA/1.0 UPnP/1.0')
                 self.end_headers()
-            elif clean_path == '/ContentDirectory.xml':
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/xml')
-                self.end_headers()
-            elif clean_path == '/ConnectionManager.xml':
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/xml')
-                self.end_headers()
-            elif clean_path == '/AVTransport.xml':
+            elif clean_path in ['/ContentDirectory.xml', '/ConnectionManager.xml', '/AVTransport.xml']:
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/xml; charset="utf-8"')
                 self.end_headers()
             else:
-                # For media files, we'll set up all the same headers we would for GET
-                path = clean_path[1:]
-                if path:
-                    # Find the file path
-                    abs_path = None
-                    for shared_folder in self.server.media_folders:
-                        potential_path = os.path.abspath(os.path.join(shared_folder, unquote(path)))
-                        shared_folder_abs = os.path.abspath(shared_folder)
-                        if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
-                            if os.path.exists(potential_path) and os.path.isfile(potential_path):
-                                abs_path = potential_path
-                                break
-
-                    if abs_path is None:
-                        self.send_error(404, "File not found")
-                        return
-
-                    # Check file type and set appropriate headers
-                    ext = os.path.splitext(abs_path)[1].lower()
-                    content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
-                    if not content_type:
-                        self.send_error(415, "Unsupported media type")
-                        return
-
-                    try:
-                        file_size = os.path.getsize(abs_path)
-                        self.send_response(200)
-                        self.send_header("Content-Type", content_type)
-                        self.send_header("Accept-Ranges", "bytes")
-                        self.send_header("Content-Length", str(file_size))
-                        self.send_header("Connection", "keep-alive")
-                        # DLNA headers
-                        self.send_header("transferMode.dlna.org", "Streaming")
-                        self.send_header("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
-                        self.end_headers()
-                    except Exception as e:
-                        self.logger.error(f"Error getting file info for HEAD request: {str(e)}")
-                        self.send_error(500, "Internal server error")
-                else:
-                    self.send_error(404, "File not found")
+                self.send_error(404, "File not found")
+                
         except Exception as e:
-            self.logger.error(f"Error handling HEAD request: {str(e)}")
-            self.send_error(500, "Internal server error")
+            self.logger.error(f"Error handling HEAD request: {e}")
+            self.send_error(500, f"Internal server error: {str(e)}")
 
     def do_POST(self):
         """Handle POST requests"""
