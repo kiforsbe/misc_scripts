@@ -12,6 +12,7 @@ from urllib.parse import unquote, quote, urlparse, parse_qs
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from logging.handlers import RotatingFileHandler
+from xml.etree import ElementTree
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 from datetime import datetime
 from mutagen import File
@@ -984,6 +985,17 @@ class DLNAServer(BaseHTTPRequestHandler):
         # Call parent constructor last
         super().__init__(request, client_address, server)
 
+    # Set up logging
+    logger = logging.getLogger('dlna_server')
+    
+    def log_message(self, format, *args):
+        """Override the default logging to use our logger"""
+        self.logger.info("%s - - %s" % (self.address_string(), format % args))
+    
+    def log_error(self, format, *args):
+        """Override error logging to use our logger"""
+        self.logger.error("%s - - %s" % (self.address_string(), format % args))
+
     def send_response(self, *args, **kwargs):
         """Override to track headers sent state"""
         super().send_response(*args, **kwargs)
@@ -1023,51 +1035,64 @@ class DLNAServer(BaseHTTPRequestHandler):
                 pass
     
     def send_media_file(self, file_path, content_type):
-        """Send media file with resource tracking"""
         try:
-            if self.resource_monitor:
-                self.resource_monitor.track_stream(started=True)
-                
-            # Get file size
             file_size = os.path.getsize(file_path)
             
-            try:
-                # Handle range requests
-                range_header = self.headers.get('Range')
-                if range_header:
-                    start, end = self._parse_range_header(range_header, file_size)
-                    self.send_response(206)
-                    self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
-                    content_length = end - start + 1
-                else:
-                    self.send_response(200)
-                    start = 0
-                    content_length = file_size
+            # Handle range requests
+            start_byte = 0
+            end_byte = file_size - 1
+            content_length = file_size
+            
+            range_header = self.headers.get('Range')
+            if range_header:
+                try:
+                    ranges = range_header.replace('bytes=', '').split('-')
+                    start_byte = int(ranges[0]) if ranges[0] else 0
+                    if len(ranges) > 1 and ranges[1]:
+                        end_byte = min(int(ranges[1]), file_size - 1)
+                    content_length = end_byte - start_byte + 1
+                except (ValueError, IndexError):
+                    self.send_error(416, "Requested range not satisfiable")
+                    return
+                
+                self.send_response(206)
+                self.send_header('Content-Range', f'bytes {start_byte}-{end_byte}/{file_size}')
+            else:
+                self.send_response(200)
+            
+            duration = self.get_media_duration(file_path)
+            if duration:
+                self.send_header('X-Content-Duration', duration)
+                
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(content_length))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('transferMode.dlna.org', 'Streaming')
+            self.send_header('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000')
+            self.end_headers()
 
-                self.send_header('Content-Type', content_type)
-                self.send_header('Content-Length', str(content_length))
-                self.send_header('Accept-Ranges', 'bytes')
-                self.send_header('transferMode.dlna.org', 'Streaming')
-                self.send_header('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0')
-                self.end_headers()
-
-                with open(file_path, 'rb') as f:
-                    if start > 0:
-                        f.seek(start)
-                    bytes_sent = 0
-                    while bytes_sent < content_length:
-                        chunk_size = min(64 * 1024, content_length - bytes_sent)
-                        chunk = f.read(chunk_size)
-                        if not chunk:
-                            break
+            with open(file_path, 'rb') as f:
+                if start_byte > 0:
+                    f.seek(start_byte)
+                    
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(64 * 1024, remaining)  # 64KB chunks
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                        
+                    try:
                         self.wfile.write(chunk)
-                        bytes_sent += len(chunk)
-                        if self.resource_monitor:
-                            self.resource_monitor.track_network(bytes_sent=len(chunk))
+                        self.logger.debug(f"Sent {len(chunk)} bytes for {os.path.basename(file_path)}")
+                        remaining -= len(chunk)
+                    except (socket.error, ConnectionError) as e:
+                        self.logger.warning(f"Connection error while streaming: {e}")
+                        break
 
-            finally:
-                if self.resource_monitor:
-                    self.resource_monitor.track_stream(started=False)
+                if remaining == 0:
+                    self.logger.info(f"Successfully streamed {content_length} bytes for {os.path.basename(file_path)}")
 
         except Exception as e:
             self.logger.error(f"Error sending media file: {e}")
@@ -1087,54 +1112,28 @@ class DLNAServer(BaseHTTPRequestHandler):
             return 0, file_size - 1
 
     def do_GET(self):
+        """Handle GET requests with proper logging"""
         try:
-            # Parse the path properly
-            parsed_path = urlparse(self.path)
-            file_path = unquote(parsed_path.path)
-            
-            # Special handling for DLNA/UPnP descriptor files
-            if file_path in ['/description.xml', '/ContentDirectory.xml', 
-                           '/ConnectionManager.xml', '/AVTransport.xml']:
-                self.serve_descriptor_file(file_path)
-                return
-            
-            # Find the file in shared folders
-            abs_path = None
-            for shared_folder in self.server.media_folders:
-                potential_path = os.path.abspath(os.path.join(shared_folder, file_path))
-                shared_folder_abs = os.path.abspath(shared_folder)
-                if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
-                    if os.path.exists(potential_path) and os.path.isfile(potential_path):
-                        abs_path = potential_path
-                        break
-            
-            if abs_path is None:
-                self.send_error(404, "File not found")
-                return
-
-            # Improved content type detection
-            ext = os.path.splitext(abs_path)[1].lower()
-            content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
-                          
-            if not content_type:
-                self.send_error(415, "Unsupported media type")
-                return
-
-            # Send response headers
-            self.send_response(200)
-            self.send_header('Content-Type', content_type)
-            self.send_header('Content-Length', str(os.path.getsize(abs_path)))
-            self.send_header('transferMode.dlna.org', 'Streaming')
-            self.send_header('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0')
-            self.end_headers()
-
-            # Stream the file
-            with open(abs_path, 'rb') as f:
-                shutil.copyfileobj(f, self.wfile)
-
+            if self.path == '/description.xml':
+                self.send_device_description()
+            elif self.path == '/ContentDirectory.xml':
+                self.send_content_directory()
+            elif self.path == '/ConnectionManager.xml':
+                self.send_connection_manager()
+            elif self.path == '/AVTransport.xml':
+                self.send_av_transport()
+            elif self.path.startswith('/media/'):
+                # Strip /media/ from path and serve the file
+                file_path = unquote(self.path[7:])
+                self.serve_media_file(file_path)
+            else:
+                self.send_response(404)
+                self.end_headers()
+                
         except Exception as e:
-            self.logger.error(f"Error handling GET request: {e}")
-            self.send_error(500, f"Internal server error: {str(e)}")
+            self.logger.error(f"Error handling GET request for {self.path}: {str(e)}")
+            self.send_response(500)
+            self.end_headers()
 
     def do_HEAD(self):
         """Handle HEAD requests by performing the same logic as GET but without sending the body"""
@@ -1178,62 +1177,54 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.send_error(500, f"Internal server error: {str(e)}")
 
     def do_POST(self):
-        """Handle POST requests for AVTransport control"""
-        try:
-            parsed_path = urlparse(self.path)
-            if parsed_path.path == '/AVTransport/control':
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length).decode('utf-8')
-                
+        """Handle POST requests, particularly for ContentDirectory control"""
+        if self.path == '/ContentDirectory/control':
+            content_length = int(self.headers['Content-Length'])
+            body = self.rfile.read(content_length).decode('utf-8')
+            
+            # Log the incoming SOAP request
+            self.logger.debug(f"ContentDirectory control request: {body}")
+            
+            try:
                 # Parse SOAP request
-                soap_action = self.headers.get('SOAPACTION', '')
-                if 'Play' in soap_action:
-                    speed = self._extract_soap_param(post_data, 'Speed')
-                    success = self.server.av_transport.play(speed)
-                elif 'Pause' in soap_action:
-                    success = self.server.av_transport.pause()
-                elif 'Stop' in soap_action:
-                    success = self.server.av_transport.stop()
-                elif 'Seek' in soap_action:
-                    target = self._extract_soap_param(post_data, 'Target')
-                    success = self.server.av_transport.seek(target)
-                elif 'SetAVTransportURI' in soap_action:
-                    uri = self._extract_soap_param(post_data, 'CurrentURI')
-                    success = self.server.av_transport.set_transport_uri(uri)
+                root = ElementTree.fromstring(body)
+                namespace = {'s': 'http://schemas.xmlsoap.org/soap/envelope/'}
+                action = root.find('.//s:Body/*', namespace)
                 
-                if success:
-                    self._send_soap_response()
-                else:
-                    self._send_soap_error(501, "Action Failed")
-            else:
-                self.send_error(404, "Not Found")
+                if action is not None:
+                    action_name = action.tag.split('}')[-1]
+                    
+                    # Handle Browse action
+                    if action_name == 'Browse':
+                        object_id = action.find('./ObjectID').text
+                        browse_flag = action.find('./BrowseFlag').text
+                        filter_str = action.find('./Filter').text
+                        starting_index = int(action.find('./StartingIndex').text)
+                        requested_count = int(action.find('./RequestedCount').text)
+                        sort_criteria = action.find('./SortCriteria').text
+                        
+                        # Generate DIDL response
+                        result = self.generate_browse_didl(
+                            object_id, browse_flag, starting_index,
+                            requested_count, filter_str, sort_criteria
+                        )
+                        
+                        # Send successful response
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+                        self.end_headers()
+                        self.wfile.write(result.encode('utf-8'))
+                        return
+            
+            except Exception as e:
+                self.logger.error(f"Error handling ContentDirectory control request: {str(e)}")
+                self.send_response(500)
+                self.end_headers()
+                return
                 
-        except Exception as e:
-            self.logger.error(f"Error handling POST request: {e}")
-            self.send_error(500, "Internal Server Error")
-
-    def _extract_soap_param(self, soap_data, param_name):
-        """Extract parameter value from SOAP request"""
-        try:
-            match = re.search(f'<{param_name}>(.*?)</{param_name}>', soap_data)
-            return match.group(1) if match else None
-        except Exception:
-            return None
-
-    def _send_soap_response(self):
-        """Send successful SOAP response"""
-        response = '''<?xml version="1.0"?>
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-            <s:Body>
-                <u:ActionResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"/>
-            </s:Body>
-        </s:Envelope>'''
-        
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-        self.send_header('Content-Length', str(len(response)))
+        # If we get here, the path wasn't handled
+        self.send_response(404)
         self.end_headers()
-        self.wfile.write(response.encode('utf-8'))
 
     def send_media_file(self, file_path, content_type):
         """Stream media file with proper DLNA support and range handling"""
@@ -2044,195 +2035,28 @@ class DLNAServer(BaseHTTPRequestHandler):
             except:
                 pass
 
-    def serve_media_file(self, path):
-        """Enhanced media file serving with improved seeking and playlist support"""
+    def serve_media_file(self, file_path):
         try:
-            parsed_url = urlparse(self.path)
-            query_params = parse_qs(parsed_url.query)
-            
-            decoded_path_segment = unquote(path)
-            abs_path = None
-
-            # Find the file in shared folders
             for shared_folder in self.server.media_folders:
-                potential_path = os.path.abspath(os.path.join(shared_folder, decoded_path_segment))
+                potential_path = os.path.abspath(os.path.join(shared_folder, file_path))
                 shared_folder_abs = os.path.abspath(shared_folder)
                 if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
                     if os.path.exists(potential_path) and os.path.isfile(potential_path):
-                        abs_path = potential_path
+                        ext = os.path.splitext(potential_path)[1].lower()
+                        content_type = (VIDEO_EXTENSIONS.get(ext) or 
+                                      AUDIO_EXTENSIONS.get(ext) or 
+                                      IMAGE_EXTENSIONS.get(ext))
+                        if content_type:
+                            self.send_media_file(potential_path, content_type)
+                            return
                         break
 
-            if abs_path is None:
-                self.send_error(404, "File not found")
-                return
-
-            ext = os.path.splitext(abs_path)[1].lower()
-            content_type = (VIDEO_EXTENSIONS.get(ext) or 
-                           AUDIO_EXTENSIONS.get(ext) or 
-                           IMAGE_EXTENSIONS.get(ext))
-
-            if not content_type:
-                self.send_error(415, "Unsupported media type")
-                return
-
-            # Get DLNA profile and protocol info
-            dlna_profile, protocol_info = self.get_dlna_profile(ext, content_type)
-            
-            # Get file size and handle range requests
-            file_size = os.path.getsize(abs_path)
-            start_byte = 0
-            end_byte = file_size - 1
-
-            # Handle range requests
-            range_header = self.headers.get('Range')
-            if range_header:
-                try:
-                    range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
-                    if range_match:
-                        start_byte = int(range_match.group(1))
-                        if range_match.group(2):
-                            end_byte = min(int(range_match.group(2)), file_size - 1)
-                except ValueError:
-                    self.send_error(416, "Requested range not satisfiable")
-                    return
-
-            # Handle time-based seeking
-            seek_time, _ = self.handle_time_seek_request()
-            if seek_time is not None and (ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS):
-                duration = self.get_media_duration_seconds(abs_path)
-                if duration:
-                    start_byte = int((seek_time / duration) * file_size)
-                    start_byte = max(0, min(start_byte, file_size - 1))
-
-            content_length = end_byte - start_byte + 1
-
-            # Send response headers
-            self.send_response(206 if start_byte > 0 else 200)
-            self.send_header('Content-Type', content_type)
-            self.send_header('Accept-Ranges', 'bytes')
-            self.send_header('Content-Length', str(content_length))
-
-            if start_byte > 0:
-                self.send_header('Content-Range', f'bytes {start_byte}-{end_byte}/{file_size}')
-
-            # Add DLNA headers
-            self.send_header('transferMode.DLNA.ORG', 'Streaming')
-            if protocol_info:
-                self.send_header('contentFeatures.DLNA.ORG', protocol_info)
-            if dlna_profile:
-                self.send_header('DLNA.ORG_PN', dlna_profile)
-
-            # Add media-specific headers
-            if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS:
-                duration = self.get_media_duration_seconds(abs_path)
-                if duration:
-                    self.send_header('TimeSeekRange.DLNA.ORG', f'npt=0.0-{duration}')
-                    self.send_header('X-Content-Duration', str(duration))
-                    self.send_header('Available-Range.DLNA.ORG', f'npt=0.0-{duration}')
-
-            self.send_header('Connection', 'keep-alive')
-            self.end_headers()
-
-            # Stream the file with proper buffering
-            try:
-                with open(abs_path, 'rb') as f:
-                    if start_byte > 0:
-                        f.seek(start_byte)
-                    
-                    remaining = content_length
-                    buffer_size = 64 * 1024  # 64KB buffer
-
-                    while remaining > 0:
-                        chunk_size = min(buffer_size, remaining)
-                        chunk = f.read(chunk_size)
-                        if not chunk:
-                            break
-                        
-                        try:
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
-                        except (ConnectionError, socket.error) as e:
-                            if isinstance(e, ConnectionAbortedError) or \
-                               getattr(e, 'winerror', None) in (10053, 10054):
-                                self.logger.debug("Client disconnected")
-                                return
-                            raise
-
-            except Exception as e:
-                self.logger.error(f"Error streaming file: {e}")
-                if not self.headers_sent:
-                    self.send_error(500, "Error streaming file")
+            self.send_error(404, "File not found")
 
         except Exception as e:
-            self.logger.error(f"Error serving media: {e}")
+            self.logger.error(f"Error serving media file: {e}")
             if not self.headers_sent:
-                self.send_error(500, "Internal server error")
-
-    def handle_time_seek_request(self):
-        """Handle time-based seeking requests"""
-        try:
-            if 'TimeSeekRange.dlna.org' in self.headers:
-                time_range = self.headers['TimeSeekRange.dlna.org'].replace('npt=', '').split('-')
-                start_time = float(time_range[0]) if time_range[0] else 0
-                end_time = float(time_range[1]) if len(time_range) > 1 and time_range[1] else None
-                return start_time, end_time
-        except Exception as e:
-            self.logger.warning(f"Time seek parsing error: {e}")
-        return None, None
-
-    def get_media_duration_seconds(self, file_path):
-        """Get media duration in seconds using ffmpeg"""
-        try:
-            result = subprocess.run(
-                ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            if result.stdout.strip():
-                return float(result.stdout.strip())
-        except Exception as e:
-            self.logger.warning(f"Error getting media duration: {e}")
-        return None
-
-    def generate_video_thumbnail(self, file_path):
-        """Generate video thumbnail using ffmpeg"""
-        try:
-            import ffmpeg
-            probe = ffmpeg.probe(file_path)
-            duration = float(probe['format']['duration'])
-            thumbnail_time = min(5.0, duration / 3)  # Take frame at 5 seconds or 1/3 duration
-            
-            # Use a temporary file for the thumbnail
-            temp_thumb = os.path.join(os.path.dirname(file_path), '.thumb_' + os.path.basename(file_path) + '.jpg')
-            
-            try:
-                (
-                    ffmpeg
-                    .input(file_path, ss=thumbnail_time)
-                    .filter('scale', 320, -1)  # Scale to 320px width, maintain aspect ratio
-                    .output(temp_thumb, vframes=1)
-                    .overwrite_output()
-                    .run(capture_stdout=True, capture_stderr=True)
-                )
-                
-                with open(temp_thumb, 'rb') as f:
-                    thumbnail_data = f.read()
-                
-                try:
-                    os.remove(temp_thumb)
-                except:
-                    pass
-                    
-                return thumbnail_data, 'image/jpeg'
-                
-            except ffmpeg.Error as e:
-                self.logger.error(f"FFmpeg error generating thumbnail: {e.stderr.decode()}")
-                return None, None
-                
-        except Exception as e:
-            self.logger.error(f"Error generating video thumbnail: {e}")
-            return None, None
+                self.send_error(500, "Error serving media file")
 
     def handle_thumbnail_request(self, file_path, is_video=False):
         """Generate and serve thumbnails for videos and images with caching"""
