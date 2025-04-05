@@ -121,10 +121,31 @@ class SSDPServer:
                 'total_messages': 0,
                 'response_times': [],
                 'error_count': 0,
-                'last_check': time.time()
             }
         }
+        self.metrics['last_check'] = time.time()  # Initialize last_check
         self.known_clients = set()  # Track unique clients
+        self._local_ip = None  # Cache for local IP
+
+    def get_local_ip(self):
+        """Get the local IP address used for SSDP communication"""
+        if self._local_ip is None:
+            try:
+                # Use the HTTP server address if available
+                if self.http_server_address and self.http_server_address[0] != '0.0.0.0':
+                    self._local_ip = self.http_server_address[0]
+                else:
+                    # Fall back to socket method
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    try:
+                        s.connect(('8.8.8.8', 80))
+                        self._local_ip = s.getsockname()[0]
+                    finally:
+                        s.close()
+            except Exception as e:
+                self.logger.warning(f"Error getting local IP: {e}")
+                self._local_ip = '127.0.0.1'  # Fallback to localhost
+        return self._local_ip
 
     def validate_announcement_timing(self, current_time):
         """Validate announcement timing follows exponential backoff"""
@@ -136,10 +157,10 @@ class SSDPServer:
             if len(self.metrics['intervals']) > 10:
                 self.metrics['intervals'].pop(0)
             
-            # Check if interval is increasing properly
+            # Check if interval is increasing properly with more lenient threshold
             if self.metrics['last_interval']:
-                expected_interval = min(self.metrics['last_interval'] * 2, 1800)
-                if interval < expected_interval * 0.9:  # Allow 10% variance
+                expected_interval = min(self.metrics['last_interval'] * 1.5, 1800)  # Changed from 2x to 1.5x
+                if interval < expected_interval * 0.8:  # Allow 20% variance instead of 10%
                     self.metrics['backoff_violations'] += 1
                     self.logger.warning(
                         f"Backoff violation: Interval {interval:.1f}s, "
@@ -148,8 +169,8 @@ class SSDPServer:
             
             self.metrics['last_interval'] = interval
             
-            # Log comprehensive metrics every 5 announcements
-            if len(self.metrics['intervals']) >= 5:
+            # Log comprehensive metrics every 10 announcements
+            if len(self.metrics['intervals']) >= 10:
                 self.log_metrics()
 
     def log_metrics(self):
@@ -221,22 +242,14 @@ class SSDPServer:
                         # Create a temporary socket for sending on this interface
                         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as send_sock:
                             send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            # Try binding to the interface IP - might fail if port is in use, but that's okay for sending
-                            try:
-                                send_sock.bind((interface_ip, 0)) # Bind to ephemeral port
-                            except socket.error as bind_err:
-                                self.logger.debug(f"Could not bind send socket to {interface_ip}: {bind_err}")
-                                # Continue anyway, OS might route correctly
-
-                            # Set TTL
+                            send_sock.bind((interface_ip, 0))  # Use random source port
+                            
+                            # Set multicast TTL
                             send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
-                            # Set outgoing interface
-                            send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(interface_ip))
-
-                            self.error_handler.with_retry(
-                                lambda: send_sock.sendto(notify_msg.encode('utf-8'), (SSDP_ADDR, SSDP_PORT))
-                            )
-                            self.logger.info(f"Sent {nts_type} notification for service ['{service}'] via interface ['{interface_ip}']")
+                            
+                            # Send notification
+                            send_sock.sendto(notify_msg.encode('utf-8'), (SSDP_ADDR, SSDP_PORT))
+                            self.logger.info(f"Sent {nts_type} notification for service [{service}] via interface [{interface_ip}]")
 
                     except socket.error as sock_err:
                          # Log specific socket errors during sending
@@ -423,22 +436,13 @@ class SSDPServer:
             # Track unique clients
             self.known_clients.add(addr[0])
             
-            # Enhanced source filtering
-            if addr[0] in (self.http_server_address[0], '127.0.0.1'):
+            # Enhanced source filtering - only do this once
+            if addr[0] == self.get_local_ip():
                 self.metrics['filtered_msgs'] += 1
                 self.logger.debug(f"Filtered own SSDP message from {addr[0]}")
                 return
-                
+            
             # Track timing metrics
-            self.validate_announcement_timing(time.time())
-
-            # Filter out our own messages and localhost
-            if addr[0] in (self.http_server_address[0], '127.0.0.1'):
-                self.metrics['filtered_msgs'] += 1
-                self.logger.debug(f"Filtered own SSDP message from {addr[0]}")
-                return
-
-            # Track timing metrics for announcements
             current_time = time.time()
             if self.last_announcement_time:
                 interval = current_time - self.last_announcement_time
@@ -448,10 +452,7 @@ class SSDPServer:
                     self.metrics['announcements'].pop(0)
             
             self.last_announcement_time = current_time
-
-            # Filter out our own messages
-            if addr[0] == self.get_local_ip():
-                return
+            self.validate_announcement_timing(current_time)
 
             request_line, *header_lines = data.decode('utf-8', errors='ignore').split('\r\n')
             self.logger.info(f"Received SSDP request from {addr[0]}:{addr[1]}: {request_line}")
@@ -966,13 +967,22 @@ class DLNAServer(BaseHTTPRequestHandler):
     thumbnail_cache = {}
     thumbnail_cache_size = 100  # Maximum number of cached thumbnails
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, request, client_address, server):
+        # Initialize logger first
         self.logger = logging.getLogger('DLNAServer')
         self.protocol_version = 'HTTP/1.1'
         self.timeout = 60  # Set timeout to 60 seconds
         self.headers_sent = False  # Track if headers have been sent
-        self.resource_monitor = getattr(self.server, 'resource_monitor', None)
-        super().__init__(*args, **kwargs)
+        
+        # Initialize resource monitor before calling parent
+        if hasattr(server, 'resource_monitor'):
+            self.resource_monitor = server.resource_monitor
+        else:
+            self.resource_monitor = None
+            self.logger.warning("Resource monitor not available on server instance")
+
+        # Call parent constructor last
+        super().__init__(request, client_address, server)
 
     def send_response(self, *args, **kwargs):
         """Override to track headers sent state"""
@@ -1999,39 +2009,23 @@ class DLNAServer(BaseHTTPRequestHandler):
                         if not chunk:
                             break
                             
-                        # Track activity and check timeouts
-                        current_time = time.time()
-                        if current_time - last_activity > 60:  # 60 second inactivity timeout
-                            self.logger.warning(f"Client inactive for 60 seconds, closing connection")
-                            return False
-                            
-                        # Track activity
-                        bytes_sent = 0
-                        while bytes_sent < len(chunk):
-                            try:
-                                sent = self.wfile.write(chunk[bytes_sent:])
-                                if sent is None:  # Non-blocking socket might return None
-                                    sent = 0
-                                bytes_sent += sent
-                                total_sent += sent
-                                last_activity = time.time()
-                                
-                            except (socket.error, ConnectionError) as e:
-                                error_code = getattr(e, 'errno', None) or getattr(e, 'winerror', None)
-                                if error_code in (10053, 10054, errno.EPIPE):  # Expected client disconnection
-                                    self.logger.debug(f"Client closed connection after receiving {total_sent} bytes")
-                                    return False
-                                raise  # Re-raise unexpected socket errors
+                        self.wfile.write(chunk)
+                        total_sent += len(chunk)
+                        
+                        # Update activity timestamp
+                        last_activity = time.time()
+                        
+                        # Track network usage if resource monitor is available
+                        if self.resource_monitor:
+                            self.resource_monitor.track_network(bytes_sent=len(chunk))
                                 
                     except socket.timeout:
-                        self.logger.warning(f"Socket timeout while sending file {file_path}")
-                        return False
+                        # Check if connection is still alive
+                        if time.time() - last_activity > 60:  # 1 minute without activity
+                            self.logger.warning("Connection timed out due to inactivity")
+                            return False
                     except (socket.error, ConnectionError) as e:
-                        if isinstance(e, ConnectionAbortedError) or \
-                           getattr(e, 'winerror', None) in (10053, 10054):
-                            self.logger.debug(f"Client disconnected after {total_sent} bytes: {str(e)}")
-                        else:
-                            self.logger.warning(f"Connection error sending file {file_path}: {str(e)}")
+                        self.logger.warning(f"Connection error while streaming: {e}")
                         return False
                         
                 self.logger.debug(f"Successfully sent {total_sent} bytes")
