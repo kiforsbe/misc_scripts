@@ -1019,7 +1019,7 @@ class DLNAServer(BaseHTTPRequestHandler):
         except (socket.error, ConnectionError) as e:
             # Don't log common client disconnection errors at error level
             if isinstance(e, ConnectionAbortedError) or \
-               getattr(e, 'winerror', None) in (10053, 10054):  # Connection aborted/reset
+                getattr(e, 'winerror', None) in (10053, 10054):  # Connection aborted/reset
                 self.logger.debug(f"Client connection closed: {str(e)}")
             else:
                 self.logger.error(f"Socket error during request: {str(e)}")
@@ -1499,10 +1499,10 @@ class DLNAServer(BaseHTTPRequestHandler):
                         for entry in entries:
                             if entry.is_file():
                                 ext = os.path.splitext(entry.name)[1].lower()
-                                if ext in AUDIO_EXTENSIONS:
-                                    audio_files.append(entry.path)
-                                elif ext in VIDEO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                                if ext in VIDEO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
                                     items_list.append((entry.path, False))
+                                elif ext in AUDIO_EXTENSIONS:
+                                    audio_files.append(entry.path)
                             elif entry.is_dir():
                                 items_list.append((entry.path, True))
                                 
