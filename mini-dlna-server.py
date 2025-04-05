@@ -624,6 +624,85 @@ class SSDPServer:
             self.cleanup_sockets()
             self.logger.info("SSDP server stopped.")
 
+class AVTransportService:
+    """Handles media transport controls and playlist management"""
+    def __init__(self):
+        self.state = {
+            'TransportState': 'STOPPED',  # PLAYING, PAUSED_PLAYBACK, STOPPED
+            'CurrentURI': '',
+            'CurrentTrack': 0,
+            'NumberOfTracks': 0,
+            'PlaybackSpeed': '1',
+            'RelativeTimePosition': '00:00:00',
+            'AbsoluteTimePosition': '00:00:00'
+        }
+        self.playlist = []
+        self.current_media = None
+        self._last_update = time.time()
+        self.subscribers = set()
+
+    def set_transport_uri(self, uri):
+        """Set the URI of the media to be played"""
+        self.state['CurrentURI'] = uri
+        self.state['TransportState'] = 'STOPPED'
+        self._notify_state_change()
+        return True
+
+    def play(self, speed='1'):
+        """Start or resume playback"""
+        if self.state['CurrentURI']:
+            self.state['TransportState'] = 'PLAYING'
+            self.state['PlaybackSpeed'] = speed
+            self._notify_state_change()
+            return True
+        return False
+
+    def pause(self):
+        """Pause playback"""
+        if self.state['TransportState'] == 'PLAYING':
+            self.state['TransportState'] = 'PAUSED_PLAYBACK'
+            self._notify_state_change()
+            return True
+        return False
+
+    def stop(self):
+        """Stop playback"""
+        self.state['TransportState'] = 'STOPPED'
+        self.state['RelativeTimePosition'] = '00:00:00'
+        self._notify_state_change()
+        return True
+
+    def seek(self, target):
+        """Seek to specific position"""
+        if self.current_media:
+            # Parse target format (time or track number)
+            if ':' in target:  # Time format
+                hours, minutes, seconds = map(int, target.split(':'))
+                position_seconds = hours * 3600 + minutes * 60 + seconds
+                self.state['RelativeTimePosition'] = target
+                self._notify_state_change()
+                return True
+        return False
+
+    def _notify_state_change(self):
+        """Notify subscribers of state changes"""
+        event_data = {
+            'TransportState': self.state['TransportState'],
+            'CurrentTrack': self.state['CurrentTrack'],
+            'RelativeTime': self.state['RelativeTimePosition']
+        }
+        for subscriber in self.subscribers:
+            try:
+                self._send_event(subscriber, event_data)
+            except Exception as e:
+                self.subscribers.remove(subscriber)
+                logging.error(f"Failed to notify subscriber {subscriber}: {e}")
+
+    def _send_event(self, subscriber, data):
+        """Send event notification to subscriber"""
+        # Implementation will use HTTP NOTIFY
+        pass
+
 class DLNAServer(BaseHTTPRequestHandler):
     # Add thumbnail cache as class variable
     thumbnail_cache = {}
@@ -834,20 +913,130 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.send_error(500, f"Internal server error: {str(e)}")
 
     def do_POST(self):
-        """Handle POST requests"""
+        """Handle POST requests for AVTransport control"""
         try:
-            if self.path == '/ContentDirectory/control':
-                self.handle_content_directory_control()
+            parsed_path = urlparse(self.path)
+            if parsed_path.path == '/AVTransport/control':
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length).decode('utf-8')
+                
+                # Parse SOAP request
+                soap_action = self.headers.get('SOAPACTION', '')
+                if 'Play' in soap_action:
+                    speed = self._extract_soap_param(post_data, 'Speed')
+                    success = self.server.av_transport.play(speed)
+                elif 'Pause' in soap_action:
+                    success = self.server.av_transport.pause()
+                elif 'Stop' in soap_action:
+                    success = self.server.av_transport.stop()
+                elif 'Seek' in soap_action:
+                    target = self._extract_soap_param(post_data, 'Target')
+                    success = self.server.av_transport.seek(target)
+                elif 'SetAVTransportURI' in soap_action:
+                    uri = self._extract_soap_param(post_data, 'CurrentURI')
+                    success = self.server.av_transport.set_transport_uri(uri)
+                
+                if success:
+                    self._send_soap_response()
+                else:
+                    self._send_soap_error(501, "Action Failed")
             else:
-                self.send_error(501, "Unsupported method ('POST')")
+                self.send_error(404, "Not Found")
+                
         except Exception as e:
-            self.logger.error(f"Error handling POST request: {str(e)}")
-            
+            self.logger.error(f"Error handling POST request: {e}")
+            self.send_error(500, "Internal Server Error")
+
+    def _extract_soap_param(self, soap_data, param_name):
+        """Extract parameter value from SOAP request"""
+        try:
+            match = re.search(f'<{param_name}>(.*?)</{param_name}>', soap_data)
+            return match.group(1) if match else None
+        except Exception:
+            return None
+
+    def _send_soap_response(self):
+        """Send successful SOAP response"""
+        response = '''<?xml version="1.0"?>
+        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+            <s:Body>
+                <u:ActionResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"/>
+            </s:Body>
+        </s:Envelope>'''
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+        self.send_header('Content-Length', str(len(response)))
+        self.end_headers()
+        self.wfile.write(response.encode('utf-8'))
+
+    def send_media_file(self, file_path, content_type):
+        """Stream media file with proper DLNA support and range handling"""
+        file_size = os.path.getsize(file_path)
+        duration = self.get_media_duration_seconds(file_path)
+
+        # Handle range requests
+        start_byte = 0
+        end_byte = file_size - 1
+        
+        if 'Range' in self.headers:
             try:
-                self.send_error(500, "Internal server error")
+                range_header = self.headers['Range'].replace('bytes=', '').split('-')
+                start_byte = int(range_header[0]) if range_header[0] else 0
+                end_byte = int(range_header[1]) if len(range_header) > 1 and range_header[1] else file_size - 1
             except Exception as e:
-                self.logger.error(f"Could not return error response to client: {str(e)}")
-                return
+                self.logger.warning(f"Range parsing error: {e}")
+
+        # Handle time-based seeking
+        start_time, end_time = self.handle_time_seek_request()
+        if start_time is not None:
+            # Convert time to bytes (approximate)
+            bytes_per_second = file_size / duration if duration else 0
+            start_byte = int(start_time * bytes_per_second)
+            if end_time:
+                end_byte = int(end_time * bytes_per_second)
+
+        content_length = end_byte - start_byte + 1
+        
+        # Send headers
+        self.send_response(206 if start_byte > 0 or end_byte < file_size - 1 else 200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(content_length))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Range', f'bytes {start_byte}-{end_byte}/{file_size}')
+        
+        # DLNA specific headers
+        self.send_header('TransferMode.DLNA.ORG', 'Streaming')
+        self.send_header('contentFeatures.DLNA.ORG', 
+                        'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000')
+        self.send_header('Connection', 'keep-alive')
+        
+        if duration:
+            self.send_header('X-Content-Duration', str(duration))
+            self.send_header('TimeSeekRange.dlna.org', f'npt=0.0-{duration}')
+        
+        self.end_headers()
+
+        # Stream the file
+        with open(file_path, 'rb') as f:
+            f.seek(start_byte)
+            remaining = content_length
+            chunk_size = min(102400, remaining)  # 100KB chunks
+            
+            while remaining > 0:
+                if self.close_connection:
+                    break
+                    
+                chunk = f.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                    
+                try:
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+                except (ConnectionError, socket.error) as e:
+                    self.logger.warning(f"Connection error while streaming: {e}")
+                    break
 
     def handle_content_directory_control(self):
         """Handle POST requests to /ContentDirectory/control with improved XML handling and browsing logic"""
@@ -1944,6 +2133,7 @@ def start_server(config):
 
     server.media_folders = media_folders
     server.indexed_files = indexed_files
+    server.av_transport = AVTransportService()  # Initialize AVTransport service
     
     # Start SSDP server in a separate thread
     ssdp_server = SSDPServer((local_ip, port)) # Pass logger if needed
