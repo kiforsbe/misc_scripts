@@ -1299,14 +1299,50 @@ class DLNAServer(BaseHTTPRequestHandler):
                 # Parse SOAP request using the new parser
                 try:
                     params = self.request_parser.parse_browse_request(body)
-                    result_didl, number_returned, total_matches = self.generate_browse_didl(
-                        params['object_id'], 
-                        params['browse_flag'],
-                        params['starting_index'],
-                        params['requested_count'],
-                        params['filter'],
-                        params['sort_criteria']
-                    )
+                    # For BrowseDirectChildren we should return all items in the container
+                    # For BrowseMetadata we should return just the container info
+                    result_didl = '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0" xmlns:sec="http://www.sec.co.kr/dlna">'
+                    
+                    if params['browse_flag'] == 'BrowseDirectChildren':
+                        number_returned = 0
+                        for file_path in self.media_files:
+                            item_id = str(self.media_files.index(file_path) + 1)
+                            mime_type = self.get_mime_type(file_path)
+                            file_name = os.path.basename(file_path)
+                            file_size = os.path.getsize(file_path)
+                            
+                            if mime_type.startswith('video/'):
+                                result_didl += f'''<item id="{item_id}" parentID="0" restricted="1">
+                                    <dc:title>{file_name}</dc:title>
+                                    <upnp:class>object.item.videoItem</upnp:class>
+                                    <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01" size="{file_size}">http://{self.server.server_address[0]}:{self.server.server_address[1]}/media/{item_id}</res>
+                                </item>'''
+                            elif mime_type.startswith('audio/'):
+                                result_didl += f'''<item id="{item_id}" parentID="0" restricted="1">
+                                    <dc:title>{file_name}</dc:title>
+                                    <upnp:class>object.item.audioItem.musicTrack</upnp:class>
+                                    <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01" size="{file_size}">http://{self.server.server_address[0]}:{self.server.server_address[1]}/media/{item_id}</res>
+                                </item>'''
+                            elif mime_type.startswith('image/'):
+                                result_didl += f'''<item id="{item_id}" parentID="0" restricted="1">
+                                    <dc:title>{file_name}</dc:title>
+                                    <upnp:class>object.item.imageItem.photo</upnp:class>
+                                    <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01" size="{file_size}">http://{self.server.server_address[0]}:{self.server.server_address[1]}/media/{item_id}</res>
+                                </item>'''
+                            number_returned += 1
+                        
+                        total_matches = len(self.media_files)
+                    else:  # BrowseMetadata
+                        result_didl += f'''<container id="0" parentID="-1" restricted="1" searchable="1" childCount="{len(self.media_files)}">
+                            <dc:title>Root</dc:title>
+                            <upnp:class>object.container.storageFolder</upnp:class>
+                            <upnp:storageUsed>-1</upnp:storageUsed>
+                            <upnp:writeStatus>NOT_WRITABLE</upnp:writeStatus>
+                        </container>'''
+                        number_returned = 1
+                        total_matches = 1
+                        
+                    result_didl += '</DIDL-Lite>'
                     
                     # Use SOAP handler to send response
                     response_content = f'''
