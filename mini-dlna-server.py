@@ -1196,7 +1196,7 @@ class DLNAServer(BaseHTTPRequestHandler):
                         
                         # Send successful response
                         self.send_response(200)
-                        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+                        self.send_header('Content-Type', 'application/xml; charset="utf-8"')
                         self.end_headers()
                         self.wfile.write(result_didl.encode('utf-8'))
                         return
@@ -1637,7 +1637,7 @@ class DLNAServer(BaseHTTPRequestHandler):
         # Convert to string and escape XML special characters for embedding in SOAP
         xml_string = tostring(root_element, encoding='unicode')
         # Basic escaping for embedding in XML. More robust escaping might be needed.
-        return xml_string.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        return f"{xml_string}" #.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
     def find_shared_folder_root(self, abs_path):
         """Finds which shared folder an absolute path belongs to."""
