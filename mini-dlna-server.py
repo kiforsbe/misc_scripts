@@ -116,8 +116,15 @@ class SSDPServer:
             'filtered_msgs': 0,
             'intervals': [],
             'last_interval': None,
-            'backoff_violations': 0
+            'backoff_violations': 0,
+            'performance': {
+                'total_messages': 0,
+                'response_times': [],
+                'error_count': 0,
+                'last_check': time.time()
+            }
         }
+        self.known_clients = set()  # Track unique clients
 
     def validate_announcement_timing(self, current_time):
         """Validate announcement timing follows exponential backoff"""
@@ -130,16 +137,44 @@ class SSDPServer:
                 self.metrics['intervals'].pop(0)
             
             # Check if interval is increasing properly
-            if self.metrics['last_interval'] and interval < self.metrics['last_interval']:
-                self.metrics['backoff_violations'] += 1
-                self.logger.warning(f"Backoff violation: Current interval {interval:.1f}s < Previous {self.metrics['last_interval']:.1f}s")
+            if self.metrics['last_interval']:
+                expected_interval = min(self.metrics['last_interval'] * 2, 1800)
+                if interval < expected_interval * 0.9:  # Allow 10% variance
+                    self.metrics['backoff_violations'] += 1
+                    self.logger.warning(
+                        f"Backoff violation: Interval {interval:.1f}s, "
+                        f"Expected {expected_interval:.1f}s"
+                    )
             
             self.metrics['last_interval'] = interval
             
-            # Log timing metrics every 5 announcements
+            # Log comprehensive metrics every 5 announcements
             if len(self.metrics['intervals']) >= 5:
-                avg_interval = sum(self.metrics['intervals']) / len(self.metrics['intervals'])
-                self.logger.info(f"SSDP Timing - Avg Interval: {avg_interval:.1f}s, Violations: {self.metrics['backoff_violations']}")
+                self.log_metrics()
+
+    def log_metrics(self):
+        """Log comprehensive performance metrics"""
+        now = time.time()
+        metrics = self.metrics
+        
+        # Calculate time-based stats
+        elapsed = now - metrics['last_check']
+        msg_rate = metrics['performance']['total_messages'] / elapsed if elapsed > 0 else 0
+        avg_interval = sum(metrics['intervals']) / len(metrics['intervals'])
+        
+        # Log detailed stats
+        self.logger.info(
+            f"SSDP Stats - Avg Interval: {avg_interval:.1f}s, "
+            f"Violations: {metrics['backoff_violations']}, "
+            f"Filtered: {metrics['filtered_msgs']}, "
+            f"Msg Rate: {msg_rate:.2f}/s, "
+            f"Unique Clients: {len(self.known_clients)}"
+        )
+        
+        # Reset counters
+        metrics['performance']['total_messages'] = 0
+        metrics['performance']['response_times'] = []
+        metrics['last_check'] = now
 
     def send_notification(self, nts_type):
         """Send SSDP notification (alive or byebye) with enhanced Samsung compatibility"""
@@ -380,8 +415,23 @@ class SSDPServer:
             return None
 
     def handle_request(self, data, addr):
-        """Handle incoming SSDP requests with improved filtering"""
+        """Handle incoming SSDP requests with enhanced filtering and metrics"""
         try:
+            start_time = time.time()
+            self.metrics['performance']['total_messages'] += 1
+            
+            # Track unique clients
+            self.known_clients.add(addr[0])
+            
+            # Enhanced source filtering
+            if addr[0] in (self.http_server_address[0], '127.0.0.1'):
+                self.metrics['filtered_msgs'] += 1
+                self.logger.debug(f"Filtered own SSDP message from {addr[0]}")
+                return
+                
+            # Track timing metrics
+            self.validate_announcement_timing(time.time())
+
             # Filter out our own messages and localhost
             if addr[0] in (self.http_server_address[0], '127.0.0.1'):
                 self.metrics['filtered_msgs'] += 1
@@ -448,9 +498,14 @@ class SSDPServer:
                 else:
                     self.logger.debug(f"Ignoring M-SEARCH from {addr}: ST '{st}' does not match our services.")
 
+            # Record response time
+            response_time = time.time() - start_time
+            self.metrics['performance']['response_times'].append(response_time)
+
         except UnicodeDecodeError as e:
             self.logger.warning(f"Received malformed SSDP request (UnicodeDecodeError) from {addr[0]}:{addr[1]}: {e}")
         except Exception as e:
+            self.metrics['performance']['error_count'] += 1
             self.logger.error(f"Error handling SSDP request from {addr[0]}:{addr[1]}: {e}", exc_info=True)
 
     def send_discovery_response(self, addr, st):
