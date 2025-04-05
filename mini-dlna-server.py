@@ -190,36 +190,35 @@ class SSDPServer:
 
     def periodic_announce(self):
         """Periodically send presence announcements with optimized timing"""
-        initial_interval = 0.5  # Start with more frequent announcements (was 1)
-        max_interval = 2      # Maximum interval between announcements (was 5)
-        burst_count = 3       # Number of initial rapid announcements
-        
-        # Initial burst of announcements
-        for _ in range(burst_count):
-            try:
-                self.error_handler.with_retry(self.send_alive_notification)
-                time.sleep(0.25)  # Short delay between initial announcements
-            except Exception as e:
-                self.logger.error(f"Error in initial announce burst: {str(e)}")
+        try:
+            # Initial burst for quick discovery (2 announcements, 500ms apart)
+            for _ in range(2):
+                self.send_alive_notification()
+                time.sleep(0.5)
 
-        current_interval = initial_interval
-        while self.running:
-            try:
-                self.error_handler.with_retry(self.send_alive_notification)
-                
-                # Sleep with interruption check
-                for _ in range(int(current_interval * 4)):  # *4 because we use 0.25s sleep chunks
+            # Use exponential backoff for announcements
+            announcement_interval = 60  # Start with 1 minute
+            max_interval = 1800  # Max 30 minutes
+            last_announcement = time.time()
+
+            while self.running:
+                current_time = time.time()
+                if current_time - last_announcement >= announcement_interval:
+                    self.send_alive_notification()
+                    last_announcement = current_time
+                    # Increase interval up to max
+                    announcement_interval = min(announcement_interval * 2, max_interval)
+
+                # Sleep in smaller chunks (5 seconds) to allow clean shutdown
+                for _ in range(10):  # 10 * 0.5s = 5s chunks
                     if not self.running:
                         break
-                    time.sleep(0.25)  # Use shorter sleep intervals to allow faster shutdown
-                
-                # Gradually increase interval up to max_interval
-                if current_interval < max_interval:
-                    current_interval = min(current_interval * 1.2, max_interval)
-                    
-            except Exception as e:
-                self.logger.error(f"Error in periodic announce: {str(e)}")
-                time.sleep(0.25)  # Prevent tight loop on error
+                    time.sleep(0.5)
+
+        except Exception as e:
+            self.logger.error(f"Error in periodic announce: {str(e)}")
+            if self.running:
+                time.sleep(1)  # Prevent tight loop on error
 
     def get_all_interfaces(self):
         """Get all IPv4 addresses of all network interfaces with error handling"""
@@ -266,23 +265,25 @@ class SSDPServer:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
             # Allow reuse of the address, crucial for multicast and coexistence
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
+            
+            # Set optimal buffer sizes
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB receive buffer
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB send buffer
+            
+            # Set socket timeouts
+            self.socket.settimeout(1.0)  # 1 second timeout for receiving
+            
             # Bind to the SSDP port on all available interfaces
             try:
                 self.socket.bind(('', SSDP_PORT))
                 self.logger.info(f"Successfully bound listening socket to ('', {SSDP_PORT})")
             except socket.error as e:
-                # EADDRINUSE (10048 on Windows) is expected if another service (like Windows Discovery) is running
-                if e.errno == errno.WSAEADDRINUSE or e.errno == errno.EADDRINUSE:
-                    self.logger.warning(f"SSDP port {SSDP_PORT} is already in use (Likely Windows Discovery Service). Will attempt to listen in shared mode.")
-                    # We can still often receive multicast packets even if binding fails with WSAEADDRINUSE on Windows when SO_REUSEADDR is set.
+                if e.errno == errno.WSAEADDRINUSE:
+                    self.logger.warning(f"SSDP port {SSDP_PORT} is already in use (Windows Discovery Service). Attempting shared mode.")
                 else:
-                    self.logger.error(f"Failed to bind listening socket to ('', {SSDP_PORT}): {e}")
+                    self.logger.error(f"Failed to bind listening socket: {e}")
                     self.cleanup_sockets()
                     return False
-
-            # Set socket timeout for receiving
-            self.socket.settimeout(1.0) # Timeout allows checking self.running periodically
 
             self.logger.info(f"SSDP listening socket initialized.")
             return True
@@ -342,8 +343,12 @@ class SSDPServer:
             return None
 
     def handle_request(self, data, addr):
-        """Handle incoming SSDP requests with error handling"""
+        """Handle incoming SSDP requests with improved filtering"""
         try:
+            # Filter out our own messages
+            if addr[0] == self.get_local_ip():
+                return
+
             request_line, *header_lines = data.decode('utf-8', errors='ignore').split('\r\n')
             self.logger.info(f"Received SSDP request from {addr[0]}:{addr[1]}: {request_line}")
             # self.logger.debug(f"Full request data: {data!r}") # Log raw data if needed
@@ -511,6 +516,10 @@ class SSDPServer:
             self.logger.info("SSDP server stopped.")
 
 class DLNAServer(BaseHTTPRequestHandler):
+    # Add thumbnail cache as class variable
+    thumbnail_cache = {}
+    thumbnail_cache_size = 100  # Maximum number of cached thumbnails
+
     def __init__(self, *args, **kwargs):
         self.logger = logging.getLogger('DLNAServer')
         self.protocol_version = 'HTTP/1.1'
@@ -1610,15 +1619,27 @@ class DLNAServer(BaseHTTPRequestHandler):
             return None, None
 
     def handle_thumbnail_request(self, file_path, is_video=False):
-        """Generate and serve thumbnails for videos and images"""
+        """Generate and serve thumbnails for videos and images with caching"""
         try:
+            # Check cache first
+            cache_key = f"{file_path}_{is_video}"
+            cached_thumb = self.thumbnail_cache.get(cache_key)
+            
+            if cached_thumb:
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/jpeg')
+                self.send_header('Content-Length', str(len(cached_thumb)))
+                self.send_header('Cache-Control', 'max-age=3600')  # Cache for 1 hour
+                self.end_headers()
+                self.wfile.write(cached_thumb)
+                return
+
             from PIL import Image
             import io
             
             if is_video:
                 try:
                     import ffmpeg
-                    # Extract frame at 1 second mark for video thumbnail
                     out, _ = (
                         ffmpeg
                         .input(file_path, ss="00:00:01")
@@ -1632,14 +1653,10 @@ class DLNAServer(BaseHTTPRequestHandler):
                     self.send_error(500, "Could not generate thumbnail")
                     return
             else:
-                # For images, just load and resize
                 image = Image.open(file_path)
             
-            # Resize maintaining aspect ratio
-            max_size = (320, 320)
-            image.thumbnail(max_size, Image.Resampling.LANCZOS)
+            image.thumbnail((320, 320), Image.Resampling.LANCZOS)
             
-            # Convert to RGB if necessary
             if image.mode in ('RGBA', 'LA'):
                 background = Image.new('RGB', image.size, (255, 255, 255))
                 background.paste(image, mask=image.split()[-1])
@@ -1647,17 +1664,22 @@ class DLNAServer(BaseHTTPRequestHandler):
             elif image.mode != 'RGB':
                 image = image.convert('RGB')
                 
-            # Save to buffer
             thumb_io = io.BytesIO()
             image.save(thumb_io, 'JPEG', quality=85)
-            thumb_io.seek(0)
+            thumb_data = thumb_io.getvalue()
             
-            # Send response
+            # Cache the thumbnail
+            if len(self.thumbnail_cache) >= self.thumbnail_cache_size:
+                # Remove oldest item if cache is full
+                self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
+            self.thumbnail_cache[cache_key] = thumb_data
+            
             self.send_response(200)
             self.send_header('Content-Type', 'image/jpeg')
-            self.send_header('Content-Length', str(thumb_io.getbuffer().nbytes))
+            self.send_header('Content-Length', str(len(thumb_data)))
+            self.send_header('Cache-Control', 'max-age=3600')
             self.end_headers()
-            self.wfile.write(thumb_io.getvalue())
+            self.wfile.write(thumb_data)
             
         except Exception as e:
             self.logger.error(f"Error handling thumbnail: {e}")
@@ -1681,6 +1703,267 @@ class DLNAServer(BaseHTTPRequestHandler):
         elif ext in IMAGE_EXTENSIONS:
             return 'JPEG_LRG', f'http-get:*:{content_type}:DLNA.ORG_PN=JPEG_LRG;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000'
         return None, None
+
+    def serve_descriptor_file(self, file_path):
+        """Serve UPnP/DLNA XML descriptor files"""
+        try:
+            if file_path == '/description.xml':
+                xml_content = f'''<?xml version="1.0"?>
+                <root xmlns="urn:schemas-upnp-org:device-1-0">
+                    <specVersion>
+                        <major>1</major>
+                        <minor>0</minor>
+                    </specVersion>
+                    <device>
+                        <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+                        <friendlyName>{DEVICE_NAME}</friendlyName>
+                        <manufacturer>Python DLNA</manufacturer>
+                        <manufacturerURL>https://github.com/</manufacturerURL>
+                        <modelDescription>Python DLNA Media Server</modelDescription>
+                        <modelName>Python-DLNA</modelName>
+                        <modelURL>https://github.com/</modelURL>
+                        <UDN>uuid:{DEVICE_UUID}</UDN>
+                        <dlna:X_DLNADOC xmlns:dlna="urn:schemas-dlna-org:device-1-0">DMS-1.50</dlna:X_DLNADOC>
+                        <serviceList>
+                            <service>
+                                <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
+                                <serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>
+                                <SCPDURL>/ContentDirectory.xml</SCPDURL>
+                                <controlURL>/ContentDirectory/control</controlURL>
+                                <eventSubURL>/ContentDirectory/event</eventSubURL>
+                            </service>
+                            <service>
+                                <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
+                                <serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>
+                                <SCPDURL>/ConnectionManager.xml</SCPDURL>
+                                <controlURL>/ConnectionManager/control</controlURL>
+                                <eventSubURL>/ConnectionManager/event</eventSubURL>
+                            </service>
+                            <service>
+                                <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
+                                <serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>
+                                <SCPDURL>/AVTransport.xml</SCPDURL>
+                                <controlURL>/AVTransport/control</controlURL>
+                                <eventSubURL>/AVTransport/event</eventSubURL>
+                            </service>
+                        </serviceList>
+                    </device>
+                </root>'''
+            elif file_path == '/ContentDirectory.xml':
+                xml_content = '''<?xml version="1.0" encoding="utf-8"?>
+                <scpd xmlns="urn:schemas-upnp-org:service-1-0">
+                    <specVersion>
+                        <major>1</major>
+                        <minor>0</minor>
+                    </specVersion>
+                    <actionList>
+                        <action>
+                            <name>Browse</name>
+                            <argumentList>
+                                <argument>
+                                    <name>ObjectID</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>BrowseFlag</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>Filter</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>StartingIndex</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>RequestedCount</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>SortCriteria</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>Result</name>
+                                    <direction>out</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>NumberReturned</name>
+                                    <direction>out</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>TotalMatches</name>
+                                    <direction>out</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>UpdateID</name>
+                                    <direction>out</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable>
+                                </argument>
+                            </argumentList>
+                        </action>
+                    </actionList>
+                    <serviceStateTable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_BrowseFlag</name>
+                            <dataType>string</dataType>
+                            <allowedValueList>
+                                <allowedValue>BrowseMetadata</allowedValue>
+                                <allowedValue>BrowseDirectChildren</allowedValue>
+                            </allowedValueList>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_ObjectID</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_UpdateID</name>
+                            <dataType>ui4</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_Filter</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_Index</name>
+                            <dataType>ui4</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_Count</name>
+                            <dataType>ui4</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_SortCriteria</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_Result</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="yes">
+                            <name>SystemUpdateID</name>
+                            <dataType>ui4</dataType>
+                        </stateVariable>
+                    </serviceStateTable>
+                </scpd>'''
+            elif file_path == '/ConnectionManager.xml':
+                xml_content = '''<?xml version="1.0" encoding="utf-8"?>
+                <scpd xmlns="urn:schemas-upnp-org:service-1-0">
+                    <specVersion>
+                        <major>1</major>
+                        <minor>0</minor>
+                    </specVersion>
+                    <actionList>
+                        <action>
+                            <name>GetProtocolInfo</name>
+                            <argumentList>
+                                <argument>
+                                    <name>Source</name>
+                                    <direction>out</direction>
+                                    <relatedStateVariable>SourceProtocolInfo</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>Sink</name>
+                                    <direction>out</direction>
+                                    <relatedStateVariable>SinkProtocolInfo</relatedStateVariable>
+                                </argument>
+                            </argumentList>
+                        </action>
+                    </actionList>
+                    <serviceStateTable>
+                        <stateVariable sendEvents="yes">
+                            <name>SourceProtocolInfo</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="yes">
+                            <name>SinkProtocolInfo</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="yes">
+                            <name>CurrentConnectionIDs</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                    </serviceStateTable>
+                </scpd>'''
+            elif file_path == '/AVTransport.xml':
+                xml_content = '''<?xml version="1.0" encoding="utf-8"?>
+                <scpd xmlns="urn:schemas-upnp-org:service-1-0">
+                    <specVersion>
+                        <major>1</major>
+                        <minor>0</minor>
+                    </specVersion>
+                    <actionList>
+                        <action>
+                            <name>SetAVTransportURI</name>
+                            <argumentList>
+                                <argument>
+                                    <name>InstanceID</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>CurrentURI</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>AVTransportURI</relatedStateVariable>
+                                </argument>
+                            </argumentList>
+                        </action>
+                        <action>
+                            <name>Play</name>
+                            <argumentList>
+                                <argument>
+                                    <name>InstanceID</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable>
+                                </argument>
+                                <argument>
+                                    <name>Speed</name>
+                                    <direction>in</direction>
+                                    <relatedStateVariable>TransportPlaySpeed</relatedStateVariable>
+                                </argument>
+                            </argumentList>
+                        </action>
+                    </actionList>
+                    <serviceStateTable>
+                        <stateVariable sendEvents="no">
+                            <name>A_ARG_TYPE_InstanceID</name>
+                            <dataType>ui4</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>AVTransportURI</name>
+                            <dataType>string</dataType>
+                        </stateVariable>
+                        <stateVariable sendEvents="no">
+                            <name>TransportPlaySpeed</name>
+                            <dataType>string</dataType>
+                            <defaultValue>1</defaultValue>
+                        </stateVariable>
+                    </serviceStateTable>
+                </scpd>'''
+            else:
+                self.send_error(404, "Unknown descriptor file")
+                return
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+            xml_bytes = xml_content.encode('utf-8')
+            self.send_header('Content-Length', str(len(xml_bytes)))
+            self.end_headers()
+            self.wfile.write(xml_bytes)
+            
+        except Exception as e:
+            self.logger.error(f"Error serving descriptor file {file_path}: {e}")
+            self.send_error(500, f"Internal server error serving {file_path}")
 
 def get_local_ip():
     """Get the local IP address"""
