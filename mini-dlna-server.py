@@ -202,64 +202,49 @@ class SSDPServer:
         """Send SSDP notification (alive or byebye) with enhanced Samsung compatibility"""
         services = [
             'upnp:rootdevice',
-            f'uuid:{DEVICE_UUID}', # Add device UDN itself
+            f'uuid:{DEVICE_UUID}',
             'urn:schemas-upnp-org:device:MediaServer:1',
             'urn:schemas-upnp-org:service:ContentDirectory:1',
             'urn:schemas-upnp-org:service:ConnectionManager:1',
-            'urn:schemas-upnp-org:service:AVTransport:1' # Added AVTransport
+            'urn:schemas-upnp-org:service:AVTransport:1'
         ]
 
         location = f'http://{self.http_server_address[0]}:{self.http_server_address[1]}/description.xml'
 
         for service in services:
             usn = f'uuid:{DEVICE_UUID}'
-            if service != 'upnp:rootdevice' and not service.startswith('uuid:'):
-                 usn += f'::{service}' # Correct USN format
+            if service != f'uuid:{DEVICE_UUID}':
+                usn += f'::{service}'
 
             try:
                 notify_msg = '\r\n'.join([
                     'NOTIFY * HTTP/1.1',
                     f'HOST: {SSDP_ADDR}:{SSDP_PORT}',
-                    'CACHE-CONTROL: max-age=1800' if nts_type == 'ssdp:alive' else '', # Only for alive
+                    'CACHE-CONTROL: max-age=1800',
                     f'LOCATION: {location}',
                     f'NT: {service}',
                     f'NTS: {nts_type}',
-                    'SERVER: Windows/10 UPnP/1.0 Python-DLNA/1.0', # Simplified Server header
+                    'SERVER: Windows/10.0 UPnP/1.0 Python-DLNA/1.0',
                     f'USN: {usn}',
-                    'BOOTID.UPNP.ORG: 1', # Keep BootID
-                    'CONFIGID.UPNP.ORG: 1', # Keep ConfigID
-                    # Samsung-specific headers (optional but potentially helpful)
-                    'X-DLNADOC: DMS-1.50',
-                    'X-DLNACAP: av-upload,image-upload,audio-upload', # Capabilities
-                    'Content-Length: 0',
+                    'BOOTID.UPNP.ORG: 1',
+                    'CONFIGID.UPNP.ORG: 1',
+                    'DEVICEID.SES.COM: 1',  # Samsung specific
+                    'X-DLNADOC: DMS-1.50',  # DLNA version for Samsung
+                    'X-DLNACAP: av-upload,image-upload,audio-upload',
                     '',
                     ''
-                ]).strip() # Remove empty lines if CACHE-CONTROL is absent
+                ])
 
-                # Send notification using the announce socket bound to a specific interface
                 interfaces = self.get_all_interfaces()
                 for interface_ip in interfaces:
                     try:
-                        # Create a temporary socket for sending on this interface
-                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as send_sock:
-                            send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            send_sock.bind((interface_ip, 0))  # Use random source port
-                            
-                            # Set multicast TTL
-                            send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
-                            
-                            # Send notification
-                            send_sock.sendto(notify_msg.encode('utf-8'), (SSDP_ADDR, SSDP_PORT))
-                            self.logger.info(f"Sent {nts_type} notification for service [{service}] via interface [{interface_ip}]")
-
-                    except socket.error as sock_err:
-                         # Log specific socket errors during sending
-                         self.logger.warning(f"Socket error sending {nts_type} on {interface_ip} for {service}: {sock_err}")
+                        self.socket.sendto(notify_msg.encode('utf-8'), (SSDP_ADDR, SSDP_PORT))
+                        self.logger.info(f"Sent {nts_type} notification for service [{service}] via interface [{interface_ip}]")
                     except Exception as e:
-                        self.logger.warning(f"Failed to send {nts_type} notification on interface {interface_ip} for {service}: {str(e)}")
+                        self.logger.warning(f"Failed to send {nts_type} on interface {interface_ip}: {e}")
 
             except Exception as e:
-                self.logger.error(f"Failed to prepare/send {nts_type} notification for service {service}: {str(e)}")
+                self.logger.error(f"Failed to send {nts_type} notification for service {service}: {str(e)}")
                 continue
 
     def send_alive_notification(self):
@@ -1374,28 +1359,27 @@ class DLNAServer(BaseHTTPRequestHandler):
             # Parse the SOAP request robustly
             try:
                 envelope = fromstring(post_data)
-                # Namespace handling might be needed depending on client request format
                 ns = {
                     's': 'http://schemas.xmlsoap.org/soap/envelope/',
                     'u': 'urn:schemas-upnp-org:service:ContentDirectory:1'
                 }
                 body = envelope.find('s:Body', ns)
                 if body is None: # Try without namespace if first fails
-                     body = envelope.find('{http://schemas.xmlsoap.org/soap/envelope/}Body')
+                    body = envelope.find('{http://schemas.xmlsoap.org/soap/envelope/}Body')
 
                 if body is None:
-                     self.logger.error("Could not find SOAP Body in request")
-                     self.send_error(400, "Invalid SOAP request: Missing Body")
-                     return
+                    self.logger.error("Could not find SOAP Body in request")
+                    self.send_error(400, "Invalid SOAP request: Missing Body")
+                    return
 
                 browse = body.find('u:Browse', ns)
                 if browse is None: # Try without namespace
-                     browse = body.find('{urn:schemas-upnp-org:service:ContentDirectory:1}Browse')
+                    browse = body.find('{urn:schemas-upnp-org:service:ContentDirectory:1}Browse')
 
                 if browse is None:
-                     self.logger.error("Could not find Browse action in SOAP Body")
-                     self.send_error(400, "Invalid SOAP request: Missing Browse action")
-                     return
+                    self.logger.error("Could not find Browse action in SOAP Body")
+                    self.send_error(400, "Invalid SOAP request: Missing Browse action")
+                    return
 
             except Exception as xml_err:
                 self.logger.error(f"Error parsing SOAP XML: {xml_err}")
@@ -1461,22 +1445,22 @@ class DLNAServer(BaseHTTPRequestHandler):
                       self.logger.error(f"Could not send error response to client: {send_err}")
 
     def generate_browse_didl(self, object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria):
-        """Generates the DIDL-Lite XML string and counts based on browse parameters."""
+        """Generates the DIDL-Lite XML string for Samsung TV compatibility"""
         self.logger.debug(f"Generating DIDL - ObjectID: {object_id}, BrowseFlag: {browse_flag}, StartIndex: {starting_index}, Count: {requested_count}")
         
         root = Element('DIDL-Lite', {
             'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
             'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
             'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
-            'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0'
+            'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0',
+            'xmlns:sec': 'http://www.sec.co.kr/dlna'  # Add Samsung namespace
         })
 
         try:
-            # For root browsing
-            if object_id == '0':
+            if object_id == '0':  # Root container
                 if browse_flag == 'BrowseMetadata':
                     self.logger.debug("Processing BrowseMetadata for root container")
-                    # Count valid media files and folders in all shared folders
+                    # Count valid media files and folders
                     total_children = 0
                     for shared_folder in self.server.media_folders:
                         try:
@@ -1505,8 +1489,44 @@ class DLNAServer(BaseHTTPRequestHandler):
                     self.logger.debug(f"Root BrowseMetadata response - Children: {total_children}, DIDL: {result}")
                     return result, 1, 1
 
-            # For non-root items
-            else:
+                elif browse_flag == 'BrowseDirectChildren':
+                    self.logger.debug("Processing BrowseDirectChildren for root container")
+                    total_matched = 0
+                    items_added = 0
+
+                    for shared_folder in self.server.media_folders:
+                        try:
+                            entries = list(os.scandir(shared_folder))
+                            entries.sort(key=lambda x: x.name.lower())  # Sort entries alphabetically
+                            
+                            for entry in entries:
+                                if total_matched >= starting_index:
+                                    if requested_count > 0 and items_added >= requested_count:
+                                        break
+
+                                    if entry.is_dir():
+                                        self.add_container_to_didl(root, entry.path, entry.name, '0')
+                                        items_added += 1
+                                    elif entry.is_file():
+                                        ext = os.path.splitext(entry.name)[1].lower()
+                                        if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                                            self.add_item_to_didl(root, entry.path, entry.name, '0')
+                                            items_added += 1
+                                
+                                if entry.is_dir() or (entry.is_file() and 
+                                    os.path.splitext(entry.name)[1].lower() in 
+                                    {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
+                                    total_matched += 1
+
+                        except OSError as e:
+                            self.logger.error(f"Error scanning directory {shared_folder}: {e}")
+                            continue
+
+                    result = self.encode_didl(root)
+                    self.logger.debug(f"Root BrowseDirectChildren response - Added: {items_added}, Total: {total_matched}")
+                    return result, items_added, total_matched
+
+            else:  # Non-root items
                 if browse_flag == 'BrowseMetadata':
                     self.logger.debug(f"Processing BrowseMetadata for object: {object_id}")
                     # Find the actual path from object_id
@@ -1521,7 +1541,6 @@ class DLNAServer(BaseHTTPRequestHandler):
                     if actual_path and os.path.exists(actual_path):
                         if os.path.isdir(actual_path):
                             self.logger.debug(f"Processing directory metadata: {actual_path}")
-                            # Count valid children in this directory
                             child_count = 0
                             try:
                                 with os.scandir(actual_path) as entries:
@@ -1533,7 +1552,6 @@ class DLNAServer(BaseHTTPRequestHandler):
                             except OSError as e:
                                 self.logger.error(f"Error counting children in {actual_path}: {e}")
 
-                            # Create container element with accurate child count
                             container = SubElement(root, 'container', {
                                 'id': object_id,
                                 'parentID': os.path.dirname(object_id) or '0',
@@ -1543,35 +1561,72 @@ class DLNAServer(BaseHTTPRequestHandler):
                             })
                             SubElement(container, 'dc:title').text = os.path.basename(actual_path)
                             SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
-                            SubElement(container, 'upnp:storageUsed').text = '-1'
-                            SubElement(container, 'upnp:writeStatus').text = 'NOT_WRITABLE'
-
-                            # Add modification date
-                            try:
-                                mtime = os.path.getmtime(actual_path)
-                                mod_time = datetime.fromtimestamp(mtime)
-                                SubElement(container, 'dc:date').text = mod_time.isoformat()
-                            except OSError as e:
-                                self.logger.warning(f"Could not get modification time for {actual_path}: {e}")
-
+                            
                             result = self.encode_didl(root)
-                            self.logger.debug(f"Directory BrowseMetadata response - Path: {actual_path}, Children: {child_count}, DIDL: {result}")
+                            self.logger.debug(f"Directory BrowseMetadata response - Path: {actual_path}, Children: {child_count}")
                             return result, 1, 1
 
-                        else:  # File
+                        else:  # File metadata
                             self.logger.debug(f"Processing file metadata: {actual_path}")
                             self.add_item_to_didl(root, actual_path, os.path.basename(actual_path), 
                                                 os.path.dirname(object_id) or '0')
                             result = self.encode_didl(root)
-                            self.logger.debug(f"File BrowseMetadata response - Path: {actual_path}, DIDL: {result}")
+                            self.logger.debug(f"File BrowseMetadata response - Path: {actual_path}")
                             return result, 1, 1
 
                     else:
                         self.logger.error(f"Path not found for object_id: {object_id}")
                         return self.encode_didl(root), 0, 0
 
-            # Continue with existing BrowseDirectChildren logic
-            # ...existing code...
+                elif browse_flag == 'BrowseDirectChildren':
+                    self.logger.debug(f"Processing BrowseDirectChildren for object: {object_id}")
+                    # Find directory path
+                    dir_path = None
+                    for shared_folder in self.server.media_folders:
+                        potential_path = os.path.join(shared_folder, unquote(object_id))
+                        if os.path.exists(potential_path) and os.path.isdir(potential_path):
+                            dir_path = potential_path
+                            break
+
+                    if dir_path:
+                        try:
+                            entries = list(os.scandir(dir_path))
+                            entries.sort(key=lambda x: x.name.lower())  # Sort entries alphabetically
+                            total_matched = 0
+                            items_added = 0
+
+                            for entry in entries:
+                                if total_matched >= starting_index:
+                                    if requested_count > 0 and items_added >= requested_count:
+                                        break
+
+                                    if entry.is_dir():
+                                        self.add_container_to_didl(root, entry.path, entry.name, object_id)
+                                        items_added += 1
+                                    elif entry.is_file():
+                                        ext = os.path.splitext(entry.name)[1].lower()
+                                        if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                                            self.add_item_to_didl(root, entry.path, entry.name, object_id)
+                                            items_added += 1
+
+                                if entry.is_dir() or (entry.is_file() and 
+                                    os.path.splitext(entry.name)[1].lower() in 
+                                    {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
+                                    total_matched += 1
+
+                            result = self.encode_didl(root)
+                            self.logger.debug(f"Directory BrowseDirectChildren response - Added: {items_added}, Total: {total_matched}")
+                            return result, items_added, total_matched
+
+                        except OSError as e:
+                            self.logger.error(f"Error scanning directory {dir_path}: {e}")
+                            return self.encode_didl(root), 0, 0
+
+                    else:
+                        self.logger.error(f"Directory not found for object_id: {object_id}")
+                        return self.encode_didl(root), 0, 0
+
+            return self.encode_didl(root), 0, 0
 
         except Exception as e:
             self.logger.error(f"Error in generate_browse_didl: {e}", exc_info=True)
@@ -1649,7 +1704,7 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.logger.error(f"Error adding container to DIDL for path {path}: {e}", exc_info=True)
 
     def add_item_to_didl(self, root, path, title, parent_id, next_id=None):
-        """Add an item to the DIDL-Lite XML with improved metadata and playlist support"""
+        """Add an item to the DIDL-Lite XML with Samsung TV compatibility"""
         try:
             shared_root = self.find_shared_folder_root(path)
             if not shared_root:
@@ -1658,76 +1713,105 @@ class DLNAServer(BaseHTTPRequestHandler):
 
             relative_path = os.path.relpath(path, shared_root)
             item_id = quote(relative_path.replace('\\', '/'))
+            ext = os.path.splitext(path)[1].lower()
 
-            mime_type, upnp_class = self.get_mime_and_upnp_class(title)
-            if upnp_class == 'object.item':
+            mime_type = (VIDEO_EXTENSIONS.get(ext) or 
+                        AUDIO_EXTENSIONS.get(ext) or 
+                        IMAGE_EXTENSIONS.get(ext))
+            if not mime_type:
                 self.logger.debug(f"Skipping item with unknown type: {path}")
                 return
 
+            # Determine DLNA profile and class
+            dlna_profile, protocol_info = self.get_dlna_profile(ext, mime_type)
+            upnp_class = ('object.item.videoItem.movie' if ext in VIDEO_EXTENSIONS else
+                         'object.item.audioItem.musicTrack' if ext in AUDIO_EXTENSIONS else
+                         'object.item.imageItem.photo' if ext in IMAGE_EXTENSIONS else
+                         'object.item')
+
+            # Create item element with required attributes
             item = SubElement(root, 'item', {
                 'id': item_id,
                 'parentID': parent_id,
-                'restricted': '1'
+                'restricted': '1',
+                'dlna:dlnaManaged': '00000001'  # Samsung TV compatibility
             })
 
+            # Add basic metadata
             SubElement(item, 'dc:title').text = title
             SubElement(item, 'upnp:class').text = upnp_class
 
-            # Add resource element
+            # Add resource element with full metadata
             res = SubElement(item, 'res')
             try:
                 file_size = os.path.getsize(path)
-            except OSError:
-                file_size = 0
+                url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{quote(relative_path)}'
+                res.text = url
+                res.set('size', str(file_size))
+                res.set('protocolInfo', protocol_info)
 
-            # Construct URL
-            url_path_part = quote(relative_path.replace('\\', '/'))
-            url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{url_path_part}'
-            res.text = url
+                # Add media-specific metadata
+                if ext in VIDEO_EXTENSIONS:
+                    duration = self.get_media_duration_seconds(path)
+                    if duration:
+                        res.set('duration', str(datetime.timedelta(seconds=int(duration))))
+                        res.set('sampleRate', '48000')  # Common video sample rate
+                        res.set('nrAudioChannels', '2')  # Stereo audio
+                    # Add video thumbnail
+                    thumb = SubElement(item, 'upnp:albumArtURI')
+                    thumb.set('dlna:profileID', 'JPEG_TN')
+                    thumb.set('xmlns:dlna', 'urn:schemas-dlna-org:metadata-1-0')
+                    thumb.text = f'{url}?thumbnail=true'
+                    # Add Samsung-specific video metadata
+                    SubElement(item, 'sec:CaptionInfo').text = 'No'
+                    SubElement(item, 'sec:CaptionInfoEx').text = 'No'
+                    SubElement(item, 'sec:dcmInfo').text = 'No'
 
-            # Add DLNA attributes
-            if upnp_class.startswith('object.item.audioItem'):
-                protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000'
-                duration = self.get_media_duration_seconds(path)
-                if duration:
-                    res.set('duration', str(datetime.timedelta(seconds=int(duration))))
-                # Add next item for playlists
-                if next_id:
-                    next_url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{next_id}'
-                    next_res = SubElement(item, 'res', {
-                        'protocolInfo': protocol_info,
-                        'nextAV': next_url
-                    })
+                elif ext in AUDIO_EXTENSIONS:
+                    duration = self.get_media_duration_seconds(path)
+                    if duration:
+                        res.set('duration', str(datetime.timedelta(seconds=int(duration))))
+                    # Add audio metadata from file
+                    try:
+                        audio = File(path)
+                        if audio and hasattr(audio, 'tags'):
+                            tags = audio.tags
+                            if hasattr(tags, 'get'):  # Handle both dict-like and object interfaces
+                                artist = str(tags.get('artist', [''])[0]) if isinstance(tags.get('artist', ['']), (list, tuple)) else str(tags.get('artist', ''))
+                                album = str(tags.get('album', [''])[0]) if isinstance(tags.get('album', ['']), (list, tuple)) else str(tags.get('album', ''))
+                                genre = str(tags.get('genre', [''])[0]) if isinstance(tags.get('genre', ['']), (list, tuple)) else str(tags.get('genre', ''))
+                                if artist:
+                                    SubElement(item, 'upnp:artist').text = artist
+                                if album:
+                                    SubElement(item, 'upnp:album').text = album
+                                if genre:
+                                    SubElement(item, 'upnp:genre').text = genre
+                    except Exception as e:
+                        self.logger.debug(f"Error reading audio metadata: {e}")
 
-            elif upnp_class.startswith('object.item.videoItem'):
-                protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
-                duration = self.get_media_duration_seconds(path)
-                if duration:
-                    res.set('duration', str(datetime.timedelta(seconds=int(duration))))
-                # Add thumbnail
-                thumb_uri = SubElement(item, 'upnp:albumArtURI')
-                thumb_uri.set('dlna:profileID', 'JPEG_TN')
-                thumb_uri.text = f'{url}?thumbnail=true'
+                elif ext in IMAGE_EXTENSIONS:
+                    # Add image resolution if available
+                    resolution = self.get_image_resolution(path)
+                    if resolution:
+                        res.set('resolution', resolution)
+                    # Add thumbnail for images
+                    thumb = SubElement(item, 'upnp:albumArtURI')
+                    thumb.set('dlna:profileID', 'JPEG_TN')
+                    thumb.set('xmlns:dlna', 'urn:schemas-dlna-org:metadata-1-0')
+                    thumb.text = f'{url}?thumbnail=true'
 
-            elif upnp_class.startswith('object.item.imageItem'):
-                protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000'
-                # Add thumbnail for images
-                thumb_uri = SubElement(item, 'upnp:albumArtURI')
-                thumb_uri.set('dlna:profileID', 'JPEG_TN')
-                thumb_uri.text = f'{url}?thumbnail=true'
+                # Add modification date
+                try:
+                    mod_time = datetime.fromtimestamp(os.path.getmtime(path))
+                    SubElement(item, 'dc:date').text = mod_time.isoformat()
+                except OSError:
+                    pass
 
-            res.set('protocolInfo', protocol_info)
-            res.set('size', str(file_size))
-
-            # Add modification date
-            try:
-                mod_time = datetime.fromtimestamp(os.path.getmtime(path))
-                SubElement(item, 'dc:date').text = mod_time.isoformat()
-            except OSError:
-                pass
+            except Exception as e:
+                self.logger.error(f"Error adding resource element for {path}: {e}")
 
         except Exception as e:
-            self.logger.error(f"Error adding item to DIDL for path {path}: {e}", exc_info=True)
+            self.logger.error(f"Error adding item to DIDL-Lite for {path}: {e}", exc_info=True)
 
     def get_media_duration(self, file_path):
         """Get media duration using mutagen (works for audio/some video)"""
@@ -1890,36 +1974,165 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.send_error(500, "Internal server error")
 
     def send_content_directory(self):
-        """Send DLNA Content Directory XML"""
+        """Send DLNA Content Directory XML with Samsung compatibility"""
         try:
-            # Create the content directory XML
-            root = Element('root', {
-                'xmlns': 'urn:schemas-upnp-org:service-1-0',
-                'xmlns:dlna': 'urn:schemas-dlna-org:service-1-0'
-            })
-            
-            # Add specVersion
-            spec_version = SubElement(root, 'specVersion')
-            SubElement(spec_version, 'major').text = '1'
-            SubElement(spec_version, 'minor').text = '0'
-            
-            # Add service information
-            service = SubElement(root, 'service')
-            SubElement(service, 'serviceType').text = 'urn:schemas-upnp-org:service:ContentDirectory:1'
-            SubElement(service, 'serviceId').text = 'urn:upnp-org:serviceId:ContentDirectory'
-            
-            # Convert XML to string
-            xml_str = tostring(root, encoding='utf-8', method='xml')
-            
-            # Send response
+            content_directory_xml = '''<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+    <specVersion>
+        <major>1</major>
+        <minor>0</minor>
+    </specVersion>
+    <actionList>
+        <action>
+            <name>Browse</name>
+            <argumentList>
+                <argument>
+                    <name>ObjectID</name>
+                    <direction>in</direction>
+                    <relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>BrowseFlag</name>
+                    <direction>in</direction>
+                    <relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>Filter</name>
+                    <direction>in</direction>
+                    <relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>StartingIndex</name>
+                    <direction>in</direction>
+                    <relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>RequestedCount</name>
+                    <direction>in</direction>
+                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>SortCriteria</name>
+                    <direction>in</direction>
+                    <relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>Result</name>
+                    <direction>out</direction>
+                    <relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>NumberReturned</name>
+                    <direction>out</direction>
+                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>TotalMatches</name>
+                    <direction>out</direction>
+                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
+                </argument>
+                <argument>
+                    <name>UpdateID</name>
+                    <direction>out</direction>
+                    <relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable>
+                </argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSearchCapabilities</name>
+            <argumentList>
+                <argument>
+                    <name>SearchCaps</name>
+                    <direction>out</direction>
+                    <relatedStateVariable>SearchCapabilities</relatedStateVariable>
+                </argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSortCapabilities</name>
+            <argumentList>
+                <argument>
+                    <name>SortCaps</name>
+                    <direction>out</direction>
+                    <relatedStateVariable>SortCapabilities</relatedStateVariable>
+                </argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSystemUpdateID</name>
+            <argumentList>
+                <argument>
+                    <name>Id</name>
+                    <direction>out</direction>
+                    <relatedStateVariable>SystemUpdateID</relatedStateVariable>
+                </argument>
+            </argumentList>
+        </action>
+    </actionList>
+    <serviceStateTable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_BrowseFlag</name>
+            <dataType>string</dataType>
+            <allowedValueList>
+                <allowedValue>BrowseMetadata</allowedValue>
+                <allowedValue>BrowseDirectChildren</allowedValue>
+            </allowedValueList>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_ObjectID</name>
+            <dataType>string</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_UpdateID</name>
+            <dataType>ui4</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_Filter</name>
+            <dataType>string</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_Index</name>
+            <dataType>ui4</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_Count</name>
+            <dataType>ui4</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_SortCriteria</name>
+            <dataType>string</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>A_ARG_TYPE_Result</name>
+            <dataType>string</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="yes">
+            <name>SystemUpdateID</name>
+            <dataType>ui4</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>SearchCapabilities</name>
+            <dataType>string</dataType>
+        </stateVariable>
+        <stateVariable sendEvents="no">
+            <name>SortCapabilities</name>
+            <dataType>string</dataType>
+        </stateVariable>
+    </serviceStateTable>
+</scpd>'''
+
             self.send_response(200)
-            self.send_header('Content-Type', 'application/xml')
-            self.send_header('Content-Length', len(xml_str))
+            self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+            response_bytes = content_directory_xml.encode('utf-8')
+            self.send_header('Content-Length', str(len(response_bytes)))
             self.end_headers()
-            self.wfile.write(xml_str)
+            self.wfile.write(response_bytes)
+            self.logger.debug("Sent Content Directory service description")
+
         except Exception as e:
-            self.logger.error(f"Error sending content directory: {str(e)}")
-            self.send_error(500, "Internal server error")
+            self.logger.error(f"Error sending Content Directory description: {str(e)}")
+            if not self.headers_sent:
+                self.send_error(500, "Internal server error")
 
     def send_connection_manager(self):
         """Send DLNA Connection Manager XML"""
@@ -2160,12 +2373,12 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.send_error(500, "Could not generate thumbnail")
 
     def get_dlna_profile(self, ext, content_type):
-        """Get DLNA profile and protocol info based on file type"""
+        """Get DLNA profile and protocol info based on file type with Samsung TV support"""
         if ext in VIDEO_EXTENSIONS:
             if ext == '.mp4':
                 return 'AVC_MP4_HP_HD_AAC', f'http-get:*:{content_type}:DLNA.ORG_PN=AVC_MP4_HP_HD_AAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
             elif ext == '.mkv':
-                return 'MATROSKA', f'http-get:*:{content_type}:DLNA.ORG_PN=MATROSKA;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
+                return 'MKV', f'http-get:*:{content_type}:DLNA.ORG_PN=MKV;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
             return 'AVC_MP4_HP_HD_AAC', f'http-get:*:{content_type}:DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000'
         elif ext in AUDIO_EXTENSIONS:
             if ext == '.mp3':
@@ -2174,7 +2387,8 @@ class DLNAServer(BaseHTTPRequestHandler):
                 return 'FLAC', f'http-get:*:{content_type}:DLNA.ORG_PN=FLAC;DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000'
             return 'MP3', f'http-get:*:{content_type}:DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000'
         elif ext in IMAGE_EXTENSIONS:
-            return 'JPEG_LRG', f'http-get:*:{content_type}:DLNA.ORG_PN=JPEG_LRG;DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000'
+            # Samsung TVs prefer JPEG_LRG profile for images
+            return 'JPEG_LRG', f'http-get:*:{content_type}:DLNA.ORG_PN=JPEG_LRG;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000;DLNA.ORG_OP=01'
         return None, None
 
     def serve_descriptor_file(self, file_path):
@@ -2215,6 +2429,60 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.logger.error(f"Error serving descriptor file {file_path}: {e}", exc_info=True)
             if not self.headers_sent:
                 self.send_error(500, f"Internal server error serving {file_path}")
+
+    def get_media_duration_seconds(self, file_path):
+        """Get media duration in seconds"""
+        try:
+            media = File(file_path)
+            if media and hasattr(media.info, 'length'):
+                return int(media.info.length)
+        except Exception as e:
+            self.logger.debug(f"Could not get duration for {file_path}: {e}")
+        return None
+
+    def handle_time_seek_request(self):
+        """Handle DLNA time-based seek requests"""
+        try:
+            timeseek_header = self.headers.get('TimeSeekRange.dlna.org')
+            if timeseek_header:
+                # Format: npt=<start_time>-<end_time>
+                times = timeseek_header.split('=')[1].split('-')
+                start_time = float(times[0])
+                end_time = float(times[1]) if len(times) > 1 and times[1] else None
+                return start_time, end_time
+        except Exception as e:
+            self.logger.debug(f"Error parsing time seek request: {e}")
+        return None, None
+
+    def get_protocol_info(self, mime_type, ext):
+        """Get Samsung TV compatible protocol info string"""
+        flags = {
+            'video': '01700000000000000000000000000000',  # Video flags
+            'audio': '01500000000000000000000000000000',  # Audio flags
+            'image': '00f00000000000000000000000000000'   # Image flags
+        }
+        
+        if ext in VIDEO_EXTENSIONS:
+            profile = 'AVC_MP4_HP_HD_AAC' if ext == '.mp4' else 'MKV' if ext == '.mkv' else ''
+            protocol_info = f'http-get:*:{mime_type}:'
+            if profile:
+                protocol_info += f'DLNA.ORG_PN={profile};'
+            protocol_info += f'DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS={flags["video"]}'
+            
+        elif ext in AUDIO_EXTENSIONS:
+            profile = 'MP3' if ext == '.mp3' else 'FLAC' if ext == '.flac' else ''
+            protocol_info = f'http-get:*:{mime_type}:'
+            if profile:
+                protocol_info += f'DLNA.ORG_PN={profile};'
+            protocol_info += f'DLNA.ORG_OP=11;DLNA.ORG_CI=0;DLNA.ORG_FLAGS={flags["audio"]}'
+            
+        elif ext in IMAGE_EXTENSIONS:
+            protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_PN=JPEG_LRG;DLNA.ORG_CI=0;DLNA.ORG_FLAGS={flags["image"]};DLNA.ORG_OP=01'
+            
+        else:
+            protocol_info = f'http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0'
+            
+        return protocol_info
 
 def get_local_ip():
     """Get the local IP address"""
