@@ -1474,7 +1474,7 @@ class DLNAServer(BaseHTTPRequestHandler):
                     
                     result = self.encode_didl(root)
                     self.logger.debug(f"Root BrowseMetadata response - Children: {total_children}, DIDL: {result}")
-                    return result, 1, 1
+                    return result, total_children, total_children
 
                 elif browse_flag == 'BrowseDirectChildren':
                     self.logger.debug("Processing BrowseDirectChildren for root container")
