@@ -703,6 +703,264 @@ class AVTransportService:
         # Implementation will use HTTP NOTIFY
         pass
 
+class ContentDirectorySearch:
+    """Handles indexed search functionality for the Content Directory Service"""
+    def __init__(self, media_folders):
+        self.logger = logging.getLogger('DLNAServer')
+        self.media_folders = media_folders
+        self.index = {}
+        self.metadata_cache = {}
+        self._build_index()
+
+    def _build_index(self):
+        """Build search index from media folders"""
+        try:
+            from whoosh.fields import Schema, TEXT, ID, STORED
+            from whoosh.analysis import StandardAnalyzer
+            from whoosh.index import create_in, exists_in, open_dir
+            import os.path
+            
+            # Create schema for media indexing
+            self.schema = Schema(
+                path=ID(stored=True),
+                filename=TEXT(stored=True, analyzer=StandardAnalyzer()),
+                title=TEXT(stored=True),
+                artist=TEXT(stored=True),
+                album=TEXT(stored=True),
+                genre=TEXT(stored=True),
+                type=TEXT(stored=True)
+            )
+            
+            # Create or open index
+            index_dir = os.path.join(os.path.dirname(__file__), 'search_index')
+            if not os.path.exists(index_dir):
+                os.makedirs(index_dir)
+                
+            if exists_in(index_dir):
+                self.ix = open_dir(index_dir)
+            else:
+                self.ix = create_in(index_dir, self.schema)
+            
+            # Index all media files
+            writer = self.ix.writer()
+            
+            for folder in self.media_folders:
+                for root, _, files in os.walk(folder):
+                    for file in files:
+                        try:
+                            ext = os.path.splitext(file)[1].lower()
+                            if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                                full_path = os.path.join(root, file)
+                                metadata = self._extract_metadata(full_path)
+                                
+                                # Store in index
+                                writer.add_document(
+                                    path=full_path,
+                                    filename=file,
+                                    title=metadata.get('title', file),
+                                    artist=metadata.get('artist', ''),
+                                    album=metadata.get('album', ''),
+                                    genre=metadata.get('genre', ''),
+                                    type=self._get_media_type(ext)
+                                )
+                                
+                                # Cache metadata
+                                self.metadata_cache[full_path] = metadata
+                                
+                        except Exception as e:
+                            self.logger.warning(f"Error indexing {file}: {e}")
+                            
+            writer.commit()
+            self.logger.info("Search index built successfully")
+            
+        except ImportError:
+            self.logger.warning("Whoosh not installed, falling back to basic search")
+            self._build_basic_index()
+
+    def _build_basic_index(self):
+        """Build a simple in-memory index when Whoosh is not available"""
+        for folder in self.media_folders:
+            for root, _, files in os.walk(folder):
+                for file in files:
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
+                        full_path = os.path.join(root, file)
+                        self.index[full_path] = {
+                            'filename': file,
+                            'type': self._get_media_type(ext),
+                            'metadata': self._extract_metadata(full_path)
+                        }
+
+    def search(self, query, media_type=None, limit=50):
+        """Search for media items matching query"""
+        try:
+            from whoosh.qparser import MultifieldParser
+            from whoosh.query import Term
+            
+            with self.ix.searcher() as searcher:
+                query_fields = ['filename', 'title', 'artist', 'album', 'genre']
+                parser = MultifieldParser(query_fields, self.schema)
+                q = parser.parse(query)
+                
+                # Add media type filter if specified
+                if media_type:
+                    q = q & Term('type', media_type)
+                
+                results = searcher.search(q, limit=limit)
+                return [(hit['path'], hit.score, hit['title']) for hit in results]
+                
+        except ImportError:
+            return self._basic_search(query, media_type, limit)
+
+    def _basic_search(self, query, media_type=None, limit=50):
+        """Basic search implementation without Whoosh"""
+        query = query.lower()
+        results = []
+        
+        for path, info in self.index.items():
+            if media_type and info['type'] != media_type:
+                continue
+                
+            score = 0
+            metadata = info['metadata']
+            
+            # Check filename
+            if query in info['filename'].lower():
+                score += 1
+                
+            # Check metadata
+            for field in ['title', 'artist', 'album', 'genre']:
+                if field in metadata and query in metadata[field].lower():
+                    score += 1
+                    
+            if score > 0:
+                results.append((path, score, metadata.get('title', info['filename'])))
+                
+        # Sort by score and limit results
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:limit]
+
+    def _extract_metadata(self, file_path):
+        """Extract metadata from media file"""
+        try:
+            from mutagen import File
+            metadata = {}
+            media_file = File(file_path)
+            
+            if media_file is not None:
+                if hasattr(media_file, 'tags'):
+                    tags = media_file.tags
+                    if tags:
+                        metadata['title'] = str(tags.get('title', [''])[0])
+                        metadata['artist'] = str(tags.get('artist', [''])[0])
+                        metadata['album'] = str(tags.get('album', [''])[0])
+                        metadata['genre'] = str(tags.get('genre', [''])[0])
+                        
+                if hasattr(media_file.info, 'length'):
+                    metadata['duration'] = int(media_file.info.length)
+                    
+            return metadata
+            
+        except Exception as e:
+            self.logger.debug(f"Error extracting metadata from {file_path}: {e}")
+            return {}
+
+    def _get_media_type(self, ext):
+        """Get media type from file extension"""
+        if ext in VIDEO_EXTENSIONS:
+            return 'video'
+        elif ext in AUDIO_EXTENSIONS:
+            return 'audio'
+        elif ext in IMAGE_EXTENSIONS:
+            return 'image'
+        return 'unknown'
+
+class ResourceMonitor:
+    """Monitors system resources used by the DLNA server"""
+    def __init__(self, logger):
+        self.logger = logger
+        self.metrics = {
+            'cpu_usage': [],
+            'memory_usage': [],
+            'network_stats': {
+                'bytes_sent': 0,
+                'bytes_received': 0,
+                'connections': 0
+            },
+            'active_streams': 0,
+            'cache_stats': {
+                'thumbnail_hits': 0,
+                'thumbnail_misses': 0,
+                'metadata_hits': 0,
+                'metadata_misses': 0
+            }
+        }
+        self._start_monitoring()
+
+    def _start_monitoring(self):
+        """Start resource monitoring in background thread"""
+        try:
+            import psutil
+            self.process = psutil.Process()
+            
+            def monitor_loop():
+                while True:
+                    try:
+                        # CPU usage (percentage)
+                        cpu_percent = self.process.cpu_percent(interval=1.0)
+                        self.metrics['cpu_usage'].append(cpu_percent)
+                        if len(self.metrics['cpu_usage']) > 60:  # Keep last 60 samples
+                            self.metrics['cpu_usage'].pop(0)
+                        
+                        # Memory usage (MB)
+                        memory_info = self.process.memory_info()
+                        memory_mb = memory_info.rss / (1024 * 1024)
+                        self.metrics['memory_usage'].append(memory_mb)
+                        if len(self.metrics['memory_usage']) > 60:
+                            self.metrics['memory_usage'].pop(0)
+                        
+                        # Log metrics every minute
+                        avg_cpu = sum(self.metrics['cpu_usage']) / len(self.metrics['cpu_usage'])
+                        avg_mem = sum(self.metrics['memory_usage']) / len(self.metrics['memory_usage'])
+                        
+                        self.logger.info(
+                            f"Resource Usage - CPU: {avg_cpu:.1f}%, Memory: {avg_mem:.1f}MB, "
+                            f"Streams: {self.metrics['active_streams']}, "
+                            f"Cache Hits: {self.metrics['cache_stats']['thumbnail_hits'] + self.metrics['cache_stats']['metadata_hits']}"
+                        )
+                        
+                        time.sleep(60)  # Update every minute
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error in resource monitoring: {e}")
+                        time.sleep(5)  # Shorter sleep on error
+                        
+            threading.Thread(target=monitor_loop, daemon=True).start()
+            self.logger.info("Resource monitoring started")
+            
+        except ImportError:
+            self.logger.warning("psutil not installed, resource monitoring disabled")
+
+    def track_stream(self, started=True):
+        """Track active media streams"""
+        if started:
+            self.metrics['active_streams'] += 1
+        else:
+            self.metrics['active_streams'] = max(0, self.metrics['active_streams'] - 1)
+
+    def track_network(self, bytes_sent=0, bytes_received=0):
+        """Track network usage"""
+        self.metrics['network_stats']['bytes_sent'] += bytes_sent
+        self.metrics['network_stats']['bytes_received'] += bytes_received
+
+    def track_cache(self, cache_type, hit=True):
+        """Track cache hits/misses"""
+        if hit:
+            self.metrics['cache_stats'][f'{cache_type}_hits'] += 1
+        else:
+            self.metrics['cache_stats'][f'{cache_type}_misses'] += 1
+
+# Update DLNAServer to use resource monitoring
 class DLNAServer(BaseHTTPRequestHandler):
     # Add thumbnail cache as class variable
     thumbnail_cache = {}
@@ -713,6 +971,7 @@ class DLNAServer(BaseHTTPRequestHandler):
         self.protocol_version = 'HTTP/1.1'
         self.timeout = 60  # Set timeout to 60 seconds
         self.headers_sent = False  # Track if headers have been sent
+        self.resource_monitor = getattr(self.server, 'resource_monitor', None)
         super().__init__(*args, **kwargs)
 
     def send_response(self, *args, **kwargs):
@@ -754,72 +1013,68 @@ class DLNAServer(BaseHTTPRequestHandler):
                 pass
     
     def send_media_file(self, file_path, content_type):
-        """Stream media file with proper DLNA support and range handling"""
-        file_size = os.path.getsize(file_path)
-        duration = self.get_media_duration_seconds(file_path)
-
-        # Handle range requests
-        start_byte = 0
-        end_byte = file_size - 1
-        
-        if 'Range' in self.headers:
-            try:
-                range_header = self.headers['Range'].replace('bytes=', '').split('-')
-                start_byte = int(range_header[0]) if range_header[0] else 0
-                end_byte = int(range_header[1]) if len(range_header) > 1 and range_header[1] else file_size - 1
-            except Exception as e:
-                self.logger.warning(f"Range parsing error: {e}")
-
-        # Handle time-based seeking
-        start_time, end_time = self.handle_time_seek_request()
-        if start_time is not None:
-            # Convert time to bytes (approximate)
-            bytes_per_second = file_size / duration if duration else 0
-            start_byte = int(start_time * bytes_per_second)
-            if end_time:
-                end_byte = int(end_time * bytes_per_second)
-
-        content_length = end_byte - start_byte + 1
-        
-        # Send headers
-        self.send_response(206 if start_byte > 0 or end_byte < file_size - 1 else 200)
-        self.send_header('Content-Type', content_type)
-        self.send_header('Content-Length', str(content_length))
-        self.send_header('Accept-Ranges', 'bytes')
-        self.send_header('Content-Range', f'bytes {start_byte}-{end_byte}/{file_size}')
-        
-        # DLNA specific headers
-        self.send_header('TransferMode.DLNA.ORG', 'Streaming')
-        self.send_header('contentFeatures.DLNA.ORG', 
-                        'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000')
-        self.send_header('Connection', 'keep-alive')
-        
-        if duration:
-            self.send_header('X-Content-Duration', str(duration))
-            self.send_header('TimeSeekRange.dlna.org', f'npt=0.0-{duration}')
-        
-        self.end_headers()
-
-        # Stream the file
-        with open(file_path, 'rb') as f:
-            f.seek(start_byte)
-            remaining = content_length
-            chunk_size = min(102400, remaining)  # 100KB chunks
+        """Send media file with resource tracking"""
+        try:
+            if self.resource_monitor:
+                self.resource_monitor.track_stream(started=True)
+                
+            # Get file size
+            file_size = os.path.getsize(file_path)
             
-            while remaining > 0:
-                if self.close_connection:
-                    break
-                    
-                chunk = f.read(min(chunk_size, remaining))
-                if not chunk:
-                    break
-                    
-                try:
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
-                except (ConnectionError, socket.error) as e:
-                    self.logger.warning(f"Connection error while streaming: {e}")
-                    break
+            try:
+                # Handle range requests
+                range_header = self.headers.get('Range')
+                if range_header:
+                    start, end = self._parse_range_header(range_header, file_size)
+                    self.send_response(206)
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+                    content_length = end - start + 1
+                else:
+                    self.send_response(200)
+                    start = 0
+                    content_length = file_size
+
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(content_length))
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('transferMode.dlna.org', 'Streaming')
+                self.send_header('contentFeatures.dlna.org', 'DLNA.ORG_OP=01;DLNA.ORG_CI=0')
+                self.end_headers()
+
+                with open(file_path, 'rb') as f:
+                    if start > 0:
+                        f.seek(start)
+                    bytes_sent = 0
+                    while bytes_sent < content_length:
+                        chunk_size = min(64 * 1024, content_length - bytes_sent)
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        bytes_sent += len(chunk)
+                        if self.resource_monitor:
+                            self.resource_monitor.track_network(bytes_sent=len(chunk))
+
+            finally:
+                if self.resource_monitor:
+                    self.resource_monitor.track_stream(started=False)
+
+        except Exception as e:
+            self.logger.error(f"Error sending media file: {e}")
+            if not self.headers_sent:
+                self.send_error(500, "Error sending media file")
+
+    def _parse_range_header(self, range_header, file_size):
+        """Parse HTTP range header"""
+        try:
+            range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+            if range_match:
+                start = int(range_match.group(1))
+                end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+                return max(0, start), min(file_size - 1, end)
+            return 0, file_size - 1
+        except Exception:
+            return 0, file_size - 1
 
     def do_GET(self):
         try:
@@ -1037,6 +1292,75 @@ class DLNAServer(BaseHTTPRequestHandler):
                 except (ConnectionError, socket.error) as e:
                     self.logger.warning(f"Connection error while streaming: {e}")
                     break
+
+    def handle_content_directory_control(self):
+        """Handle Content Directory control actions including search"""
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            
+            # Parse SOAP request
+            soap_action = self.headers.get('SOAPACTION', '')
+            
+            if 'Search' in soap_action:
+                # Extract search criteria
+                search_criteria = self._extract_soap_param(post_data, 'SearchCriteria')
+                filter_str = self._extract_soap_param(post_data, 'Filter') or '*'
+                starting_index = int(self._extract_soap_param(post_data, 'StartingIndex') or '0')
+                requested_count = int(self._extract_soap_param(post_data, 'RequestedCount') or '50')
+                
+                # Perform search
+                results = self.server.content_search.search(
+                    search_criteria, 
+                    limit=requested_count
+                )
+                
+                # Generate DIDL-Lite response
+                didl = self._generate_search_didl(results[starting_index:starting_index + requested_count])
+                
+                self._send_search_response(didl, len(results), len(results))
+                
+            else:
+                # Handle other Content Directory actions
+                super().handle_content_directory_control()
+                
+        except Exception as e:
+            self.logger.error(f"Error handling content directory control: {e}")
+            self.send_error(500, "Internal server error")
+
+    def _generate_search_didl(self, results):
+        """Generate DIDL-Lite XML for search results"""
+        root = Element('DIDL-Lite', {
+            'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
+            'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
+            'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/'
+        })
+        
+        for path, score, title in results:
+            self.add_item_to_didl(root, path, title, '0')
+            
+        return self.encode_didl(root)
+
+    def _send_search_response(self, didl, number_returned, total_matches):
+        """Send SOAP response for search results"""
+        response = f'''<?xml version="1.0"?>
+        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+            <s:Body>
+                <u:SearchResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+                    <Result>{didl}</Result>
+                    <NumberReturned>{number_returned}</NumberReturned>
+                    <TotalMatches>{total_matches}</TotalMatches>
+                    <UpdateID>1</UpdateID>
+                </u:SearchResponse>
+            </s:Body>
+        </s:Envelope>'''
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+        response_bytes = response.encode('utf-8')
+        self.send_header('Content-Length', str(len(response_bytes)))
+        self.end_headers()
+        self.wfile.write(response_bytes)
 
     def handle_content_directory_control(self):
         """Handle POST requests to /ContentDirectory/control with improved XML handling and browsing logic"""
@@ -2134,6 +2458,8 @@ def start_server(config):
     server.media_folders = media_folders
     server.indexed_files = indexed_files
     server.av_transport = AVTransportService()  # Initialize AVTransport service
+    server.content_search = ContentDirectorySearch(media_folders)  # Initialize Content Directory Search
+    server.resource_monitor = ResourceMonitor(logger)  # Initialize resource monitor
     
     # Start SSDP server in a separate thread
     ssdp_server = SSDPServer((local_ip, port)) # Pass logger if needed
