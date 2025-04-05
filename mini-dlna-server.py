@@ -20,6 +20,7 @@ import json
 import argparse
 import re
 import random
+from network_utils import NetworkUtils  # Add this import
 
 # DLNA/UPnP Constants
 DEVICE_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())
@@ -126,27 +127,10 @@ class SSDPServer:
         }
         self.metrics['last_check'] = time.time()  # Initialize last_check
         self.known_clients = set()  # Track unique clients
-        self._local_ip = None  # Cache for local IP
 
     def get_local_ip(self):
         """Get the local IP address used for SSDP communication"""
-        if self._local_ip is None:
-            try:
-                # Use the HTTP server address if available
-                if self.http_server_address and self.http_server_address[0] != '0.0.0.0':
-                    self._local_ip = self.http_server_address[0]
-                else:
-                    # Fall back to socket method
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    try:
-                        s.connect(('8.8.8.8', 80))
-                        self._local_ip = s.getsockname()[0]
-                    finally:
-                        s.close()
-            except Exception as e:
-                self.logger.warning(f"Error getting local IP: {e}")
-                self._local_ip = '127.0.0.1'  # Fallback to localhost
-        return self._local_ip
+        return NetworkUtils.get_local_ip(self.http_server_address[0])
 
     def validate_announcement_timing(self, current_time):
         """Validate announcement timing follows exponential backoff"""
@@ -1454,8 +1438,8 @@ class DLNAServer(BaseHTTPRequestHandler):
             'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
             'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
             'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
-            'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0',
-            'xmlns:sec': 'http://www.sec.co.kr/dlna'  # Add Samsung namespace
+            'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0/',  # Fixed namespace
+            'xmlns:sec': 'http://www.sec.co.kr/dlna'
         })
 
         try:
@@ -1465,27 +1449,28 @@ class DLNAServer(BaseHTTPRequestHandler):
                     # Count valid media files and folders
                     total_children = 0
                     for shared_folder in self.server.media_folders:
-                        try:
-                            with os.scandir(shared_folder) as entries:
-                                for entry in entries:
-                                    if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
-                                        {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                                        total_children += 1
-                                        self.logger.debug(f"Found valid child: {entry.name} ({total_children})")
-                        except OSError as e:
-                            self.logger.error(f"Error scanning directory {shared_folder}: {e}")
-
+                        with os.scandir(shared_folder) as entries:
+                            for entry in entries:
+                                if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
+                                    {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
+                                    total_children += 1
+                    
+                    # Updated root container attributes
                     container = SubElement(root, 'container', {
                         'id': '0',
-                        'parentID': '-1',
+                        'parentID': '0',  # Changed from -1 to 0
                         'restricted': '1',
                         'searchable': '1',
-                        'childCount': str(total_children)
+                        'childCount': str(total_children),
+                        'dlna:dlnaManaged': '00000004'  # Add DLNA managed flag
                     })
+                    
+                    # Add required elements for root container
                     SubElement(container, 'dc:title').text = "Root"
-                    SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
+                    SubElement(container, 'upnp:class').text = 'object.container'
                     SubElement(container, 'upnp:storageUsed').text = '-1'
-                    SubElement(container, 'upnp:writeStatus').text = 'NOT_WRITABLE'
+                    SubElement(container, 'sec:deviceID').text = str(DEVICE_UUID)  # Add Samsung device ID
+                    SubElement(container, 'sec:containerType').text = 'DLNA'  # Add Samsung container type
                     
                     result = self.encode_didl(root)
                     self.logger.debug(f"Root BrowseMetadata response - Children: {total_children}, DIDL: {result}")
@@ -1982,140 +1967,19 @@ class DLNAServer(BaseHTTPRequestHandler):
         <minor>0</minor>
     </specVersion>
     <actionList>
-        <action>
-            <name>Browse</name>
-            <argumentList>
-                <argument>
-                    <name>ObjectID</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>BrowseFlag</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>Filter</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>StartingIndex</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>RequestedCount</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>SortCriteria</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>Result</name>
-                    <direction>out</direction>
-                    <relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>NumberReturned</name>
-                    <direction>out</direction>
-                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>TotalMatches</name>
-                    <direction>out</direction>
-                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>UpdateID</name>
-                    <direction>out</direction>
-                    <relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable>
-                </argument>
-            </argumentList>
-        </action>
-        <action>
-            <name>GetSearchCapabilities</name>
-            <argumentList>
-                <argument>
-                    <name>SearchCaps</name>
-                    <direction>out</direction>
-                    <relatedStateVariable>SearchCapabilities</relatedStateVariable>
-                </argument>
-            </argumentList>
-        </action>
-        <action>
-            <name>GetSortCapabilities</name>
-            <argumentList>
-                <argument>
-                    <name>SortCaps</name>
-                    <direction>out</direction>
-                    <relatedStateVariable>SortCapabilities</relatedStateVariable>
-                </argument>
-            </argumentList>
-        </action>
-        <action>
-            <name>GetSystemUpdateID</name>
-            <argumentList>
-                <argument>
-                    <name>Id</name>
-                    <direction>out</direction>
-                    <relatedStateVariable>SystemUpdateID</relatedStateVariable>
-                </argument>
-            </argumentList>
-        </action>
+        <!-- ...existing actions... -->
     </actionList>
     <serviceStateTable>
+        <!-- ...existing state variables... -->
         <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_BrowseFlag</name>
+            <name>SortCapabilities</name>
             <dataType>string</dataType>
-            <allowedValueList>
-                <allowedValue>BrowseMetadata</allowedValue>
-                <allowedValue>BrowseDirectChildren</allowedValue>
-            </allowedValueList>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_ObjectID</name>
-            <dataType>string</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_UpdateID</name>
-            <dataType>ui4</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_Filter</name>
-            <dataType>string</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_Index</name>
-            <dataType>ui4</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_Count</name>
-            <dataType>ui4</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_SortCriteria</name>
-            <dataType>string</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_Result</name>
-            <dataType>string</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="yes">
-            <name>SystemUpdateID</name>
-            <dataType>ui4</dataType>
+            <defaultValue>dc:title,dc:date,upnp:class</defaultValue>
         </stateVariable>
         <stateVariable sendEvents="no">
             <name>SearchCapabilities</name>
             <dataType>string</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>SortCapabilities</name>
-            <dataType>string</dataType>
+            <defaultValue>dc:title,dc:creator,upnp:class</defaultValue>
         </stateVariable>
     </serviceStateTable>
 </scpd>'''
@@ -2419,17 +2283,6 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.logger.debug(f"Error parsing time seek request: {e}")
         return None, None
 
-def get_local_ip():
-    """Get the local IP address"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
-    finally:
-        s.close()
-
 def load_config():
     parser = argparse.ArgumentParser(description="Mini DLNA Server")
     parser.add_argument('--config', type=str, help='Path to configuration JSON file', default='config.json')
@@ -2488,7 +2341,7 @@ def start_server(config):
     indexed_files = index_files(media_folders)
     logger.info(f"Indexed files: {indexed_files}")
 
-    local_ip = get_local_ip()
+    local_ip = NetworkUtils.get_local_ip()
     
     # Try ports until we find an available one
     base_port = 8201  # Start at 8201 to avoid common DLNA ports
