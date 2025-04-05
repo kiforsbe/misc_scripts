@@ -1292,76 +1292,7 @@ class DLNAServer(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST requests, particularly for ContentDirectory control"""
         if self.path == '/ContentDirectory/control':
-            try:
-                content_length = int(self.headers['Content-Length'])
-                body = self.rfile.read(content_length).decode('utf-8')
-                
-                # Parse SOAP request using the new parser
-                try:
-                    params = self.request_parser.parse_browse_request(body)
-                    # For BrowseDirectChildren we should return all items in the container
-                    # For BrowseMetadata we should return just the container info
-                    result_didl = '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0" xmlns:sec="http://www.sec.co.kr/dlna">'
-                    
-                    if params['browse_flag'] == 'BrowseDirectChildren':
-                        number_returned = 0
-                        for file_path in self.media_files:
-                            item_id = str(self.media_files.index(file_path) + 1)
-                            mime_type = self.get_mime_type(file_path)
-                            file_name = os.path.basename(file_path)
-                            file_size = os.path.getsize(file_path)
-                            
-                            if mime_type.startswith('video/'):
-                                result_didl += f'''<item id="{item_id}" parentID="0" restricted="1">
-                                    <dc:title>{file_name}</dc:title>
-                                    <upnp:class>object.item.videoItem</upnp:class>
-                                    <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01" size="{file_size}">http://{self.server.server_address[0]}:{self.server.server_address[1]}/media/{item_id}</res>
-                                </item>'''
-                            elif mime_type.startswith('audio/'):
-                                result_didl += f'''<item id="{item_id}" parentID="0" restricted="1">
-                                    <dc:title>{file_name}</dc:title>
-                                    <upnp:class>object.item.audioItem.musicTrack</upnp:class>
-                                    <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01" size="{file_size}">http://{self.server.server_address[0]}:{self.server.server_address[1]}/media/{item_id}</res>
-                                </item>'''
-                            elif mime_type.startswith('image/'):
-                                result_didl += f'''<item id="{item_id}" parentID="0" restricted="1">
-                                    <dc:title>{file_name}</dc:title>
-                                    <upnp:class>object.item.imageItem.photo</upnp:class>
-                                    <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01" size="{file_size}">http://{self.server.server_address[0]}:{self.server.server_address[1]}/media/{item_id}</res>
-                                </item>'''
-                            number_returned += 1
-                        
-                        total_matches = len(self.media_files)
-                    else:  # BrowseMetadata
-                        result_didl += f'''<container id="0" parentID="-1" restricted="1" searchable="1" childCount="{len(self.media_files)}">
-                            <dc:title>Root</dc:title>
-                            <upnp:class>object.container.storageFolder</upnp:class>
-                            <upnp:storageUsed>-1</upnp:storageUsed>
-                            <upnp:writeStatus>NOT_WRITABLE</upnp:writeStatus>
-                        </container>'''
-                        number_returned = 1
-                        total_matches = 1
-                        
-                    result_didl += '</DIDL-Lite>'
-                    
-                    # Use SOAP handler to send response
-                    response_content = f'''
-                        <Result>{result_didl}</Result>
-                        <NumberReturned>{number_returned}</NumberReturned>
-                        <TotalMatches>{total_matches}</TotalMatches>
-                        <UpdateID>1</UpdateID>'''
-                    
-                    self.soap_handler.send_soap_response(
-                        response_content,
-                        'Browse',
-                        'urn:schemas-upnp-org:service:ContentDirectory:1'
-                    )
-                    
-                except ValueError as ve:
-                    self.error_handler.handle_request_error(self, ve, 400)
-                    
-            except Exception as e:
-                self.error_handler.handle_request_error(self, e)
+            self.handle_content_directory_control()
         else:
             self.send_error(404)
 
@@ -1432,41 +1363,6 @@ class DLNAServer(BaseHTTPRequestHandler):
                 except (ConnectionError, socket.error) as e:
                     self.logger.warning(f"Connection error while streaming: {e}")
                     break
-
-    def handle_content_directory_control(self):
-        """Handle Content Directory control actions including search"""
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length).decode('utf-8')
-            
-            # Parse SOAP request
-            soap_action = self.headers.get('SOAPACTION', '')
-            
-            if 'Search' in soap_action:
-                # Extract search criteria
-                search_criteria = self._extract_soap_param(post_data, 'SearchCriteria')
-                filter_str = self._extract_soap_param(post_data, 'Filter') or '*'
-                starting_index = int(self._extract_soap_param(post_data, 'StartingIndex') or '0')
-                requested_count = int(self._extract_soap_param(post_data, 'RequestedCount') or '50')
-                
-                # Perform search
-                results = self.server.content_search.search(
-                    search_criteria, 
-                    limit=requested_count
-                )
-                
-                # Generate DIDL-Lite response
-                didl = self._generate_search_didl(results[starting_index:starting_index + requested_count])
-                
-                self._send_search_response(didl, len(results), len(results))
-                
-            else:
-                # Handle other Content Directory actions
-                super().handle_content_directory_control()
-                
-        except Exception as e:
-            self.logger.error(f"Error handling content directory control: {e}")
-            self.send_error(500, "Internal server error")
 
     def _generate_search_didl(self, results):
         """Generate DIDL-Lite XML for search results"""
