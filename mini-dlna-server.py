@@ -948,6 +948,107 @@ class ResourceMonitor:
             self.metrics['cache_stats'][f'{cache_type}_misses'] += 1
 
 # Update DLNAServer to use resource monitoring
+class SOAPResponseHandler:
+    def __init__(self, http_handler):
+        self.handler = http_handler
+        self.logger = logging.getLogger('DLNAServer')
+
+    def send_soap_response(self, body_content, action_name, service_type):
+        """Send a SOAP response with common headers and formatting"""
+        soap_response = f'''<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+    <s:Body>
+        <u:{action_name}Response xmlns:u="{service_type}">
+            {body_content}
+        </u:{action_name}Response>
+    </s:Body>
+</s:Envelope>'''
+
+        try:
+            self.handler.send_response(200)
+            self.handler.send_header('Content-Type', 'text/xml; charset="utf-8"')
+            self.handler.send_header('Ext', '')
+            self.handler.send_header('Server', 'Windows/10.0 UPnP/1.0 Python-DLNA/1.0')
+            response_bytes = soap_response.encode('utf-8')
+            self.handler.send_header('Content-Length', str(len(response_bytes)))
+            self.handler.end_headers()
+            self.handler.wfile.write(response_bytes)
+        except Exception as e:
+            self.logger.error(f"Error sending SOAP response: {e}")
+            if not self.handler.headers_sent:
+                self.handler.send_error(500, "Internal server error")
+
+class DLNAXMLGenerator:
+    @staticmethod
+    def create_didl_container(id, parent_id, title, child_count):
+        """Create a DIDL-Lite container element"""
+        container = Element('container', {
+            'id': id,
+            'parentID': parent_id,
+            'restricted': '1',
+            'searchable': '1',
+            'childCount': str(child_count)
+        })
+        SubElement(container, 'dc:title').text = title
+        SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
+        return container
+
+    @staticmethod
+    def create_didl_item(id, parent_id, title, resource_url, mime_type, size):
+        """Create a DIDL-Lite item element"""
+        item = Element('item', {
+            'id': id,
+            'parentID': parent_id,
+            'restricted': '1'
+        })
+        SubElement(item, 'dc:title').text = title
+        res = SubElement(item, 'res')
+        res.text = resource_url
+        res.set('protocolInfo', f'http-get:*:{mime_type}:*')
+        res.set('size', str(size))
+        return item
+
+class DLNARequestParser:
+    @staticmethod
+    def parse_browse_request(soap_body):
+        """Parse Browse action request parameters"""
+        try:
+            root = ElementTree.fromstring(soap_body)
+            namespace = {'s': 'http://schemas.xmlsoap.org/soap/envelope/'}
+            browse = root.find('.//Browse', namespace)
+            
+            return {
+                'object_id': browse.find('ObjectID').text,
+                'browse_flag': browse.find('BrowseFlag').text,
+                'filter': browse.find('Filter').text,
+                'starting_index': int(browse.find('StartingIndex').text),
+                'requested_count': int(browse.find('RequestedCount').text),
+                'sort_criteria': browse.find('SortCriteria').text
+            }
+        except Exception as e:
+            raise ValueError(f"Invalid Browse request: {e}")
+
+class DLNAErrorHandler:
+    def __init__(self, logger):
+        self.logger = logger
+
+    def handle_request_error(self, handler, error, status_code=500):
+        """Handle errors during request processing"""
+        self.logger.error(f"Error processing request: {error}")
+        if not handler.headers_sent:
+            handler.send_error(status_code, str(error))
+
+    def handle_network_error(self, error, retry_count=3):
+        """Handle network-related errors with retry logic"""
+        for attempt in range(retry_count):
+            try:
+                yield attempt
+            except Exception as e:
+                if attempt == retry_count - 1:
+                    raise e
+                self.logger.warning(f"Network error (attempt {attempt + 1}/{retry_count}): {e}")
+                time.sleep(1)
+
 class DLNAServer(BaseHTTPRequestHandler):
     # Add thumbnail cache as class variable
     thumbnail_cache = {}
@@ -966,6 +1067,12 @@ class DLNAServer(BaseHTTPRequestHandler):
         else:
             self.resource_monitor = None
             self.logger.warning("Resource monitor not available on server instance")
+
+        # Initialize the new components
+        self.soap_handler = SOAPResponseHandler(self)
+        self.xml_generator = DLNAXMLGenerator()
+        self.request_parser = DLNARequestParser()
+        self.error_handler = DLNAErrorHandler(self.logger)
 
         # Call parent constructor last
         super().__init__(request, client_address, server)
@@ -1164,65 +1271,42 @@ class DLNAServer(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST requests, particularly for ContentDirectory control"""
         if self.path == '/ContentDirectory/control':
-            content_length = int(self.headers['Content-Length'])
-            body = self.rfile.read(content_length).decode('utf-8')
-            
-            # Log the incoming SOAP request
-            self.logger.debug(f"ContentDirectory control request: {body}")
-            
             try:
-                # Parse SOAP request
-                root = ElementTree.fromstring(body)
-                namespace = {'s': 'http://schemas.xmlsoap.org/soap/envelope/'}
-                action = root.find('.//s:Body/*', namespace)
+                content_length = int(self.headers['Content-Length'])
+                body = self.rfile.read(content_length).decode('utf-8')
                 
-                if action is not None:
-                    action_name = action.tag.split('}')[-1]
+                # Parse SOAP request using the new parser
+                try:
+                    params = self.request_parser.parse_browse_request(body)
+                    result_didl, number_returned, total_matches = self.generate_browse_didl(
+                        params['object_id'], 
+                        params['browse_flag'],
+                        params['starting_index'],
+                        params['requested_count'],
+                        params['filter'],
+                        params['sort_criteria']
+                    )
                     
-                    # Handle Browse action
-                    if action_name == 'Browse':
-                        object_id = action.find('./ObjectID').text
-                        browse_flag = action.find('./BrowseFlag').text
-                        filter_str = action.find('./Filter').text
-                        starting_index = int(action.find('./StartingIndex').text)
-                        requested_count = int(action.find('./RequestedCount').text)
-                        sort_criteria = action.find('./SortCriteria').text
-                        
-                        # Generate DIDL response
-                        result_didl, number_returned, total_matches = self.generate_browse_didl(
-                            object_id, browse_flag, starting_index,
-                            requested_count, filter_str, sort_criteria
-                        )
-                        
-                        # Wrap DIDL in SOAP response
-                        soap_response = f'''<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-    <s:Body>
-        <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
-            <Result>{result_didl}</Result>
-            <NumberReturned>{number_returned}</NumberReturned>
-            <TotalMatches>{total_matches}</TotalMatches>
-            <UpdateID>1</UpdateID>
-        </u:BrowseResponse>
-    </s:Body>
-</s:Envelope>'''
-                        
-                        # Send successful response
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-                        self.end_headers()
-                        self.wfile.write(soap_response.encode('utf-8'))
-                        return
-            
+                    # Use SOAP handler to send response
+                    response_content = f'''
+                        <Result>{result_didl}</Result>
+                        <NumberReturned>{number_returned}</NumberReturned>
+                        <TotalMatches>{total_matches}</TotalMatches>
+                        <UpdateID>1</UpdateID>'''
+                    
+                    self.soap_handler.send_soap_response(
+                        response_content,
+                        'Browse',
+                        'urn:schemas-upnp-org:service:ContentDirectory:1'
+                    )
+                    
+                except ValueError as ve:
+                    self.error_handler.handle_request_error(self, ve, 400)
+                    
             except Exception as e:
-                self.logger.error(f"Error handling ContentDirectory control request: {str(e)}")
-                self.send_response(500)
-                self.end_headers()
-                return
-                
-        # If we get here, the path wasn't handled
-        self.send_response(404)
-        self.end_headers()
+                self.error_handler.handle_request_error(self, e)
+        else:
+            self.send_error(404)
 
     def send_media_file(self, file_path, content_type):
         """Stream media file with proper DLNA support and range handling"""
@@ -1261,7 +1345,7 @@ class DLNAServer(BaseHTTPRequestHandler):
         
         # DLNA specific headers
         self.send_header('TransferMode.DLNA.ORG', 'Streaming')
-        self.send_header('contentFeatures.DLNA.ORG', 
+        self.send_header('contentFeatures.dlna.org', 
                         'DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000')
         self.send_header('Connection', 'keep-alive')
         
