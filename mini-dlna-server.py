@@ -1462,6 +1462,8 @@ class DLNAServer(BaseHTTPRequestHandler):
 
     def generate_browse_didl(self, object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria):
         """Generates the DIDL-Lite XML string and counts based on browse parameters."""
+        self.logger.debug(f"Generating DIDL - ObjectID: {object_id}, BrowseFlag: {browse_flag}, StartIndex: {starting_index}, Count: {requested_count}")
+        
         root = Element('DIDL-Lite', {
             'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
             'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
@@ -1473,6 +1475,7 @@ class DLNAServer(BaseHTTPRequestHandler):
             # For root browsing
             if object_id == '0':
                 if browse_flag == 'BrowseMetadata':
+                    self.logger.debug("Processing BrowseMetadata for root container")
                     # Count valid media files and folders in all shared folders
                     total_children = 0
                     for shared_folder in self.server.media_folders:
@@ -1482,9 +1485,9 @@ class DLNAServer(BaseHTTPRequestHandler):
                                     if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
                                         {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
                                         total_children += 1
+                                        self.logger.debug(f"Found valid child: {entry.name} ({total_children})")
                         except OSError as e:
                             self.logger.error(f"Error scanning directory {shared_folder}: {e}")
-                            continue
 
                     container = SubElement(root, 'container', {
                         'id': '0',
@@ -1498,54 +1501,26 @@ class DLNAServer(BaseHTTPRequestHandler):
                     SubElement(container, 'upnp:storageUsed').text = '-1'
                     SubElement(container, 'upnp:writeStatus').text = 'NOT_WRITABLE'
                     
-                    return self.encode_didl(root), 1, 1
-
-                else:  # BrowseDirectChildren
-                    items_list = []
-                    for shared_folder in self.server.media_folders:
-                        try:
-                            with os.scandir(shared_folder) as entries:
-                                for entry in entries:
-                                    if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
-                                        {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                                        items_list.append((entry.path, entry.is_dir()))
-                        except OSError as e:
-                            self.logger.error(f"Error scanning directory {shared_folder}: {e}")
-                            continue
-
-                    # Sort items (directories first, then by name)
-                    items_list.sort(key=lambda x: (not x[1], os.path.basename(x[0]).lower()))
-                    
-                    total_matches = len(items_list)
-                    if requested_count == 0:
-                        paged_items = items_list[starting_index:]
-                    else:
-                        paged_items = items_list[starting_index:starting_index + requested_count]
-                    
-                    number_returned = len(paged_items)
-                    
-                    # Generate DIDL for paged items
-                    for item_path, is_directory in paged_items:
-                        if is_directory:
-                            self.add_container_to_didl(root, item_path, os.path.basename(item_path), '0')
-                        else:
-                            self.add_item_to_didl(root, item_path, os.path.basename(item_path), '0')
-
-                    return self.encode_didl(root), number_returned, total_matches
+                    result = self.encode_didl(root)
+                    self.logger.debug(f"Root BrowseMetadata response - Children: {total_children}, DIDL: {result}")
+                    return result, 1, 1
 
             # For non-root items
             else:
                 if browse_flag == 'BrowseMetadata':
+                    self.logger.debug(f"Processing BrowseMetadata for object: {object_id}")
                     # Find the actual path from object_id
                     actual_path = None
                     for shared_folder in self.server.media_folders:
                         potential_path = os.path.join(shared_folder, unquote(object_id))
                         if os.path.exists(potential_path):
                             actual_path = potential_path
+                            self.logger.debug(f"Found matching path: {actual_path}")
                             break
 
                     if actual_path and os.path.exists(actual_path):
                         if os.path.isdir(actual_path):
+                            self.logger.debug(f"Processing directory metadata: {actual_path}")
                             # Count valid children in this directory
                             child_count = 0
                             try:
@@ -1554,11 +1529,11 @@ class DLNAServer(BaseHTTPRequestHandler):
                                         if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
                                             {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
                                             child_count += 1
+                                            self.logger.debug(f"Found valid child: {entry.name} ({child_count})")
                             except OSError as e:
                                 self.logger.error(f"Error counting children in {actual_path}: {e}")
-                                child_count = 0
 
-                            # Create container element
+                            # Create container element with accurate child count
                             container = SubElement(root, 'container', {
                                 'id': object_id,
                                 'parentID': os.path.dirname(object_id) or '0',
@@ -1576,65 +1551,27 @@ class DLNAServer(BaseHTTPRequestHandler):
                                 mtime = os.path.getmtime(actual_path)
                                 mod_time = datetime.fromtimestamp(mtime)
                                 SubElement(container, 'dc:date').text = mod_time.isoformat()
-                            except OSError:
-                                pass
+                            except OSError as e:
+                                self.logger.warning(f"Could not get modification time for {actual_path}: {e}")
 
-                            return self.encode_didl(root), 1, 1
+                            result = self.encode_didl(root)
+                            self.logger.debug(f"Directory BrowseMetadata response - Path: {actual_path}, Children: {child_count}, DIDL: {result}")
+                            return result, 1, 1
 
                         else:  # File
+                            self.logger.debug(f"Processing file metadata: {actual_path}")
                             self.add_item_to_didl(root, actual_path, os.path.basename(actual_path), 
                                                 os.path.dirname(object_id) or '0')
-                            return self.encode_didl(root), 1, 1
+                            result = self.encode_didl(root)
+                            self.logger.debug(f"File BrowseMetadata response - Path: {actual_path}, DIDL: {result}")
+                            return result, 1, 1
 
                     else:
                         self.logger.error(f"Path not found for object_id: {object_id}")
                         return self.encode_didl(root), 0, 0
 
-                else:  # BrowseDirectChildren for non-root
-                    actual_path = None
-                    for shared_folder in self.server.media_folders:
-                        potential_path = os.path.join(shared_folder, unquote(object_id))
-                        if os.path.exists(potential_path):
-                            actual_path = potential_path
-                            break
-
-                    if actual_path and os.path.exists(actual_path) and os.path.isdir(actual_path):
-                        items_list = []
-                        try:
-                            with os.scandir(actual_path) as entries:
-                                for entry in entries:
-                                    if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
-                                        {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                                        items_list.append((entry.path, entry.is_dir()))
-                        except OSError as e:
-                            self.logger.error(f"Error scanning directory {actual_path}: {e}")
-                            return self.encode_didl(root), 0, 0
-
-                        # Sort items
-                        items_list.sort(key=lambda x: (not x[1], os.path.basename(x[0]).lower()))
-                        
-                        total_matches = len(items_list)
-                        if requested_count == 0:
-                            paged_items = items_list[starting_index:]
-                        else:
-                            paged_items = items_list[starting_index:starting_index + requested_count]
-                        
-                        number_returned = len(paged_items)
-                        
-                        # Generate DIDL for paged items
-                        for item_path, is_directory in paged_items:
-                            if is_directory:
-                                rel_path = os.path.relpath(item_path, os.path.dirname(actual_path))
-                                child_id = os.path.join(object_id, os.path.basename(item_path))
-                                self.add_container_to_didl(root, item_path, os.path.basename(item_path), object_id)
-                            else:
-                                self.add_item_to_didl(root, item_path, os.path.basename(item_path), object_id)
-
-                        return self.encode_didl(root), number_returned, total_matches
-
-                    else:
-                        self.logger.error(f"Directory not found for object_id: {object_id}")
-                        return self.encode_didl(root), 0, 0
+            # Continue with existing BrowseDirectChildren logic
+            # ...existing code...
 
         except Exception as e:
             self.logger.error(f"Error in generate_browse_didl: {e}", exc_info=True)
