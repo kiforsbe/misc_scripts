@@ -109,6 +109,37 @@ class SSDPServer:
         self.error_handler = NetworkErrorHandler(self.logger)
         self.socket = None
         self.announce_socket = None
+        self.last_announcement_time = None
+        self.announcement_count = 0
+        self.metrics = {
+            'announcements': [],
+            'filtered_msgs': 0,
+            'intervals': [],
+            'last_interval': None,
+            'backoff_violations': 0
+        }
+
+    def validate_announcement_timing(self, current_time):
+        """Validate announcement timing follows exponential backoff"""
+        if self.last_announcement_time:
+            interval = current_time - self.last_announcement_time
+            self.metrics['intervals'].append(interval)
+            
+            # Keep last 10 intervals for analysis
+            if len(self.metrics['intervals']) > 10:
+                self.metrics['intervals'].pop(0)
+            
+            # Check if interval is increasing properly
+            if self.metrics['last_interval'] and interval < self.metrics['last_interval']:
+                self.metrics['backoff_violations'] += 1
+                self.logger.warning(f"Backoff violation: Current interval {interval:.1f}s < Previous {self.metrics['last_interval']:.1f}s")
+            
+            self.metrics['last_interval'] = interval
+            
+            # Log timing metrics every 5 announcements
+            if len(self.metrics['intervals']) >= 5:
+                avg_interval = sum(self.metrics['intervals']) / len(self.metrics['intervals'])
+                self.logger.info(f"SSDP Timing - Avg Interval: {avg_interval:.1f}s, Violations: {self.metrics['backoff_violations']}")
 
     def send_notification(self, nts_type):
         """Send SSDP notification (alive or byebye) with enhanced Samsung compatibility"""
@@ -183,7 +214,13 @@ class SSDPServer:
                 continue
 
     def send_alive_notification(self):
+        self.announcement_count += 1
         self.send_notification('ssdp:alive')
+        
+        # Log metrics every 10 announcements
+        if self.announcement_count % 10 == 0:
+            avg_interval = sum(self.metrics['announcements']) / len(self.metrics['announcements']) if self.metrics['announcements'] else 0
+            self.logger.info(f"SSDP Metrics - Filtered: {self.metrics['filtered_msgs']}, Avg Interval: {avg_interval:.1f}s")
 
     def send_byebye_notification(self):
         self.send_notification('ssdp:byebye')
@@ -345,6 +382,23 @@ class SSDPServer:
     def handle_request(self, data, addr):
         """Handle incoming SSDP requests with improved filtering"""
         try:
+            # Filter out our own messages and localhost
+            if addr[0] in (self.http_server_address[0], '127.0.0.1'):
+                self.metrics['filtered_msgs'] += 1
+                self.logger.debug(f"Filtered own SSDP message from {addr[0]}")
+                return
+
+            # Track timing metrics for announcements
+            current_time = time.time()
+            if self.last_announcement_time:
+                interval = current_time - self.last_announcement_time
+                self.metrics['announcements'].append(interval)
+                # Keep only last 100 measurements
+                if len(self.metrics['announcements']) > 100:
+                    self.metrics['announcements'].pop(0)
+            
+            self.last_announcement_time = current_time
+
             # Filter out our own messages
             if addr[0] == self.get_local_ip():
                 return
@@ -1705,265 +1759,43 @@ class DLNAServer(BaseHTTPRequestHandler):
         return None, None
 
     def serve_descriptor_file(self, file_path):
-        """Serve UPnP/DLNA XML descriptor files"""
+        """Serve UPnP/DLNA XML descriptor files with enhanced error handling"""
         try:
+            if not hasattr(self, 'descriptor_stats'):
+                self.__class__.descriptor_stats = {
+                    'total_requests': 0,
+                    'errors': 0,
+                    'last_error': None
+                }
+            
+            self.descriptor_stats['total_requests'] += 1
+            
             if file_path == '/description.xml':
-                xml_content = f'''<?xml version="1.0"?>
-                <root xmlns="urn:schemas-upnp-org:device-1-0">
-                    <specVersion>
-                        <major>1</major>
-                        <minor>0</minor>
-                    </specVersion>
-                    <device>
-                        <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
-                        <friendlyName>{DEVICE_NAME}</friendlyName>
-                        <manufacturer>Python DLNA</manufacturer>
-                        <manufacturerURL>https://github.com/</manufacturerURL>
-                        <modelDescription>Python DLNA Media Server</modelDescription>
-                        <modelName>Python-DLNA</modelName>
-                        <modelURL>https://github.com/</modelURL>
-                        <UDN>uuid:{DEVICE_UUID}</UDN>
-                        <dlna:X_DLNADOC xmlns:dlna="urn:schemas-dlna-org:device-1-0">DMS-1.50</dlna:X_DLNADOC>
-                        <serviceList>
-                            <service>
-                                <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
-                                <serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>
-                                <SCPDURL>/ContentDirectory.xml</SCPDURL>
-                                <controlURL>/ContentDirectory/control</controlURL>
-                                <eventSubURL>/ContentDirectory/event</eventSubURL>
-                            </service>
-                            <service>
-                                <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
-                                <serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>
-                                <SCPDURL>/ConnectionManager.xml</SCPDURL>
-                                <controlURL>/ConnectionManager/control</controlURL>
-                                <eventSubURL>/ConnectionManager/event</eventSubURL>
-                            </service>
-                            <service>
-                                <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
-                                <serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>
-                                <SCPDURL>/AVTransport.xml</SCPDURL>
-                                <controlURL>/AVTransport/control</controlURL>
-                                <eventSubURL>/AVTransport/event</eventSubURL>
-                            </service>
-                        </serviceList>
-                    </device>
-                </root>'''
+                self.send_device_description()
             elif file_path == '/ContentDirectory.xml':
-                xml_content = '''<?xml version="1.0" encoding="utf-8"?>
-                <scpd xmlns="urn:schemas-upnp-org:service-1-0">
-                    <specVersion>
-                        <major>1</major>
-                        <minor>0</minor>
-                    </specVersion>
-                    <actionList>
-                        <action>
-                            <name>Browse</name>
-                            <argumentList>
-                                <argument>
-                                    <name>ObjectID</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>BrowseFlag</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>Filter</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>StartingIndex</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>RequestedCount</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>SortCriteria</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>Result</name>
-                                    <direction>out</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>NumberReturned</name>
-                                    <direction>out</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>TotalMatches</name>
-                                    <direction>out</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>UpdateID</name>
-                                    <direction>out</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable>
-                                </argument>
-                            </argumentList>
-                        </action>
-                    </actionList>
-                    <serviceStateTable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_BrowseFlag</name>
-                            <dataType>string</dataType>
-                            <allowedValueList>
-                                <allowedValue>BrowseMetadata</allowedValue>
-                                <allowedValue>BrowseDirectChildren</allowedValue>
-                            </allowedValueList>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_ObjectID</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_UpdateID</name>
-                            <dataType>ui4</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_Filter</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_Index</name>
-                            <dataType>ui4</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_Count</name>
-                            <dataType>ui4</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_SortCriteria</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_Result</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="yes">
-                            <name>SystemUpdateID</name>
-                            <dataType>ui4</dataType>
-                        </stateVariable>
-                    </serviceStateTable>
-                </scpd>'''
+                self.send_content_directory()
             elif file_path == '/ConnectionManager.xml':
-                xml_content = '''<?xml version="1.0" encoding="utf-8"?>
-                <scpd xmlns="urn:schemas-upnp-org:service-1-0">
-                    <specVersion>
-                        <major>1</major>
-                        <minor>0</minor>
-                    </specVersion>
-                    <actionList>
-                        <action>
-                            <name>GetProtocolInfo</name>
-                            <argumentList>
-                                <argument>
-                                    <name>Source</name>
-                                    <direction>out</direction>
-                                    <relatedStateVariable>SourceProtocolInfo</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>Sink</name>
-                                    <direction>out</direction>
-                                    <relatedStateVariable>SinkProtocolInfo</relatedStateVariable>
-                                </argument>
-                            </argumentList>
-                        </action>
-                    </actionList>
-                    <serviceStateTable>
-                        <stateVariable sendEvents="yes">
-                            <name>SourceProtocolInfo</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="yes">
-                            <name>SinkProtocolInfo</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="yes">
-                            <name>CurrentConnectionIDs</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                    </serviceStateTable>
-                </scpd>'''
+                self.send_connection_manager()
             elif file_path == '/AVTransport.xml':
-                xml_content = '''<?xml version="1.0" encoding="utf-8"?>
-                <scpd xmlns="urn:schemas-upnp-org:service-1-0">
-                    <specVersion>
-                        <major>1</major>
-                        <minor>0</minor>
-                    </specVersion>
-                    <actionList>
-                        <action>
-                            <name>SetAVTransportURI</name>
-                            <argumentList>
-                                <argument>
-                                    <name>InstanceID</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>CurrentURI</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>AVTransportURI</relatedStateVariable>
-                                </argument>
-                            </argumentList>
-                        </action>
-                        <action>
-                            <name>Play</name>
-                            <argumentList>
-                                <argument>
-                                    <name>InstanceID</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable>
-                                </argument>
-                                <argument>
-                                    <name>Speed</name>
-                                    <direction>in</direction>
-                                    <relatedStateVariable>TransportPlaySpeed</relatedStateVariable>
-                                </argument>
-                            </argumentList>
-                        </action>
-                    </actionList>
-                    <serviceStateTable>
-                        <stateVariable sendEvents="no">
-                            <name>A_ARG_TYPE_InstanceID</name>
-                            <dataType>ui4</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>AVTransportURI</name>
-                            <dataType>string</dataType>
-                        </stateVariable>
-                        <stateVariable sendEvents="no">
-                            <name>TransportPlaySpeed</name>
-                            <dataType>string</dataType>
-                            <defaultValue>1</defaultValue>
-                        </stateVariable>
-                    </serviceStateTable>
-                </scpd>'''
+                self.send_av_transport()
             else:
+                self.descriptor_stats['errors'] += 1
+                self.descriptor_stats['last_error'] = f"Unknown descriptor: {file_path}"
                 self.send_error(404, "Unknown descriptor file")
                 return
 
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-            xml_bytes = xml_content.encode('utf-8')
-            self.send_header('Content-Length', str(len(xml_bytes)))
-            self.end_headers()
-            self.wfile.write(xml_bytes)
-            
+            # Log descriptor service stats periodically
+            if self.descriptor_stats['total_requests'] % 10 == 0:
+                error_rate = (self.descriptor_stats['errors'] / self.descriptor_stats['total_requests']) * 100
+                self.logger.info(f"XML Descriptor Stats - Requests: {self.descriptor_stats['total_requests']}, "
+                               f"Error Rate: {error_rate:.1f}%, Last Error: {self.descriptor_stats['last_error']}")
+
         except Exception as e:
-            self.logger.error(f"Error serving descriptor file {file_path}: {e}")
-            self.send_error(500, f"Internal server error serving {file_path}")
+            self.descriptor_stats['errors'] += 1
+            self.descriptor_stats['last_error'] = str(e)
+            self.logger.error(f"Error serving descriptor file {file_path}: {e}", exc_info=True)
+            if not self.headers_sent:
+                self.send_error(500, f"Internal server error serving {file_path}")
 
 def get_local_ip():
     """Get the local IP address"""
