@@ -633,29 +633,34 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.list_directory()
                 return
 
-            abs_path = os.path.join(self.server.media_dir, file_path)
+            # Find the file in shared folders
+            abs_path = None
+            for shared_folder in self.server.media_folders:
+                potential_path = os.path.abspath(os.path.join(shared_folder, file_path))
+                shared_folder_abs = os.path.abspath(shared_folder)
+                if os.path.commonpath([shared_folder_abs, potential_path]) == shared_folder_abs:
+                    if os.path.exists(potential_path) and os.path.isfile(potential_path):
+                        abs_path = potential_path
+                        break
             
-            if not os.path.exists(abs_path):
+            if abs_path is None:
                 self.send_error(404, "File not found")
                 return
 
             # Improved content type detection
-            content_type = None
-            if file_path.lower().endswith(('.mp3', '.wav', '.aac', '.m4a')):
-                content_type = 'audio/mpeg'
-            elif file_path.lower().endswith(('.mp4', '.mkv', '.avi')):
-                content_type = 'video/mp4'
-            elif file_path.lower().endswith(('.jpg', '.jpeg')):
-                content_type = 'image/jpeg'
-            else:
-                content_type = 'application/octet-stream'
+            ext = os.path.splitext(abs_path)[1].lower()
+            content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
+                          
+            if not content_type:
+                self.send_error(415, "Unsupported media type")
+                return
 
-            self.send_media_file(abs_path, content_type)
-            
+            self.serve_media_file(file_path)
+
         except Exception as e:
             self.logger.error(f"Error handling GET request: {e}")
             self.send_error(500, f"Internal server error: {str(e)}")
-    
+
     def do_HEAD(self):
         """Handle HEAD requests by performing the same logic as GET but without sending the body"""
         try:
