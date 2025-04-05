@@ -882,10 +882,12 @@ class ResourceMonitor:
                 'metadata_misses': 0
             }
         }
+        self.last_cpu_check = time.time()
+        self.last_metric_log = time.time()
         self._start_monitoring()
 
     def _start_monitoring(self):
-        """Start resource monitoring in background thread"""
+        """Start resource monitoring in background thread with optimized sampling"""
         try:
             import psutil
             self.process = psutil.Process()
@@ -893,36 +895,42 @@ class ResourceMonitor:
             def monitor_loop():
                 while True:
                     try:
-                        # CPU usage (percentage)
-                        cpu_percent = self.process.cpu_percent(interval=1.0)
-                        self.metrics['cpu_usage'].append(cpu_percent)
-                        if len(self.metrics['cpu_usage']) > 60:  # Keep last 60 samples
-                            self.metrics['cpu_usage'].pop(0)
+                        current_time = time.time()
                         
-                        # Memory usage (MB)
+                        # Only sample CPU every 5 seconds to reduce overhead
+                        if current_time - self.last_cpu_check >= 5:
+                            cpu_percent = self.process.cpu_percent(interval=0.1)  # Reduced interval
+                            self.metrics['cpu_usage'].append(cpu_percent)
+                            if len(self.metrics['cpu_usage']) > 12:  # Keep last minute
+                                self.metrics['cpu_usage'].pop(0)
+                            self.last_cpu_check = current_time
+
+                        # Sample memory usage
                         memory_info = self.process.memory_info()
                         memory_mb = memory_info.rss / (1024 * 1024)
                         self.metrics['memory_usage'].append(memory_mb)
-                        if len(self.metrics['memory_usage']) > 60:
+                        if len(self.metrics['memory_usage']) > 12:
                             self.metrics['memory_usage'].pop(0)
                         
                         # Log metrics every minute
-                        avg_cpu = sum(self.metrics['cpu_usage']) / len(self.metrics['cpu_usage'])
-                        avg_mem = sum(self.metrics['memory_usage']) / len(self.metrics['memory_usage'])
+                        if current_time - self.last_metric_log >= 60:
+                            avg_cpu = sum(self.metrics['cpu_usage']) / len(self.metrics['cpu_usage']) if self.metrics['cpu_usage'] else 0
+                            avg_mem = sum(self.metrics['memory_usage']) / len(self.metrics['memory_usage']) if self.metrics['memory_usage'] else 0
+                            
+                            self.logger.info(
+                                f"Resource Usage - CPU: {avg_cpu:.1f}%, Memory: {avg_mem:.1f}MB, "
+                                f"Streams: {self.metrics['active_streams']}, "
+                                f"Cache Hits: {self.metrics['cache_stats']['thumbnail_hits'] + self.metrics['cache_stats']['metadata_hits']}"
+                            )
+                            self.last_metric_log = current_time
                         
-                        self.logger.info(
-                            f"Resource Usage - CPU: {avg_cpu:.1f}%, Memory: {avg_mem:.1f}MB, "
-                            f"Streams: {self.metrics['active_streams']}, "
-                            f"Cache Hits: {self.metrics['cache_stats']['thumbnail_hits'] + self.metrics['cache_stats']['metadata_hits']}"
-                        )
-                        
-                        time.sleep(60)  # Update every minute
+                        time.sleep(5)  # Reduced polling frequency
                         
                     except Exception as e:
                         self.logger.error(f"Error in resource monitoring: {e}")
-                        time.sleep(5)  # Shorter sleep on error
-                        
-            threading.Thread(target=monitor_loop, daemon=True).start()
+                        time.sleep(5)
+
+            threading.Thread(target=monitor_loop, daemon=True, name="ResourceMonitor").start()
             self.logger.info("Resource monitoring started")
             
         except ImportError:
@@ -1011,22 +1019,35 @@ class DLNAXMLGenerator:
 class DLNARequestParser:
     @staticmethod
     def parse_browse_request(soap_body):
-        """Parse Browse action request parameters"""
+        """Parse Browse action request parameters with improved error handling"""
         try:
             root = ElementTree.fromstring(soap_body)
-            namespace = {'s': 'http://schemas.xmlsoap.org/soap/envelope/'}
-            browse = root.find('.//Browse', namespace)
-            
-            return {
-                'object_id': browse.find('ObjectID').text,
-                'browse_flag': browse.find('BrowseFlag').text,
-                'filter': browse.find('Filter').text,
-                'starting_index': int(browse.find('StartingIndex').text),
-                'requested_count': int(browse.find('RequestedCount').text),
-                'sort_criteria': browse.find('SortCriteria').text
+            namespaces = {
+                's': 'http://schemas.xmlsoap.org/soap/envelope/',
+                'u': 'urn:schemas-upnp-org:service:ContentDirectory:1'
             }
+            
+            # Try both with and without namespace
+            browse = (root.find('.//u:Browse', namespaces) or 
+                     root.find('.//Browse') or 
+                     root.find(".//{urn:schemas-upnp-org:service:ContentDirectory:1}Browse"))
+            
+            if browse is None:
+                raise ValueError("Browse action not found in SOAP request")
+
+            # Safe extraction of parameters with defaults
+            return {
+                'object_id': (browse.find('ObjectID') or browse.find('./ObjectID')).text or '0',
+                'browse_flag': (browse.find('BrowseFlag') or browse.find('./BrowseFlag')).text or 'BrowseDirectChildren',
+                'filter': (browse.find('Filter') or browse.find('./Filter')).text or '*',
+                'starting_index': int((browse.find('StartingIndex') or browse.find('./StartingIndex')).text or '0'),
+                'requested_count': int((browse.find('RequestedCount') or browse.find('./RequestedCount')).text or '0'),
+                'sort_criteria': (browse.find('SortCriteria') or browse.find('./SortCriteria')).text or ''
+            }
+        except (AttributeError, ValueError) as e:
+            raise ValueError(f"Invalid Browse request: {str(e)}")
         except Exception as e:
-            raise ValueError(f"Invalid Browse request: {e}")
+            raise ValueError(f"Error parsing Browse request: {str(e)}")
 
 class DLNAErrorHandler:
     def __init__(self, logger):
