@@ -1411,7 +1411,7 @@ class DLNAServer(BaseHTTPRequestHandler):
                 
                 # Send SOAP response using handler
                 response_content = f'''
-                    <Result>{result_didl}</Result>
+                    <Result><![CDATA[{result_didl}]]></Result>
                     <NumberReturned>{number_returned}</NumberReturned>
                     <TotalMatches>{total_matches}</TotalMatches>
                     <UpdateID>1</UpdateID>'''
@@ -1458,9 +1458,9 @@ class DLNAServer(BaseHTTPRequestHandler):
                     # Updated root container attributes
                     container = SubElement(root, 'container', {
                         'id': '0',
-                        'parentID': '0',  # Changed from -1 to 0
-                        'restricted': '1',
-                        'searchable': '1',
+                        'parentID': '-1',  # Changed from -1 to 0
+                        'restricted': 'false',
+                        'searchable': 'true',
                         'childCount': str(total_children),
                         'dlna:dlnaManaged': '00000004'  # Add DLNA managed flag
                     })
