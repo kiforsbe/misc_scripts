@@ -1194,11 +1194,24 @@ class DLNAServer(BaseHTTPRequestHandler):
                             requested_count, filter_str, sort_criteria
                         )
                         
+                        # Wrap DIDL in SOAP response
+                        soap_response = f'''<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+    <s:Body>
+        <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+            <Result>{result_didl}</Result>
+            <NumberReturned>{number_returned}</NumberReturned>
+            <TotalMatches>{total_matches}</TotalMatches>
+            <UpdateID>1</UpdateID>
+        </u:BrowseResponse>
+    </s:Body>
+</s:Envelope>'''
+                        
                         # Send successful response
                         self.send_response(200)
-                        self.send_header('Content-Type', 'application/xml; charset="utf-8"')
+                        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
                         self.end_headers()
-                        self.wfile.write(result_didl.encode('utf-8'))
+                        self.wfile.write(soap_response.encode('utf-8'))
                         return
             
             except Exception as e:
@@ -2137,96 +2150,60 @@ class DLNAServer(BaseHTTPRequestHandler):
     def send_connection_manager(self):
         """Send DLNA Connection Manager XML"""
         try:
-            # Create the connection manager XML
-            root = Element('root', {
-                'xmlns': 'urn:schemas-upnp-org:service-1-0',
-                'xmlns:dlna': 'urn:schemas-dlna-org:service-1-0'
-            })
-            
-            # Add specVersion
-            spec_version = SubElement(root, 'specVersion')
-            SubElement(spec_version, 'major').text = '1'
-            SubElement(spec_version, 'minor').text = '0'
-            
-            # Add service information
-            service = SubElement(root, 'service')
-            SubElement(service, 'serviceType').text = 'urn:schemas-upnp-org:service:ConnectionManager:1'
-            SubElement(service, 'serviceId').text = 'urn:upnp-org:serviceId:ConnectionManager'
-            
-            # Convert XML to string
-            xml_str = tostring(root, encoding='utf-8', method='xml')
-            
-            # Send response
+            # Create SOAP envelope with connection manager info
+            connection_manager_xml = '''<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
+      <Source>http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_LRG,http-get:*:audio/mpeg:DLNA.ORG_PN=MP3,http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_HP_HD_AAC</Source>
+      <Sink></Sink>
+      <CurrentConnectionIDs>0</CurrentConnectionIDs>
+    </u:GetProtocolInfoResponse>
+  </s:Body>
+</s:Envelope>'''
+
             self.send_response(200)
-            self.send_header('Content-Type', 'application/xml')
-            self.send_header('Content-Length', len(xml_str))
+            self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+            self.send_header('Ext', '') # Required by UPnP spec
+            self.send_header('Server', 'Windows/10.0 UPnP/1.0 Python-DLNA/1.0')
+            response_bytes = connection_manager_xml.encode('utf-8')
+            self.send_header('Content-Length', str(len(response_bytes)))
             self.end_headers()
-            self.wfile.write(xml_str)
+            self.wfile.write(response_bytes)
+
         except Exception as e:
             self.logger.error(f"Error sending connection manager: {str(e)}")
-            self.send_error(500, "Internal server error")
+            if not self.headers_sent:
+                self.send_error(500, "Internal server error")
 
     def send_av_transport(self):
-        """Send AVTransport service description"""
-        av_transport_xml = """<?xml version="1.0" encoding="utf-8"?>
-<scpd xmlns="urn:schemas-upnp-org:service-1-0">
-    <specVersion>
-        <major>1</major>
-        <minor>0</minor>
-    </specVersion>
-    <actionList>
-        <action>
-            <name>SetAVTransportURI</name>
-            <argumentList>
-                <argument>
-                    <name>InstanceID</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>CurrentURI</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>AVTransportURI</relatedStateVariable>
-                </argument>
-            </argumentList>
-        </action>
-        <action>
-            <name>Play</name>
-            <argumentList>
-                <argument>
-                    <name>InstanceID</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable>
-                </argument>
-                <argument>
-                    <name>Speed</name>
-                    <direction>in</direction>
-                    <relatedStateVariable>TransportPlaySpeed</relatedStateVariable>
-                </argument>
-            </argumentList>
-        </action>
-    </actionList>
-    <serviceStateTable>
-        <stateVariable sendEvents="no">
-            <name>A_ARG_TYPE_InstanceID</name>
-            <dataType>ui4</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>AVTransportURI</name>
-            <dataType>string</dataType>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>TransportPlaySpeed</name>
-            <dataType>string</dataType>
-            <defaultValue>1</defaultValue>
-        </stateVariable>
-    </serviceStateTable>
-</scpd>"""
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-        self.send_header('Content-Length', len(av_transport_xml))
-        self.end_headers()
-        self.wfile.write(av_transport_xml.encode('utf-8'))
+        """Send DLNA AV Transport XML"""
+        try:
+            # Create SOAP envelope with AV transport info
+            av_transport_xml = '''<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetTransportInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <CurrentTransportState>STOPPED</CurrentTransportState>
+      <CurrentTransportStatus>OK</CurrentTransportStatus>
+      <CurrentSpeed>1</CurrentSpeed>
+    </u:GetTransportInfoResponse>
+  </s:Body>
+</s:Envelope>'''
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/xml; charset="utf-8"')
+            self.send_header('Ext', '') # Required by UPnP spec
+            self.send_header('Server', 'Windows/10.0 UPnP/1.0 Python-DLNA/1.0')
+            response_bytes = av_transport_xml.encode('utf-8')
+            self.send_header('Content-Length', str(len(response_bytes)))
+            self.end_headers()
+            self.wfile.write(response_bytes)
+
+        except Exception as e:
+            self.logger.error(f"Error sending AV transport info: {str(e)}")
+            if not self.headers_sent:
+                self.send_error(500, "Internal server error")
 
     def send_file_with_error_handling(self, file_path):
         """Send file with improved buffering, timeouts and connection handling"""
