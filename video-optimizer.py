@@ -393,28 +393,12 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         'ffmpeg',
         '-i', input_file,
         '-ab', audio_bitrate,
-        '-vf', vf_options
-    ]
-
-    # Add video encoding parameters based on settings
-    if settings.get('video_codec') == 'h265':
-        ffmpeg_cmd.extend([
-            '-tag:v', 'hvc1',  # Essential for Apple HEVC compatibility
-            '-movflags', '+faststart+use_metadata_tags',  # Web optimization
-            '-brand', 'mp42,iso6,isom,msdh,dby1'  # Compatible brands for iOS
-        ])
-    else:
-        ffmpeg_cmd.extend([
-            '-movflags', '+faststart+use_metadata_tags'  # Web optimization for H.264
-        ])
-
-    # Add quality settings
-    ffmpeg_cmd.extend([
+        '-vf', vf_options,
         '-rc', 'vbr',
         '-cq', str(constant_quality),
         '-pix_fmt', settings.get('pix_fmt', 'yuv420p10le'),  # Use profile-specific format if available
         '-preset', codec_preset
-    ])
+    ]
 
     # Add profile-specific parameters if they exist
     if 'profile' in settings:
@@ -426,6 +410,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
 
     # Add stream mapping and codec selection
     ffmpeg_cmd.extend([
+        '-movflags', 'faststart',
         '-map', '0:v',
         '-map', '0:a',
         '-map', '0:s',
@@ -496,8 +481,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
 
     except subprocess.CalledProcessError as e:
         logging.error(f"Error transcoding {input_file}: {e}")
-        if 'pbar' in locals():
-            pbar.close()
+        pbar.close()
         input("An error occurred. Press Enter to exit...")
         sys.exit(1)
 
@@ -762,6 +746,7 @@ def display_metadata_preview(metadata_list: List[VideoMetadata]):
 def add_metadata(output_file: str, video_meta: VideoMetadata, container: str):
     """Add metadata tags to the output file with proper Apple TV compatible tags."""
     if not video_meta.metadata:
+        logging.warning(f"No metadata available for {output_file}")
         return
 
     try:
@@ -769,123 +754,169 @@ def add_metadata(output_file: str, video_meta: VideoMetadata, container: str):
         cover_image_path = extract_cover_image(output_file)
         
         if container == 'mp4':
-            video = MP4(output_file)
-            # Map to MP4 tags with proper Apple TV compatibility
-            show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', ''))
-            season = video_meta.metadata.get('TVSEASON', 1)
-            episode = video_meta.metadata.get('TVEPISODE', 1)
-            
-            # Set show name or use generic "Episode #" format if no title available
-            if show_title:
-                episode_title = f"{show_title} - S{season:02d}E{episode:02d}"
-            else:
-                episode_title = f"Episode {episode}"
-            
-            video['\xa9nam'] = episode_title
-            video['tvsh'] = show_title if show_title else "Unknown Show"
-            video['tvsn'] = [season]
-            video['tves'] = [episode]
-            video['stik'] = [10]  # Content type = TV Show
-            video['hdvd'] = [1]   # HD flag
-            
-            # Create a rich description including anime-specific metadata
-            description_parts = []
-            if video_meta.metadata.get('SHOW TYPE'):
-                description_parts.append(f"Type: {video_meta.metadata['SHOW TYPE']}")
-            if video_meta.metadata.get('TOTAL EPISODES'):
-                description_parts.append(f"Total Episodes: {video_meta.metadata['TOTAL EPISODES']}")
-            if video_meta.metadata.get('STATUS'):
-                description_parts.append(f"Status: {video_meta.metadata['STATUS']}")
-            if video_meta.metadata.get('TAGS'):
-                description_parts.append(f"Tags: {', '.join(video_meta.metadata['TAGS'][:5])}")
-            
-            description = " | ".join(description_parts)
-            video['\xa9cmt'] = description
-            
-            # Set episode info in description field
-            video['desc'] = [episode_title]
-            
-            # Add genre tags from anime database
-            if video_meta.metadata.get('TAGS'):
-                video['\xa9gen'] = video_meta.metadata['TAGS'][:5]
-            
-            # Add cover art if available
-            if cover_image_path and os.path.exists(cover_image_path):
-                with open(cover_image_path, 'rb') as f:
-                    cover_data = f.read()
-                    video['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
-                try:
-                    os.remove(cover_image_path)
-                except Exception as e:
-                    logging.warning(f"Failed to clean up cover image: {e}")
-            
-            video.save()
+            try:
+                video = MP4(output_file)
+                # Map to MP4 tags with proper Apple TV compatibility
+                show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', ''))
+                season = video_meta.metadata.get('TVSEASON', 1)
+                episode = video_meta.metadata.get('TVEPISODE', 1)
+                
+                # Set show name or use generic "Episode #" format if no title available
+                if show_title:
+                    episode_title = f"{show_title} - S{season:02d}E{episode:02d}"
+                else:
+                    episode_title = f"Episode {episode}"
+                
+                video['\xa9nam'] = episode_title
+                video['tvsh'] = show_title if show_title else "Unknown Show"
+                video['tvsn'] = [season]
+                video['tves'] = [episode]
+                video['stik'] = [10]  # Content type = TV Show
+                video['hdvd'] = [1]   # HD flag
+                
+                # Create a rich description including anime-specific metadata
+                description_parts = []
+                if video_meta.metadata.get('SHOW TYPE'):
+                    description_parts.append(f"Type: {video_meta.metadata['SHOW TYPE']}")
+                if video_meta.metadata.get('TOTAL EPISODES'):
+                    description_parts.append(f"Total Episodes: {video_meta.metadata['TOTAL EPISODES']}")
+                if video_meta.metadata.get('STATUS'):
+                    description_parts.append(f"Status: {video_meta.metadata['STATUS']}")
+                if video_meta.metadata.get('TAGS'):
+                    description_parts.append(f"Tags: {', '.join(video_meta.metadata['TAGS'][:5])}")
+                
+                description = " | ".join(description_parts)
+                if description:
+                    video['\xa9cmt'] = description
+                    video['desc'] = [description]
+                
+                # Add genre tags from anime database
+                if video_meta.metadata.get('TAGS'):
+                    video['\xa9gen'] = video_meta.metadata['TAGS'][:5]
+                
+                # Add cover art if available
+                if cover_image_path and os.path.exists(cover_image_path):
+                    with open(cover_image_path, 'rb') as f:
+                        cover_data = f.read()
+                        video['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
+                
+                # Save changes
+                video.save()
+                logging.info(f"Successfully saved MP4 metadata for {output_file}")
+                
+            except Exception as mp4_error:
+                logging.error(f"Failed to save MP4 metadata for {output_file}: {mp4_error}")
+                raise
             
         elif container == 'mkv':
-            # For MKV, use mkvpropedit command line tool
-            cmd = ['mkvpropedit', output_file, '--edit', 'info']
-            
-            # Set tags in a format compatible with MKV
-            show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', ''))
-            season = video_meta.metadata.get('TVSEASON', 1)
-            episode = video_meta.metadata.get('TVEPISODE', 1)
-            
-            # Set show name or use generic "Episode #" format if no title available
-            if show_title:
-                episode_title = f"{show_title} - S{season:02d}E{episode:02d}"
-            else:
-                episode_title = f"Episode {episode}"
-            
-            # Create XML tags file for MKV
-            tags_file = output_file + "_tags.xml"
-            with open(tags_file, 'w', encoding='utf-8') as f:
-                f.write('<?xml version="1.0"?>\n<Tags><Tag><Targets><TargetTypeValue>50</TargetTypeValue></Targets><Simple>')
-                f.write(f'<Name>TITLE</Name><String>{episode_title}</String></Simple>')
-                
-                # Add anime-specific metadata
-                if video_meta.metadata.get('SHOW TYPE'):
-                    f.write(f'<Simple><Name>SHOW_TYPE</Name><String>{video_meta.metadata["SHOW TYPE"]}</String></Simple>')
-                if video_meta.metadata.get('TOTAL EPISODES'):
-                    f.write(f'<Simple><Name>TOTAL_EPISODES</Name><String>{video_meta.metadata["TOTAL EPISODES"]}</String></Simple>')
-                if video_meta.metadata.get('STATUS'):
-                    f.write(f'<Simple><Name>STATUS</Name><String>{video_meta.metadata["STATUS"]}</String></Simple>')
-                if video_meta.metadata.get('TAGS'):
-                    f.write(f'<Simple><Name>TAGS</Name><String>{", ".join(video_meta.metadata["TAGS"][:5])}</String></Simple>')
-                
-                f.write('</Tag></Tags>')
-            
-            # Add tags file to MKV
-            cmd.extend(['--tags', 'global:' + tags_file])
-            
-            # Add cover art if available
-            if cover_image_path and os.path.exists(cover_image_path):
-                cmd.extend(['--attachment-mime-type', 'image/jpeg'])
-                cmd.extend(['--add-attachment', cover_image_path])
-                
-            # Run mkvpropedit
-            subprocess.run(cmd, check=True)
-            
-            # Clean up temporary files
             try:
-                os.remove(tags_file)
+                # Create XML tags file for MKV
+                tags_file = output_file + "_tags.xml"
+                with open(tags_file, 'w', encoding='utf-8') as f:
+                    f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                    f.write('<Tags>\n')
+                    f.write('  <Tag>\n')
+                    f.write('    <Targets>\n')
+                    f.write('      <TargetTypeValue>50</TargetTypeValue>\n')
+                    f.write('    </Targets>\n')
+                    
+                    # Write each piece of metadata as separate Simple tags
+                    show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', ''))
+                    season = video_meta.metadata.get('TVSEASON', 1)
+                    episode = video_meta.metadata.get('TVEPISODE', 1)
+                    
+                    if show_title:
+                        episode_title = f"{show_title} - S{season:02d}E{episode:02d}"
+                        f.write('    <Simple>\n')
+                        f.write('      <Name>TITLE</Name>\n')
+                        f.write(f'      <String>{episode_title}</String>\n')
+                        f.write('    </Simple>\n')
+                        
+                        f.write('    <Simple>\n')
+                        f.write('      <Name>SERIES</Name>\n')
+                        f.write(f'      <String>{show_title}</String>\n')
+                        f.write('    </Simple>\n')
+                    
+                    # Add season and episode numbers
+                    f.write('    <Simple>\n')
+                    f.write('      <Name>SEASON</Name>\n')
+                    f.write(f'      <String>{season}</String>\n')
+                    f.write('    </Simple>\n')
+                    
+                    f.write('    <Simple>\n')
+                    f.write('      <Name>EPISODE</Name>\n')
+                    f.write(f'      <String>{episode}</String>\n')
+                    f.write('    </Simple>\n')
+                    
+                    # Add anime-specific metadata
+                    if video_meta.metadata.get('SHOW TYPE'):
+                        f.write('    <Simple>\n')
+                        f.write('      <Name>SHOW_TYPE</Name>\n')
+                        f.write(f'      <String>{video_meta.metadata["SHOW TYPE"]}</String>\n')
+                        f.write('    </Simple>\n')
+                    
+                    if video_meta.metadata.get('TOTAL EPISODES'):
+                        f.write('    <Simple>\n')
+                        f.write('      <Name>TOTAL_EPISODES</Name>\n')
+                        f.write(f'      <String>{video_meta.metadata["TOTAL EPISODES"]}</String>\n')
+                        f.write('    </Simple>\n')
+                    
+                    if video_meta.metadata.get('STATUS'):
+                        f.write('    <Simple>\n')
+                        f.write('      <Name>STATUS</Name>\n')
+                        f.write(f'      <String>{video_meta.metadata["STATUS"]}</String>\n')
+                        f.write('    </Simple>\n')
+                    
+                    if video_meta.metadata.get('TAGS'):
+                        f.write('    <Simple>\n')
+                        f.write('      <Name>TAGS</Name>\n')
+                        f.write(f'      <String>{", ".join(video_meta.metadata["TAGS"][:5])}</String>\n')
+                        f.write('    </Simple>\n')
+                    
+                    f.write('  </Tag>\n')
+                    f.write('</Tags>\n')
+                
+                # Add tags file to MKV using mkvpropedit
+                cmd = ['mkvpropedit', output_file, '--tags', 'global:' + tags_file]
+                
+                # Add cover art if available
                 if cover_image_path and os.path.exists(cover_image_path):
-                    os.remove(cover_image_path)
-            except Exception as e:
-                logging.warning(f"Failed to clean up temporary files: {e}")
-            
+                    cmd.extend(['--attachment-name', 'cover.jpg'])
+                    cmd.extend(['--attachment-mime-type', 'image/jpeg'])
+                    cmd.extend(['--add-attachment', cover_image_path])
+                
+                # Run mkvpropedit and capture any errors
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                if result.stderr:
+                    logging.warning(f"MKVPropedit output for {output_file}: {result.stderr}")
+                else:
+                    logging.info(f"Successfully saved MKV metadata for {output_file}")
+                
+            except subprocess.CalledProcessError as mkv_error:
+                logging.error(f"Failed to save MKV metadata for {output_file}: {mkv_error}")
+                if mkv_error.stderr:
+                    logging.error(f"MKVPropedit error output: {mkv_error.stderr}")
+                raise
+            except Exception as mkv_error:
+                logging.error(f"Unexpected error saving MKV metadata for {output_file}: {mkv_error}")
+                raise
+            finally:
+                # Clean up temporary files
+                if 'tags_file' in locals() and os.path.exists(tags_file):
+                    try:
+                        os.remove(tags_file)
+                    except Exception as e:
+                        logging.warning(f"Failed to clean up tags file: {e}")
+    
     except Exception as e:
-        logging.error(f"Failed to add metadata: {e}")
-        # Clean up any temporary files in case of error
+        logging.error(f"Failed to add metadata to {output_file}: {e}")
+    finally:
+        # Clean up cover image in all cases
         if 'cover_image_path' in locals() and cover_image_path and os.path.exists(cover_image_path):
             try:
                 os.remove(cover_image_path)
             except Exception as e:
                 logging.warning(f"Failed to clean up cover image: {e}")
-        if 'tags_file' in locals() and os.path.exists(tags_file):
-            try:
-                os.remove(tags_file)
-            except Exception as e:
-                logging.warning(f"Failed to clean up tags file: {e}")
 
 def extract_cover_image(input_file):
     """Extract a frame at 20% duration to use as cover art."""
@@ -949,13 +980,13 @@ def main():
     # Transcode each file and immediately apply metadata
     for video_meta in metadata_list:
         output_file = os.path.splitext(video_meta.filename)[0] + "_transcoded"
-        final_output = f"{output_file}.{extension}"
         logging.info(f"Starting transcoding for {video_meta.filename}")
         
         # First transcode the file
         transcode_file(video_meta.filename, output_file, extension, settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
         
         # Immediately apply metadata after transcoding is complete
+        final_output = f"{output_file}.{extension}"
         if os.path.exists(final_output):
             logging.info(f"Applying metadata to {final_output}")
             add_metadata(final_output, video_meta, extension)
