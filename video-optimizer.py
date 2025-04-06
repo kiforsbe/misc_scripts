@@ -20,6 +20,9 @@ CACHE_DIR = os.path.join(os.path.expanduser("~"), ".anime_metadata_cache")
 DB_CACHE_FILE = os.path.join(CACHE_DIR, "anime-offline-database.json")
 CACHE_DURATION = timedelta(days=7)
 
+# Global variable to store the anime database
+ANIME_DB = None
+
 def ensure_cache_dir():
     """Ensure the cache directory exists"""
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -32,31 +35,42 @@ def is_cache_valid():
     mtime = datetime.fromtimestamp(os.path.getmtime(DB_CACHE_FILE))
     return datetime.now() - mtime < CACHE_DURATION
 
-def download_anime_database():
-    """Download the anime database if needed"""
+def load_anime_database():
+    """Load the anime database into memory, downloading if needed"""
+    global ANIME_DB
+    
+    if ANIME_DB is not None:
+        logging.info("Using in-memory anime database")
+        return ANIME_DB
+        
     try:
         if is_cache_valid():
-            logging.info("Using cached anime database")
+            logging.info("Loading cached anime database")
             with open(DB_CACHE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                ANIME_DB = json.load(f)
+                return ANIME_DB
 
         logging.info("Downloading fresh anime database...")
         response = requests.get(ANIME_DB_URL)
         response.raise_for_status()
         
         ensure_cache_dir()
-        db_data = response.json()
+        ANIME_DB = response.json()
         
         with open(DB_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(db_data, f, ensure_ascii=False, indent=2)
+            json.dump(ANIME_DB, f, ensure_ascii=False, indent=2)
         
-        return db_data
+        return ANIME_DB
     except Exception as e:
-        logging.error(f"Error downloading/loading anime database: {e}")
-        # If we have a cached version, use it even if expired
+        logging.error(f"Error loading anime database: {e}")
+        # Try to load from cache even if expired
         if os.path.exists(DB_CACHE_FILE):
-            with open(DB_CACHE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            try:
+                with open(DB_CACHE_FILE, 'r', encoding='utf-8') as f:
+                    ANIME_DB = json.load(f)
+                    return ANIME_DB
+            except Exception as cache_e:
+                logging.error(f"Error loading cached database: {cache_e}")
         return None
 
 def find_best_anime_match(show_name, anime_db):
@@ -595,47 +609,56 @@ def select_default_tracks(files):
 
 def parse_filename(filename):
     """Extract show information from filename and enrich with anime database data."""
-    # First get basic metadata from filename
     basename = os.path.splitext(filename)[0]
     
-    # Pattern for common anime/TV show naming formats
+    # Updated patterns to handle various anime filename formats
     patterns = [
-        # [Group] Show - S01E02
+        # [Group] Show Title - Episode [Quality][Tags][CRC]
+        # This pattern keeps the full show title intact (including season subtitle)
+        r'\[([^\]]+)\]\s*([^-]+(?:\s*-\s*[^-]+)*)\s*-\s*(\d+)(?:\s*\[[^\]]+\])*$',
+        # [Group] Show - S01E02 (standard format)
         r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*S(\d+)E(\d+)(?:\s*\[[^\]]+\])*$',
         # [Group] Show - 01x02
-        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*(\d+)x(\d+)(?:\s*\[[^\]]+\])*$',
-        # [Group] Show - 02 (assume season 1 if no season specified)
-        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*(\d+)(?:\s*\[[^\]]+\])*$'
+        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*(\d+)x(\d+)(?:\s*\[[^\]]+\])*$'
     ]
     
     for pattern in patterns:
         match = re.match(pattern, basename)
         if match:
-            if len(match.groups()) == 4:  # Format with explicit season
-                release_group, show_name, season_num, episode_num = match.groups()
-            else:  # Format with just episode number
-                release_group, show_name, episode_num = match.groups()
-                season_num = '1'  # Default to season 1
+            groups = match.groups()
+            
+            if len(groups) == 3:  # Simple episode format (like your example)
+                release_group, show_title, episode_num = groups
+                season_int = 1  # Default season
+                try:
+                    episode_int = int(episode_num)
+                except ValueError:
+                    logging.warning(f"Could not parse episode number from {filename}")
+                    return None
                 
-            try:
-                season_int = int(season_num)
-                episode_int = int(episode_num)
-            except ValueError:
-                logging.warning(f"Could not parse season/episode numbers from {filename}")
-                return None
+            elif len(groups) == 4:  # Standard S01E02 or 01x02 format
+                release_group, show_title, season_num, episode_num = groups
+                try:
+                    season_int = int(season_num)
+                    episode_int = int(episode_num)
+                except ValueError:
+                    logging.warning(f"Could not parse season/episode numbers from {filename}")
+                    return None
             
             # Get anime database info
             try:
-                anime_db = download_anime_database()
+                anime_db = load_anime_database()
                 if anime_db:
-                    anime_entry = find_best_anime_match(show_name.strip(), anime_db)
+                    # Try to match with the full show title
+                    anime_entry = find_best_anime_match(show_title.strip(), anime_db)
+                    
                     if anime_entry:
                         episode_info = get_episode_info(anime_entry, episode_int)
                         
                         # Combine filename metadata with database info
                         return {
                             'MEDIA TYPE': 6,  # TV Show
-                            'TVSHOW': show_name.strip(),
+                            'TVSHOW': show_title.strip(),
                             'TVSEASON': season_int,
                             'TVEPISODE': episode_int,
                             'RELEASE GROUP': release_group.strip(),
@@ -646,14 +669,14 @@ def parse_filename(filename):
                             'TAGS': episode_info['tags'],
                             'ANIME DB TITLE': episode_info['title']
                         }
-                
+            
             except Exception as e:
                 logging.warning(f"Failed to get anime database info: {e}")
             
             # Return basic metadata if database lookup fails
             return {
                 'MEDIA TYPE': 6,  # TV Show
-                'TVSHOW': show_name.strip(),
+                'TVSHOW': show_title.strip(),
                 'TVSEASON': season_int,
                 'TVEPISODE': episode_int,
                 'RELEASE GROUP': release_group.strip()
