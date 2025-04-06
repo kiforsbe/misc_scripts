@@ -8,6 +8,101 @@ from tqdm import tqdm
 import sys
 import threading
 from mutagen.mp4 import MP4, MP4Cover
+import requests
+import json
+from datetime import datetime, timedelta
+from rapidfuzz import fuzz, process
+from pathlib import Path
+
+# Constants for anime database
+ANIME_DB_URL = "https://raw.githubusercontent.com/manami-project/anime-offline-database/master/anime-offline-database.json"
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".anime_metadata_cache")
+DB_CACHE_FILE = os.path.join(CACHE_DIR, "anime-offline-database.json")
+CACHE_DURATION = timedelta(days=7)
+
+def ensure_cache_dir():
+    """Ensure the cache directory exists"""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
+def is_cache_valid():
+    """Check if the cached database is still valid"""
+    if not os.path.exists(DB_CACHE_FILE):
+        return False
+    
+    mtime = datetime.fromtimestamp(os.path.getmtime(DB_CACHE_FILE))
+    return datetime.now() - mtime < CACHE_DURATION
+
+def download_anime_database():
+    """Download the anime database if needed"""
+    try:
+        if is_cache_valid():
+            logging.info("Using cached anime database")
+            with open(DB_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+
+        logging.info("Downloading fresh anime database...")
+        response = requests.get(ANIME_DB_URL)
+        response.raise_for_status()
+        
+        ensure_cache_dir()
+        db_data = response.json()
+        
+        with open(DB_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(db_data, f, ensure_ascii=False, indent=2)
+        
+        return db_data
+    except Exception as e:
+        logging.error(f"Error downloading/loading anime database: {e}")
+        # If we have a cached version, use it even if expired
+        if os.path.exists(DB_CACHE_FILE):
+            with open(DB_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return None
+
+def find_best_anime_match(show_name, anime_db):
+    """Find the best matching anime in the database using fuzzy string matching"""
+    if not anime_db or 'data' not in anime_db:
+        return None
+    
+    # Create a list of tuples (title, anime_entry)
+    title_entries = []
+    for entry in anime_db['data']:
+        # Check all possible titles (synonyms, english, etc)
+        all_titles = [entry['title']] + entry.get('synonyms', [])
+        if 'english' in entry.get('title', {}):
+            all_titles.append(entry['title']['english'])
+        
+        title_entries.extend((title, entry) for title in all_titles if title)
+    
+    # Find the best match using fuzzy string matching
+    best_match = process.extractOne(
+        show_name,
+        [t[0] for t in title_entries],
+        scorer=fuzz.ratio,
+        score_cutoff=80
+    )
+    
+    if best_match:
+        # Find the corresponding entry
+        for title, entry in title_entries:
+            if title == best_match[0]:
+                return entry
+    
+    return None
+
+def get_episode_info(anime_entry, episode_number):
+    """Get episode specific information if available"""
+    # This is a placeholder - in a real implementation, you might want to
+    # query another API (like AniList or MyAnimeList) for episode-specific data
+    # For now, we'll return basic info from the offline database
+    return {
+        'title': anime_entry['title'],
+        'type': anime_entry.get('type', ''),
+        'episodes': anime_entry.get('episodes', 0),
+        'status': anime_entry.get('status', ''),
+        'season': anime_entry.get('animeSeason', {}),
+        'tags': anime_entry.get('tags', [])
+    }
 
 # Set up logging
 logging.basicConfig(
@@ -450,11 +545,11 @@ def detect_nvenc_support():
         logging.error(f"Error detecting NVENC support: {e}")
         return False
 
-# Function to let the user select default audio and subtitle tracks
 def select_default_tracks(files):
+    """Select default audio and subtitle tracks, with languages sorted alphabetically"""
     audio_languages = []
     subtitle_languages = []
-
+    
     for file in files:
         media_info = get_media_info(file)
         if not media_info:
@@ -465,32 +560,45 @@ def select_default_tracks(files):
         audio_tracks = extract_track_details(media_info, 'audio')
         subtitle_tracks = extract_track_details(media_info, 'subtitle')
 
-        audio_languages.extend([track['tags'].get('language', 'Unknown') for track in audio_tracks])
-        subtitle_languages.extend([track['tags'].get('language', 'Unknown') for track in subtitle_tracks])
+        # Add languages while maintaining uniqueness
+        for track in audio_tracks:
+            lang = track['tags'].get('language', 'Unknown')
+            if lang not in audio_languages:
+                audio_languages.append(lang)
+        
+        for track in subtitle_tracks:
+            lang = track['tags'].get('language', 'Unknown')
+            if lang not in subtitle_languages:
+                subtitle_languages.append(lang)
 
-    # Get unique languages
-    unique_audio_languages = list(set(audio_languages))
-    unique_subtitle_languages = list(set(subtitle_languages))
+    # Sort languages alphabetically, but keep 'Unknown' at the end if present
+    audio_languages.sort(key=lambda x: ('zzz' if x == 'Unknown' else x.lower()))
+    subtitle_languages.sort(key=lambda x: ('zzz' if x == 'Unknown' else x.lower()))
 
-    logging.info(f"Audio languages available: {unique_audio_languages}")
-    logging.info(f"Subtitle languages available: {unique_subtitle_languages}")
+    logging.info(f"Audio languages available (alphabetically): {audio_languages}")
+    logging.info(f"Subtitle languages available (alphabetically): {subtitle_languages}")
 
     # Let the user select the default audio and subtitle tracks
     questions = [
-        inquirer.List('audio_language', message="Select default audio language:", choices=unique_audio_languages),
-        inquirer.List('subtitle_language', message="Select default subtitle language:", choices=unique_subtitle_languages)
+        inquirer.List('audio_language', 
+                     message="Select default audio language:", 
+                     choices=audio_languages,
+                     default=audio_languages[0] if audio_languages else None),
+        inquirer.List('subtitle_language', 
+                     message="Select default subtitle language:", 
+                     choices=subtitle_languages,
+                     default=subtitle_languages[0] if subtitle_languages else None)
     ]
     answers = inquirer.prompt(questions)
     logging.info(f"User selected default audio: {answers['audio_language']}, default subtitle: {answers['subtitle_language']}")
     return answers['audio_language'], answers['subtitle_language']
 
 def parse_filename(filename):
-    """Extract show information from filename with better season/episode parsing."""
-    # Strip file extension
+    """Extract show information from filename and enrich with anime database data."""
+    # First get basic metadata from filename
     basename = os.path.splitext(filename)[0]
     
-    # Pattern for common anime/TV show naming formats:
-    # [Group] Show - S01E02 or [Group] Show - 01x02 or [Group] Show - 02
+    # Pattern for common anime/TV show naming formats
     patterns = [
         # [Group] Show - S01E02
         r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*S(\d+)E(\d+)(?:\s*\[[^\]]+\])*$',
@@ -515,8 +623,36 @@ def parse_filename(filename):
             except ValueError:
                 logging.warning(f"Could not parse season/episode numbers from {filename}")
                 return None
+            
+            # Get anime database info
+            try:
+                anime_db = download_anime_database()
+                if anime_db:
+                    anime_entry = find_best_anime_match(show_name.strip(), anime_db)
+                    if anime_entry:
+                        episode_info = get_episode_info(anime_entry, episode_int)
+                        
+                        # Combine filename metadata with database info
+                        return {
+                            'MEDIA TYPE': 6,  # TV Show
+                            'TVSHOW': show_name.strip(),
+                            'TVSEASON': season_int,
+                            'TVEPISODE': episode_int,
+                            'RELEASE GROUP': release_group.strip(),
+                            'SHOW TYPE': episode_info['type'],
+                            'TOTAL EPISODES': episode_info['episodes'],
+                            'STATUS': episode_info['status'],
+                            'SEASON INFO': episode_info['season'],
+                            'TAGS': episode_info['tags'],
+                            'ANIME DB TITLE': episode_info['title']
+                        }
                 
+            except Exception as e:
+                logging.warning(f"Failed to get anime database info: {e}")
+            
+            # Return basic metadata if database lookup fails
             return {
+                'MEDIA TYPE': 6,  # TV Show
                 'TVSHOW': show_name.strip(),
                 'TVSEASON': season_int,
                 'TVEPISODE': episode_int,
@@ -536,22 +672,39 @@ def add_metadata(output_file, metadata, container):
         if container == 'mp4':
             video = MP4(output_file)
             # Map to MP4 tags with proper Apple TV compatibility
-            # stik=10 indicates TV Show content type for Apple TV
-            video['\xa9nam'] = metadata.get('TVSHOW', '')    # Show name as title
-            video['tvsh'] = metadata.get('TVSHOW', '')       # TV Show name
+            video['\xa9nam'] = metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))  # Prefer database title
+            video['tvsh'] = metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))     # TV Show name
             video['tvsn'] = [metadata.get('TVSEASON', 1)]    # TV Season number
             video['tves'] = [metadata.get('TVEPISODE', 1)]   # TV Episode number
             video['stik'] = [10]                             # Content type = TV Show
             video['hdvd'] = [1]                             # HD flag
-            # Set episode title as "Show - SxxEyy"
-            episode_title = f"{metadata.get('TVSHOW', '')} - S{metadata.get('TVSEASON', 1):02d}E{metadata.get('TVEPISODE', 1):02d}"
+            
+            # Create a rich description including anime-specific metadata
+            description_parts = []
+            if metadata.get('SHOW TYPE'):
+                description_parts.append(f"Type: {metadata['SHOW TYPE']}")
+            if metadata.get('TOTAL EPISODES'):
+                description_parts.append(f"Total Episodes: {metadata['TOTAL EPISODES']}")
+            if metadata.get('STATUS'):
+                description_parts.append(f"Status: {metadata['STATUS']}")
+            if metadata.get('TAGS'):
+                description_parts.append(f"Tags: {', '.join(metadata['TAGS'][:5])}")  # Limit to first 5 tags
+            
+            description = " | ".join(description_parts)
+            video['\xa9cmt'] = description  # Comments field for extra metadata
+            
+            # Set episode info
+            episode_title = f"{metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))} - S{metadata.get('TVSEASON', 1):02d}E{metadata.get('TVEPISODE', 1):02d}"
             video['desc'] = [episode_title]                  # Description/summary
+            
+            # Add genre tags from anime database
+            if metadata.get('TAGS'):
+                video['\xa9gen'] = metadata['TAGS'][:5]  # Use first 5 tags as genres
             
             # Add cover art if available
             if cover_image_path and os.path.exists(cover_image_path):
                 with open(cover_image_path, 'rb') as f:
                     cover_data = f.read()
-                    # Add as both PNG and JPEG for maximum compatibility
                     video['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
                 # Clean up the temporary cover image file
                 try:
@@ -564,33 +717,62 @@ def add_metadata(output_file, metadata, container):
         elif container == 'mkv':
             # For MKV, use mkvpropedit command line tool
             cmd = ['mkvpropedit', output_file, '--edit', 'info']
+            
             # Set tags in a format compatible with MKV
-            if 'TVSHOW' in metadata and 'TVEPISODE' in metadata:
-                episode_title = f"{metadata['TVSHOW']} - S{metadata['TVSEASON']:02d}E{metadata['TVEPISODE']:02d}"
-                cmd.extend(['--set', f'title={episode_title}'])
+            if metadata:
+                show_title = metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))
+                episode_title = f"{show_title} - S{metadata.get('TVSEASON', 1):02d}E{metadata.get('TVEPISODE', 1):02d}"
+                
+                # Create XML tags file for MKV
+                tags_file = output_file + "_tags.xml"
+                with open(tags_file, 'w', encoding='utf-8') as f:
+                    f.write('<?xml version="1.0"?>\n<Tags><Tag><Targets><TargetTypeValue>50</TargetTypeValue></Targets><Simple>')
+                    f.write(f'<Name>TITLE</Name><String>{episode_title}</String></Simple>')
+                    
+                    # Add anime-specific metadata
+                    if metadata.get('SHOW TYPE'):
+                        f.write(f'<Simple><Name>SHOW_TYPE</Name><String>{metadata["SHOW TYPE"]}</String></Simple>')
+                    if metadata.get('TOTAL EPISODES'):
+                        f.write(f'<Simple><Name>TOTAL_EPISODES</Name><String>{metadata["TOTAL EPISODES"]}</String></Simple>')
+                    if metadata.get('STATUS'):
+                        f.write(f'<Simple><Name>STATUS</Name><String>{metadata["STATUS"]}</String></Simple>')
+                    if metadata.get('TAGS'):
+                        f.write(f'<Simple><Name>TAGS</Name><String>{", ".join(metadata["TAGS"][:5])}</String></Simple>')
+                    
+                    f.write('</Tag></Tags>')
+                
+                # Add tags file to MKV
+                cmd.extend(['--tags', 'global:' + tags_file])
                 
                 # Add cover art if available
                 if cover_image_path and os.path.exists(cover_image_path):
                     cmd.extend(['--attachment-mime-type', 'image/jpeg'])
                     cmd.extend(['--add-attachment', cover_image_path])
                     
-            subprocess.run(cmd, check=True)
-            
-            # Clean up the temporary cover image file for MKV case
-            if cover_image_path and os.path.exists(cover_image_path):
+                # Run mkvpropedit
+                subprocess.run(cmd, check=True)
+                
+                # Clean up temporary files
                 try:
-                    os.remove(cover_image_path)
+                    os.remove(tags_file)
+                    if cover_image_path and os.path.exists(cover_image_path):
+                        os.remove(cover_image_path)
                 except Exception as e:
-                    logging.warning(f"Failed to clean up cover image: {e}")
+                    logging.warning(f"Failed to clean up temporary files: {e}")
             
     except Exception as e:
         logging.error(f"Failed to add metadata: {e}")
-        # Clean up the temporary cover image file in case of error
-        if cover_image_path and os.path.exists(cover_image_path):
+        # Clean up any temporary files in case of error
+        if 'cover_image_path' in locals() and cover_image_path and os.path.exists(cover_image_path):
             try:
                 os.remove(cover_image_path)
             except Exception as e:
                 logging.warning(f"Failed to clean up cover image: {e}")
+        if 'tags_file' in locals() and os.path.exists(tags_file):
+            try:
+                os.remove(tags_file)
+            except Exception as e:
+                logging.warning(f"Failed to clean up tags file: {e}")
 
 def extract_cover_image(input_file):
     """Extract a frame at 20% duration to use as cover art."""
