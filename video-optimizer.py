@@ -407,6 +407,12 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         ffmpeg_cmd.extend(['-level', settings['level']])
     if 'max_muxing_queue_size' in settings:
         ffmpeg_cmd.extend(['-max_muxing_queue_size', str(settings['max_muxing_queue_size'])])
+    if 'profile' in settings:
+        ffmpeg_cmd.extend(['-profile:v', settings['profile']])
+    
+    # Add brand for Apple compatibility if using NVENC
+    if settings.get('video_codec') == 'h265' and use_nvenc:
+        ffmpeg_cmd.extend(['-tag:v', 'hvc1'])
 
     # Add stream mapping and codec selection
     ffmpeg_cmd.extend([
@@ -760,12 +766,7 @@ def add_metadata(output_file: str, video_meta: VideoMetadata, container: str):
                 show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', ''))
                 season = video_meta.metadata.get('TVSEASON', 1)
                 episode = video_meta.metadata.get('TVEPISODE', 1)
-                
-                # Set show name or use generic "Episode #" format if no title available
-                if show_title:
-                    episode_title = f"{show_title} - S{season:02d}E{episode:02d}"
-                else:
-                    episode_title = f"Episode {episode}"
+                episode_title = f"Episode {episode}"
                 
                 video['\xa9nam'] = episode_title
                 video['tvsh'] = show_title if show_title else "Unknown Show"
