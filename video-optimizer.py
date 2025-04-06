@@ -143,7 +143,8 @@ default_profiles = [
             'pix_fmt': 'yuv420p',  # Standard 8-bit color for maximum compatibility
             'profile': 'high',  # H.264 High Profile
             'level': '4.0',    # Compatible level for iOS
-            'max_muxing_queue_size': 1024  # Helps with MP4 muxing
+            'max_muxing_queue_size': 1024,  # Helps with MP4 muxing
+            'movflags': '+faststart+use_metadata_tags'
         }
     },
     {
@@ -155,10 +156,13 @@ default_profiles = [
             'video_codec': 'h265',
             'codec_preset': 'medium',
             'constant_quality': 28,
-            'pix_fmt': 'yuv420p',
-            'profile': 'main',
-            'level': '4.0',
-            'max_muxing_queue_size': 1024
+            'pix_fmt': 'yuv420p',  # iPhone requires 8-bit color for compatibility
+            'profile': 'main',    # HEVC Main profile is well supported
+            'level': '4.1',      # Common HEVC level for mobile
+            'max_muxing_queue_size': 1024,
+            'movflags': '+faststart+use_metadata_tags',
+            'tag:v': 'hvc1',     # Essential for Apple device compatibility
+            'brand': 'mp42,iso6,isom,msdh,dby1'  # Compatible brands for iOS
         }
     },
     {
@@ -353,11 +357,11 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         # Use the subtitle_index directly to find the stream information
         stream = subtitle_streams[audio_index]
 
-        # Summarize audio details into a string
+        # Summarize subtitle details into a string
         details = f"Language: {stream['tags']['language']}, Codec Name: {stream['codec_name']}"
         logging.info(f"Subtitle details: {details}")
     else:
-        logging.warning("No matching audio stream found.")
+        logging.warning("No matching subtitle stream found.")
         subtitle_index = 0
 
     # Encoder selection
@@ -371,7 +375,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     if apply_denoise:
         vf_options += ",hqdn3d=3:2:6:4"  # Denoise filter with medium settings
 
-    # Set up subtitle format, if the output extension is 'mp4' then, and only then use 'mov_text' otherwise just copy 'copy' the source
+    # Set up subtitle format
     subtitle_format = map_subtitle_for_transcode(extension)
 
     # Set up some locals based on settings to make things easier
@@ -389,12 +393,28 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         'ffmpeg',
         '-i', input_file,
         '-ab', audio_bitrate,
-        '-vf', vf_options,
+        '-vf', vf_options
+    ]
+
+    # Add video encoding parameters based on settings
+    if settings.get('video_codec') == 'h265':
+        ffmpeg_cmd.extend([
+            '-tag:v', 'hvc1',  # Essential for Apple HEVC compatibility
+            '-movflags', '+faststart+use_metadata_tags',  # Web optimization
+            '-brand', 'mp42,iso6,isom,msdh,dby1'  # Compatible brands for iOS
+        ])
+    else:
+        ffmpeg_cmd.extend([
+            '-movflags', '+faststart+use_metadata_tags'  # Web optimization for H.264
+        ])
+
+    # Add quality settings
+    ffmpeg_cmd.extend([
         '-rc', 'vbr',
         '-cq', str(constant_quality),
         '-pix_fmt', settings.get('pix_fmt', 'yuv420p10le'),  # Use profile-specific format if available
         '-preset', codec_preset
-    ]
+    ])
 
     # Add profile-specific parameters if they exist
     if 'profile' in settings:
@@ -404,9 +424,8 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     if 'max_muxing_queue_size' in settings:
         ffmpeg_cmd.extend(['-max_muxing_queue_size', str(settings['max_muxing_queue_size'])])
 
-    # Continue with existing command parameters
+    # Add stream mapping and codec selection
     ffmpeg_cmd.extend([
-        '-movflags', 'faststart',
         '-map', '0:v',
         '-map', '0:a',
         '-map', '0:s',
@@ -470,11 +489,15 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         # Close the progress bar
         pbar.close()
 
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, ffmpeg_cmd)
+
         logging.info(f"Transcoding complete for {input_file}. Output saved to {output_file}")
 
     except subprocess.CalledProcessError as e:
         logging.error(f"Error transcoding {input_file}: {e}")
-        pbar.close()
+        if 'pbar' in locals():
+            pbar.close()
         input("An error occurred. Press Enter to exit...")
         sys.exit(1)
 
@@ -734,8 +757,7 @@ def display_metadata_preview(metadata_list: List[VideoMetadata]):
         metadata_line = f"{show_title}, {show_type}, S{season:02d}E{episode:02d}/{total_episodes}, {status}, {release_group}"
         print(metadata_line)
     
-    print("\n" + "=" * 120)
-    input("\nPress Enter to continue with processing...")
+    print("=" * 120)
 
 def add_metadata(output_file: str, video_meta: VideoMetadata, container: str):
     """Add metadata tags to the output file with proper Apple TV compatible tags."""
@@ -924,18 +946,20 @@ def main():
     # Display metadata preview before processing
     display_metadata_preview(metadata_list)
 
-    # Transcode each file
+    # Transcode each file and immediately apply metadata
     for video_meta in metadata_list:
         output_file = os.path.splitext(video_meta.filename)[0] + "_transcoded"
+        final_output = f"{output_file}.{extension}"
         logging.info(f"Starting transcoding for {video_meta.filename}")
         
         # First transcode the file
         transcode_file(video_meta.filename, output_file, extension, settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
         
-        # Then apply metadata to the transcoded file
-        final_output = f"{output_file}.{extension}"
+        # Immediately apply metadata after transcoding is complete
         if os.path.exists(final_output):
+            logging.info(f"Applying metadata to {final_output}")
             add_metadata(final_output, video_meta, extension)
+            logging.info(f"Completed processing {video_meta.filename}")
         else:
             logging.error(f"Transcoded file not found: {final_output}")
 
