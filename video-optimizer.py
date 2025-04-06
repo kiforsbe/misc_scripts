@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timedelta
 from rapidfuzz import fuzz, process
 from pathlib import Path
+from typing import Dict, Any, List, Optional
 
 # Constants for anime database
 ANIME_DB_URL = "https://raw.githubusercontent.com/manami-project/anime-offline-database/master/anime-offline-database.json"
@@ -307,9 +308,8 @@ def get_stream_index_by_language(streams, language):
     return index
 
 def map_subtitle_for_transcode(container):
-    if container == 'mp4':
-            return 'mov_text'
-        
+    if (container == 'mp4'):
+        return 'mov_text'
     return 'copy'
 
 # Helper function to transcode a file based on user settings
@@ -336,7 +336,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     audio_index = get_stream_index_by_language(audio_streams, audio_language_name)
     subtitle_index = get_stream_index_by_language(subtitle_streams, subtitle_language_name)
 
-    # Check if an appropriate default stream was found as default, and if so output some information on it, and if not, change the audio_index to 0
+    # Check if an appropriate default stream was found as default, and if not, change the audio_index to 0
     if 0 <= audio_index < len(audio_streams):
         # Use the audio_index directly to find the stream information
         stream = audio_streams[audio_index]
@@ -348,7 +348,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         logging.warning("No matching audio stream found.")
         audio_index = 0
 
-    # Check if an appropriate default stream was found as default, and if so output some information on it, and if not, change the subtitle_index to 0
+    # Check if an appropriate default stream was found as default, and if not, change the subtitle_index to 0
     if 0 <= subtitle_index < len(subtitle_streams):
         # Use the subtitle_index directly to find the stream information
         stream = subtitle_streams[audio_index]
@@ -425,7 +425,6 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         # Function to read from the stderr pipe
         def read_stderr(stderr, queue):
             for line in iter(stderr.readline, ''):
-                #print(line)
                 queue.put(line)
             stderr.close()
 
@@ -472,15 +471,6 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         pbar.close()
 
         logging.info(f"Transcoding complete for {input_file}. Output saved to {output_file}")
-
-        # After successful transcode, add metadata
-        try:
-            metadata = parse_filename(os.path.basename(input_file))
-            if metadata:
-                add_metadata(output_file, metadata, extension)
-                logging.info(f"Added metadata: {metadata}")
-        except Exception as e:
-            logging.error(f"Failed to add metadata: {e}")
 
     except subprocess.CalledProcessError as e:
         logging.error(f"Error transcoding {input_file}: {e}")
@@ -652,7 +642,7 @@ def parse_filename(filename):
                     # Try to match with the full show title
                     anime_entry = find_best_anime_match(show_title.strip(), anime_db)
                     
-                    if anime_entry:
+                    if (anime_entry):
                         episode_info = get_episode_info(anime_entry, episode_int)
                         
                         # Combine filename metadata with database info
@@ -683,105 +673,183 @@ def parse_filename(filename):
             }
     return None
 
-def add_metadata(output_file, metadata, container):
+class VideoMetadata:
+    def __init__(self, filename: str, metadata: Dict[str, Any]):
+        self.filename = filename
+        self.metadata = metadata
+        self.cover_image_path = None
+
+def gather_metadata(files: List[str]) -> List[VideoMetadata]:
+    """Gather metadata for all files before processing"""
+    logging.info("Gathering metadata for all files...")
+    metadata_list = []
+    
+    # Load anime database once for all files
+    anime_db = load_anime_database()
+    
+    for file_path in files:
+        filename = os.path.basename(file_path)
+        metadata = parse_filename(filename)
+        if metadata and anime_db:
+            # Try to enrich with anime database info if not already done
+            if 'ANIME DB TITLE' not in metadata:
+                show_title = metadata.get('TVSHOW', '')
+                anime_entry = find_best_anime_match(show_title.strip(), anime_db)
+                if anime_entry:
+                    episode_info = get_episode_info(anime_entry, metadata.get('TVEPISODE', 1))
+                    metadata.update({
+                        'SHOW TYPE': episode_info['type'],
+                        'TOTAL EPISODES': episode_info['episodes'],
+                        'STATUS': episode_info['status'],
+                        'SEASON INFO': episode_info['season'],
+                        'TAGS': episode_info['tags'],
+                        'ANIME DB TITLE': episode_info['title']
+                    })
+        
+        metadata_list.append(VideoMetadata(file_path, metadata or {}))
+    
+    return metadata_list
+
+def display_metadata_preview(metadata_list: List[VideoMetadata]):
+    """Display a preview of all files and their metadata in a concise single-line format"""
+    print("\nFiles to be processed:")
+    print("=" * 120)
+    
+    for video_meta in metadata_list:
+        filename = os.path.basename(video_meta.filename)
+        
+        if not video_meta.metadata:
+            print("No metadata could be extracted")
+            continue
+            
+        # Create concise metadata line
+        show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', 'Unknown'))
+        show_type = video_meta.metadata.get('SHOW TYPE', 'Unknown')
+        season = video_meta.metadata.get('TVSEASON', 1)
+        episode = video_meta.metadata.get('TVEPISODE', 1)
+        total_episodes = video_meta.metadata.get('TOTAL EPISODES', '?')
+        status = video_meta.metadata.get('STATUS', 'Unknown')
+        release_group = video_meta.metadata.get('RELEASE GROUP', 'Unknown')
+        
+        metadata_line = f"{show_title}, {show_type}, S{season:02d}E{episode:02d}/{total_episodes}, {status}, {release_group}"
+        print(metadata_line)
+    
+    print("\n" + "=" * 120)
+    input("\nPress Enter to continue with processing...")
+
+def add_metadata(output_file: str, video_meta: VideoMetadata, container: str):
     """Add metadata tags to the output file with proper Apple TV compatible tags."""
-    if not metadata:
+    if not video_meta.metadata:
         return
 
     try:
-        # Extract cover image first
+        # Extract cover image after transcoding is complete
         cover_image_path = extract_cover_image(output_file)
         
         if container == 'mp4':
             video = MP4(output_file)
             # Map to MP4 tags with proper Apple TV compatibility
-            video['\xa9nam'] = metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))  # Prefer database title
-            video['tvsh'] = metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))     # TV Show name
-            video['tvsn'] = [metadata.get('TVSEASON', 1)]    # TV Season number
-            video['tves'] = [metadata.get('TVEPISODE', 1)]   # TV Episode number
-            video['stik'] = [10]                             # Content type = TV Show
-            video['hdvd'] = [1]                             # HD flag
+            show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', ''))
+            season = video_meta.metadata.get('TVSEASON', 1)
+            episode = video_meta.metadata.get('TVEPISODE', 1)
+            
+            # Set show name or use generic "Episode #" format if no title available
+            if show_title:
+                episode_title = f"{show_title} - S{season:02d}E{episode:02d}"
+            else:
+                episode_title = f"Episode {episode}"
+            
+            video['\xa9nam'] = episode_title
+            video['tvsh'] = show_title if show_title else "Unknown Show"
+            video['tvsn'] = [season]
+            video['tves'] = [episode]
+            video['stik'] = [10]  # Content type = TV Show
+            video['hdvd'] = [1]   # HD flag
             
             # Create a rich description including anime-specific metadata
             description_parts = []
-            if metadata.get('SHOW TYPE'):
-                description_parts.append(f"Type: {metadata['SHOW TYPE']}")
-            if metadata.get('TOTAL EPISODES'):
-                description_parts.append(f"Total Episodes: {metadata['TOTAL EPISODES']}")
-            if metadata.get('STATUS'):
-                description_parts.append(f"Status: {metadata['STATUS']}")
-            if metadata.get('TAGS'):
-                description_parts.append(f"Tags: {', '.join(metadata['TAGS'][:5])}")  # Limit to first 5 tags
+            if video_meta.metadata.get('SHOW TYPE'):
+                description_parts.append(f"Type: {video_meta.metadata['SHOW TYPE']}")
+            if video_meta.metadata.get('TOTAL EPISODES'):
+                description_parts.append(f"Total Episodes: {video_meta.metadata['TOTAL EPISODES']}")
+            if video_meta.metadata.get('STATUS'):
+                description_parts.append(f"Status: {video_meta.metadata['STATUS']}")
+            if video_meta.metadata.get('TAGS'):
+                description_parts.append(f"Tags: {', '.join(video_meta.metadata['TAGS'][:5])}")
             
             description = " | ".join(description_parts)
-            video['\xa9cmt'] = description  # Comments field for extra metadata
+            video['\xa9cmt'] = description
             
-            # Set episode info
-            episode_title = f"{metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))} - S{metadata.get('TVSEASON', 1):02d}E{metadata.get('TVEPISODE', 1):02d}"
-            video['desc'] = [episode_title]                  # Description/summary
+            # Set episode info in description field
+            video['desc'] = [episode_title]
             
             # Add genre tags from anime database
-            if metadata.get('TAGS'):
-                video['\xa9gen'] = metadata['TAGS'][:5]  # Use first 5 tags as genres
+            if video_meta.metadata.get('TAGS'):
+                video['\xa9gen'] = video_meta.metadata['TAGS'][:5]
             
             # Add cover art if available
             if cover_image_path and os.path.exists(cover_image_path):
                 with open(cover_image_path, 'rb') as f:
                     cover_data = f.read()
                     video['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
-                # Clean up the temporary cover image file
                 try:
                     os.remove(cover_image_path)
                 except Exception as e:
                     logging.warning(f"Failed to clean up cover image: {e}")
             
             video.save()
-        
+            
         elif container == 'mkv':
             # For MKV, use mkvpropedit command line tool
             cmd = ['mkvpropedit', output_file, '--edit', 'info']
             
             # Set tags in a format compatible with MKV
-            if metadata:
-                show_title = metadata.get('ANIME DB TITLE', metadata.get('TVSHOW', ''))
-                episode_title = f"{show_title} - S{metadata.get('TVSEASON', 1):02d}E{metadata.get('TVEPISODE', 1):02d}"
+            show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', ''))
+            season = video_meta.metadata.get('TVSEASON', 1)
+            episode = video_meta.metadata.get('TVEPISODE', 1)
+            
+            # Set show name or use generic "Episode #" format if no title available
+            if show_title:
+                episode_title = f"{show_title} - S{season:02d}E{episode:02d}"
+            else:
+                episode_title = f"Episode {episode}"
+            
+            # Create XML tags file for MKV
+            tags_file = output_file + "_tags.xml"
+            with open(tags_file, 'w', encoding='utf-8') as f:
+                f.write('<?xml version="1.0"?>\n<Tags><Tag><Targets><TargetTypeValue>50</TargetTypeValue></Targets><Simple>')
+                f.write(f'<Name>TITLE</Name><String>{episode_title}</String></Simple>')
                 
-                # Create XML tags file for MKV
-                tags_file = output_file + "_tags.xml"
-                with open(tags_file, 'w', encoding='utf-8') as f:
-                    f.write('<?xml version="1.0"?>\n<Tags><Tag><Targets><TargetTypeValue>50</TargetTypeValue></Targets><Simple>')
-                    f.write(f'<Name>TITLE</Name><String>{episode_title}</String></Simple>')
-                    
-                    # Add anime-specific metadata
-                    if metadata.get('SHOW TYPE'):
-                        f.write(f'<Simple><Name>SHOW_TYPE</Name><String>{metadata["SHOW TYPE"]}</String></Simple>')
-                    if metadata.get('TOTAL EPISODES'):
-                        f.write(f'<Simple><Name>TOTAL_EPISODES</Name><String>{metadata["TOTAL EPISODES"]}</String></Simple>')
-                    if metadata.get('STATUS'):
-                        f.write(f'<Simple><Name>STATUS</Name><String>{metadata["STATUS"]}</String></Simple>')
-                    if metadata.get('TAGS'):
-                        f.write(f'<Simple><Name>TAGS</Name><String>{", ".join(metadata["TAGS"][:5])}</String></Simple>')
-                    
-                    f.write('</Tag></Tags>')
+                # Add anime-specific metadata
+                if video_meta.metadata.get('SHOW TYPE'):
+                    f.write(f'<Simple><Name>SHOW_TYPE</Name><String>{video_meta.metadata["SHOW TYPE"]}</String></Simple>')
+                if video_meta.metadata.get('TOTAL EPISODES'):
+                    f.write(f'<Simple><Name>TOTAL_EPISODES</Name><String>{video_meta.metadata["TOTAL EPISODES"]}</String></Simple>')
+                if video_meta.metadata.get('STATUS'):
+                    f.write(f'<Simple><Name>STATUS</Name><String>{video_meta.metadata["STATUS"]}</String></Simple>')
+                if video_meta.metadata.get('TAGS'):
+                    f.write(f'<Simple><Name>TAGS</Name><String>{", ".join(video_meta.metadata["TAGS"][:5])}</String></Simple>')
                 
-                # Add tags file to MKV
-                cmd.extend(['--tags', 'global:' + tags_file])
+                f.write('</Tag></Tags>')
+            
+            # Add tags file to MKV
+            cmd.extend(['--tags', 'global:' + tags_file])
+            
+            # Add cover art if available
+            if cover_image_path and os.path.exists(cover_image_path):
+                cmd.extend(['--attachment-mime-type', 'image/jpeg'])
+                cmd.extend(['--add-attachment', cover_image_path])
                 
-                # Add cover art if available
+            # Run mkvpropedit
+            subprocess.run(cmd, check=True)
+            
+            # Clean up temporary files
+            try:
+                os.remove(tags_file)
                 if cover_image_path and os.path.exists(cover_image_path):
-                    cmd.extend(['--attachment-mime-type', 'image/jpeg'])
-                    cmd.extend(['--add-attachment', cover_image_path])
-                    
-                # Run mkvpropedit
-                subprocess.run(cmd, check=True)
-                
-                # Clean up temporary files
-                try:
-                    os.remove(tags_file)
-                    if cover_image_path and os.path.exists(cover_image_path):
-                        os.remove(cover_image_path)
-                except Exception as e:
-                    logging.warning(f"Failed to clean up temporary files: {e}")
+                    os.remove(cover_image_path)
+            except Exception as e:
+                logging.warning(f"Failed to clean up temporary files: {e}")
             
     except Exception as e:
         logging.error(f"Failed to add metadata: {e}")
@@ -835,8 +903,11 @@ def main():
         input("Press Enter to exit...")
         sys.exit(1)
 
-    file_paths = sys.argv[1:]  # Read file paths from command-line arguments
+    file_paths = sys.argv[1:]
     logging.info(f"Files received for transcoding: {file_paths}")
+
+    # Gather metadata for all files upfront
+    metadata_list = gather_metadata(file_paths)
 
     # Select default audio and subtitle tracks
     audio_language, subtitle_language = select_default_tracks(file_paths)
@@ -850,11 +921,23 @@ def main():
     # Select output container / extension
     extension = get_output_container()
 
+    # Display metadata preview before processing
+    display_metadata_preview(metadata_list)
+
     # Transcode each file
-    for file_path in file_paths:
-        output_file = os.path.splitext(file_path)[0] + "_transcoded"
-        logging.info(f"Starting transcoding for {file_path} with output {output_file}")
-        transcode_file(file_path, output_file, extension, settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
+    for video_meta in metadata_list:
+        output_file = os.path.splitext(video_meta.filename)[0] + "_transcoded"
+        logging.info(f"Starting transcoding for {video_meta.filename}")
+        
+        # First transcode the file
+        transcode_file(video_meta.filename, output_file, extension, settings, use_nvenc, apply_denoise, audio_language, subtitle_language)
+        
+        # Then apply metadata to the transcoded file
+        final_output = f"{output_file}.{extension}"
+        if os.path.exists(final_output):
+            add_metadata(final_output, video_meta, extension)
+        else:
+            logging.error(f"Transcoded file not found: {final_output}")
 
     input("Transcoding finished. Press Enter to exit...")
 
