@@ -7,6 +7,7 @@ import logging
 from tqdm import tqdm
 import sys
 import threading
+from mutagen.mp4 import MP4, MP4Cover
 
 # Set up logging
 logging.basicConfig(
@@ -20,6 +21,36 @@ logging.basicConfig(
 
 # Declare some default profiles in case there is no profiles.json available
 default_profiles = [
+    {
+        'profile_id': 'iphone_480p',
+        'description': 'iPhone, 480p, H264 High Profile, AAC audio, MP4',
+        'settings': {
+            'horizontal_resolution': 854,
+            'audio_bitrate': '128k',
+            'video_codec': 'h264',
+            'codec_preset': 'medium',  # Better compatibility than 'fast'
+            'constant_quality': 23,
+            'pix_fmt': 'yuv420p',  # Standard 8-bit color for maximum compatibility
+            'profile': 'high',  # H.264 High Profile
+            'level': '4.0',    # Compatible level for iOS
+            'max_muxing_queue_size': 1024  # Helps with MP4 muxing
+        }
+    },
+    {
+        'profile_id': 'iphone_hevc_480p',
+        'description': 'iPhone (HEVC), 480p, H265 Main Profile, AAC audio, MP4',
+        'settings': {
+            'horizontal_resolution': 854,
+            'audio_bitrate': '128k',
+            'video_codec': 'h265',
+            'codec_preset': 'medium',
+            'constant_quality': 28,
+            'pix_fmt': 'yuv420p',
+            'profile': 'main',
+            'level': '4.0',
+            'max_muxing_queue_size': 1024
+        }
+    },
     {
         'profile_id': '480p',
         'description': '480p, H265, 96kbps audio, 8MB/min',
@@ -244,7 +275,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     logging.info(f"Output path {outfilename}")
     logging.info(f"Video encoder: {encoder}, Target resolution: {resolution}, Audio bitrate: {audio_bitrate}, Quality setting: {constant_quality}, Denoise filter applied: {apply_denoise}")
 
-    # Set up ffmpeg command
+    # Set up ffmpeg command with modified parameters for iPhone compatibility
     ffmpeg_cmd = [
         'ffmpeg',
         '-i', input_file,
@@ -252,8 +283,20 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         '-vf', vf_options,
         '-rc', 'vbr',
         '-cq', str(constant_quality),
-        '-pix_fmt', 'yuv420p10le',
-        '-preset', codec_preset,
+        '-pix_fmt', settings.get('pix_fmt', 'yuv420p10le'),  # Use profile-specific format if available
+        '-preset', codec_preset
+    ]
+
+    # Add profile-specific parameters if they exist
+    if 'profile' in settings:
+        ffmpeg_cmd.extend(['-profile:v', settings['profile']])
+    if 'level' in settings:
+        ffmpeg_cmd.extend(['-level', settings['level']])
+    if 'max_muxing_queue_size' in settings:
+        ffmpeg_cmd.extend(['-max_muxing_queue_size', str(settings['max_muxing_queue_size'])])
+
+    # Continue with existing command parameters
+    ffmpeg_cmd.extend([
         '-movflags', 'faststart',
         '-map', '0:v',
         '-map', '0:a',
@@ -264,10 +307,7 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         f"-disposition:a:{audio_index}", 'default',
         f"-disposition:s:{subtitle_index}", 'default',
         '-y', output_file
-    ]
-
-    # Uncomment this line to figure out issues with the ffmpeg process. At some point I need to add some proper error handling.
-    #print(' '.join(ffmpeg_cmd))
+    ])
 
     try:
         # Start the process
@@ -323,6 +363,16 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         pbar.close()
 
         logging.info(f"Transcoding complete for {input_file}. Output saved to {output_file}")
+
+        # After successful transcode, add metadata
+        try:
+            metadata = parse_filename(os.path.basename(input_file))
+            if metadata:
+                add_metadata(output_file, metadata, extension)
+                logging.info(f"Added metadata: {metadata}")
+        except Exception as e:
+            logging.error(f"Failed to add metadata: {e}")
+
     except subprocess.CalledProcessError as e:
         logging.error(f"Error transcoding {input_file}: {e}")
         pbar.close()
@@ -434,6 +484,145 @@ def select_default_tracks(files):
     logging.info(f"User selected default audio: {answers['audio_language']}, default subtitle: {answers['subtitle_language']}")
     return answers['audio_language'], answers['subtitle_language']
 
+def parse_filename(filename):
+    """Extract show information from filename with better season/episode parsing."""
+    # Strip file extension
+    basename = os.path.splitext(filename)[0]
+    
+    # Pattern for common anime/TV show naming formats:
+    # [Group] Show - S01E02 or [Group] Show - 01x02 or [Group] Show - 02
+    patterns = [
+        # [Group] Show - S01E02
+        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*S(\d+)E(\d+)(?:\s*\[[^\]]+\])*$',
+        # [Group] Show - 01x02
+        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*(\d+)x(\d+)(?:\s*\[[^\]]+\])*$',
+        # [Group] Show - 02 (assume season 1 if no season specified)
+        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*(\d+)(?:\s*\[[^\]]+\])*$'
+    ]
+    
+    for pattern in patterns:
+        match = re.match(pattern, basename)
+        if match:
+            if len(match.groups()) == 4:  # Format with explicit season
+                release_group, show_name, season_num, episode_num = match.groups()
+            else:  # Format with just episode number
+                release_group, show_name, episode_num = match.groups()
+                season_num = '1'  # Default to season 1
+                
+            try:
+                season_int = int(season_num)
+                episode_int = int(episode_num)
+            except ValueError:
+                logging.warning(f"Could not parse season/episode numbers from {filename}")
+                return None
+                
+            return {
+                'TVSHOW': show_name.strip(),
+                'TVSEASON': season_int,
+                'TVEPISODE': episode_int,
+                'RELEASE GROUP': release_group.strip()
+            }
+    return None
+
+def add_metadata(output_file, metadata, container):
+    """Add metadata tags to the output file with proper Apple TV compatible tags."""
+    if not metadata:
+        return
+
+    try:
+        # Extract cover image first
+        cover_image_path = extract_cover_image(output_file)
+        
+        if container == 'mp4':
+            video = MP4(output_file)
+            # Map to MP4 tags with proper Apple TV compatibility
+            # stik=10 indicates TV Show content type for Apple TV
+            video['\xa9nam'] = metadata.get('TVSHOW', '')    # Show name as title
+            video['tvsh'] = metadata.get('TVSHOW', '')       # TV Show name
+            video['tvsn'] = [metadata.get('TVSEASON', 1)]    # TV Season number
+            video['tves'] = [metadata.get('TVEPISODE', 1)]   # TV Episode number
+            video['stik'] = [10]                             # Content type = TV Show
+            video['hdvd'] = [1]                             # HD flag
+            # Set episode title as "Show - SxxEyy"
+            episode_title = f"{metadata.get('TVSHOW', '')} - S{metadata.get('TVSEASON', 1):02d}E{metadata.get('TVEPISODE', 1):02d}"
+            video['desc'] = [episode_title]                  # Description/summary
+            
+            # Add cover art if available
+            if cover_image_path and os.path.exists(cover_image_path):
+                with open(cover_image_path, 'rb') as f:
+                    cover_data = f.read()
+                    # Add as both PNG and JPEG for maximum compatibility
+                    video['covr'] = [MP4Cover(cover_data, imageformat=MP4Cover.FORMAT_JPEG)]
+                # Clean up the temporary cover image file
+                try:
+                    os.remove(cover_image_path)
+                except Exception as e:
+                    logging.warning(f"Failed to clean up cover image: {e}")
+            
+            video.save()
+        
+        elif container == 'mkv':
+            # For MKV, use mkvpropedit command line tool
+            cmd = ['mkvpropedit', output_file, '--edit', 'info']
+            # Set tags in a format compatible with MKV
+            if 'TVSHOW' in metadata and 'TVEPISODE' in metadata:
+                episode_title = f"{metadata['TVSHOW']} - S{metadata['TVSEASON']:02d}E{metadata['TVEPISODE']:02d}"
+                cmd.extend(['--set', f'title={episode_title}'])
+                
+                # Add cover art if available
+                if cover_image_path and os.path.exists(cover_image_path):
+                    cmd.extend(['--attachment-mime-type', 'image/jpeg'])
+                    cmd.extend(['--add-attachment', cover_image_path])
+                    
+            subprocess.run(cmd, check=True)
+            
+            # Clean up the temporary cover image file for MKV case
+            if cover_image_path and os.path.exists(cover_image_path):
+                try:
+                    os.remove(cover_image_path)
+                except Exception as e:
+                    logging.warning(f"Failed to clean up cover image: {e}")
+            
+    except Exception as e:
+        logging.error(f"Failed to add metadata: {e}")
+        # Clean up the temporary cover image file in case of error
+        if cover_image_path and os.path.exists(cover_image_path):
+            try:
+                os.remove(cover_image_path)
+            except Exception as e:
+                logging.warning(f"Failed to clean up cover image: {e}")
+
+def extract_cover_image(input_file):
+    """Extract a frame at 20% duration to use as cover art."""
+    try:
+        # Get video duration first
+        probe = ffmpeg.probe(input_file)
+        duration = float(probe['format']['duration'])
+        
+        # Calculate timestamp at 20% of duration
+        timestamp = duration * 0.2
+        
+        # Create temporary file path for the cover image
+        temp_cover = os.path.splitext(input_file)[0] + "_cover.jpg"
+        
+        # Extract the frame using ffmpeg
+        ffmpeg_cmd = [
+            'ffmpeg',
+            '-ss', str(timestamp),  # Seek to 20% position
+            '-i', input_file,
+            '-vframes', '1',        # Extract exactly one frame
+            '-q:v', '2',           # High quality JPEG
+            '-y',                  # Overwrite if exists
+            temp_cover
+        ]
+        
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+        
+        return temp_cover
+    except Exception as e:
+        logging.error(f"Failed to extract cover image: {e}")
+        return None
+
 # Main function to handle files and transcoding
 def main():
     if len(sys.argv) < 2:
@@ -468,4 +657,3 @@ if __name__ == "__main__":
     logging.info("Starting transcoder script")
     main()
     logging.info("Transcoder script finished")
-    
