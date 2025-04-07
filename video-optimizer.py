@@ -614,10 +614,11 @@ def parse_filename(filename):
     """Extract show information from filename and enrich with anime database data."""
     basename = os.path.splitext(filename)[0]
     
-    # Updated patterns to handle various anime filename formats
+    # Updated patterns to handle various filename formats
     patterns = [
+        # Modern streaming format: Show.Year.S01E02.Title.Quality.Encoding-Group
+        r'^([\w\.]*)\.(\d{4})\.S(\d+)E(\d+)\.([^.]+(?:\.[^.]+)*)\.([^-]*)-(.+)$',
         # [Group] Show Title - Episode [Quality][Tags][CRC]
-        # This pattern keeps the full show title intact (including season subtitle)
         r'\[([^\]]+)\]\s*([^-]+(?:\s*-\s*[^-]+)*)\s*-\s*(\d+)(?:\s*\[[^\]]+\])*$',
         # [Group] Show - S01E02 (standard format)
         r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*S(\d+)E(\d+)(?:\s*\[[^\]]+\])*$',
@@ -630,7 +631,32 @@ def parse_filename(filename):
         if match:
             groups = match.groups()
             
-            if len(groups) == 3:  # Simple episode format (like your example)
+            if len(groups) == 7:  # Modern streaming format
+                show_title_raw, year, season_num, episode_num, episode_title, quality, release_group = groups
+                show_title = show_title_raw.replace('.', ' ').strip()
+                episode_title = episode_title.replace('.', ' ').strip()
+                
+                try:
+                    season_int = int(season_num)
+                    episode_int = int(episode_num)
+                    quality_info = quality.replace('.', ' ')
+                except ValueError:
+                    logging.warning(f"Could not parse season/episode numbers from {filename}")
+                    return None
+                
+                # Return metadata without querying anime database for non-anime content
+                return {
+                    'MEDIA TYPE': 6,  # TV Show
+                    'TVSHOW': show_title,
+                    'TVSEASON': season_int,
+                    'TVEPISODE': episode_int,
+                    'EPISODE TITLE': episode_title,
+                    'RELEASE GROUP': release_group.strip(),
+                    'YEAR': year,
+                    'QUALITY': quality_info
+                }
+            
+            elif len(groups) == 3:  # Simple episode format
                 release_group, show_title, episode_num = groups
                 season_int = 1  # Default season
                 try:
@@ -648,7 +674,7 @@ def parse_filename(filename):
                     logging.warning(f"Could not parse season/episode numbers from {filename}")
                     return None
             
-            # Get anime database info
+            # Get anime database info for anime-style filenames
             try:
                 anime_db = load_anime_database()
                 if anime_db:
