@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from rapidfuzz import fuzz, process
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+from imdb_metadata import IMDbDataManager
+from anime_metadata import AnimeDBManager
 
 # Constants for anime database
 ANIME_DB_URL = "https://raw.githubusercontent.com/manami-project/anime-offline-database/master/anime-offline-database.json"
@@ -23,6 +25,10 @@ CACHE_DURATION = timedelta(days=7)
 
 # Global variable to store the anime database
 ANIME_DB = None
+
+# Initialize database managers as global variables
+IMDB_MANAGER = None
+ANIME_MANAGER = None
 
 def ensure_cache_dir():
     """Ensure the cache directory exists"""
@@ -118,6 +124,15 @@ def get_episode_info(anime_entry, episode_number):
         'season': anime_entry.get('animeSeason', {}),
         'tags': anime_entry.get('tags', [])
     }
+
+def get_metadata_managers():
+    """Get or initialize the metadata managers"""
+    global IMDB_MANAGER, ANIME_MANAGER
+    if IMDB_MANAGER is None:
+        IMDB_MANAGER = IMDbDataManager()
+    if ANIME_MANAGER is None:
+        ANIME_MANAGER = AnimeDBManager()
+    return ANIME_MANAGER, IMDB_MANAGER
 
 # Set up logging
 logging.basicConfig(
@@ -611,13 +626,18 @@ def select_default_tracks(files):
     return answers['audio_language'], answers['subtitle_language']
 
 def parse_filename(filename):
-    """Extract show information from filename and enrich with anime database data."""
+    """Extract show information from filename and enrich with metadata from anime and IMDb databases."""
     basename = os.path.splitext(filename)[0]
+    
+    # Get database managers
+    anime_manager, imdb_manager = get_metadata_managers()
     
     # Updated patterns to handle various filename formats
     patterns = [
         # Modern streaming format: Show.Year.S01E02.Title.Quality.Encoding-Group
         r'^([\w\.]*)\.(\d{4})\.S(\d+)E(\d+)\.([^.]+(?:\.[^.]+)*)\.([^-]*)-(.+)$',
+        # Movie format: Movie.Name.Year.Quality.Encoding-Group
+        r'^([\w\.]*)\.(\d{4})\.([^-]+)-(.+)$',
         # [Group] Show Title - Episode [Quality][Tags][CRC]
         r'\[([^\]]+)\]\s*([^-]+(?:\s*-\s*[^-]+)*)\s*-\s*(\d+)(?:\s*\[[^\]]+\])*$',
         # [Group] Show - S01E02 (standard format)
@@ -631,85 +651,174 @@ def parse_filename(filename):
         if match:
             groups = match.groups()
             
-            if len(groups) == 7:  # Modern streaming format
+            # Modern streaming TV show format
+            if len(groups) == 7:
                 show_title_raw, year, season_num, episode_num, episode_title, quality, release_group = groups
                 show_title = show_title_raw.replace('.', ' ').strip()
                 episode_title = episode_title.replace('.', ' ').strip()
                 
                 try:
+                    year_int = int(year)
                     season_int = int(season_num)
                     episode_int = int(episode_num)
                     quality_info = quality.replace('.', ' ')
                 except ValueError:
-                    logging.warning(f"Could not parse season/episode numbers from {filename}")
+                    logging.warning(f"Could not parse numbers from {filename}")
                     return None
                 
-                # Return metadata without querying anime database for non-anime content
-                return {
-                    'MEDIA TYPE': 6,  # TV Show
-                    'TVSHOW': show_title,
-                    'TVSEASON': season_int,
-                    'TVEPISODE': episode_int,
-                    'EPISODE TITLE': episode_title,
-                    'RELEASE GROUP': release_group.strip(),
-                    'YEAR': year,
-                    'QUALITY': quality_info
-                }
-            
-            elif len(groups) == 3:  # Simple episode format
-                release_group, show_title, episode_num = groups
-                season_int = 1  # Default season
-                try:
-                    episode_int = int(episode_num)
-                except ValueError:
-                    logging.warning(f"Could not parse episode number from {filename}")
-                    return None
+                # Try anime database first
+                anime_match = anime_manager.find_best_match(show_title, year_int)
+                if anime_match:
+                    episode_info = anime_manager.get_episode_info(anime_match, episode_int)
+                    return {
+                        'MEDIA TYPE': 'Anime',
+                        'TVSHOW': episode_info['title'],
+                        'TVSEASON': season_int,
+                        'TVEPISODE': episode_int,
+                        'EPISODE TITLE': episode_title,
+                        'RELEASE GROUP': release_group.strip(),
+                        'YEAR': year_int,
+                        'QUALITY': quality_info,
+                        'SHOW TYPE': episode_info['type'],
+                        'TOTAL EPISODES': episode_info['episodes'],
+                        'STATUS': episode_info['status'],
+                        'SEASON INFO': episode_info['season'],
+                        'TAGS': episode_info['tags'],
+                        'SOURCES': episode_info['sources']
+                    }
                 
-            elif len(groups) == 4:  # Standard S01E02 or 01x02 format
-                release_group, show_title, season_num, episode_num = groups
-                try:
-                    season_int = int(season_num)
-                    episode_int = int(episode_num)
-                except ValueError:
-                    logging.warning(f"Could not parse season/episode numbers from {filename}")
-                    return None
-            
-            # Get anime database info for anime-style filenames
-            try:
-                anime_db = load_anime_database()
-                if anime_db:
-                    # Try to match with the full show title
-                    anime_entry = find_best_anime_match(show_title.strip(), anime_db)
+                # Fall back to IMDb if no anime match found
+                show_match = imdb_manager.find_best_match(show_title, year_int, 'tv')
+                if show_match:
+                    series_info = imdb_manager.get_series_info(show_match['id'])
+                    episode_info = imdb_manager.get_episode_info(show_match['id'], season_int, episode_int)
                     
-                    if (anime_entry):
-                        episode_info = get_episode_info(anime_entry, episode_int)
-                        
-                        # Combine filename metadata with database info
-                        return {
-                            'MEDIA TYPE': 6,  # TV Show
-                            'TVSHOW': show_title.strip(),
-                            'TVSEASON': season_int,
-                            'TVEPISODE': episode_int,
-                            'RELEASE GROUP': release_group.strip(),
-                            'SHOW TYPE': episode_info['type'],
-                            'TOTAL EPISODES': episode_info['episodes'],
-                            'STATUS': episode_info['status'],
-                            'SEASON INFO': episode_info['season'],
-                            'TAGS': episode_info['tags'],
-                            'ANIME DB TITLE': episode_info['title']
-                        }
+                    return {
+                        'MEDIA TYPE': 'TV Show',
+                        'TVSHOW': show_match['title'],
+                        'TVSEASON': season_int,
+                        'TVEPISODE': episode_int,
+                        'EPISODE TITLE': episode_info['title'] if episode_info else episode_title,
+                        'RELEASE GROUP': release_group.strip(),
+                        'YEAR': year_int,
+                        'QUALITY': quality_info,
+                        'IMDB ID': show_match['id'],
+                        'IMDB RATING': show_match.get('rating'),
+                        'IMDB VOTES': show_match.get('votes'),
+                        'GENRES': series_info.get('genres', []),
+                        'TOTAL SEASONS': series_info.get('total_seasons'),
+                        'TOTAL EPISODES': series_info.get('total_episodes'),
+                        'START YEAR': series_info.get('start_year'),
+                        'END YEAR': series_info.get('end_year'),
+                        'EPISODE RATING': episode_info.get('rating') if episode_info else None,
+                        'EPISODE VOTES': episode_info.get('votes') if episode_info else None
+                    }
             
-            except Exception as e:
-                logging.warning(f"Failed to get anime database info: {e}")
+            # Movie format
+            elif len(groups) == 4:
+                movie_title_raw, year, quality, release_group = groups
+                movie_title = movie_title_raw.replace('.', ' ').strip()
+                
+                try:
+                    year_int = int(year)
+                    quality_info = quality.replace('.', ' ')
+                except ValueError:
+                    logging.warning(f"Could not parse year from {filename}")
+                    return None
+                
+                # Try anime database first for movies
+                anime_match = anime_manager.find_best_match(movie_title, year_int)
+                if anime_match:
+                    movie_info = anime_manager.get_episode_info(anime_match, 1)  # Use episode 1 for movies
+                    return {
+                        'MEDIA TYPE': 'Anime Movie',
+                        'TITLE': movie_info['title'],
+                        'YEAR': year_int,
+                        'QUALITY': quality_info,
+                        'RELEASE GROUP': release_group.strip(),
+                        'SHOW TYPE': movie_info['type'],
+                        'STATUS': movie_info['status'],
+                        'TAGS': movie_info['tags'],
+                        'SOURCES': movie_info['sources']
+                    }
+                
+                # Fall back to IMDb for movies
+                movie_match = imdb_manager.find_best_match(movie_title, year_int, 'movie')
+                if movie_match:
+                    return {
+                        'MEDIA TYPE': 'Movie',
+                        'TITLE': movie_match['title'],
+                        'YEAR': year_int,
+                        'QUALITY': quality_info,
+                        'RELEASE GROUP': release_group.strip(),
+                        'IMDB ID': movie_match['id'],
+                        'IMDB RATING': movie_match.get('rating'),
+                        'IMDB VOTES': movie_match.get('votes')
+                    }
             
-            # Return basic metadata if database lookup fails
-            return {
-                'MEDIA TYPE': 6,  # TV Show
-                'TVSHOW': show_title.strip(),
-                'TVSEASON': season_int,
-                'TVEPISODE': episode_int,
-                'RELEASE GROUP': release_group.strip()
-            }
+            # Handle anime-style filenames
+            else:
+                release_group = groups[0]
+                show_title = groups[1].strip()
+                
+                if len(groups) == 3:  # Simple episode format
+                    season_int = 1  # Default season
+                    try:
+                        episode_int = int(groups[2])
+                    except ValueError:
+                        logging.warning(f"Could not parse episode number from {filename}")
+                        return None
+                else:  # Standard S01E02 or 01x02 format
+                    try:
+                        season_int = int(groups[2])
+                        episode_int = int(groups[3])
+                    except ValueError:
+                        logging.warning(f"Could not parse season/episode numbers from {filename}")
+                        return None
+                
+                # Try anime database first
+                anime_match = anime_manager.find_best_match(show_title)
+                if anime_match:
+                    episode_info = anime_manager.get_episode_info(anime_match, episode_int)
+                    return {
+                        'MEDIA TYPE': 'Anime',
+                        'TVSHOW': episode_info['title'],
+                        'TVSEASON': season_int,
+                        'TVEPISODE': episode_int,
+                        'RELEASE GROUP': release_group.strip(),
+                        'SHOW TYPE': episode_info['type'],
+                        'TOTAL EPISODES': episode_info['episodes'],
+                        'STATUS': episode_info['status'],
+                        'SEASON INFO': episode_info['season'],
+                        'TAGS': episode_info['tags'],
+                        'SOURCES': episode_info['sources']
+                    }
+                
+                # Fall back to IMDb
+                show_match = imdb_manager.find_best_match(show_title, None, 'tv')
+                if show_match:
+                    series_info = imdb_manager.get_series_info(show_match['id'])
+                    episode_info = imdb_manager.get_episode_info(show_match['id'], season_int, episode_int)
+                    
+                    return {
+                        'MEDIA TYPE': 'TV Show',
+                        'TVSHOW': show_match['title'],
+                        'TVSEASON': season_int,
+                        'TVEPISODE': episode_int,
+                        'EPISODE TITLE': episode_info['title'] if episode_info else None,
+                        'RELEASE GROUP': release_group.strip(),
+                        'IMDB ID': show_match['id'],
+                        'IMDB RATING': show_match.get('rating'),
+                        'IMDB VOTES': show_match.get('votes'),
+                        'GENRES': series_info.get('genres', []),
+                        'TOTAL SEASONS': series_info.get('total_seasons'),
+                        'TOTAL EPISODES': series_info.get('total_episodes'),
+                        'START YEAR': series_info.get('start_year'),
+                        'END YEAR': series_info.get('end_year'),
+                        'EPISODE RATING': episode_info.get('rating') if episode_info else None,
+                        'EPISODE VOTES': episode_info.get('votes') if episode_info else None
+                    }
+    
     return None
 
 class VideoMetadata:
