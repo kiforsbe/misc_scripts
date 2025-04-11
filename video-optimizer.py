@@ -715,10 +715,10 @@ def display_metadata_preview(metadata_list: List[VideoMetadata]):
         rating = video_meta.metadata.get('RATING', '?')
         
         if show_type == 'movie':
-            metadata_line = f"{show_title} ({start_year}), [{release_group}] Rating: {rating})"
+            metadata_line = f"{show_title} ({start_year}), [{release_group}] Rating: {rating}"
         else:
             episode_rating = video_meta.metadata.get('EPISODE RATING', '?')
-            metadata_line = f"{show_title} - S{season:02d}E{episode:02d}/{total_episodes} - {episode_title}, [{release_group}] Rating: {rating}#{episode_rating})"
+            metadata_line = f"{show_title} - S{season:02d}E{episode:02d}/{total_episodes} - {episode_title}, [{release_group}] Rating: {rating}#{episode_rating}"
 
         print(metadata_line)
     

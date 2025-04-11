@@ -325,7 +325,7 @@ class AnimeDataProvider(BaseMetadataProvider):
         if not anime_entry.empty:
             entry = anime_entry.iloc[0]
             return EpisodeInfo(
-                title=f"{entry['title']} - Episode {episode}",  # Anime databases typically don't have episode titles
+                title=f"Episode {episode}",  # Anime databases typically don't have episode titles
                 season=season,
                 episode=episode,
                 parent_id=parent_id,
