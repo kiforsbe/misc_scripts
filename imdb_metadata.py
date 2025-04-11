@@ -18,15 +18,33 @@ class IMDbDataProvider(BaseMetadataProvider):
         'title.ratings': 'https://datasets.imdbws.com/title.ratings.tsv.gz',
         'title.akas': 'https://datasets.imdbws.com/title.akas.tsv.gz'
     }
+    
+    # Define columns we actually need from each dataset
+    REQUIRED_COLUMNS = {
+        'title.basics': ['tconst', 'primaryTitle', 'titleType', 'startYear', 'endYear', 'genres'],
+        'title.episode': ['tconst', 'parentTconst', 'seasonNumber', 'episodeNumber'],
+        'title.ratings': ['tconst', 'averageRating', 'numVotes'],
+        'title.akas': ['titleId', 'title', 'region', 'isOriginalTitle']
+    }
+    
     MAX_RETRIES = 3
     
     def __init__(self):
-        super().__init__('imdb', provider_weight=0.9)  # IMDB gets slightly lower weight than anime DB for anime
-        self.title_basics = None
-        self.title_episode = None
-        self.title_ratings = None
-        self.title_akas = None
-        self.tv_series_cache = {}
+        super().__init__('imdb', provider_weight=0.9)
+        self._datasets = {}  # Store dataset references, load on demand
+        self._tv_series_cache = {}
+    
+    def _load_dataset_if_needed(self, dataset_name: str) -> pd.DataFrame:
+        """Lazy load datasets only when needed"""
+        if dataset_name not in self._datasets:
+            df = self.download_dataset(dataset_name)
+            # Set index for efficient lookups
+            if dataset_name == 'title.episode':
+                df = df.set_index('tconst', drop=False)
+            elif dataset_name in ['title.basics', 'title.ratings']:
+                df = df.set_index('tconst')
+            self._datasets[dataset_name] = df
+        return self._datasets[dataset_name]
     
     def download_dataset(self, dataset_name: str) -> pd.DataFrame:
         """Download and process an IMDb dataset with resume capability"""
@@ -38,7 +56,11 @@ class IMDbDataProvider(BaseMetadataProvider):
         if self.is_cache_valid(cache_file) and self._verify_file_integrity(cache_file):
             try:
                 with tqdm(desc=f"Loading cached {dataset_name}", unit='B', unit_scale=True) as pbar:
-                    df = pd.read_parquet(cache_file)
+                    # Read only required columns
+                    df = pd.read_parquet(
+                        cache_file,
+                        columns=self.REQUIRED_COLUMNS[dataset_name]
+                    )
                     pbar.update(os.path.getsize(cache_file))
                 return df
             except Exception as e:
@@ -47,56 +69,58 @@ class IMDbDataProvider(BaseMetadataProvider):
         # Download and process with retries
         for attempt in range(self.MAX_RETRIES):
             try:
-                logging.info(f"Processing {dataset_name} dataset (attempt {attempt + 1}/{self.MAX_RETRIES})...")
-                
-                # Download gzipped file with resume capability and progress bar
+                # Download gzipped file with resume capability and progress
                 response = requests.get(url, stream=True)
                 total_size = int(response.headers.get('content-length', 0))
-                block_size = 8192
                 
                 with tqdm(total=total_size, desc=f"Downloading {dataset_name}", unit='B', unit_scale=True) as pbar:
                     with open(gz_cache, 'wb') as f:
-                        for data in response.iter_content(block_size):
-                            if data:
-                                f.write(data)
-                                pbar.update(len(data))
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                pbar.update(len(chunk))
                 
-                # Verify the gzipped file
-                try:
-                    with gzip.open(gz_cache, 'rb') as test_read:
-                        test_read.read(1024)  # Try reading a small chunk to verify
-                except Exception as gz_error:
-                    logging.error(f"Downloaded {dataset_name} file is corrupted: {str(gz_error)}")
-                    os.remove(gz_cache)
-                    if attempt < self.MAX_RETRIES - 1:
-                        continue
-                    raise
-                
-                # Parse the gzipped TSV with progress bar
+                # Parse the gzipped TSV
                 with tqdm(desc=f"Parsing {dataset_name}", unit='B', unit_scale=True) as pbar:
                     try:
-                        with gzip.open(gz_cache, 'rb') as gz_file:
-                            # Read and parse in chunks to show progress
-                            chunks = []
-                            while True:
-                                chunk = gz_file.read(block_size)
-                                if not chunk:
-                                    break
-                                chunks.append(chunk)
-                                pbar.update(len(chunk))
-                            data = b''.join(chunks)
-                            df = pd.read_csv(io.BytesIO(data), sep='\t', low_memory=False)
+                        # Only read required columns to save memory
+                        df = pd.read_csv(
+                            gz_cache,
+                            sep='\t',
+                            usecols=self.REQUIRED_COLUMNS[dataset_name],
+                            low_memory=False
+                        )
+                        
+                        # Clean and optimize data types
+                        if 'startYear' in df.columns:
+                            df['startYear'] = pd.to_numeric(df['startYear'], errors='coerce')
+                        if 'endYear' in df.columns:
+                            df['endYear'] = pd.to_numeric(df['endYear'], errors='coerce')
+                        if 'seasonNumber' in df.columns:
+                            df['seasonNumber'] = pd.to_numeric(df['seasonNumber'], errors='coerce')
+                        if 'episodeNumber' in df.columns:
+                            df['episodeNumber'] = pd.to_numeric(df['episodeNumber'], errors='coerce')
+                        if 'numVotes' in df.columns:
+                            df['numVotes'] = pd.to_numeric(df['numVotes'], errors='coerce')
+                        if 'averageRating' in df.columns:
+                            df['averageRating'] = pd.to_numeric(df['averageRating'], errors='coerce')
+                        
+                        pbar.update(os.path.getsize(gz_cache))
                     except Exception as parse_error:
                         logging.error(f"Error parsing {dataset_name}: {str(parse_error)}")
                         if attempt < self.MAX_RETRIES - 1:
                             continue
                         raise
                 
-                # Save to parquet cache with progress
+                # Save to parquet cache with optimized compression
                 temp_parquet = cache_file + '.tmp'
                 try:
                     with tqdm(desc=f"Saving {dataset_name} cache", unit='B', unit_scale=True) as pbar:
-                        df.to_parquet(temp_parquet)
+                        df.to_parquet(
+                            temp_parquet,
+                            compression='brotli',  # Better compression than default
+                            index=False
+                        )
                         pbar.update(os.path.getsize(temp_parquet))
                     os.replace(temp_parquet, cache_file)
                 except Exception as write_error:
@@ -107,7 +131,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                         continue
                     raise
                 
-                # Clean up gzip file after successful processing
+                # Clean up gzip file
                 try:
                     os.remove(gz_cache)
                 except:
@@ -123,53 +147,21 @@ class IMDbDataProvider(BaseMetadataProvider):
                 raise
         
         raise RuntimeError(f"Failed to process {dataset_name} dataset after {self.MAX_RETRIES} attempts")
-    
-    def load_datasets(self) -> None:
-        """Load all necessary IMDb datasets"""
-        try:
-            logging.info("Starting IMDb datasets loading process...")
-            datasets = list(self.DATASETS.keys())
-            
-            # Create overall progress bar for dataset loading
-            with tqdm(total=len(datasets), desc="Loading IMDb datasets") as pbar:
-                for dataset_name in datasets:
-                    pbar.set_description(f"Loading {dataset_name}")
-                    if dataset_name == 'title.basics':
-                        self.title_basics = self.download_dataset(dataset_name)
-                    elif dataset_name == 'title.episode':
-                        self.title_episode = self.download_dataset(dataset_name)
-                    elif dataset_name == 'title.ratings':
-                        self.title_ratings = self.download_dataset(dataset_name)
-                    elif dataset_name == 'title.akas':
-                        self.title_akas = self.download_dataset(dataset_name)
-                    pbar.update(1)
-            
-            with tqdm(desc="Setting indices", total=3) as pbar:
-                self.title_basics.set_index('tconst', inplace=True)
-                pbar.update(1)
-                self.title_episode.set_index('tconst', inplace=True)
-                pbar.update(1)
-                self.title_ratings.set_index('tconst', inplace=True)
-                pbar.update(1)
-            
-            logging.info("Successfully loaded and indexed all IMDb datasets")
-            
-        except Exception as e:
-            logging.error(f"Error loading IMDb datasets: {str(e)}")
-            raise
-    
+
     def find_title(self, title: str, year: Optional[int] = None) -> Optional[MatchResult]:
         """Find title information for either a movie or TV show"""
-        if not self.title_basics is not None:
-            self.load_datasets()
+        # Lazy load only the required datasets
+        basics_df = self._load_dataset_if_needed('title.basics')
+        ratings_df = self._load_dataset_if_needed('title.ratings')
         
-        # Search in both movies and TV shows
-        type_filter = self.title_basics['titleType'].isin(['movie', 'tvSeries', 'tvMiniSeries'])
+        # Search in movies and TV shows
+        type_filter = basics_df['titleType'].isin(['movie', 'tvSeries', 'tvMiniSeries'])
+        search_df = basics_df[type_filter]
         
         # Search in primary titles
         title_matches = process.extract(
             title,
-            self.title_basics[type_filter]['primaryTitle'].to_dict(),
+            search_df['primaryTitle'].to_dict(),
             scorer=fuzz.ratio,
             limit=50
         )
@@ -178,79 +170,65 @@ class IMDbDataProvider(BaseMetadataProvider):
         best_score = 0
         
         for matched_title, score, idx in title_matches:
-            if score < 80:  # Minimum similarity threshold
+            if score < 80:
                 continue
             
-            row = self.title_basics.loc[idx]
-            
-            # Calculate base score from title match
+            row = search_df.loc[idx]
             total_score = score
             
             # Add year match bonus
-            if year and row['startYear'] != 'NA':
+            if year and pd.notna(row['startYear']):
                 row_year = self.safe_int(row['startYear'])
-                if row_year and year:
-                    if row_year == year:
-                        total_score += 20
-                    elif abs(row_year - year) <= 1:
-                        total_score += 10
+                if row_year and row_year == year:
+                    total_score += 20
+                elif row_year and abs(row_year - year) <= 1:
+                    total_score += 10
             
-            # Add popularity bonus based on number of votes
-            if idx in self.title_ratings.index:
-                rating_data = self.title_ratings.loc[idx]
-                votes = self.safe_int(rating_data['numVotes']) or 0
-                # Log scale bonus for vote count (max +15 points)
-                vote_bonus = min(15, (votes / 10000))  # 100k votes = +10 points
-                total_score += vote_bonus
+            # Add popularity bonus based on votes
+            if idx in ratings_df.index:
+                rating_data = ratings_df.loc[idx]
+                if pd.notna(rating_data['numVotes']):
+                    votes = self.safe_int(rating_data['numVotes'])
+                    if votes:
+                        vote_bonus = min(15, (votes / 10000))
+                        total_score += vote_bonus
             
             if total_score > best_score:
                 best_score = total_score
                 rating = None
                 votes = None
                 
-                if idx in self.title_ratings.index:
-                    rating_data = self.title_ratings.loc[idx]
-                    try:
+                if idx in ratings_df.index:
+                    rating_data = ratings_df.loc[idx]
+                    if pd.notna(rating_data['averageRating']):
                         rating = float(rating_data['averageRating'])
+                    if pd.notna(rating_data['numVotes']):
                         votes = self.safe_int(rating_data['numVotes'])
-                    except (ValueError, TypeError):
-                        pass
                 
-                # Map IMDb type to our unified type system
+                # Map IMDb type to unified type
                 media_type = 'movie' if row['titleType'] == 'movie' else 'tv'
                 
                 # Get episode count for TV shows
                 total_episodes = None
                 total_seasons = None
                 if media_type == 'tv':
-                    if idx in self.tv_series_cache:
-                        episodes = self.tv_series_cache[idx]
-                    else:
-                        episodes = self.title_episode[self.title_episode['parentTconst'] == idx]
-                        self.tv_series_cache[idx] = episodes
-                    
-                    if not episodes.empty:
-                        try:
-                            season_numbers = episodes['seasonNumber'].dropna()
-                            if not season_numbers.empty:
-                                total_seasons = self.safe_int(season_numbers.astype(int).max())
-                            total_episodes = len(episodes)
-                        except (ValueError, TypeError):
-                            pass
+                    episodes_df = self._get_episodes(idx)
+                    if not episodes_df.empty:
+                        total_seasons = self.safe_int(episodes_df['seasonNumber'].max())
+                        total_episodes = len(episodes_df)
                 
-                start_year = self.safe_int(row['startYear'])
-                end_year = self.safe_int(row['endYear'])
+                genres = row['genres'].split(',') if pd.notna(row['genres']) else []
                 
                 best_match = TitleInfo(
                     id=idx,
                     title=row['primaryTitle'],
                     type=media_type,
-                    year=start_year,
-                    start_year=start_year,
-                    end_year=end_year,
+                    year=self.safe_int(row['startYear']),
+                    start_year=self.safe_int(row['startYear']),
+                    end_year=self.safe_int(row['endYear']),
                     rating=rating,
                     votes=votes,
-                    genres=row['genres'].split(',') if pd.notna(row['genres']) else [],
+                    genres=genres,
                     total_episodes=total_episodes,
                     total_seasons=total_seasons
                 )
@@ -263,46 +241,71 @@ class IMDbDataProvider(BaseMetadataProvider):
             )
         
         return None
-    
+
+    def _get_episodes(self, series_id: str) -> pd.DataFrame:
+        """Get episodes dataframe for a TV series with caching"""
+        if series_id not in self._tv_series_cache:
+            episodes_df = self._load_dataset_if_needed('title.episode')
+            if 'parentTconst' in episodes_df.columns:
+                # Convert series_id to string and filter
+                series_id_str = str(series_id)
+                filtered_df = episodes_df[episodes_df['parentTconst'].astype(str) == series_id_str].copy()
+                
+                # Convert season and episode numbers to numeric
+                filtered_df['seasonNumber'] = pd.to_numeric(filtered_df['seasonNumber'], errors='coerce')
+                filtered_df['episodeNumber'] = pd.to_numeric(filtered_df['episodeNumber'], errors='coerce')
+                
+                # Sort by season and episode
+                filtered_df = filtered_df.sort_values(['seasonNumber', 'episodeNumber'])
+                
+                self._tv_series_cache[series_id] = filtered_df
+            else:
+                logging.error("'parentTconst' column is missing in the 'title.episode' dataset.")
+                self._tv_series_cache[series_id] = pd.DataFrame()
+        return self._tv_series_cache[series_id]
+
     def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode information if the title is a TV show"""
-        if not self.title_basics is not None:
-            self.load_datasets()
-        
-        if parent_id not in self.tv_series_cache:
-            episodes = self.title_episode[self.title_episode['parentTconst'] == parent_id]
-            self.tv_series_cache[parent_id] = episodes
-        
-        episodes = self.tv_series_cache[parent_id]
-        episode_match = episodes[
-            (episodes['seasonNumber'].astype(int) == season) &
-            (episodes['episodeNumber'].astype(int) == episode)
+        episodes_df = self._get_episodes(parent_id)
+        if episodes_df.empty:
+            return None
+            
+        # Handle NaN values in season/episode numbers
+        episode_match = episodes_df[
+            (episodes_df['seasonNumber'].fillna(-1) == season) &
+            (episodes_df['episodeNumber'].fillna(-1) == episode)
         ]
         
         if not episode_match.empty:
             episode_id = episode_match.index[0]
-            episode_data = self.title_basics.loc[episode_id]
+            basics_df = self._load_dataset_if_needed('title.basics')
+            ratings_df = self._load_dataset_if_needed('title.ratings')
             
-            rating = None
-            votes = None
-            if episode_id in self.title_ratings.index:
-                rating_data = self.title_ratings.loc[episode_id]
-                try:
-                    rating = float(rating_data['averageRating'])
-                    votes = self.safe_int(rating_data['numVotes'])
-                except (ValueError, TypeError):
-                    pass
-            
-            year = self.safe_int(episode_data['startYear'])
-            
-            return EpisodeInfo(
-                title=episode_data['primaryTitle'],
-                season=season,
-                episode=episode,
-                parent_id=parent_id,
-                year=year,
-                rating=rating,
-                votes=votes
-            )
+            # Handle potential missing episode data
+            try:
+                episode_data = basics_df.loc[episode_id]
+                
+                rating = None
+                votes = None
+                if episode_id in ratings_df.index:
+                    rating_data = ratings_df.loc[episode_id]
+                    if pd.notna(rating_data['averageRating']):
+                        rating = float(rating_data['averageRating'])
+                    if pd.notna(rating_data['numVotes']):
+                        votes = self.safe_int(rating_data['numVotes'])
+                
+                return EpisodeInfo(
+                    title=episode_data['primaryTitle'],
+                    season=season,
+                    episode=episode,
+                    parent_id=parent_id,
+                    year=self.safe_int(episode_data['startYear']),
+                    rating=rating,
+                    votes=votes
+                )
+            except KeyError as e:
+                logging.error(f"Failed to find episode data for ID {episode_id}: {str(e)}")
+            except Exception as e:
+                logging.error(f"Error processing episode data: {str(e)}")
         
         return None

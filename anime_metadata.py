@@ -2,17 +2,17 @@ import os
 import json
 import logging
 import requests
+import pandas as pd
 from typing import Optional, Dict, List, Tuple
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
 from dataclasses import dataclass
-from collections import defaultdict
 
 @dataclass
 class TitleEntry:
     """Helper class to store title information with relevance scores"""
-    entry_id: int  # Index in anime_db['data']
+    title: str
     title_type: str  # 'main', 'english', 'synonym'
     relevance: float  # Base relevance score for this title type
 
@@ -28,244 +28,279 @@ class AnimeDataProvider(BaseMetadataProvider):
     }
     
     def __init__(self):
-        super().__init__('anime', provider_weight=1.0)  # Anime DB gets full weight for anime content
-        self.anime_db = None
-        self.title_index: Dict[str, List[TitleEntry]] = defaultdict(list)
-        self._db_loaded = False
+        super().__init__('anime', provider_weight=1.0)
+        self._df = None  # Main dataframe
+        self._title_index = None  # Title search index
+        self._synonyms_df = None  # Synonyms dataframe
     
     def load_database(self) -> None:
         """Load the anime database into memory, downloading if needed"""
-        if self.anime_db is not None:
+        if self._df is not None:
             logging.info("Using already loaded anime database from memory")
             return
         
-        cache_file = os.path.join(self.cache_dir, "anime-offline-database.json")
-        temp_cache = cache_file + '.download'
+        cache_file = os.path.join(self.cache_dir, "anime.parquet")
+        synonyms_cache = os.path.join(self.cache_dir, "anime_synonyms.parquet")
+        title_index_cache = os.path.join(self.cache_dir, "anime_title_index.json")
+        temp_json = os.path.join(self.cache_dir, "temp_anime.json")
         
+        # First try to load from cache
+        if (self.is_cache_valid(cache_file) and 
+            self.is_cache_valid(synonyms_cache) and 
+            self.is_cache_valid(title_index_cache)):
+            try:
+                with tqdm(desc="Loading cached anime database", unit='B', unit_scale=True) as pbar:
+                    self._df = pd.read_parquet(cache_file)
+                    pbar.update(os.path.getsize(cache_file))
+                    
+                with tqdm(desc="Loading cached synonyms", unit='B', unit_scale=True) as pbar:
+                    self._synonyms_df = pd.read_parquet(synonyms_cache)
+                    pbar.update(os.path.getsize(synonyms_cache))
+                    
+                with tqdm(desc="Loading cached title index", unit='B', unit_scale=True) as pbar:
+                    with open(title_index_cache, 'r', encoding='utf-8') as f:
+                        title_data = json.load(f)
+                        self._title_index = {
+                            title: TitleEntry(**entry_data)
+                            for title, entry_data in title_data.items()
+                        }
+                    pbar.update(os.path.getsize(title_index_cache))
+                return
+                    
+            except Exception as e:
+                logging.warning(f"Failed to load cached data: {str(e)}")
+        
+        # Download and process with retries
         for attempt in range(self.MAX_RETRIES):
             try:
-                # First try to load from cache if valid
-                if self.is_cache_valid(cache_file) and self._verify_file_integrity(cache_file):
-                    logging.info("Loading cached anime database...")
-                    with tqdm(desc="Loading cached anime database", unit='B', unit_scale=True) as pbar:
-                        with open(cache_file, 'r', encoding='utf-8') as f:
-                            data = f.read()
-                            pbar.update(len(data.encode('utf-8')))
-                            try:
-                                self.anime_db = json.loads(data)
-                                # Build index with progress bar
-                                self._build_title_index(with_progress=True)
-                                logging.info("Successfully loaded anime database from cache")
-                                return
-                            except json.JSONDecodeError:
-                                logging.warning("Cached anime database is corrupted, will download fresh copy")
-                
                 logging.info(f"Downloading fresh anime database (attempt {attempt + 1}/{self.MAX_RETRIES})...")
                 
-                # Download with progress bar
+                # Download JSON
                 response = requests.get(self.ANIME_DB_URL, stream=True)
                 total_size = int(response.headers.get('content-length', 0))
-                block_size = 8192
                 
                 with tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
-                    with open(temp_cache, 'wb') as f:
-                        for data in response.iter_content(block_size):
-                            if data:
-                                f.write(data)
-                                pbar.update(len(data))
+                    with open(temp_json, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                pbar.update(len(chunk))
+                
+                # Parse JSON and convert to dataframes
+                with tqdm(desc="Processing anime database", unit='entries') as pbar:
+                    with open(temp_json, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        
+                        # Convert main data to dataframe
+                        records = []
+                        synonyms = []
+                        
+                        for entry in data['data']:
+                            # Extract main entry data
+                            record = {
+                                'id': entry.get('sources', [''])[0],  # Use first source as ID
+                                'title': entry['title'],
+                                'type': 'movie' if entry.get('type') == 'MOVIE' else 'tvSeries',
+                                'episodes': self.safe_int(entry.get('episodes')),
+                                'status': entry.get('status'),
+                                'season_year': self.safe_int(entry.get('animeSeason', {}).get('year')),
+                                'season_name': entry.get('animeSeason', {}).get('season'),
+                                'sources': ','.join(entry.get('sources', [])),
+                                'tags': ','.join(entry.get('tags', []))
+                            }
+                            records.append(record)
+                            
+                            # Extract synonyms
+                            for synonym in entry.get('synonyms', []):
+                                if synonym and synonym != entry['title']:
+                                    synonyms.append({
+                                        'id': record['id'],
+                                        'title': synonym,
+                                        'relevance': self.TITLE_WEIGHTS['synonym']
+                                    })
+                            
+                            pbar.update(1)
+                        
+                        # Create main dataframe
+                        self._df = pd.DataFrame.from_records(records)
+                        
+                        # Create synonyms dataframe
+                        self._synonyms_df = pd.DataFrame.from_records(synonyms)
+                
+                # Save to parquet with optimized compression
+                with tqdm(desc="Saving database cache", unit='B', unit_scale=True) as pbar:
+                    self._df.to_parquet(
+                        cache_file,
+                        compression='brotli',
+                        index=False
+                    )
+                    pbar.update(os.path.getsize(cache_file))
                     
-                    # Move temp file to final location
-                    os.replace(temp_cache, cache_file)
+                    self._synonyms_df.to_parquet(
+                        synonyms_cache,
+                        compression='brotli',
+                        index=False
+                    )
+                    pbar.update(os.path.getsize(synonyms_cache))
+                    
+                    # Build and save title index
+                    self._build_title_index()
+                    
+                    # Save title index to JSON
+                    with open(title_index_cache, 'w', encoding='utf-8') as f:
+                        title_data = {
+                            title: {
+                                'title': entry.title,
+                                'title_type': entry.title_type,
+                                'relevance': entry.relevance
+                            }
+                            for title, entry in self._title_index.items()
+                        }
+                        json.dump(title_data, f)
+                    pbar.update(os.path.getsize(title_index_cache))
                 
-                # Verify the downloaded file
-                if not self._verify_file_integrity(cache_file):
-                    logging.error("Downloaded anime database is corrupted")
-                    if os.path.exists(cache_file):
-                        os.remove(cache_file)
-                    continue
+                # Clean up temp file
+                try:
+                    os.remove(temp_json)
+                except:
+                    pass
                 
-                # Parse JSON with progress
-                with tqdm(desc="Parsing anime database", unit='B', unit_scale=True) as pbar:
-                    try:
-                        with open(cache_file, 'r', encoding='utf-8') as f:
-                            data = f.read()
-                            pbar.update(len(data.encode('utf-8')))
-                            self.anime_db = json.loads(data)
-                            # Build index with progress bar
-                            self._build_title_index(with_progress=True)
-                            logging.info("Successfully loaded fresh anime database")
-                            return
-                    except json.JSONDecodeError:
-                        logging.error("Downloaded anime database has invalid JSON")
-                        if os.path.exists(cache_file):
-                            os.remove(cache_file)
-                        continue
+                return
                 
             except Exception as e:
-                logging.error(f"Error during anime database download/load (attempt {attempt + 1}): {str(e)}")
+                logging.error(f"Error processing anime database (attempt {attempt + 1}): {str(e)}")
                 if attempt < self.MAX_RETRIES - 1:
                     logging.info("Retrying...")
                     continue
+                raise
         
-        # If all attempts failed, try to load from expired cache as last resort
-        if os.path.exists(cache_file):
-            try:
-                logging.warning("All download attempts failed. Attempting to load expired cache as fallback...")
-                with tqdm(desc="Loading expired cache", unit='B', unit_scale=True) as pbar:
-                    with open(cache_file, 'r', encoding='utf-8') as f:
-                        data = f.read()
-                        pbar.update(len(data.encode('utf-8')))
-                        self.anime_db = json.loads(data)
-                        # Build index with progress bar
-                        self._build_title_index(with_progress=True)
-                        logging.info("Successfully loaded anime database from expired cache")
-                        return
-            except Exception as cache_e:
-                logging.error(f"Error loading cached database: {str(cache_e)}")
-        
-        self.anime_db = None
         raise RuntimeError("Failed to load anime database after multiple attempts")
     
-    def _build_title_index(self, with_progress: bool = False) -> None:
-        """Build an efficient index of titles and their variants"""
-        if not self.anime_db or 'data' not in self.anime_db:
+    def _build_title_index(self) -> None:
+        """Build an efficient search index of titles"""
+        if self._df is None or self._synonyms_df is None:
             return
             
-        self.title_index.clear()
-        entries = self.anime_db['data']
+        # Create title lookup dictionary
+        titles = {}
         
-        if with_progress:
-            entries = tqdm(entries, desc="Building title index", unit='entries')
-        
-        for idx, entry in enumerate(entries):
-            # Add main title
-            main_title = entry.get('title')
-            if main_title:
-                self.title_index[main_title].append(
-                    TitleEntry(idx, 'main', self.TITLE_WEIGHTS['main'])
+        # Add main titles
+        with tqdm(desc="Building title index", total=len(self._df) + len(self._synonyms_df)) as pbar:
+            for _, row in self._df.iterrows():
+                titles[row['title']] = TitleEntry(
+                    title=row['title'],
+                    title_type='main',
+                    relevance=self.TITLE_WEIGHTS['main']
                 )
+                pbar.update(1)
             
             # Add synonyms
-            for synonym in entry.get('synonyms', []):
-                if synonym and synonym != main_title:
-                    self.title_index[synonym].append(
-                        TitleEntry(idx, 'synonym', self.TITLE_WEIGHTS['synonym'])
-                    )
-    
-    def _get_entry_by_id(self, entry_id: int) -> Optional[dict]:
-        """Get anime entry by its index in the database"""
-        if not self.anime_db or 'data' not in self.anime_db:
-            return None
-        try:
-            return self.anime_db['data'][entry_id]
-        except IndexError:
-            return None
+            for _, row in self._synonyms_df.iterrows():
+                titles[row['title']] = TitleEntry(
+                    title=row['title'],
+                    title_type='synonym',
+                    relevance=row['relevance']
+                )
+                pbar.update(1)
+        
+        self._title_index = titles
     
     def find_title(self, title: str, year: Optional[int] = None) -> Optional[MatchResult]:
         """Find title information for either a movie or TV show"""
-        if not self.anime_db:
+        if self._df is None:
             self.load_database()
         
-        if not self.anime_db or 'data' not in self.anime_db:
+        if self._df is None or self._title_index is None:
             return None
-            
-        # Build title index if not already done
-        if not self._db_loaded:
-            self._build_title_index()
-            self._db_loaded = True
         
-        # First try exact matches with weighted relevance
+        # First try exact matches
         best_match = None
         best_score = 0
-        best_entry = None
         
         # Look for exact matches first
-        if title in self.title_index:
-            for title_entry in self.title_index[title]:
-                entry = self._get_entry_by_id(title_entry.entry_id)
-                if not entry:
-                    continue
-                
-                # Calculate base score from title type
-                score = 100 * title_entry.relevance
-                
-                # Add year match bonus if applicable
-                if year:
-                    entry_year = self.safe_int(entry.get('animeSeason', {}).get('year'))
-                    if entry_year:
-                        if entry_year == year:
-                            score += 20
-                        elif abs(entry_year - year) <= 1:
-                            score += 10
-                
-                # Add bonus for number of sources (+5 per source up to +15)
-                source_bonus = min(15, len(entry.get('sources', [])) * 5)
-                score += source_bonus
-                
-                # Add bonus for having episodes count (+10)
-                episodes_count = self.safe_int(entry.get('episodes'))
-                if episodes_count:
+        if title in self._title_index:
+            entry = self._title_index[title]
+            
+            # Find corresponding main entry
+            if entry.title_type == 'main':
+                main_entry = self._df[self._df['title'] == entry.title].iloc[0]
+            else:
+                main_entry = self._df[self._df['id'].isin(
+                    self._synonyms_df[self._synonyms_df['title'] == entry.title]['id']
+                )].iloc[0]
+            
+            score = 100 * entry.relevance
+            
+            # Add year match bonus
+            if year and pd.notna(main_entry['season_year']):
+                entry_year = self.safe_int(main_entry['season_year'])
+                if entry_year and entry_year == year:
+                    score += 20
+                elif entry_year and abs(entry_year - year) <= 1:
                     score += 10
-                
-                if score > best_score:
-                    best_score = score
-                    best_entry = entry
+            
+            # Add bonus for having episodes count
+            if pd.notna(main_entry['episodes']):
+                score += 10
+            
+            if score > best_score:
+                best_score = score
+                best_match = main_entry
         
-        # If no good exact match, try fuzzy matching
-        if not best_entry:
+        # If no exact match, try fuzzy matching
+        if not best_match:
             matches = process.extract(
                 title,
-                list(self.title_index.keys()),
+                list(self._title_index.keys()),
                 scorer=fuzz.ratio,
                 limit=5
             )
             
             for matched_title, fuzzy_score, _ in matches:
-                if fuzzy_score < 80:  # Minimum similarity threshold
+                if fuzzy_score < 80:
                     continue
-                    
-                for title_entry in self.title_index[matched_title]:
-                    entry = self._get_entry_by_id(title_entry.entry_id)
-                    if not entry:
-                        continue
-                    
-                    # Calculate score based on fuzzy match and title type
-                    score = fuzzy_score * title_entry.relevance
-                    
-                    # Add year match bonus
-                    if year:
-                        entry_year = self.safe_int(entry.get('animeSeason', {}).get('year'))
-                        if entry_year:
-                            if entry_year == year:
-                                score += 20
-                            elif abs(entry_year - year) <= 1:
-                                score += 10
-                    
-                    # Add source and episode count bonuses
-                    source_bonus = min(15, len(entry.get('sources', [])) * 5)
-                    score += source_bonus
-                    
-                    episodes_count = self.safe_int(entry.get('episodes'))
-                    if episodes_count:
+                
+                entry = self._title_index[matched_title]
+                
+                # Find corresponding main entry
+                if entry.title_type == 'main':
+                    main_entry = self._df[self._df['title'] == entry.title].iloc[0]
+                else:
+                    main_entry = self._df[self._df['id'].isin(
+                        self._synonyms_df[self._synonyms_df['title'] == entry.title]['id']
+                    )].iloc[0]
+                
+                score = fuzzy_score * entry.relevance
+                
+                # Add year match bonus
+                if year and pd.notna(main_entry['season_year']):
+                    entry_year = self.safe_int(main_entry['season_year'])
+                    if entry_year and entry_year == year:
+                        score += 20
+                    elif entry_year and abs(entry_year - year) <= 1:
                         score += 10
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_entry = entry
+                
+                # Add bonus for having episodes count
+                if pd.notna(main_entry['episodes']):
+                    score += 10
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = main_entry
         
-        if best_entry:
-            # Map anime type to our unified type system
-            media_type = 'movie' if best_entry.get('type') == 'MOVIE' else 'tvSeries'
+        if best_match is not None:
+            tags = best_match['tags'].split(',') if pd.notna(best_match['tags']) else []
+            sources = best_match['sources'].split(',') if pd.notna(best_match['sources']) else []
             
             match_info = TitleInfo(
-                id=best_entry.get('sources', [''])[0],  # Use first source as ID
-                title=best_entry['title'],
-                type=media_type,
-                year=self.safe_int(best_entry.get('animeSeason', {}).get('year')),
-                status=best_entry.get('status'),
-                total_episodes=self.safe_int(best_entry.get('episodes')),
-                tags=best_entry.get('tags', []),
-                sources=best_entry.get('sources', [])
+                id=best_match['id'],
+                title=best_match['title'],
+                type=best_match['type'],
+                year=self.safe_int(best_match['season_year']),
+                status=best_match['status'],
+                total_episodes=self.safe_int(best_match['episodes']),
+                tags=tags,
+                sources=sources
             )
             
             return MatchResult(
@@ -278,22 +313,23 @@ class AnimeDataProvider(BaseMetadataProvider):
     
     def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode information if the title is a TV show"""
-        if not self.anime_db:
+        if self._df is None:
             self.load_database()
         
-        # Find the anime by source ID
-        anime_entry = next(
-            (entry for entry in self.anime_db['data'] if parent_id in entry.get('sources', [])),
-            None
-        )
+        if self._df is None:
+            return None
         
-        if anime_entry:
+        # Find the anime by source ID
+        anime_entry = self._df[self._df['sources'].str.contains(parent_id, na=False)]
+        
+        if not anime_entry.empty:
+            entry = anime_entry.iloc[0]
             return EpisodeInfo(
-                title=f"{anime_entry['title']} - Episode {episode}",  # Anime databases typically don't have episode titles
+                title=f"{entry['title']} - Episode {episode}",  # Anime databases typically don't have episode titles
                 season=season,
                 episode=episode,
                 parent_id=parent_id,
-                year=anime_entry.get('animeSeason', {}).get('year')
+                year=self.safe_int(entry['season_year'])
             )
         
         return None

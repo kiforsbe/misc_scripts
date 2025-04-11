@@ -211,9 +211,11 @@ class BaseMetadataProvider(ABC):
         if value is None:
             return None
         try:
-            if isinstance(value, str) and value.lower() == 'na':
-                return None
-            return int(value)
+            if isinstance(value, str):
+                value = value.strip().lower()
+                if value in ('', 'na', 'n/a', 'none', '\\n'):
+                    return None
+            return int(float(value))  # Handle both integer and float strings
         except (ValueError, TypeError):
             return None
 
