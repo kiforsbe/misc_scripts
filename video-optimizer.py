@@ -8,13 +8,8 @@ from tqdm import tqdm
 import sys
 import threading
 from mutagen.mp4 import MP4, MP4Cover
-import requests
-import json
-from datetime import datetime, timedelta
-from rapidfuzz import fuzz, process
-from pathlib import Path
-from typing import Dict, Any, List, Optional
-from metadata_provider import MetadataManager, EpisodeInfo, TitleInfo
+from typing import Dict, Any, List
+from metadata_provider import MetadataManager
 from anime_metadata import AnimeDataProvider
 from imdb_metadata import IMDbDataProvider
 
@@ -33,7 +28,7 @@ def get_metadata_manager():
 
 # Set up logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARN,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("transcoder.log"),
