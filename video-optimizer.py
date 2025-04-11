@@ -18,117 +18,13 @@ from metadata_provider import MetadataManager, EpisodeInfo, TitleInfo
 from anime_metadata import AnimeDataProvider
 from imdb_metadata import IMDbDataProvider
 
-# Constants for anime database
-ANIME_DB_URL = "https://raw.githubusercontent.com/manami-project/anime-offline-database/master/anime-offline-database.json"
-CACHE_DIR = os.path.join(os.path.expanduser("~"), ".anime_metadata_cache")
-DB_CACHE_FILE = os.path.join(CACHE_DIR, "anime-offline-database.json")
-CACHE_DURATION = timedelta(days=7)
-
-# Global variable to store the anime database
-ANIME_DB = None
-
 # Initialize metadata manager as a global variable
 METADATA_MANAGER = None
-
-def ensure_cache_dir():
-    """Ensure the cache directory exists"""
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-def is_cache_valid():
-    """Check if the cached database is still valid"""
-    if not os.path.exists(DB_CACHE_FILE):
-        return False
-    
-    mtime = datetime.fromtimestamp(os.path.getmtime(DB_CACHE_FILE))
-    return datetime.now() - mtime < CACHE_DURATION
-
-def load_anime_database():
-    """Load the anime database into memory, downloading if needed"""
-    global ANIME_DB
-    
-    if ANIME_DB is not None:
-        logging.info("Using in-memory anime database")
-        return ANIME_DB
-        
-    try:
-        if is_cache_valid():
-            logging.info("Loading cached anime database")
-            with open(DB_CACHE_FILE, 'r', encoding='utf-8') as f:
-                ANIME_DB = json.load(f)
-                return ANIME_DB
-
-        logging.info("Downloading fresh anime database...")
-        response = requests.get(ANIME_DB_URL)
-        response.raise_for_status()
-        
-        ensure_cache_dir()
-        ANIME_DB = response.json()
-        
-        with open(DB_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(ANIME_DB, f, ensure_ascii=False, indent=2)
-        
-        return ANIME_DB
-    except Exception as e:
-        logging.error(f"Error loading anime database: {e}")
-        # Try to load from cache even if expired
-        if os.path.exists(DB_CACHE_FILE):
-            try:
-                with open(DB_CACHE_FILE, 'r', encoding='utf-8') as f:
-                    ANIME_DB = json.load(f)
-                    return ANIME_DB
-            except Exception as cache_e:
-                logging.error(f"Error loading cached database: {cache_e}")
-        return None
-
-def find_best_anime_match(show_name, anime_db):
-    """Find the best matching anime in the database using fuzzy string matching"""
-    if not anime_db or 'data' not in anime_db:
-        return None
-    
-    # Create a list of tuples (title, anime_entry)
-    title_entries = []
-    for entry in anime_db['data']:
-        # Check all possible titles (synonyms, english, etc)
-        all_titles = [entry['title']] + entry.get('synonyms', [])
-        if 'english' in entry.get('title', {}):
-            all_titles.append(entry['title']['english'])
-        
-        title_entries.extend((title, entry) for title in all_titles if title)
-    
-    # Find the best match using fuzzy string matching
-    best_match = process.extractOne(
-        show_name,
-        [t[0] for t in title_entries],
-        scorer=fuzz.ratio,
-        score_cutoff=80
-    )
-    
-    if best_match:
-        # Find the corresponding entry
-        for title, entry in title_entries:
-            if title == best_match[0]:
-                return entry
-    
-    return None
-
-def get_episode_info(anime_entry, episode_number):
-    """Get episode specific information if available"""
-    # This is a placeholder - in a real implementation, you might want to
-    # query another API (like AniList or MyAnimeList) for episode-specific data
-    # For now, we'll return basic info from the offline database
-    return {
-        'title': anime_entry['title'],
-        'type': anime_entry.get('type', ''),
-        'episodes': anime_entry.get('episodes', 0),
-        'status': anime_entry.get('status', ''),
-        'season': anime_entry.get('animeSeason', {}),
-        'tags': anime_entry.get('tags', [])
-    }
 
 def get_metadata_manager():
     """Get or initialize the metadata manager"""
     global METADATA_MANAGER
-    if METADATA_MANAGER is None:
+    if (METADATA_MANAGER is None):
         # Initialize providers
         anime_provider = AnimeDataProvider()
         imdb_provider = IMDbDataProvider()
@@ -137,7 +33,7 @@ def get_metadata_manager():
 
 # Set up logging
 logging.basicConfig(
-    level=logging.ERROR,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("transcoder.log"),
@@ -788,28 +684,9 @@ def gather_metadata(files: List[str]) -> List[VideoMetadata]:
     logging.info("Gathering metadata for all files...")
     metadata_list = []
     
-    # Load anime database once for all files
-    anime_db = load_anime_database()
-    
     for file_path in files:
         filename = os.path.basename(file_path)
         metadata = parse_filename(filename)
-        if metadata and anime_db:
-            # Try to enrich with anime database info if not already done
-            if 'ANIME DB TITLE' not in metadata:
-                show_title = metadata.get('TVSHOW', '')
-                anime_entry = find_best_anime_match(show_title.strip(), anime_db)
-                if anime_entry:
-                    episode_info = get_episode_info(anime_entry, metadata.get('TVEPISODE', 1))
-                    metadata.update({
-                        'SHOW TYPE': episode_info['type'],
-                        'TOTAL EPISODES': episode_info['episodes'],
-                        'STATUS': episode_info['status'],
-                        'SEASON INFO': episode_info['season'],
-                        'TAGS': episode_info['tags'],
-                        'ANIME DB TITLE': episode_info['title']
-                    })
-        
         metadata_list.append(VideoMetadata(file_path, metadata or {}))
     
     return metadata_list
@@ -1041,6 +918,25 @@ def extract_cover_image(input_file):
         logging.error(f"Failed to extract cover image: {e}")
         return None
 
+def initialize_metadata_providers():
+    """Initialize metadata providers with progress indication"""
+    print("\nInitializing metadata providers...")
+    
+    metadata_manager = get_metadata_manager()
+    if metadata_manager and metadata_manager.providers:
+        # Pre-load the databases to show progress upfront
+        with tqdm(total=len(metadata_manager.providers), desc="Loading metadata databases") as pbar:
+            for provider in metadata_manager.providers:
+                provider_name = provider.__class__.__name__.replace('DataProvider', '')
+                pbar.set_description(f"Loading {provider_name} database")
+                if hasattr(provider, 'load_database'):
+                    provider.load_database()
+                elif hasattr(provider, 'load_datasets'):
+                    provider.load_datasets()
+                pbar.update(1)
+    
+    return metadata_manager
+
 # Main function to handle files and transcoding
 def main():
     if len(sys.argv) < 2:
@@ -1050,6 +946,9 @@ def main():
 
     file_paths = sys.argv[1:]
     logging.info(f"Files received for transcoding: {file_paths}")
+
+    # Initialize metadata providers with progress indication
+    metadata_manager = initialize_metadata_providers()
 
     # Gather metadata for all files upfront
     metadata_list = gather_metadata(file_paths)

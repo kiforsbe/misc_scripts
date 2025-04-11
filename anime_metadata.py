@@ -4,6 +4,7 @@ import logging
 import requests
 from typing import Optional
 from rapidfuzz import fuzz, process
+from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo
 
 class AnimeDataProvider(BaseMetadataProvider):
@@ -17,35 +18,65 @@ class AnimeDataProvider(BaseMetadataProvider):
     def load_database(self) -> None:
         """Load the anime database into memory, downloading if needed"""
         if self.anime_db is not None:
+            logging.info("Using already loaded anime database from memory")
             return
         
         cache_file = os.path.join(self.cache_dir, "anime-offline-database.json")
         
         try:
             if self.is_cache_valid(cache_file):
-                logging.info("Loading cached anime database")
+                logging.info("Loading cached anime database...")
                 with open(cache_file, 'r', encoding='utf-8') as f:
-                    self.anime_db = json.load(f)
+                    data = f.read()
+                    self.anime_db = json.loads(data)
+                    logging.info("Successfully loaded anime database from cache")
                     return
             
             logging.info("Downloading fresh anime database...")
-            response = requests.get(self.ANIME_DB_URL)
+            response = requests.get(self.ANIME_DB_URL, stream=True)
             response.raise_for_status()
             
-            self.anime_db = response.json()
+            # Get the total file size for the progress bar
+            total_size = int(response.headers.get('content-length', 0))
             
+            # Initialize progress bar
+            progress = tqdm(
+                total=total_size,
+                unit='iB',
+                unit_scale=True,
+                desc="Downloading anime database"
+            )
+            
+            # Download with progress
+            content = b""
+            for data in response.iter_content(chunk_size=8192):
+                content += data
+                progress.update(len(data))
+            progress.close()
+            
+            logging.info("Parsing downloaded anime database...")
+            self.anime_db = json.loads(content)
+            
+            logging.info("Saving anime database to cache...")
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(self.anime_db, f, ensure_ascii=False, indent=2)
             
+            logging.info("Successfully loaded fresh anime database")
+            
         except Exception as e:
-            logging.error(f"Error loading anime database: {e}")
+            logging.error(f"Error loading anime database: {str(e)}")
+            # Try to load from cache even if expired
             if os.path.exists(cache_file):
                 try:
+                    logging.warning("Attempting to load expired cache as fallback...")
                     with open(cache_file, 'r', encoding='utf-8') as f:
                         self.anime_db = json.load(f)
+                    logging.info("Successfully loaded anime database from expired cache")
                 except Exception as cache_e:
-                    logging.error(f"Error loading cached database: {cache_e}")
+                    logging.error(f"Error loading cached database: {str(cache_e)}")
                     self.anime_db = None
+            else:
+                self.anime_db = None
     
     def find_title(self, title: str, year: Optional[int] = None) -> Optional[TitleInfo]:
         """Find title information for either a movie or TV show"""
