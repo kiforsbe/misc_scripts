@@ -41,140 +41,150 @@ class AnimeDataProvider(BaseMetadataProvider):
         
         cache_file = os.path.join(self.cache_dir, "anime.parquet")
         synonyms_cache = os.path.join(self.cache_dir, "anime_synonyms.parquet")
-        title_index_cache = os.path.join(self.cache_dir, "anime_title_index.json")
+        title_index_cache = os.path.join(self.cache_dir, "anime_title_index.parquet")
         temp_json = os.path.join(self.cache_dir, "temp_anime.json")
         
-        # First try to load from cache
-        if (self.is_cache_valid(cache_file) and 
-            self.is_cache_valid(synonyms_cache) and 
-            self.is_cache_valid(title_index_cache)):
+        # Load each cache file independently
+        # Main database
+        if self.is_cache_valid(cache_file):
             try:
                 with tqdm(desc="Loading cached anime database", unit='B', unit_scale=True) as pbar:
                     self._df = pd.read_parquet(cache_file)
                     pbar.update(os.path.getsize(cache_file))
-                    
+            except Exception as e:
+                logging.warning(f"Failed to load cached database: {str(e)}")
+                self._df = None
+
+        # Synonyms
+        if self.is_cache_valid(synonyms_cache):
+            try:
                 with tqdm(desc="Loading cached synonyms", unit='B', unit_scale=True) as pbar:
                     self._synonyms_df = pd.read_parquet(synonyms_cache)
                     pbar.update(os.path.getsize(synonyms_cache))
-                    
-                with tqdm(desc="Loading cached title index", unit='B', unit_scale=True) as pbar:
-                    with open(title_index_cache, 'r', encoding='utf-8') as f:
-                        title_data = json.load(f)
-                        self._title_index = {
-                            title: TitleEntry(**entry_data)
-                            for title, entry_data in title_data.items()
-                        }
-                    pbar.update(os.path.getsize(title_index_cache))
-                return
-                    
             except Exception as e:
-                logging.warning(f"Failed to load cached data: {str(e)}")
-        
-        # Download and process with retries
-        for attempt in range(self.MAX_RETRIES):
+                logging.warning(f"Failed to load cached synonyms: {str(e)}")
+                self._synonyms_df = None
+
+        # Title index
+        if self.is_cache_valid(title_index_cache):
             try:
-                logging.info(f"Downloading fresh anime database (attempt {attempt + 1}/{self.MAX_RETRIES})...")
-                
-                # Download JSON
-                response = requests.get(self.ANIME_DB_URL, stream=True)
-                total_size = int(response.headers.get('content-length', 0))
-                
-                with tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
-                    with open(temp_json, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                pbar.update(len(chunk))
-                
-                # Parse JSON and convert to dataframes
-                with tqdm(desc="Processing anime database", unit='entries') as pbar:
-                    with open(temp_json, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        
-                        # Convert main data to dataframe
-                        records = []
-                        synonyms = []
-                        
-                        for entry in data['data']:
-                            # Extract main entry data
-                            record = {
-                                'id': entry.get('sources', [''])[0],  # Use first source as ID
-                                'title': entry['title'],
-                                'type': 'movie' if entry.get('type') == 'MOVIE' else 'tvSeries',
-                                'episodes': self.safe_int(entry.get('episodes')),
-                                'status': entry.get('status'),
-                                'season_year': self.safe_int(entry.get('animeSeason', {}).get('year')),
-                                'season_name': entry.get('animeSeason', {}).get('season'),
-                                'sources': ','.join(entry.get('sources', [])),
-                                'tags': ','.join(entry.get('tags', []))
-                            }
-                            records.append(record)
-                            
-                            # Extract synonyms
-                            for synonym in entry.get('synonyms', []):
-                                if synonym and synonym != entry['title']:
-                                    synonyms.append({
-                                        'id': record['id'],
-                                        'title': synonym,
-                                        'relevance': self.TITLE_WEIGHTS['synonym']
-                                    })
-                            
-                            pbar.update(1)
-                        
-                        # Create main dataframe
-                        self._df = pd.DataFrame.from_records(records)
-                        
-                        # Create synonyms dataframe
-                        self._synonyms_df = pd.DataFrame.from_records(synonyms)
-                
-                # Save to parquet with optimized compression
-                with tqdm(desc="Saving database cache", unit='B', unit_scale=True) as pbar:
-                    self._df.to_parquet(
-                        cache_file,
-                        compression='brotli',
-                        index=False
-                    )
-                    pbar.update(os.path.getsize(cache_file))
-                    
-                    self._synonyms_df.to_parquet(
-                        synonyms_cache,
-                        compression='brotli',
-                        index=False
-                    )
-                    pbar.update(os.path.getsize(synonyms_cache))
-                    
-                    # Build and save title index
-                    self._build_title_index()
-                    
-                    # Save title index to JSON
-                    with open(title_index_cache, 'w', encoding='utf-8') as f:
-                        title_data = {
-                            title: {
-                                'title': entry.title,
-                                'title_type': entry.title_type,
-                                'relevance': entry.relevance
-                            }
-                            for title, entry in self._title_index.items()
-                        }
-                        json.dump(title_data, f)
+                with tqdm(desc="Loading cached title index", unit='B', unit_scale=True) as pbar:
+                    title_df = pd.read_parquet(title_index_cache)
+                    self._title_index = {
+                        row.title: TitleEntry(title=row.title, title_type=row.title_type, relevance=row.relevance)
+                        for row in title_df.itertuples()
+                    }
                     pbar.update(os.path.getsize(title_index_cache))
-                
-                # Clean up temp file
-                try:
-                    os.remove(temp_json)
-                except:
-                    pass
-                
-                return
-                
             except Exception as e:
-                logging.error(f"Error processing anime database (attempt {attempt + 1}): {str(e)}")
-                if attempt < self.MAX_RETRIES - 1:
-                    logging.info("Retrying...")
-                    continue
-                raise
+                logging.warning(f"Failed to load cached title index: {str(e)}")
+                self._title_index = None
+
+        # If any cache failed to load, proceed with full download
+        if self._df is None or self._synonyms_df is None or self._title_index is None:
         
-        raise RuntimeError("Failed to load anime database after multiple attempts")
+            # Download and process with retries
+            for attempt in range(self.MAX_RETRIES):
+                try:
+                    logging.info(f"Downloading fresh anime database (attempt {attempt + 1}/{self.MAX_RETRIES})...")
+                    
+                    # Download JSON
+                    response = requests.get(self.ANIME_DB_URL, stream=True)
+                    total_size = int(response.headers.get('content-length', 0))
+                    
+                    with tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
+                        with open(temp_json, 'wb') as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    pbar.update(len(chunk))
+                    
+                    # Parse JSON and convert to dataframes
+                    with tqdm(desc="Processing anime database", unit='entries') as pbar:
+                        with open(temp_json, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            
+                            # Convert main data to dataframe
+                            records = []
+                            synonyms = []
+                            
+                            for entry in data['data']:
+                                # Extract main entry data
+                                record = {
+                                    'id': entry.get('sources', [''])[0],  # Use first source as ID
+                                    'title': entry['title'],
+                                    'type': 'movie' if entry.get('type') == 'MOVIE' else 'tvSeries',
+                                    'episodes': self.safe_int(entry.get('episodes')),
+                                    'status': entry.get('status'),
+                                    'season_year': self.safe_int(entry.get('animeSeason', {}).get('year')),
+                                    'season_name': entry.get('animeSeason', {}).get('season'),
+                                    'sources': ','.join(entry.get('sources', [])),
+                                    'tags': ','.join(entry.get('tags', []))
+                                }
+                                records.append(record)
+                                
+                                # Extract synonyms
+                                for synonym in entry.get('synonyms', []):
+                                    if synonym and synonym != entry['title']:
+                                        synonyms.append({
+                                            'id': record['id'],
+                                            'title': synonym,
+                                            'relevance': self.TITLE_WEIGHTS['synonym']
+                                        })
+                                
+                                pbar.update(1)
+                            
+                            # Create main dataframe
+                            self._df = pd.DataFrame.from_records(records)
+                            
+                            # Create synonyms dataframe
+                            self._synonyms_df = pd.DataFrame.from_records(synonyms)
+                    
+                    # Save to parquet with optimized compression
+                    with tqdm(desc="Saving database cache", unit='B', unit_scale=True) as pbar:
+                        self._df.to_parquet(
+                            cache_file,
+                            compression='brotli',
+                            index=False
+                        )
+                        pbar.update(os.path.getsize(cache_file))
+                        
+                        self._synonyms_df.to_parquet(
+                            synonyms_cache,
+                            compression='brotli',
+                            index=False
+                        )
+                        pbar.update(os.path.getsize(synonyms_cache))
+                        
+                        # Build and save title index
+                        self._build_title_index()
+                        
+                        # Save title index to parquet
+                        pd.DataFrame([
+                            {'title': entry.title, 'title_type': entry.title_type, 'relevance': entry.relevance}
+                            for entry in self._title_index.values()
+                        ]).to_parquet(
+                            title_index_cache,
+                            compression='brotli',
+                            index=False
+                        )
+                        pbar.update(os.path.getsize(title_index_cache))
+                    
+                    # Clean up temp file
+                    try:
+                        os.remove(temp_json)
+                    except:
+                        pass
+                    
+                    return
+                    
+                except Exception as e:
+                    logging.error(f"Error processing anime database (attempt {attempt + 1}): {str(e)}")
+                    if attempt < self.MAX_RETRIES - 1:
+                        logging.info("Retrying...")
+                        continue
+                    raise
+        
+            raise RuntimeError("Failed to load anime database after multiple attempts")
     
     def _build_title_index(self) -> None:
         """Build an efficient search index of titles"""
@@ -186,22 +196,29 @@ class AnimeDataProvider(BaseMetadataProvider):
         
         # Add main titles
         with tqdm(desc="Building title index", total=len(self._df) + len(self._synonyms_df)) as pbar:
-            for _, row in self._df.iterrows():
-                titles[row['title']] = TitleEntry(
-                    title=row['title'],
-                    title_type='main',
-                    relevance=self.TITLE_WEIGHTS['main']
-                )
-                pbar.update(1)
+            # Add main titles
+            main_titles_df = pd.DataFrame({
+                'title': self._df['title'],
+                'title_type': 'main',
+                'relevance': self.TITLE_WEIGHTS['main']
+            })
+            titles.update({
+                row.title: TitleEntry(title=row.title, title_type=row.title_type, relevance=row.relevance)
+                for row in main_titles_df.itertuples()
+            })
+            pbar.update(len(main_titles_df))
             
             # Add synonyms
-            for _, row in self._synonyms_df.iterrows():
-                titles[row['title']] = TitleEntry(
-                    title=row['title'],
-                    title_type='synonym',
-                    relevance=row['relevance']
-                )
-                pbar.update(1)
+            synonyms_df = pd.DataFrame({
+                'title': self._synonyms_df['title'],
+                'title_type': 'synonym',
+                'relevance': self._synonyms_df['relevance']
+            })
+            titles.update({
+                row.title: TitleEntry(title=row.title, title_type=row.title_type, relevance=row.relevance)
+                for row in synonyms_df.itertuples()
+            })
+            pbar.update(len(synonyms_df))
         
         self._title_index = titles
     
