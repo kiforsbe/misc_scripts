@@ -1,14 +1,14 @@
 import os
 import gzip
-import json
 import logging
 import requests
-from datetime import datetime, timedelta
-from pathlib import Path
 import pandas as pd
-from typing import Dict, Optional, List, Any
+from datetime import timedelta
+from typing import Optional
+from rapidfuzz import fuzz, process
+from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo
 
-class IMDbDataManager:
+class IMDbDataProvider(BaseMetadataProvider):
     DATASETS = {
         'title.basics': 'https://datasets.imdbws.com/title.basics.tsv.gz',
         'title.episode': 'https://datasets.imdbws.com/title.episode.tsv.gz',
@@ -16,37 +16,20 @@ class IMDbDataManager:
         'title.akas': 'https://datasets.imdbws.com/title.akas.tsv.gz'
     }
     
-    CACHE_DIR = os.path.join(os.path.expanduser("~"), ".video_metadata_cache", "imdb")
-    CACHE_DURATION = timedelta(days=7)  # Update datasets weekly
-    
     def __init__(self):
-        self.ensure_cache_dir()
+        super().__init__('imdb')
         self.title_basics = None
         self.title_episodes = None
         self.title_ratings = None
         self.title_akas = None
         self.tv_series_cache = {}
-        self.movie_cache = {}
     
-    def ensure_cache_dir(self):
-        """Create cache directory if it doesn't exist"""
-        os.makedirs(self.CACHE_DIR, exist_ok=True)
-    
-    def is_cache_valid(self, dataset_name: str) -> bool:
-        """Check if cached dataset is still valid"""
-        cache_file = os.path.join(self.CACHE_DIR, f"{dataset_name}.parquet")
-        if not os.path.exists(cache_file):
-            return False
-        
-        mtime = datetime.fromtimestamp(os.path.getmtime(cache_file))
-        return datetime.now() - mtime < self.CACHE_DURATION
-    
-    def download_dataset(self, dataset_name: str) -> None:
+    def download_dataset(self, dataset_name: str) -> pd.DataFrame:
         """Download and process an IMDb dataset"""
         url = self.DATASETS[dataset_name]
-        cache_file = os.path.join(self.CACHE_DIR, f"{dataset_name}.parquet")
+        cache_file = os.path.join(self.cache_dir, f"{dataset_name}.parquet")
         
-        if self.is_cache_valid(dataset_name):
+        if self.is_cache_valid(cache_file):
             logging.info(f"Loading cached {dataset_name} dataset")
             return pd.read_parquet(cache_file)
         
@@ -54,11 +37,9 @@ class IMDbDataManager:
         response = requests.get(url, stream=True)
         response.raise_for_status()
         
-        # Decompress and read TSV
         with gzip.open(response.raw) as gz_file:
             df = pd.read_csv(gz_file, sep='\t', low_memory=False)
         
-        # Save to parquet for faster future loading
         df.to_parquet(cache_file)
         return df
     
@@ -70,7 +51,6 @@ class IMDbDataManager:
             self.title_ratings = self.download_dataset('title.ratings')
             self.title_akas = self.download_dataset('title.akas')
             
-            # Create indexes for faster lookups
             self.title_basics.set_index('tconst', inplace=True)
             self.title_episodes.set_index('tconst', inplace=True)
             self.title_ratings.set_index('tconst', inplace=True)
@@ -80,81 +60,96 @@ class IMDbDataManager:
             logging.error(f"Error loading IMDb datasets: {e}")
             raise
     
-    def find_best_match(self, title: str, year: Optional[int] = None, media_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Find the best matching title in IMDb datasets"""
+    def find_title(self, title: str, year: Optional[int] = None) -> Optional[TitleInfo]:
+        """Find title information for either a movie or TV show"""
         if not self.title_basics is not None:
             self.load_datasets()
         
-        # Filter by media type if specified
-        type_filter = self.title_basics['titleType'].isin(['movie']) if media_type == 'movie' \
-                     else self.title_basics['titleType'].isin(['tvSeries', 'tvMiniSeries']) if media_type == 'tv' \
-                     else self.title_basics['titleType'].isin(['movie', 'tvSeries', 'tvMiniSeries'])
-        
-        # Search in primary titles and alternative titles
-        matches = []
+        # Search in both movies and TV shows
+        type_filter = self.title_basics['titleType'].isin(['movie', 'tvSeries', 'tvMiniSeries'])
         
         # Search in primary titles
-        title_matches = self.title_basics[
-            (self.title_basics['primaryTitle'].str.lower() == title.lower()) &
-            type_filter
-        ]
+        title_matches = process.extract(
+            title,
+            self.title_basics[type_filter]['primaryTitle'].to_dict(),
+            scorer=fuzz.ratio,
+            limit=5
+        )
         
-        if year:
-            title_matches = title_matches[
-                (self.title_basics['startYear'].astype(str) == str(year))
-            ]
+        best_match = None
+        best_score = 0
         
-        for _, row in title_matches.iterrows():
-            matches.append({
-                'id': row.name,
-                'title': row['primaryTitle'],
-                'year': row['startYear'],
-                'type': row['titleType'],
-                'score': 100  # Exact match
-            })
-        
-        if not matches:
-            # Search in alternative titles
-            aka_matches = self.title_akas[
-                self.title_akas['title'].str.lower() == title.lower()
-            ]
+        for matched_title, score, idx in title_matches:
+            if score < 80:  # Minimum similarity threshold
+                continue
             
-            for _, row in aka_matches.iterrows():
-                title_data = self.title_basics.loc[row['titleId']]
-                if title_data['titleType'] in ['movie', 'tvSeries', 'tvMiniSeries']:
-                    matches.append({
-                        'id': row['titleId'],
-                        'title': title_data['primaryTitle'],
-                        'year': title_data['startYear'],
-                        'type': title_data['titleType'],
-                        'score': 90  # Alternative title match
-                    })
-        
-        if matches:
-            # Sort by score and year (if provided)
-            matches.sort(key=lambda x: (-x['score'], abs(int(x['year']) - year) if year else 0))
-            best_match = matches[0]
+            row = self.title_basics.loc[idx]
+            if year and row['startYear'] != 'NA':
+                try:
+                    if abs(int(row['startYear']) - year) > 1:  # Allow 1 year difference
+                        continue
+                except ValueError:
+                    continue
             
-            # Enhance with ratings
-            if best_match['id'] in self.title_ratings.index:
-                ratings = self.title_ratings.loc[best_match['id']]
-                best_match.update({
-                    'rating': ratings['averageRating'],
-                    'votes': ratings['numVotes']
-                })
+            # Calculate match score including year match
+            total_score = score
+            if year and row['startYear'] != 'NA' and int(row['startYear']) == year:
+                total_score += 20
             
-            return best_match
+            if total_score > best_score:
+                best_score = total_score
+                
+                # Get rating information if available
+                rating = None
+                votes = None
+                if idx in self.title_ratings.index:
+                    rating_data = self.title_ratings.loc[idx]
+                    rating = float(rating_data['averageRating'])
+                    votes = int(rating_data['numVotes'])
+                
+                # Map IMDb type to our unified type system
+                media_type = 'movie' if row['titleType'] == 'movie' else 'tv'
+                
+                # Get episode count for TV shows
+                total_episodes = None
+                total_seasons = None
+                if media_type == 'tv':
+                    if idx in self.tv_series_cache:
+                        episodes = self.tv_series_cache[idx]
+                    else:
+                        episodes = self.title_episodes[self.title_episodes['parentTconst'] == idx]
+                        self.tv_series_cache[idx] = episodes
+                    
+                    if not episodes.empty:
+                        total_seasons = episodes['seasonNumber'].astype(int).max()
+                        total_episodes = len(episodes)
+                
+                best_match = TitleInfo(
+                    id=idx,
+                    title=row['primaryTitle'],
+                    type=media_type,
+                    year=int(row['startYear']) if row['startYear'] != 'NA' else None,
+                    start_year=int(row['startYear']) if row['startYear'] != 'NA' else None,
+                    end_year=int(row['endYear']) if row['endYear'] != 'NA' else None,
+                    rating=rating,
+                    votes=votes,
+                    genres=row['genres'].split(',') if pd.notna(row['genres']) else [],
+                    total_episodes=total_episodes,
+                    total_seasons=total_seasons
+                )
         
-        return None
+        return best_match
     
-    def get_episode_info(self, series_id: str, season: int, episode: int) -> Optional[Dict[str, Any]]:
-        """Get specific episode information for a TV series"""
-        if series_id not in self.tv_series_cache:
-            # Get all episodes for the series
-            episodes = self.title_episodes[self.title_episodes['parentTconst'] == series_id]
-            self.tv_series_cache[series_id] = episodes
+    def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
+        """Get episode information if the title is a TV show"""
+        if not self.title_basics is not None:
+            self.load_datasets()
         
-        episodes = self.tv_series_cache[series_id]
+        if parent_id not in self.tv_series_cache:
+            episodes = self.title_episodes[self.title_episodes['parentTconst'] == parent_id]
+            self.tv_series_cache[parent_id] = episodes
+        
+        episodes = self.tv_series_cache[parent_id]
         episode_match = episodes[
             (episodes['seasonNumber'].astype(int) == season) &
             (episodes['episodeNumber'].astype(int) == episode)
@@ -164,60 +159,21 @@ class IMDbDataManager:
             episode_id = episode_match.index[0]
             episode_data = self.title_basics.loc[episode_id]
             
-            info = {
-                'title': episode_data['primaryTitle'],
-                'plot': episode_data['plot'] if 'plot' in episode_data else None,
-                'season': season,
-                'episode': episode
-            }
-            
-            # Add ratings if available
+            rating = None
+            votes = None
             if episode_id in self.title_ratings.index:
-                ratings = self.title_ratings.loc[episode_id]
-                info.update({
-                    'rating': ratings['averageRating'],
-                    'votes': ratings['numVotes']
-                })
+                rating_data = self.title_ratings.loc[episode_id]
+                rating = float(rating_data['averageRating'])
+                votes = int(rating_data['numVotes'])
             
-            return info
-        
-        return None
-    
-    def get_series_info(self, series_id: str) -> Optional[Dict[str, Any]]:
-        """Get comprehensive information about a TV series"""
-        if not self.title_basics is not None:
-            self.load_datasets()
-        
-        if series_id in self.title_basics.index:
-            series_data = self.title_basics.loc[series_id]
-            
-            info = {
-                'title': series_data['primaryTitle'],
-                'start_year': series_data['startYear'],
-                'end_year': series_data['endYear'],
-                'genres': series_data['genres'].split(',') if pd.notna(series_data['genres']) else [],
-                'type': series_data['titleType']
-            }
-            
-            # Add ratings if available
-            if series_id in self.title_ratings.index:
-                ratings = self.title_ratings.loc[series_id]
-                info.update({
-                    'rating': ratings['averageRating'],
-                    'votes': ratings['numVotes']
-                })
-            
-            # Get total number of seasons
-            if series_id in self.tv_series_cache:
-                episodes = self.tv_series_cache[series_id]
-            else:
-                episodes = self.title_episodes[self.title_episodes['parentTconst'] == series_id]
-                self.tv_series_cache[series_id] = episodes
-            
-            if not episodes.empty:
-                info['total_seasons'] = episodes['seasonNumber'].astype(int).max()
-                info['total_episodes'] = len(episodes)
-            
-            return info
+            return EpisodeInfo(
+                title=episode_data['primaryTitle'],
+                season=season,
+                episode=episode,
+                parent_id=parent_id,
+                year=int(episode_data['startYear']) if episode_data['startYear'] != 'NA' else None,
+                rating=rating,
+                votes=votes
+            )
         
         return None
