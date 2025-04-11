@@ -1,0 +1,7 @@
+ffmpeg-python>=0.2.0
+requests>=2.25.0
+pandas>=1.2.0
+tqdm>=4.50.0
+rapidfuzz>=2.0.0
+inquirer>=2.7.0
+mutagen>=1.45.0
