@@ -152,16 +152,24 @@ Downloads the specified `.mp3` file and adds the provided metadata to it.
 - eyed3
 - magic (python-magic-bin on windows)
 
-## video-optimizer.py
-A script that allows for quick and eazy optimization of videos. Just supply a list of videos on the command line or drag and drop them onto the script. You get a list of choices based on the contents of the videos such as which subtitles to make default, and which audio to make default along with target quality and resolution.
+## video-optimizer-v2
+A script that allows for quick and easy optimization of videos. Just supply a list of videos on the command line or drag and drop them onto the script. You get a list of choices based on the contents of the videos such as which subtitles to make default, and which audio to make default along with target quality and resolution.
 
-It is made specifically for transcoding for example tv-shows from your legacy media in a quick and simple way. Jsut drag a whole season onto the script and easily convert it for use on your phone.
+It is made specifically for transcoding for example tv-shows from your legacy media in a quick and simple way. Just drag a whole season onto the script and easily convert it for use on your phone.
+
+It now also supports lookup of meta data from common anime databases and imdb. It will automatically download the metadata and add it to the video.
+
+Check out branch mediaoptimizer_v1 for the old version.
 
 ### Requires
-- ffmpeg
+Use the video-optimizer-v2/requirements.txt file to install the requirements.
 - ffmpeg-python
-- inquirer
+- requests
+- pandas
 - tqdm
+- rapidfuzz
+- inquirer
+- mutagen
 
 ## rss-feed-downloader.py
 A script to parse RSS feeds and download enclosures (e.g., audio, video, or other files) with a console-based GUI for selection and progress tracking.
@@ -180,7 +188,9 @@ A script to parse RSS feeds and download enclosures (e.g., audio, video, or othe
 # Experimental
 
 ## lyrics-timing-generator.py
-A script that generates timed lyric for music files containing non-timed lyrics or no pre-prepared lyrics. 
+Intended to generate timed lyrics for audio files (.lrc). Uses whisper library to generate timed lyrics, and ollama and an llm to structure them.
+
+But it is not good. Really not good. It's a start, but not quite there yet. Need to restart from a known base to generate the timed subtitles which is a known working thing, and then convert that to lyrics, using an llm to format them.
 
 ### Requires
 - pydub
@@ -203,14 +213,3 @@ It is intended if I get time to do it, to stabilize it to properly handle conenc
 
 ### Requires
 - mutagen
-
-## lyrics-timing-generator.py
-Intended to generate timed lyrics for audio files (.lrc). Uses whisper library to generate timed lyrics, and ollama and an llm to structure them.
-
-But it is not good. Really not good. It's a start, but not quite there yet. Need to restart from a known base to generate the timed subtitles which is a known working thing, and then convert that to lyrics, using an llm to format them.
-
-- ollama
-- whisper
-- mutagen
-- numpy
-- soundfile
