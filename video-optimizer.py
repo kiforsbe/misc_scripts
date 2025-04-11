@@ -555,10 +555,9 @@ def parse_filename(filename):
                 show_title_raw, year, season_num, episode_num, episode_title, quality, release_group = groups
                 title = show_title_raw.replace('.', ' ').strip()
                 try:
-                    year_int = int(year)
+                    year_int = int(year) if year else None
                     season_int = int(season_num)
                     episode_int = int(episode_num)
-                    quality_info = quality.replace('.', ' ')
                 except ValueError:
                     logging.warning(f"Could not parse numbers from {filename}")
                     return None
@@ -569,28 +568,29 @@ def parse_filename(filename):
                     episode_info = metadata_manager.get_episode_info(provider, title_info.id, season_int, episode_int)
                     
                     if episode_info:
+                        quality_info = quality.replace('.', ' ') if quality else None
                         return {
                             'MEDIA TYPE': title_info.type,
                             'TITLE': title_info.title,
                             'TVSHOW': title_info.title,
                             'TVSEASON': season_int,
                             'TVEPISODE': episode_int,
-                            'EPISODE TITLE': episode_info.title or episode_title.replace('.', ' ').strip(),
-                            'RELEASE GROUP': release_group.strip(),
+                            'EPISODE TITLE': episode_info.title or episode_title.replace('.', ' ').strip() if episode_title else None,
+                            'RELEASE GROUP': release_group.strip() if release_group else None,
                             'YEAR': year_int,
                             'QUALITY': quality_info,
                             'RATING': title_info.rating,
                             'EPISODE RATING': episode_info.rating,
                             'VOTES': title_info.votes,
                             'EPISODE VOTES': episode_info.votes,
-                            'GENRES': title_info.genres,
-                            'TAGS': title_info.tags,
+                            'GENRES': title_info.genres or [],
+                            'TAGS': title_info.tags or [],
                             'STATUS': title_info.status,
                             'TOTAL EPISODES': title_info.total_episodes,
                             'TOTAL SEASONS': title_info.total_seasons,
                             'START YEAR': title_info.start_year,
                             'END YEAR': title_info.end_year,
-                            'SOURCES': title_info.sources
+                            'SOURCES': title_info.sources or []
                         }
             
             # Movie format
@@ -599,8 +599,7 @@ def parse_filename(filename):
                 title = movie_title_raw.replace('.', ' ').strip()
                 
                 try:
-                    year_int = int(year)
-                    quality_info = quality.replace('.', ' ')
+                    year_int = int(year) if year else None
                 except ValueError:
                     logging.warning(f"Could not parse year from {filename}")
                     return None
@@ -608,18 +607,19 @@ def parse_filename(filename):
                 # Find movie in metadata databases
                 title_info, provider = metadata_manager.find_title(title, year_int)
                 if title_info:
+                    quality_info = quality.replace('.', ' ') if quality else None
                     return {
                         'MEDIA TYPE': title_info.type,
                         'TITLE': title_info.title,
                         'YEAR': year_int,
                         'QUALITY': quality_info,
-                        'RELEASE GROUP': release_group.strip(),
+                        'RELEASE GROUP': release_group.strip() if release_group else None,
                         'RATING': title_info.rating,
                         'VOTES': title_info.votes,
-                        'GENRES': title_info.genres,
-                        'TAGS': title_info.tags,
+                        'GENRES': title_info.genres or [],
+                        'TAGS': title_info.tags or [],
                         'STATUS': title_info.status,
-                        'SOURCES': title_info.sources
+                        'SOURCES': title_info.sources or []
                     }
             
             # Anime-style episode formats
@@ -655,20 +655,20 @@ def parse_filename(filename):
                             'TVSEASON': season_int,
                             'TVEPISODE': episode_int,
                             'EPISODE TITLE': episode_info.title,
-                            'RELEASE GROUP': release_group.strip(),
+                            'RELEASE GROUP': release_group.strip() if release_group else None,
                             'YEAR': title_info.year,
                             'RATING': title_info.rating,
                             'EPISODE RATING': episode_info.rating,
                             'VOTES': title_info.votes,
                             'EPISODE VOTES': episode_info.votes,
-                            'GENRES': title_info.genres,
-                            'TAGS': title_info.tags,
+                            'GENRES': title_info.genres or [],
+                            'TAGS': title_info.tags or [],
                             'STATUS': title_info.status,
                             'TOTAL EPISODES': title_info.total_episodes,
                             'TOTAL SEASONS': title_info.total_seasons,
                             'START YEAR': title_info.start_year,
                             'END YEAR': title_info.end_year,
-                            'SOURCES': title_info.sources
+                            'SOURCES': title_info.sources or []
                         }
     
     return None
@@ -704,15 +704,22 @@ def display_metadata_preview(metadata_list: List[VideoMetadata]):
             continue
             
         # Create concise metadata line
-        show_title = video_meta.metadata.get('ANIME DB TITLE', video_meta.metadata.get('TVSHOW', 'Unknown'))
-        show_type = video_meta.metadata.get('SHOW TYPE', 'Unknown')
+        show_title = video_meta.metadata.get('TITLE', 'Unknown')
+        episode_title = video_meta.metadata.get('EPISODE TITLE', 'Unknown')
+        show_type = video_meta.metadata.get('MEDIA TYPE', 'Unknown')
         season = video_meta.metadata.get('TVSEASON', 1)
         episode = video_meta.metadata.get('TVEPISODE', 1)
         total_episodes = video_meta.metadata.get('TOTAL EPISODES', '?')
-        status = video_meta.metadata.get('STATUS', 'Unknown')
         release_group = video_meta.metadata.get('RELEASE GROUP', 'Unknown')
+        start_year = video_meta.metadata.get('YEAR', 'Unknown')
+        rating = video_meta.metadata.get('RATING', '?')
         
-        metadata_line = f"{show_title}, {show_type}, S{season:02d}E{episode:02d}/{total_episodes}, {status}, {release_group}"
+        if show_type == 'movie':
+            metadata_line = f"{show_title} ({start_year}), [{release_group}] Rating: {rating})"
+        else:
+            episode_rating = video_meta.metadata.get('EPISODE RATING', '?')
+            metadata_line = f"{show_title} - S{season:02d}E{episode:02d}/{total_episodes} - {episode_title}, [{release_group}] Rating: {rating}#{episode_rating})"
+
         print(metadata_line)
     
     print("=" * 120)

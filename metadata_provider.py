@@ -1,10 +1,14 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, BinaryIO
 from datetime import datetime, timedelta
 import os
 import logging
 from pathlib import Path
+import hashlib
+import requests
+import tempfile
+import shutil
 
 @dataclass
 class TitleInfo:
@@ -46,12 +50,25 @@ class EpisodeInfo:
         if not self.title:
             self.title = f"Episode {self.episode}"
 
+@dataclass
+class MatchResult:
+    """Container for a match result with quality score"""
+    info: Optional[TitleInfo]
+    score: float  # Score between 0-100
+    provider_weight: float = 1.0  # Provider-specific weight for multi-provider scenarios
+    
+    @property
+    def weighted_score(self) -> float:
+        """Get the score weighted by provider weight"""
+        return self.score * self.provider_weight
+
 class BaseMetadataProvider(ABC):
     """Base class for metadata providers with common functionality"""
     
-    def __init__(self, cache_dir: str, cache_duration: timedelta = timedelta(days=7)):
+    def __init__(self, cache_dir: str, cache_duration: timedelta = timedelta(days=7), provider_weight: float = 1.0):
         self.cache_dir = os.path.join(os.path.expanduser("~"), ".video_metadata_cache", cache_dir)
         self.cache_duration = cache_duration
+        self.provider_weight = provider_weight
         self.ensure_cache_dir()
     
     def ensure_cache_dir(self):
@@ -66,7 +83,7 @@ class BaseMetadataProvider(ABC):
         return datetime.now() - mtime < self.cache_duration
     
     @abstractmethod
-    def find_title(self, title: str, year: Optional[int] = None) -> Optional[TitleInfo]:
+    def find_title(self, title: str, year: Optional[int] = None) -> Optional[MatchResult]:
         """Find title information for either a movie or TV show"""
         pass
     
@@ -74,6 +91,131 @@ class BaseMetadataProvider(ABC):
     def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode information if the title is a TV show"""
         pass
+
+    def _download_with_resume(self, url: str, target_file: str, temp_suffix: str = '.download') -> bool:
+        """
+        Download a file with resume capability and atomic write.
+        
+        Args:
+            url: The URL to download from
+            target_file: The final path where the file should be saved
+            temp_suffix: Suffix for temporary files during download
+            
+        Returns:
+            bool: True if download was successful, False otherwise
+        """
+        temp_file = target_file + temp_suffix
+        headers = {}
+        mode = 'wb'
+        
+        # Check if we can resume a previous download
+        if os.path.exists(temp_file):
+            temp_size = os.path.getsize(temp_file)
+            headers['Range'] = f'bytes={temp_size}-'
+            mode = 'ab'
+        
+        try:
+            # Make the request with resume headers if applicable
+            response = requests.get(url, stream=True, headers=headers)
+            
+            if response.status_code == 416:  # Range not satisfiable
+                # File is already complete, just rename it
+                os.rename(temp_file, target_file)
+                return True
+                
+            response.raise_for_status()
+            
+            # Get total file size for validation
+            total_size = int(response.headers.get('content-length', 0))
+            if 'Range' in headers:
+                total_size += temp_size
+            
+            with open(temp_file, mode) as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            # Verify file size
+            if os.path.getsize(temp_file) != total_size and total_size > 0:
+                raise ValueError("Downloaded file size doesn't match expected size")
+            
+            # Atomic move
+            os.replace(temp_file, target_file)
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error downloading {url}: {str(e)}")
+            # Keep partial download for future resume
+            return False
+    
+    def _verify_file_integrity(self, filepath: str, expected_hash: Optional[str] = None) -> bool:
+        """
+        Verify file integrity by checking if it's valid and complete.
+        If expected_hash is provided, also verify the file hash.
+        """
+        try:
+            # Basic file checks
+            if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+                return False
+            
+            # Try to open and read the file
+            with open(filepath, 'rb') as f:
+                if expected_hash:
+                    file_hash = hashlib.sha256(f.read()).hexdigest()
+                    return file_hash == expected_hash
+                    
+                # If no hash provided, try reading the entire file
+                f.seek(0, os.SEEK_END)
+                return True
+                
+        except Exception as e:
+            logging.error(f"Error verifying file integrity for {filepath}: {str(e)}")
+            return False
+    
+    def _safe_write(self, filepath: str, write_func) -> bool:
+        """
+        Safely write data to a file using a temporary file and atomic rename.
+        
+        Args:
+            filepath: The target filepath
+            write_func: A function that takes a file object and writes data to it
+            
+        Returns:
+            bool: True if write was successful, False otherwise
+        """
+        temp_file = None
+        try:
+            # Create a temporary file in the same directory
+            temp_fd, temp_file = tempfile.mkstemp(dir=os.path.dirname(filepath))
+            with os.fdopen(temp_fd, 'wb') as f:
+                write_func(f)
+            
+            # Atomic rename
+            os.replace(temp_file, filepath)
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error writing to {filepath}: {str(e)}")
+            return False
+            
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+
+    @staticmethod
+    def safe_int(value: Any) -> Optional[int]:
+        """Safely convert a value to int, returning None on failure"""
+        if value is None:
+            return None
+        try:
+            if isinstance(value, str) and value.lower() == 'na':
+                return None
+            return int(value)
+        except (ValueError, TypeError):
+            return None
 
 class MetadataManager:
     """Proxy class to handle multiple metadata providers"""
@@ -83,31 +225,17 @@ class MetadataManager:
     
     def find_title(self, title: str, year: Optional[int] = None) -> Tuple[Optional[TitleInfo], Optional[BaseMetadataProvider]]:
         """Try all providers and return the best match and the provider that found it"""
-        best_match = None
+        best_result: Optional[MatchResult] = None
         best_provider = None
-        best_score = 0
         
         for provider in self.providers:
-            match = provider.find_title(title, year)
-            if match:
-                # Calculate a relevance score based on exact matches and year
-                score = 0
-                if match.title.lower() == title.lower():
-                    score += 100
-                elif title.lower() in match.title.lower():
-                    score += 80
-                
-                if year and match.year and match.year == year:
-                    score += 50
-                elif year and match.year and abs(match.year - year) <= 1:
-                    score += 30
-                
-                if score > best_score:
-                    best_score = score
-                    best_match = match
+            result = provider.find_title(title, year)
+            if result and result.info:  # Make sure we have both a result and title info
+                if not best_result or result.weighted_score > best_result.weighted_score:
+                    best_result = result
                     best_provider = provider
         
-        return best_match, best_provider
+        return (best_result.info if best_result else None, best_provider)
     
     def get_episode_info(self, provider: BaseMetadataProvider, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode info from a specific provider"""
