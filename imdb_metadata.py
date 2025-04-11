@@ -23,7 +23,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     def __init__(self):
         super().__init__('imdb', provider_weight=0.9)  # IMDB gets slightly lower weight than anime DB for anime
         self.title_basics = None
-        self.title_episodes = None
+        self.title_episode = None
         self.title_ratings = None
         self.title_akas = None
         self.tv_series_cache = {}
@@ -37,9 +37,9 @@ class IMDbDataProvider(BaseMetadataProvider):
         # First check if we have a valid parquet cache
         if self.is_cache_valid(cache_file) and self._verify_file_integrity(cache_file):
             try:
-                logging.info(f"Loading cached {dataset_name} dataset from parquet file...")
-                df = pd.read_parquet(cache_file)
-                logging.info(f"Successfully loaded {dataset_name} dataset from cache")
+                with tqdm(desc=f"Loading cached {dataset_name}", unit='B', unit_scale=True) as pbar:
+                    df = pd.read_parquet(cache_file)
+                    pbar.update(os.path.getsize(cache_file))
                 return df
             except Exception as e:
                 logging.warning(f"Failed to load cached parquet for {dataset_name}: {str(e)}")
@@ -47,13 +47,19 @@ class IMDbDataProvider(BaseMetadataProvider):
         # Download and process with retries
         for attempt in range(self.MAX_RETRIES):
             try:
-                logging.info(f"Downloading {dataset_name} dataset (attempt {attempt + 1}/{self.MAX_RETRIES})...")
+                logging.info(f"Processing {dataset_name} dataset (attempt {attempt + 1}/{self.MAX_RETRIES})...")
                 
-                # Download gzipped file with resume capability
-                if not self._download_with_resume(url, gz_cache):
-                    if attempt < self.MAX_RETRIES - 1:
-                        continue
-                    raise RuntimeError(f"Failed to download {dataset_name} after {self.MAX_RETRIES} attempts")
+                # Download gzipped file with resume capability and progress bar
+                response = requests.get(url, stream=True)
+                total_size = int(response.headers.get('content-length', 0))
+                block_size = 8192
+                
+                with tqdm(total=total_size, desc=f"Downloading {dataset_name}", unit='B', unit_scale=True) as pbar:
+                    with open(gz_cache, 'wb') as f:
+                        for data in response.iter_content(block_size):
+                            if data:
+                                f.write(data)
+                                pbar.update(len(data))
                 
                 # Verify the gzipped file
                 try:
@@ -66,23 +72,33 @@ class IMDbDataProvider(BaseMetadataProvider):
                         continue
                     raise
                 
-                # Parse the gzipped TSV safely
-                logging.info(f"Parsing {dataset_name} dataset...")
-                try:
-                    with gzip.open(gz_cache, 'rb') as gz_file:
-                        df = pd.read_csv(gz_file, sep='\t', low_memory=False)
-                except Exception as parse_error:
-                    logging.error(f"Error parsing {dataset_name}: {str(parse_error)}")
-                    if attempt < self.MAX_RETRIES - 1:
-                        continue
-                    raise
+                # Parse the gzipped TSV with progress bar
+                with tqdm(desc=f"Parsing {dataset_name}", unit='B', unit_scale=True) as pbar:
+                    try:
+                        with gzip.open(gz_cache, 'rb') as gz_file:
+                            # Read and parse in chunks to show progress
+                            chunks = []
+                            while True:
+                                chunk = gz_file.read(block_size)
+                                if not chunk:
+                                    break
+                                chunks.append(chunk)
+                                pbar.update(len(chunk))
+                            data = b''.join(chunks)
+                            df = pd.read_csv(io.BytesIO(data), sep='\t', low_memory=False)
+                    except Exception as parse_error:
+                        logging.error(f"Error parsing {dataset_name}: {str(parse_error)}")
+                        if attempt < self.MAX_RETRIES - 1:
+                            continue
+                        raise
                 
-                # Save to parquet cache using a temporary file
+                # Save to parquet cache with progress
                 temp_parquet = cache_file + '.tmp'
                 try:
-                    df.to_parquet(temp_parquet)
+                    with tqdm(desc=f"Saving {dataset_name} cache", unit='B', unit_scale=True) as pbar:
+                        df.to_parquet(temp_parquet)
+                        pbar.update(os.path.getsize(temp_parquet))
                     os.replace(temp_parquet, cache_file)
-                    logging.info(f"Successfully processed {dataset_name} dataset")
                 except Exception as write_error:
                     logging.error(f"Error writing parquet file: {str(write_error)}")
                     if os.path.exists(temp_parquet):
@@ -112,25 +128,29 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Load all necessary IMDb datasets"""
         try:
             logging.info("Starting IMDb datasets loading process...")
+            datasets = list(self.DATASETS.keys())
             
             # Create overall progress bar for dataset loading
-            with tqdm(total=4, desc="Loading IMDb datasets") as pbar:
-                self.title_basics = self.download_dataset('title.basics')
-                pbar.update(1)
-                
-                self.title_episodes = self.download_dataset('title.episode')
-                pbar.update(1)
-                
-                self.title_ratings = self.download_dataset('title.ratings')
-                pbar.update(1)
-                
-                self.title_akas = self.download_dataset('title.akas')
-                pbar.update(1)
+            with tqdm(total=len(datasets), desc="Loading IMDb datasets") as pbar:
+                for dataset_name in datasets:
+                    pbar.set_description(f"Loading {dataset_name}")
+                    if dataset_name == 'title.basics':
+                        self.title_basics = self.download_dataset(dataset_name)
+                    elif dataset_name == 'title.episode':
+                        self.title_episode = self.download_dataset(dataset_name)
+                    elif dataset_name == 'title.ratings':
+                        self.title_ratings = self.download_dataset(dataset_name)
+                    elif dataset_name == 'title.akas':
+                        self.title_akas = self.download_dataset(dataset_name)
+                    pbar.update(1)
             
-            logging.info("Setting dataset indices...")
-            self.title_basics.set_index('tconst', inplace=True)
-            self.title_episodes.set_index('tconst', inplace=True)
-            self.title_ratings.set_index('tconst', inplace=True)
+            with tqdm(desc="Setting indices", total=3) as pbar:
+                self.title_basics.set_index('tconst', inplace=True)
+                pbar.update(1)
+                self.title_episode.set_index('tconst', inplace=True)
+                pbar.update(1)
+                self.title_ratings.set_index('tconst', inplace=True)
+                pbar.update(1)
             
             logging.info("Successfully loaded and indexed all IMDb datasets")
             
@@ -206,7 +226,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     if idx in self.tv_series_cache:
                         episodes = self.tv_series_cache[idx]
                     else:
-                        episodes = self.title_episodes[self.title_episodes['parentTconst'] == idx]
+                        episodes = self.title_episode[self.title_episode['parentTconst'] == idx]
                         self.tv_series_cache[idx] = episodes
                     
                     if not episodes.empty:
@@ -250,7 +270,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             self.load_datasets()
         
         if parent_id not in self.tv_series_cache:
-            episodes = self.title_episodes[self.title_episodes['parentTconst'] == parent_id]
+            episodes = self.title_episode[self.title_episode['parentTconst'] == parent_id]
             self.tv_series_cache[parent_id] = episodes
         
         episodes = self.tv_series_cache[parent_id]

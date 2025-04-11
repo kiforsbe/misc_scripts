@@ -47,32 +47,54 @@ class AnimeDataProvider(BaseMetadataProvider):
                 # First try to load from cache if valid
                 if self.is_cache_valid(cache_file) and self._verify_file_integrity(cache_file):
                     logging.info("Loading cached anime database...")
-                    with open(cache_file, 'r', encoding='utf-8') as f:
-                        data = f.read()
-                        try:
-                            self.anime_db = json.loads(data)
-                            logging.info("Successfully loaded anime database from cache")
-                            return
-                        except json.JSONDecodeError:
-                            logging.warning("Cached anime database is corrupted, will download fresh copy")
+                    with tqdm(desc="Loading cached anime database", unit='B', unit_scale=True) as pbar:
+                        with open(cache_file, 'r', encoding='utf-8') as f:
+                            data = f.read()
+                            pbar.update(len(data.encode('utf-8')))
+                            try:
+                                self.anime_db = json.loads(data)
+                                # Build index with progress bar
+                                self._build_title_index(with_progress=True)
+                                logging.info("Successfully loaded anime database from cache")
+                                return
+                            except json.JSONDecodeError:
+                                logging.warning("Cached anime database is corrupted, will download fresh copy")
                 
                 logging.info(f"Downloading fresh anime database (attempt {attempt + 1}/{self.MAX_RETRIES})...")
                 
-                # Use download with resume capability
-                if self._download_with_resume(self.ANIME_DB_URL, cache_file):
-                    # Verify the downloaded file
-                    if not self._verify_file_integrity(cache_file):
-                        logging.error("Downloaded anime database is corrupted")
-                        if os.path.exists(cache_file):
-                            os.remove(cache_file)
-                        continue
+                # Download with progress bar
+                response = requests.get(self.ANIME_DB_URL, stream=True)
+                total_size = int(response.headers.get('content-length', 0))
+                block_size = 8192
+                
+                with tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
+                    with open(temp_cache, 'wb') as f:
+                        for data in response.iter_content(block_size):
+                            if data:
+                                f.write(data)
+                                pbar.update(len(data))
                     
-                    # Try to parse the JSON
+                    # Move temp file to final location
+                    os.replace(temp_cache, cache_file)
+                
+                # Verify the downloaded file
+                if not self._verify_file_integrity(cache_file):
+                    logging.error("Downloaded anime database is corrupted")
+                    if os.path.exists(cache_file):
+                        os.remove(cache_file)
+                    continue
+                
+                # Parse JSON with progress
+                with tqdm(desc="Parsing anime database", unit='B', unit_scale=True) as pbar:
                     try:
                         with open(cache_file, 'r', encoding='utf-8') as f:
-                            self.anime_db = json.load(f)
-                        logging.info("Successfully loaded fresh anime database")
-                        return
+                            data = f.read()
+                            pbar.update(len(data.encode('utf-8')))
+                            self.anime_db = json.loads(data)
+                            # Build index with progress bar
+                            self._build_title_index(with_progress=True)
+                            logging.info("Successfully loaded fresh anime database")
+                            return
                     except json.JSONDecodeError:
                         logging.error("Downloaded anime database has invalid JSON")
                         if os.path.exists(cache_file):
@@ -89,24 +111,33 @@ class AnimeDataProvider(BaseMetadataProvider):
         if os.path.exists(cache_file):
             try:
                 logging.warning("All download attempts failed. Attempting to load expired cache as fallback...")
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    self.anime_db = json.load(f)
-                logging.info("Successfully loaded anime database from expired cache")
-                return
+                with tqdm(desc="Loading expired cache", unit='B', unit_scale=True) as pbar:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        data = f.read()
+                        pbar.update(len(data.encode('utf-8')))
+                        self.anime_db = json.loads(data)
+                        # Build index with progress bar
+                        self._build_title_index(with_progress=True)
+                        logging.info("Successfully loaded anime database from expired cache")
+                        return
             except Exception as cache_e:
                 logging.error(f"Error loading cached database: {str(cache_e)}")
         
         self.anime_db = None
         raise RuntimeError("Failed to load anime database after multiple attempts")
     
-    def _build_title_index(self) -> None:
+    def _build_title_index(self, with_progress: bool = False) -> None:
         """Build an efficient index of titles and their variants"""
         if not self.anime_db or 'data' not in self.anime_db:
             return
             
         self.title_index.clear()
+        entries = self.anime_db['data']
         
-        for idx, entry in enumerate(self.anime_db['data']):
+        if with_progress:
+            entries = tqdm(entries, desc="Building title index", unit='entries')
+        
+        for idx, entry in enumerate(entries):
             # Add main title
             main_title = entry.get('title')
             if main_title:
