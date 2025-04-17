@@ -375,9 +375,6 @@ class DownloaderTUI:
         progress_bar.normal = progress_style
         progress_bar.complete = bar_style
 
-        if self.loop:
-            self.loop.draw_screen()
-
     def update_footer(self):
          total = len(self.downloads)
          selected = sum(1 for item in self.downloads if item.is_selected) # Count selected
@@ -412,7 +409,7 @@ class DownloaderTUI:
                 if item.status not in ["Downloading", "Processing", "Starting..."]:
                     item.is_selected = not item.is_selected
                     logger.debug(f"Toggled selection for '{item.title}' to {item.is_selected}")
-                    self.update_widget_for_item(item)
+                    self._schedule_ui_update(item)
                     self.update_footer()
                 else:
                     logger.debug(f"Cannot toggle selection for '{item.title}' while status is {item.status}")
@@ -464,7 +461,7 @@ class DownloaderTUI:
                     if item.status in ["Error", "Cancelled"]:
                          item.error = None
                          item.status = "Pending" # Reset status
-                         self.update_widget_for_item(item)
+                         self._schedule_ui_update(item)
                     items_to_download.append(item)
 
             if missing_format:
@@ -502,39 +499,30 @@ class DownloaderTUI:
 
 
     async def fetch_video_info(self, url: str) -> Optional[DownloadItem]:
-        # Find if item already exists (e.g., from previous run or duplicate URL)
-        existing_item = next((item for item in self.downloads if item.url == url), None)
-        item = existing_item or DownloadItem(url=url)
-        if not existing_item:
-             # Add placeholder to list immediately for UI feedback
-             item.widget = self.create_download_widget(item)
-             self.listbox_walker.append(item.widget)
-             self.downloads.append(item)
-             self.update_footer()
-             if self.loop: self.loop.draw_screen() # Update UI
+        # Find the existing placeholder item
+        item = next((i for i in self.downloads if i.url == url), None)
+        if not item:
+             # This shouldn't happen with the new flow, but handle defensively
+             logger.error(f"Could not find placeholder item for URL {url} during fetch.")
+             return None
 
+        # Update status to indicate fetching
         item.status = "Fetching Info..."
-        item.title = url # Show URL while fetching
-        self.update_widget_for_item(item)
+        # Keep URL as title temporarily
+        self._schedule_ui_update(item)
 
         try:
             logger.info(f"Fetching info for URL: {url}")
             # Use specific options for info fetching
             info_ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False, # Need full format info
-                'skip_download': True,
-                'verbose': False,
-                'ignoreerrors': True, # Continue if one URL fails
-                'forcejson': True, # Try to force JSON output
-                'dump_single_json': True, # Get JSON directly if possible
+                'quiet': True, 'no_warnings': True, 'extract_flat': False,
+                'skip_download': True, 'verbose': False, 'ignoreerrors': True,
+                'forcejson': True, 'dump_single_json': True,
             }
 
             # Run yt-dlp in executor
             loop = asyncio.get_event_loop()
             with yt_dlp.YoutubeDL(info_ydl_opts) as ydl:
-                # extract_info can block, run in executor
                 info = await loop.run_in_executor(
                     None, functools.partial(ydl.extract_info, url, download=False)
                 )
@@ -543,41 +531,34 @@ class DownloaderTUI:
                 logger.warning(f"No info extracted for {url}")
                 item.status = "Error"
                 item.error = "Failed to extract video info"
-                self.update_widget_for_item(item)
+                self._schedule_ui_update(item)
                 self.update_footer()
                 return None
 
             logger.debug(f"Successfully fetched info for {url}")
             item.title = info.get('title', 'Unknown Title')
             item.duration = info.get('duration', 0)
+            item.status = "Pending"
+            item.error = None
 
-            # Get available formats with safe codec checking
-            formats = info.get('formats', [])
+            # Get available formats
+            formats = info.get('formats', []) or info.get('requested_formats', [])
             if not formats:
-                 logger.warning(f"No formats list found for {url}. Info dump: {info}")
-                 # Fallback: try getting formats from requested_formats if available
-                 formats = info.get('requested_formats', [])
-                 if not formats:
-                      logger.error(f"No formats or requested_formats found for {url}")
-                      item.status = "Error"
-                      item.error = "No downloadable formats found"
-                      self.update_widget_for_item(item)
-                      self.update_footer()
-                      return None # Cannot proceed without formats
+                 logger.error(f"No formats or requested_formats found for {url}")
+                 item.status = "Error"
+                 item.error = "No downloadable formats found"
+                 self._schedule_ui_update(item)
+                 self.update_footer()
+                 return None
 
-            # Filter and store formats
-            item.format_info['audio'] = [f for f in formats if f.get('acodec', 'none') != 'none' and f.get('vcodec', 'none') == 'none']
-            item.format_info['video'] = [f for f in formats if f.get('vcodec', 'none') != 'none'] # Include video-only and video+audio
-
-            # Sort formats (example: by bitrate for audio, resolution for video)
-            # Handle potential None values in sorting keys
-            item.format_info['audio'].sort(key=lambda x: x.get('abr', 0) or 0, reverse=True) # Add 'or 0' for safety
-            item.format_info['video'].sort(
-                key=lambda x: (
-                    x.get('height', 0) or 0, # Ensure height is a number
-                    x.get('fps', 0) or 0,    # Ensure fps is a number
-                    x.get('vbr', 0) or 0.0   # Ensure vbr is a number (use 0.0 for float consistency if needed)
-                ),
+            # Filter and sort formats
+            item.format_info['audio'] = sorted(
+                [f for f in formats if f.get('acodec', 'none') != 'none' and f.get('vcodec', 'none') == 'none'],
+                key=lambda x: x.get('abr', 0) or 0, reverse=True
+            )
+            item.format_info['video'] = sorted(
+                [f for f in formats if f.get('vcodec', 'none') != 'none'],
+                key=lambda x: (x.get('height', 0) or 0, x.get('fps', 0) or 0, x.get('vbr', 0) or 0.0),
                 reverse=True
             )
 
@@ -585,29 +566,37 @@ class DownloaderTUI:
                        f"{len(item.format_info['video'])} video formats for {url}")
 
             item.status = "Pending" # Ready for format selection or auto-download
-            self.update_widget_for_item(item)
+            item.error = None # Clear any previous placeholder error
+            self._schedule_ui_update(item)
             self.update_footer()
-            return item
+
+            # --- Trigger automatic download if in batch mode ---
+            if item.download_type and item.status == "Pending":
+                 logger.info(f"Auto-starting batch download for '{item.title}' ({item.download_type})")
+                 asyncio.create_task(self.start_download(item))
+            # --- End of batch trigger ---
+
+            return item # Return the updated item
 
         except yt_dlp.utils.DownloadError as e:
-             logger.error(f"yt-dlp DownloadError fetching info for {url}: {str(e)}", exc_info=False) # Keep log cleaner
+             logger.error(f"yt-dlp DownloadError fetching info for {url}: {str(e)}", exc_info=False)
              item.status = "Error"
              item.error = f"yt-dlp error: {e}"
-             self.update_widget_for_item(item)
+             self._schedule_ui_update(item)
              self.update_footer()
              return None
         except Exception as e:
-            # Log the full traceback for unexpected errors
             logger.error(f"Unexpected error fetching info for {url}: {str(e)}", exc_info=True)
             item.status = "Error"
             item.error = f"Unexpected error: {e}"
-            self.update_widget_for_item(item)
+            self._schedule_ui_update(item)
             self.update_footer()
             return None
-
+        
     def download_progress_hook(self, d, item: DownloadItem):
         """Progress hook specifically bound to an item."""
         try:
+            needs_update = False
             if d['status'] == 'downloading':
                 downloaded = d.get('downloaded_bytes', 0)
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') # Use estimate if available
@@ -620,25 +609,26 @@ class DownloaderTUI:
                     # If total size is unknown, maybe show bytes downloaded?
                     item.status = f"Downloading ({d.get('_speed_str', '...')})" # Show speed if available
                     item.progress = 0 # Or use a spinner/indeterminate state
-
-                # Update widget less frequently to avoid overwhelming urwid
-                # Throttling can be added here if needed (e.g., update only every 0.5s)
-                self.update_widget_for_item(item)
-                self.update_footer()
+                needs_update = True
 
             elif d['status'] == 'finished':
                 logger.debug(f"Download hook: 'finished' status for {item.title}. File: {d.get('filename')}")
                 item.progress = 100
                 item.status = "Processing" # Indicate post-processing might occur
-                self.update_widget_for_item(item)
-                self.update_footer()
+                needs_update = True
 
             elif d['status'] == 'error':
                 logger.error(f"Download hook: 'error' status for {item.title}")
                 item.status = "Error"
                 item.error = "Download failed during transfer"
                 item.progress = 0
-                self.update_widget_for_item(item)
+                needs_update = True
+
+            if needs_update:
+                # --- Use schedule method ---
+                self._schedule_ui_update(item)
+                # Footer update can likely stay outside the schedule call
+                # as it doesn't directly touch complex screen drawing
                 self.update_footer()
 
         except Exception as e:
@@ -646,7 +636,7 @@ class DownloaderTUI:
             # Avoid crashing the hook itself
             item.status = "Error"
             item.error = "Hook error"
-            self.update_widget_for_item(item)
+            self._schedule_ui_update(item)
             self.update_footer()
 
 
@@ -655,7 +645,7 @@ class DownloaderTUI:
              logger.error(f"Cannot start download for {item.title}: Download type not set.")
              item.status = "Error"
              item.error = "Download type missing"
-             self.update_widget_for_item(item)
+             self._schedule_ui_update(item)
              self.update_footer()
              return
 
@@ -663,7 +653,7 @@ class DownloaderTUI:
         item.status = "Starting..."
         item.progress = 0
         item.error = None
-        self.update_widget_for_item(item)
+        self._schedule_ui_update(item)
         self.update_footer()
 
         # Ensure this task is tracked
@@ -745,7 +735,7 @@ class DownloaderTUI:
                      item.status = "Skipped"
                      item.error = "File already exists"
                      item.progress = 100 # Mark as complete visually
-                     self.update_widget_for_item(item)
+                     self._schedule_ui_update(item)
                      self.update_footer()
                      return # Exit download process for this item
 
@@ -757,7 +747,7 @@ class DownloaderTUI:
 
                 # --- Post-Download Processing ---
                 item.status = "Processing"
-                self.update_widget_for_item(item)
+                self._schedule_ui_update(item)
 
                 # Find the processed file in the temp directory
                 processed_files = list(temp_dir.glob(f'*{final_extension}'))
@@ -829,7 +819,7 @@ class DownloaderTUI:
 
         finally:
             # Final UI update for the item
-            self.update_widget_for_item(item)
+            self._schedule_ui_update(item)
             self.update_footer()
             # Remove task from tracking once done or failed
             if item.url in self.current_download_tasks:
@@ -878,7 +868,7 @@ class DownloaderTUI:
         logger.info(f"Selected format '{download_type}' for '{item.title}'")
         self.close_dialog(button) # Close the dialog first
         # Update the item's display immediately before starting download
-        self.update_widget_for_item(item)
+        self._schedule_ui_update(item)
         # Schedule the download to start
         asyncio.create_task(self.start_download(item))
 
@@ -916,6 +906,31 @@ class DownloaderTUI:
          overlay = urwid.Overlay(dialog, self.frame, align='center', width=('relative', 70), valign='middle', height='pack', min_width=40)
          self.loop.widget = overlay
 
+    def _schedule_ui_update(self, item: DownloadItem):
+        """Schedules widget update and screen redraw on the main event loop."""
+        if not self.loop or not hasattr(self.loop, 'event_loop'):
+            logger.error("Cannot schedule UI update: Main loop or event_loop not available.")
+            return
+
+        # --- Access the underlying asyncio loop ---
+        urwid_event_loop = self.loop.event_loop
+        if not hasattr(urwid_event_loop, '_loop'):
+             logger.error("Cannot schedule UI update: Urwid event loop does not have '_loop' attribute.")
+             return
+
+        asyncio_loop = urwid_event_loop._loop
+        # --- Use the asyncio loop's call_soon ---
+        asyncio_loop.call_soon(self._do_update_and_draw, item)
+
+    def _do_update_and_draw(self, item: DownloadItem):
+        """Helper function called by call_soon to update widget and draw screen."""
+        try:
+            self.update_widget_for_item(item)
+            if self.loop:
+                self.loop.draw_screen() # Now draw_screen is called from the main loop context
+        except Exception as e:
+             # Log errors happening during the scheduled update
+             logger.error(f"Error during scheduled UI update for {item.title}: {e}", exc_info=True)
 
 # --- Main Execution Logic ---
 
@@ -945,49 +960,30 @@ async def setup_application(args) -> urwid.MainLoop:
 
     tui = DownloaderTUI()
 
-    # Fetch info for all URLs concurrently
-    fetch_tasks = [tui.fetch_video_info(url) for url in args.urls]
-    results = await asyncio.gather(*fetch_tasks) # Results will contain DownloadItem or None
+    # --- Create placeholders immediately ---
+    logger.debug("Creating placeholder items and widgets")
+    for url in args.urls:
+        # Create placeholder item
+        item = DownloadItem(url=url, title=url) # Show URL as initial title
+        item.status = "Queued" # Initial status before fetching starts
 
-    # Filter out None results (errors during fetch) and assign download type if batch mode
-    valid_items = []
-    for i, item in enumerate(results):
-        if item:
-            if args.audio_only:
-                item.download_type = 'audio'
-            elif args.video:
-                item.download_type = 'video'
-            # Ensure item is in the list if it wasn't added during fetch (e.g., if fetch was instant)
-            if item not in tui.downloads:
-                 tui.downloads.append(item)
-                 # If widget wasn't created during fetch, create it now
-                 if not item.widget:
-                      item.widget = tui.create_download_widget(item)
-                 tui.listbox_walker.append(item.widget) # Add widget to list walker
-            valid_items.append(item)
-        else:
-             logger.warning(f"Failed to fetch info for URL: {args.urls[i]}")
-             # Placeholder for failed items might already be in tui.downloads/listbox_walker
-             # Ensure its status reflects the error if it exists
-             failed_item = next((d for d in tui.downloads if d.url == args.urls[i]), None)
-             if failed_item and failed_item.status != "Error":
-                  failed_item.status = "Error"
-                  failed_item.error = "Info fetch failed"
-                  tui.update_widget_for_item(failed_item)
+        # Set download type if in batch mode
+        if args.audio_only:
+            item.download_type = 'audio'
+        elif args.video:
+            item.download_type = 'video'
 
+        # Create widget for the placeholder
+        item.widget = tui.create_download_widget(item)
 
-    if not valid_items and not args.audio_only and not args.video:
-        # Only exit if interactive and *no* items could be fetched
-        logger.error("No valid URLs could be processed.")
-        print("Error: None of the provided URLs could be processed.", file=sys.stderr)
-        sys.exit(1)
-    elif not valid_items and (args.audio_only or args.video):
-         logger.warning("No valid URLs to process in batch mode.")
-         # Don't exit, allow TUI to show errors if it starts
+        # Add to TUI state
+        tui.downloads.append(item)
+        tui.listbox_walker.append(item.widget)
 
-    # Initialize the Urwid MainLoop
+    tui.update_footer() # Update footer with initial count
+
+    # --- Initialize the Urwid MainLoop ---
     logger.debug("Initializing UI MainLoop")
-    # Get the current asyncio loop to pass to Urwid
     current_asyncio_loop = asyncio.get_running_loop()
     event_loop = urwid.AsyncioEventLoop(loop=current_asyncio_loop)
 
@@ -996,24 +992,20 @@ async def setup_application(args) -> urwid.MainLoop:
         tui.palette,
         unhandled_input=tui.handle_input,
         event_loop=event_loop
-        # pop_ups=True # Enable built-in pop-up handling if needed later
     )
 
-    # Start downloads automatically for non-interactive mode AFTER loop is created
-    if args.audio_only or args.video:
-        logger.info("Starting batch downloads")
-        for item in valid_items: # Only attempt to download valid items
-            if item.download_type: # Ensure type is set
-                logger.debug(f"Creating download task for: {item.title}")
-                # Create task but don't await here, let the loop run them
-                asyncio.create_task(tui.start_download(item))
-            else:
-                 logger.warning(f"Skipping batch download for {item.title}: download_type not set.")
+    # --- Start fetching info in the background AFTER loop is created ---
+    logger.info("Starting background tasks to fetch video info")
+    for item in tui.downloads:
+        logger.debug(f"Creating info fetch task for: {item.url}")
+        # Create task but don't await here, let the loop run them
+        asyncio.create_task(tui.fetch_video_info(item.url))
 
+    # --- Batch downloads are now triggered within fetch_video_info ---
+    # (Remove the explicit batch download loop from here)
 
     logger.debug("Setup complete, returning Urwid MainLoop")
     return tui.loop # Return the configured loop
-
 
 if __name__ == "__main__":
     # --- Argument Parsing ---
