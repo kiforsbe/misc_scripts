@@ -1016,23 +1016,34 @@ class DownloaderTUI:
         details_str = ' / '.join(map(str, filter(None, details))) # Filter out None values before joining
         return f"[{format_id}] {ext} - {details_str}"
 
-
     def show_detailed_format_selection(self, item: DownloadItem):
         logger.debug(f"Showing detailed format selection for {item.title}")
 
-        # --- Radio Button Groups ---
-        video_group: List[urwid.RadioButton] = []
-        audio_group: List[urwid.RadioButton] = []
-
-        # --- Populate Video Formats ---
-        video_widgets = [urwid.Text(("bold", "Video Formats:"))]
+        # --- Mode Selection ---
+        mode_group = []
         
-        # Option for video-only download (no separate audio merge)
-        video_only_selected = (item.selected_video_format_id is not None and 
-                            item.selected_audio_format_id is None)
-        video_only_rb = urwid.RadioButton(video_group, "(Video Only - No Audio Merge)",
-                                        state=video_only_selected)
-        video_widgets.append(video_only_rb)
+        # Determine current mode
+        current_mode = "combined"
+        if item.selected_video_format_id is not None and item.selected_audio_format_id is None:
+            current_mode = "video_only"
+        elif item.selected_audio_format_id is not None and item.selected_video_format_id is None:
+            current_mode = "audio_only"
+        
+        # Create mode selection widgets
+        mode_widgets = []
+        modes = [
+            ("combined", "Video + Audio (Combined/Merged)"), 
+            ("video_only", "Video Only (No Audio Merge)"),
+            ("audio_only", "Audio Only (No Video)")
+        ]
+        
+        for mode_value, mode_label in modes:
+            rb = urwid.RadioButton(mode_group, mode_label, state=(current_mode == mode_value))
+            mode_widgets.append(rb)
+        
+        # --- Video Format Selection ---
+        video_group = []
+        video_widgets = []
         
         for i, f in enumerate(item.format_info.get('video', [])):
             label = self._format_dict_to_str(f)
@@ -1042,16 +1053,10 @@ class DownloaderTUI:
         
         if not item.format_info.get('video'):
             video_widgets.append(urwid.Text(" (None available)"))
-
-        # --- Populate Audio Formats ---
-        audio_widgets = [urwid.Text(("bold", "Audio Formats (for merging or audio-only):"))]
         
-        # Option for audio-only download (no video)
-        audio_only_selected = (item.selected_audio_format_id is not None and 
-                            item.selected_video_format_id is None)
-        audio_only_rb = urwid.RadioButton(audio_group, "(Audio Only - No Video)",
-                                        state=audio_only_selected)
-        audio_widgets.append(audio_only_rb)
+        # --- Audio Format Selection ---
+        audio_group = []
+        audio_widgets = []
         
         for i, f in enumerate(item.format_info.get('audio', [])):
             label = self._format_dict_to_str(f)
@@ -1066,35 +1071,35 @@ class DownloaderTUI:
         # Create button widgets
         confirm_button = urwid.Button("Confirm Selection", 
                                     on_press=self._confirm_format_selection,
-                                    user_data=(item, video_group, audio_group))
+                                    user_data=(item, mode_group, video_group, audio_group))
         cancel_button = urwid.Button("Cancel", on_press=self.close_dialog)
         
         # Apply styling to buttons
         confirm_button = urwid.AttrMap(confirm_button, 'button', focus_map='button_focus')
         cancel_button = urwid.AttrMap(cancel_button, 'button', focus_map='button_focus')
 
-        # Create fixed-height ListBoxes with scrollbars if needed
-        video_list = urwid.BoxAdapter(
-            urwid.ListBox(urwid.SimpleListWalker(video_widgets)), 
-            height=min(10, len(video_widgets))
-        )
+        # Create scrollable listboxes
+        mode_list = urwid.ListBox(urwid.SimpleListWalker(mode_widgets))
+        video_list = urwid.ListBox(urwid.SimpleListWalker(video_widgets))
+        audio_list = urwid.ListBox(urwid.SimpleListWalker(audio_widgets))
         
-        audio_list = urwid.BoxAdapter(
-            urwid.ListBox(urwid.SimpleListWalker(audio_widgets)), 
-            height=min(10, len(audio_widgets))
-        )
+        # Set conservative fixed heights
+        mode_box = urwid.BoxAdapter(mode_list, height=3)  # Just enough for 3 radio buttons
+        
+        # Calculate available height for video/audio boxes (smaller of the two values)
+        # video_height = min(6, len(video_widgets))
+        # audio_height = min(6, len(audio_widgets))
+        # format_height = min(video_height, audio_height)
+        
+        # video_box = urwid.BoxAdapter(video_list, height=format_height)
+        # audio_box = urwid.BoxAdapter(audio_list, height=format_height)
 
         # Place lists in LineBoxes with titles
-        video_box = urwid.LineBox(video_list, title="Video")
-        audio_box = urwid.LineBox(audio_list, title="Audio")
+        mode_box_framed = urwid.LineBox(mode_box, title="Mode")
+        video_box_framed = urwid.LineBox(video_list, title="Video")
+        audio_box_framed = urwid.LineBox(audio_list, title="Audio")
 
-        # Create columns with video and audio sections
-        body_columns = urwid.Columns([
-            ('weight', 1, video_box),
-            ('weight', 1, audio_box)
-        ], dividechars=2)
-
-        # Title section with item name
+        # Title text
         title_text = urwid.Text(f"Select formats for:\n{item.title}", align='center')
         
         # Button row
@@ -1103,20 +1108,27 @@ class DownloaderTUI:
             ('pack', cancel_button),
         ], dividechars=4)
 
-        # Build the dialog pile with explicit sizing
+        # This widget itself will be given weighted height in the Pile
+        body_columns = urwid.Columns([
+            ('weight', 1, video_box_framed),
+            ('weight', 1, audio_box_framed)
+        ], dividechars=1)
+
+        # Use Pile for layout with explicit sizing
         dialog_pile = urwid.Pile([
-            ('pack', title_text),
-            ('pack', urwid.Divider('-')),
-            ('weight', 1, body_columns),
-            ('pack', urwid.Divider('-')),
-            ('pack', button_row)
+            ('pack', title_text),                     # Auto-size for title
+            ('pack', urwid.Divider('-')),             # Single line divider
+            ('pack', mode_box_framed),                # Fixed size mode box
+            ('weight', 1, body_columns),              # Let this expand vertically
+            ('pack', urwid.Divider('-')),             # Single line divider
+            ('pack', button_row)                      # Auto-size button row
         ])
 
         # Create a padded container for the dialog
         padded_dialog = urwid.Padding(dialog_pile, left=1, right=1)
         
         # Wrap dialog content in LineBox and AttrMap
-        dialog = urwid.LineBox(padded_dialog, title="Detailed Format Selection")
+        dialog = urwid.LineBox(padded_dialog, title="Format Selection")
         dialog = urwid.AttrMap(dialog, 'dialog_border')
 
         # Create overlay with fixed size
@@ -1124,11 +1136,11 @@ class DownloaderTUI:
             dialog,
             self.frame,
             align='center', 
-            width=('relative', 80),
+            width=('relative', 70),   # Make width slightly smaller
             valign='middle', 
-            height=('relative', 80),  # Use relative height instead of 'pack'
-            min_width=60, 
-            min_height=20
+            height=('relative', 70),  # Make height slightly smaller
+            min_width=50, 
+            min_height=15             # Reduce minimum height
         )
         
         # Set as the main widget
@@ -1136,11 +1148,41 @@ class DownloaderTUI:
 
     def _confirm_format_selection(self, button, user_data):
         """Callback when 'Confirm' is pressed in the detailed format dialog."""
-        item, video_group, audio_group = user_data
+        item, mode_group, video_group, audio_group = user_data
         
         # Find selected radio buttons
+        selected_mode_rb = next((rb for rb in mode_group if rb.state), None)
         selected_video_rb = next((rb for rb in video_group if rb.state), None)
         selected_audio_rb = next((rb for rb in audio_group if rb.state), None)
+        
+        # Determine selected mode
+        selected_mode = "combined"  # Default mode
+        if selected_mode_rb:
+            mode_index = mode_group.index(selected_mode_rb)
+            if mode_index == 1:  # "Video Only"
+                selected_mode = "video_only"
+            elif mode_index == 2:  # "Audio Only"
+                selected_mode = "audio_only"
+        
+        # Get selected video format (if any)
+        video_format = None
+        if selected_video_rb and item.format_info.get('video'):
+            try:
+                video_index = video_group.index(selected_video_rb)
+                if 0 <= video_index < len(item.format_info['video']):
+                    video_format = item.format_info['video'][video_index]
+            except (ValueError, IndexError):
+                logger.warning("Failed to get video format information")
+        
+        # Get selected audio format (if any)
+        audio_format = None
+        if selected_audio_rb and item.format_info.get('audio'):
+            try:
+                audio_index = audio_group.index(selected_audio_rb)
+                if 0 <= audio_index < len(item.format_info['audio']):
+                    audio_format = item.format_info['audio'][audio_index]
+            except (ValueError, IndexError):
+                logger.warning("Failed to get audio format information")
         
         # Reset selections before applying new ones
         item.selected_video_format_id = None
@@ -1148,100 +1190,49 @@ class DownloaderTUI:
         item.selected_video_details = ""
         item.selected_audio_details = ""
         
-        # --- Process video selection ---
-        video_format = None
-        is_video_only = False
-        
-        if selected_video_rb:
-            # Check if this is the "Video Only" option (first in the group)
-            is_video_only = (video_group.index(selected_video_rb) == 0)
-            
-            # Get format data safely - use getattr to avoid AttributeError
-            format_data = getattr(selected_video_rb, 'user_data', None)
-            if format_data:
-                video_format = format_data
-            # If we don't have format data but a regular video option is selected,
-            # try to get it from the format_info dictionary
-            elif not is_video_only:
-                try:
-                    # Calculate index in format_info (skip "Video Only" option)
-                    video_index = video_group.index(selected_video_rb) - 1
-                    if 0 <= video_index < len(item.format_info.get('video', [])):
-                        video_format = item.format_info['video'][video_index]
-                except (ValueError, IndexError):
-                    logger.warning("Failed to retrieve video format information.")
-        
-        # --- Process audio selection ---
-        audio_format = None
-        is_audio_only = False
-        
-        if selected_audio_rb:
-            # Check if this is the "Audio Only" option (first in the group)
-            is_audio_only = (audio_group.index(selected_audio_rb) == 0)
-            
-            # Get format data safely - use getattr to avoid AttributeError
-            format_data = getattr(selected_audio_rb, 'user_data', None)
-            if format_data:
-                audio_format = format_data
-            # If we don't have format data but a regular audio option is selected,
-            # try to get it from the format_info dictionary
-            elif not is_audio_only:
-                try:
-                    # Calculate index in format_info (skip "Audio Only" option)
-                    audio_index = audio_group.index(selected_audio_rb) - 1
-                    if 0 <= audio_index < len(item.format_info.get('audio', [])):
-                        audio_format = item.format_info['audio'][audio_index]
-                except (ValueError, IndexError):
-                    logger.warning("Failed to retrieve audio format information.")
-        
-        # --- Apply selections based on modes and available formats ---
-        
-        # Audio-only mode
-        if is_audio_only and audio_format:
+        # Apply selections based on mode and selected formats
+        if selected_mode == "audio_only" and audio_format:
+            # Audio only mode - set only audio format ID
             item.selected_audio_format_id = audio_format['format_id']
             item.selected_audio_details = f"{audio_format.get('ext', '?')} {audio_format.get('acodec', '?')} {audio_format.get('abr', 0)}k"
             logger.info(f"Format confirmed for '{item.title}': Audio Only - {item.selected_audio_format_id}")
         
-        # Video-only mode
-        elif is_video_only and video_format:
+        elif selected_mode == "video_only" and video_format:
+            # Video only mode - set video format ID and possibly audio from same format
             item.selected_video_format_id = video_format['format_id']
             item.selected_video_details = f"{video_format.get('ext', '?')} {video_format.get('height', '?')}p {video_format.get('vcodec', '?')}"
             
-            # Check if this video format also has audio
+            # If the video format also contains audio, set that too
             if video_format.get('acodec', 'none') != 'none':
                 item.selected_audio_format_id = video_format['format_id']
                 item.selected_audio_details = "(from video)"
             
             logger.info(f"Format confirmed for '{item.title}': Video Only - {item.selected_video_format_id}")
         
-        # Regular mode (video + audio, potentially for merging)
-        elif video_format and audio_format:
-            item.selected_video_format_id = video_format['format_id']
-            item.selected_video_details = f"{video_format.get('ext', '?')} {video_format.get('height', '?')}p {video_format.get('vcodec', '?')}"
-            item.selected_audio_format_id = audio_format['format_id']
-            item.selected_audio_details = f"{audio_format.get('ext', '?')} {audio_format.get('acodec', '?')} {audio_format.get('abr', 0)}k"
-            logger.info(f"Format confirmed for '{item.title}': Video+Audio Merge - V:{item.selected_video_format_id} + A:{item.selected_audio_format_id}")
-        
-        # Only video format selected (may include audio)
-        elif video_format:
-            item.selected_video_format_id = video_format['format_id']
-            item.selected_video_details = f"{video_format.get('ext', '?')} {video_format.get('height', '?')}p {video_format.get('vcodec', '?')}"
+        elif selected_mode == "combined":
+            # Combined mode - both video and audio
+            if video_format:
+                item.selected_video_format_id = video_format['format_id']
+                item.selected_video_details = f"{video_format.get('ext', '?')} {video_format.get('height', '?')}p {video_format.get('vcodec', '?')}"
             
-            # Check if this video format also has audio
-            if video_format.get('acodec', 'none') != 'none':
+            if audio_format:
+                item.selected_audio_format_id = audio_format['format_id']
+                item.selected_audio_details = f"{audio_format.get('ext', '?')} {audio_format.get('acodec', '?')} {audio_format.get('abr', 0)}k"
+            
+            # If video format selected but no audio format, check if video has audio
+            if video_format and not audio_format and video_format.get('acodec', 'none') != 'none':
                 item.selected_audio_format_id = video_format['format_id']
                 item.selected_audio_details = "(from video)"
             
-            logger.info(f"Format confirmed for '{item.title}': Video (maybe w/ audio) - {item.selected_video_format_id}")
-        
-        # Only audio format selected
-        elif audio_format:
-            item.selected_audio_format_id = audio_format['format_id']
-            item.selected_audio_details = f"{audio_format.get('ext', '?')} {audio_format.get('acodec', '?')} {audio_format.get('abr', 0)}k"
-            logger.info(f"Format confirmed for '{item.title}': Audio Only - {item.selected_audio_format_id}")
+            if video_format and audio_format:
+                logger.info(f"Format confirmed for '{item.title}': Video+Audio Merge - V:{item.selected_video_format_id} + A:{item.selected_audio_format_id}")
+            elif video_format:
+                logger.info(f"Format confirmed for '{item.title}': Video Only - {item.selected_video_format_id}")
+            elif audio_format:
+                logger.info(f"Format confirmed for '{item.title}': Audio Only - {item.selected_audio_format_id}")
         
         # No valid selection
-        else:
+        if not item.selected_video_format_id and not item.selected_audio_format_id:
             logger.warning(f"No valid format selection confirmed for '{item.title}'")
         
         self.close_dialog(button)
