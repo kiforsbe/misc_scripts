@@ -186,6 +186,11 @@ def setup_logging():
 
 logger = setup_logging()
 
+class SelectablePadding(urwid.Padding):
+    """A Padding widget that is always selectable."""
+    def selectable(self) -> bool:
+        return True
+
 class DownloadItem:
     def __init__(self, url: str, title: str = "", duration: int = 0):
         self.url = url
@@ -197,6 +202,7 @@ class DownloadItem:
         self.format_info = {'audio': [], 'video': []} # Initialize to avoid potential errors
         self.error = None
         self.widget: Optional[urwid.Widget] = None # Reference to the widget for updates
+        self.is_selected: bool = False # <-- Add selection state
 
 class DownloaderTUI:
     palette = [
@@ -244,12 +250,13 @@ class DownloaderTUI:
     def setup_display(self):
         # Header
         self.header = urwid.AttrMap(
-            urwid.Text('YouTube Downloader - (↑↓ Navigate) (Enter Select/Download) (q Quit)'),
+            # --- Update header text for new keybinds ---
+            urwid.Text('YouTube Downloader - (↑↓ Navigate) (+/- Select) (Enter Format) (d Download Selected) (q Quit)'),
             'header'
         )
 
         # Main content area - Use AttrMap for focus styling
-        self.listbox = urwid.ListBox(self.listbox_walker)
+        self.listbox = urwid.ListBox(self.listbox_walker) # Keep the ListBox as is
 
         # Footer
         self.footer_text = urwid.Text('')
@@ -257,154 +264,131 @@ class DownloaderTUI:
 
         # Layout
         self.frame = urwid.Frame(
-            urwid.AttrMap(self.listbox, 'body', focus_map={'focus': 'focus'}), # Apply focus map
+            # --- Use the ListBox directly as the body ---
+            self.listbox,
+            # --- Remove the AttrMap wrapper that was here ---
+            # urwid.AttrMap(self.listbox, 'body', focus_map={'focus': 'focus'}),
             header=self.header,
             footer=self.footer
         )
         self.update_footer()
 
+
     def create_download_widget(self, item: DownloadItem) -> urwid.Widget:
-        # Title and duration
-        title_widget = urwid.Text(('title_text', item.title or "Loading..."))
+        # --- (pile, status, progress setup remains the same) ---
+        selection_marker = f"[{'x' if item.is_selected else ' '}] "
+        title_text = f"{selection_marker}{item.title or 'Loading...'}"
+        title_widget = urwid.Text(('title_text', title_text))
         duration_str = str(timedelta(seconds=int(item.duration))) if item.duration else "--:--:--"
         duration_widget = urwid.Text(('duration_text', f" ({duration_str})"), align='right')
         header_cols = urwid.Columns([title_widget, ('pack', duration_widget)], dividechars=1)
 
-        # Status and progress
         status_map = {
-            "Pending": "status_pending",
-            "Downloading": "status_downloading",
-            "Processing": "status_processing",
-            "Complete": "status_complete",
-            "Error": "status_error",
+            "Pending": "status_pending", "Fetching Info...": "status_pending",
+            "Starting...": "status_downloading", "Downloading": "status_downloading",
+            "Processing": "status_processing", "Complete": "status_complete",
+            "Error": "status_error", "Cancelled": "status_error",
+            "Skipped": "status_pending",
         }
-        status_style = status_map.get(item.status, 'error_text') # Default to error if unknown status
+        status_style = status_map.get(item.status, 'error_text')
         status_text = f"Status: {item.status}"
-        if item.download_type:
-            status_text += f" | Type: {item.download_type}"
-        if item.error:
-             status_text += f" | Error: {item.error[:50]}..." # Show truncated error
-
+        if item.download_type: status_text += f" | Type: {item.download_type}"
+        if item.error: status_text += f" | Error: {item.error[:50]}..."
         status_widget = urwid.AttrMap(urwid.Text(status_text), status_style)
 
-        # Progress bar
         progress_style = 'progress_normal'
-        if item.status == "Complete":
-            progress_style = 'progress_complete'
-        elif item.status == "Error":
-            progress_style = 'progress_error'
+        bar_style = 'progress_bar'
+        if item.status == "Complete" or item.status == "Skipped": progress_style = 'progress_complete'
+        elif item.status == "Error" or item.status == "Cancelled": progress_style = 'progress_error'
+        progress_bar = urwid.ProgressBar(progress_style, bar_style, current=item.progress, done=100)
 
-        progress_bar = urwid.ProgressBar(progress_style, 'progress_bar', # Use different attr for the bar itself
-                                         current=item.progress, done=100)
-
-        # Combine into a Pile, wrap with padding and selectable marker
         pile = urwid.Pile([
             header_cols,
             status_widget,
             progress_bar,
         ])
-        # Add padding and make it selectable
-        widget = urwid.Padding(pile, left=1, right=1)
-        # Store widget reference in item for direct updates
-        item.widget = widget # Store the outer widget
+
+        # --- Use SelectablePadding instead of urwid.Padding ---
+        padded_widget = SelectablePadding(pile, left=1, right=1)
+
+        # --- Wrap Padding with AttrMap for focus ---
+        widget = urwid.AttrMap(padded_widget, None, focus_map='focus')
+
+        item.widget = widget # Store the outer AttrMap widget
         return widget
-
-
+    
     def update_widget_for_item(self, item: DownloadItem):
         """Updates the display components of a specific item's widget."""
+        # --- Adjust access path back to: AttrMap -> Padding -> Pile ---
         if not item.widget or not hasattr(item.widget, 'original_widget'):
-             logger.warning(f"Cannot update widget for {item.title}: Widget not found or not structured as expected.")
+             # Check if it's an AttrMap
+             if not isinstance(item.widget, urwid.AttrMap):
+                  logger.warning(f"Cannot update widget for {item.title}: Widget is not an AttrMap as expected.")
+                  return
+             logger.warning(f"Cannot update widget for {item.title}: AttrMap widget missing original_widget.")
+             return
+        try:
+            # item.widget is the AttrMap
+            padded_widget = item.widget.original_widget # This is the Padding
+            pile = padded_widget.original_widget # This is the Pile
+        except AttributeError:
+             logger.warning(f"Cannot update widget for {item.title}: Widget structure incorrect (AttrMap->Padding->Pile expected).")
              return
 
-        pile = item.widget.original_widget # Access the Pile inside Padding
+        # --- The rest of the update logic remains the same ---
+        header_cols = pile.contents[0][0]
+        title_widget = header_cols.contents[0][0]
+        duration_widget = header_cols.contents[1][0]
 
-        # Update Header (Title/Duration)
-        header_cols = pile.contents[0][0] # Get the Columns widget
-        title_widget = header_cols.contents[0][0] # Get the Text widget for title
-        duration_widget = header_cols.contents[1][0] # Get the Text widget for duration
-        title_widget.set_text(('title_text', item.title or "Loading..."))
+        selection_marker = f"[{'x' if item.is_selected else ' '}] "
+        title_text = f"{selection_marker}{item.title or 'Loading...'}"
+        title_widget.set_text(('title_text', title_text))
         duration_str = str(timedelta(seconds=int(item.duration))) if item.duration else "--:--:--"
         duration_widget.set_text(('duration_text', f" ({duration_str})"))
 
-        # Update Status
         status_map = {
-            "Pending": "status_pending",
-            "Downloading": "status_downloading",
-            "Processing": "status_processing",
-            "Complete": "status_complete",
-            "Error": "status_error",
+            "Pending": "status_pending", "Fetching Info...": "status_pending",
+            "Starting...": "status_downloading", "Downloading": "status_downloading",
+            "Processing": "status_processing", "Complete": "status_complete",
+            "Error": "status_error", "Cancelled": "status_error",
+            "Skipped": "status_pending",
         }
         status_style = status_map.get(item.status, 'error_text')
         status_text = f"Status: {item.status}"
-        if item.download_type:
-            status_text += f" | Type: {item.download_type}"
-        if item.error:
-             status_text += f" | Error: {item.error[:50]}..."
-
-        status_widget = pile.contents[1][0] # Get the AttrMap widget for status
+        if item.download_type: status_text += f" | Type: {item.download_type}"
+        if item.error: status_text += f" | Error: {item.error[:50]}..."
+        status_widget = pile.contents[1][0]
         status_widget.attr_map = {None: status_style}
-        status_widget.original_widget.set_text(status_text) # Update text in the underlying Text widget
+        status_widget.original_widget.set_text(status_text)
 
-        # Update Progress Bar
-        progress_bar = pile.contents[2][0] # Get the ProgressBar widget
+        progress_bar = pile.contents[2][0]
         progress_style = 'progress_normal'
         bar_style = 'progress_bar'
-        if item.status == "Complete":
+        current_progress = item.progress
+        if item.status == "Complete" or item.status == "Skipped":
             progress_style = 'progress_complete'
-        elif item.status == "Error":
+            current_progress = 100
+        elif item.status == "Error" or item.status == "Cancelled":
             progress_style = 'progress_error'
-            item.progress = 0 # Reset progress visually on error
-
-        progress_bar.set_completion(item.progress)
+            current_progress = 0
+        progress_bar.set_completion(current_progress)
         progress_bar.normal = progress_style
-        progress_bar.complete = bar_style # Keep the bar style consistent
+        progress_bar.complete = bar_style
 
-        # Urwid doesn't automatically redraw on widget content change, signal the loop
         if self.loop:
             self.loop.draw_screen()
 
-
-    def refresh_display(self):
-        """Rebuilds the entire listbox - less efficient but simpler."""
-        # This is less efficient than updating widgets in place,
-        # but simpler to implement initially. Consider update_widget_for_item
-        # for better performance with many items.
-        new_widgets = []
-        for item in self.downloads:
-            # Ensure widget exists or create it
-            if not item.widget:
-                 item.widget = self.create_download_widget(item)
-            else:
-                 # If widget exists, update its contents before adding
-                 self.update_widget_for_item(item) # Update internal state first
-            new_widgets.append(item.widget)
-
-        # Check if focus needs adjustment
-        current_focus = self.listbox.focus_position
-        max_focus = len(new_widgets) - 1
-
-        self.listbox_walker[:] = new_widgets
-
-        # Restore focus if it was valid, otherwise reset
-        if max_focus >= 0:
-             self.listbox.focus_position = min(current_focus, max_focus)
-        else:
-             self.listbox.focus_position = 0 # Or handle empty list case
-
-        self.update_footer()
-        if self.loop:
-            self.loop.draw_screen() # Ensure redraw after bulk update
-
     def update_footer(self):
          total = len(self.downloads)
+         selected = sum(1 for item in self.downloads if item.is_selected) # Count selected
          complete = sum(1 for item in self.downloads if item.status == "Complete")
-         downloading = sum(1 for item in self.downloads if item.status in ["Downloading", "Processing"])
-         errors = sum(1 for item in self.downloads if item.status == "Error")
+         downloading = sum(1 for item in self.downloads if item.status in ["Downloading", "Processing", "Starting..."])
+         errors = sum(1 for item in self.downloads if item.status in ["Error", "Cancelled"])
          pending = total - complete - downloading - errors
 
-         status_str = f"Total: {total} | ✓: {complete} | ↓: {downloading} | !: {errors} | ?: {pending}"
+         # --- Add selected count to footer ---
+         status_str = f"Total: {total} | Sel: {selected} | ✓: {complete} | ↓: {downloading} | !: {errors} | ?: {pending}"
          self.footer_text.set_text(status_str)
-
 
     def handle_input(self, key):
         if key in ('q', 'Q'):
@@ -419,26 +403,90 @@ class DownloaderTUI:
                  raise urwid.ExitMainLoop()
             return True # Indicate key was handled
 
-        # Let ListBox handle up/down navigation by default
-        # We handle 'enter' specifically
+        # --- Handle +/- for selection ---
+        elif key in ('+', '-'):
+            focused_widget, position = self.listbox.get_focus()
+            if position < len(self.downloads):
+                item = self.downloads[position]
+                # Toggle selection only if not actively downloading/processing
+                if item.status not in ["Downloading", "Processing", "Starting..."]:
+                    item.is_selected = not item.is_selected
+                    logger.debug(f"Toggled selection for '{item.title}' to {item.is_selected}")
+                    self.update_widget_for_item(item)
+                    self.update_footer()
+                else:
+                    logger.debug(f"Cannot toggle selection for '{item.title}' while status is {item.status}")
+            return True # Indicate key was handled
+
+        # --- Handle 'Enter' for format selection (on focused item) ---
         elif key == 'enter':
             focused_widget, position = self.listbox.get_focus()
             if position < len(self.downloads):
                 item = self.downloads[position]
-                # If already downloading/complete/error, maybe show details or retry?
-                # For now, only show format selection if pending
+                # Show format selection only if pending and not already downloading/done
                 if item.status == "Pending":
                     self.show_format_selection(item)
                 elif item.status == "Error":
-                     # Option to retry? For now, just log maybe.
-                     logger.info(f"Enter pressed on item with error: {item.title} - {item.error}")
                      self.show_message_dialog(f"Error for {item.title}:\n{item.error}", title="Download Error")
+                elif item.status == "Cancelled":
+                     self.show_message_dialog(f"Download was cancelled for {item.title}.", title="Cancelled")
+                elif item.status == "Skipped":
+                     self.show_message_dialog(f"Download skipped for {item.title} (File exists).", title="Skipped")
+                elif item.status == "Complete":
+                     self.show_message_dialog(f"Download already complete for {item.title}.", title="Complete")
+                elif item.status in ["Downloading", "Processing", "Starting..."]:
+                     self.show_message_dialog(f"Download in progress for {item.title}...", title="In Progress")
+                elif item.status == "Fetching Info...":
+                     self.show_message_dialog(f"Still fetching info for {item.title}...", title="Loading")
                 else:
                      logger.debug(f"Enter pressed on item with status {item.status}, no action taken.")
-
             return True # Indicate key was handled
 
-        # Return the key if not handled here, allowing default ListBox processing
+        # --- Handle 'd' for downloading selected items ---
+        elif key in ('d', 'D'):
+            selected_items = [item for item in self.downloads if item.is_selected]
+            items_to_download = []
+            missing_format = []
+
+            if not selected_items:
+                self.show_message_dialog("No items selected. Use '+' or '-' to select items first.", title="Nothing Selected")
+                return True
+
+            for item in selected_items:
+                if item.status in ["Downloading", "Processing", "Starting...", "Complete", "Skipped"]:
+                    logger.warning(f"Skipping download trigger for '{item.title}': Status is '{item.status}'")
+                    continue # Don't re-download if already processing or done
+
+                if not item.download_type:
+                    missing_format.append(item.title)
+                else:
+                    # Reset error/cancelled status before retrying
+                    if item.status in ["Error", "Cancelled"]:
+                         item.error = None
+                         item.status = "Pending" # Reset status
+                         self.update_widget_for_item(item)
+                    items_to_download.append(item)
+
+            if missing_format:
+                missing_titles = "\n - ".join(missing_format)
+                self.show_message_dialog(f"Cannot start download. Format not selected for:\n - {missing_titles}\n\nUse Enter on each item to select a format first.", title="Format Missing")
+                return True # Indicate key was handled
+
+            if not items_to_download:
+                 self.show_message_dialog("No eligible items to download among selected.", title="Download Info")
+                 return True
+
+            # Start downloads directly
+            logger.info(f"Starting download for {len(items_to_download)} selected items.")
+            for item in items_to_download:
+                logger.debug(f"Creating download task for selected item: {item.title}")
+                asyncio.create_task(self.start_download(item))
+
+            self.update_footer() # Update footer after potentially changing selection
+            return True # Indicate key was handled
+
+
+        # Return the key if not handled here, allowing default ListBox processing (like PgUp/PgDown)
         return key
 
     def _confirm_quit(self, button):
@@ -939,9 +987,6 @@ async def setup_application(args) -> urwid.MainLoop:
     elif not valid_items and (args.audio_only or args.video):
          logger.warning("No valid URLs to process in batch mode.")
          # Don't exit, allow TUI to show errors if it starts
-
-    # Refresh display after all fetches are done
-    tui.refresh_display() # Rebuilds list with final fetched info
 
     # Initialize the Urwid MainLoop
     logger.debug("Initializing UI MainLoop")
