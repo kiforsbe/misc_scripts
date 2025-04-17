@@ -168,7 +168,7 @@ def setup_logging():
     console_handler = logging.StreamHandler(sys.stderr) # Log to stderr to avoid interfering with urwid stdout
     console_handler.setFormatter(console_formatter)
     # Set console level higher by default, can be overridden by args if needed
-    console_handler.setLevel(logging.INFO) # Show INFO and above on console
+    console_handler.setLevel(logging.ERROR) # Show INFO and above on console
 
     # Setup root logger
     root_logger = logging.getLogger()
@@ -857,7 +857,8 @@ class DownloaderTUI:
         ])
 
         list_box = urwid.ListBox(urwid.SimpleFocusListWalker(body))
-        dialog = urwid.LineBox(urwid.Padding(list_box, top=1, bottom=1), title="Format Selection")
+        # --- Remove top=1 and bottom=1 from Padding ---
+        dialog = urwid.LineBox(urwid.Padding(list_box), title="Format Selection")
         dialog = urwid.AttrMap(dialog, 'dialog_border')
 
         # Overlay the dialog
@@ -865,12 +866,10 @@ class DownloaderTUI:
             dialog,
             self.frame,
             align='center', width=('relative', 60),
-            valign='middle', height=('relative', 50),
+            valign='middle', height=('relative', 50), # Adjust height as needed, 'pack' might also work
             min_width=40, min_height=10
         )
-        # Add a shadow effect
-        shadow_overlay = urwid.DropShadow(overlay)
-        self.loop.widget = shadow_overlay
+        self.loop.widget = overlay
 
 
     def format_selected(self, button, data):
@@ -903,8 +902,7 @@ class DownloaderTUI:
          dialog = urwid.LineBox(urwid.Pile(body), title="Confirm")
          dialog = urwid.AttrMap(dialog, 'dialog_border')
          overlay = urwid.Overlay(dialog, self.frame, align='center', width=('relative', 50), valign='middle', height='pack', min_width=30)
-         shadow_overlay = urwid.DropShadow(overlay)
-         self.loop.widget = shadow_overlay
+         self.loop.widget = overlay
 
     def show_message_dialog(self, message: str, title: str = "Message"):
          """Shows a simple message dialog with an OK button."""
@@ -916,8 +914,7 @@ class DownloaderTUI:
          dialog = urwid.LineBox(urwid.Pile(body), title=title)
          dialog = urwid.AttrMap(dialog, 'dialog_border')
          overlay = urwid.Overlay(dialog, self.frame, align='center', width=('relative', 70), valign='middle', height='pack', min_width=40)
-         shadow_overlay = urwid.DropShadow(overlay)
-         self.loop.widget = shadow_overlay
+         self.loop.widget = overlay
 
 
 # --- Main Execution Logic ---
