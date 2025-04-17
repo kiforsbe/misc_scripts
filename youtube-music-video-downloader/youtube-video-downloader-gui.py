@@ -196,13 +196,19 @@ class DownloadItem:
         self.url = url
         self.title = title
         self.duration = duration
-        self.progress = 0.0 # Use float for progress
+        self.progress = 0.0
         self.status = "Pending"
-        self.download_type = None  # 'audio', 'video', or None
-        self.format_info = {'audio': [], 'video': []} # Initialize to avoid potential errors
+        self.download_type: Optional[str] = None # Hint for batch mode or simple selection
+        self.format_info = {'audio': [], 'video': []}
         self.error = None
-        self.widget: Optional[urwid.Widget] = None # Reference to the widget for updates
-        self.is_selected: bool = False # <-- Add selection state
+        self.widget: Optional[urwid.Widget] = None
+        self.is_selected: bool = False
+        # --- Add fields for selected format IDs ---
+        self.selected_audio_format_id: Optional[str] = None
+        self.selected_video_format_id: Optional[str] = None
+        # --- Store format details for display ---
+        self.selected_audio_details: str = ""
+        self.selected_video_details: str = ""
 
 class DownloaderTUI:
     palette = [
@@ -355,8 +361,22 @@ class DownloaderTUI:
         }
         status_style = status_map.get(item.status, 'error_text')
         status_text = f"Status: {item.status}"
-        if item.download_type: status_text += f" | Type: {item.download_type}"
-        if item.error: status_text += f" | Error: {item.error[:50]}..."
+
+        # --- Display selected format details ---
+        selected_formats_str = ""
+        if item.selected_video_format_id:
+            selected_formats_str += f" | V: {item.selected_video_details}"
+        if item.selected_audio_format_id:
+             # Only show audio if it's different from video or if no video selected
+             # (Assumes combined formats might store audio ID separately if needed)
+            selected_formats_str += f" | A: {item.selected_audio_details}"
+
+        status_text += selected_formats_str
+        # --- End format display ---
+
+        if item.error:
+             status_text += f" | Error: {item.error[:40]}..."
+             
         status_widget = pile.contents[1][0]
         status_widget.attr_map = {None: status_style}
         status_widget.original_widget.set_text(status_text)
@@ -420,42 +440,36 @@ class DownloaderTUI:
             focused_widget, position = self.listbox.get_focus()
             if position < len(self.downloads):
                 item = self.downloads[position]
-                # Show format selection only if pending and not already downloading/done
-                if item.status == "Pending":
-                    self.show_format_selection(item)
-                elif item.status == "Error":
-                     self.show_message_dialog(f"Error for {item.title}:\n{item.error}", title="Download Error")
-                elif item.status == "Cancelled":
-                     self.show_message_dialog(f"Download was cancelled for {item.title}.", title="Cancelled")
-                elif item.status == "Skipped":
-                     self.show_message_dialog(f"Download skipped for {item.title} (File exists).", title="Skipped")
-                elif item.status == "Complete":
-                     self.show_message_dialog(f"Download already complete for {item.title}.", title="Complete")
+                # Show format selection if info is fetched (Pending or Error/Cancelled/Skipped to allow re-selection)
+                if item.status not in ["Queued", "Fetching Info...", "Downloading", "Processing", "Starting..."]:
+                    if not item.format_info['audio'] and not item.format_info['video']:
+                         self.show_message_dialog(f"No format information available for {item.title}.\nStatus: {item.status}\nError: {item.error}", title="Format Info Missing")
+                    else:
+                         self.show_detailed_format_selection(item) # <-- Call new dialog
                 elif item.status in ["Downloading", "Processing", "Starting..."]:
                      self.show_message_dialog(f"Download in progress for {item.title}...", title="In Progress")
-                elif item.status == "Fetching Info...":
+                else: # Queued or Fetching Info
                      self.show_message_dialog(f"Still fetching info for {item.title}...", title="Loading")
-                else:
-                     logger.debug(f"Enter pressed on item with status {item.status}, no action taken.")
             return True # Indicate key was handled
 
         # --- Handle 'd' for downloading selected items ---
         elif key in ('d', 'D'):
             selected_items = [item for item in self.downloads if item.is_selected]
             items_to_download = []
-            missing_format = []
+            missing_selection = [] # Renamed from missing_format
 
             if not selected_items:
                 self.show_message_dialog("No items selected. Use '+' or '-' to select items first.", title="Nothing Selected")
                 return True
 
             for item in selected_items:
-                if item.status in ["Downloading", "Processing", "Starting...", "Complete", "Skipped"]:
+                if item.status in ["Downloading", "Processing", "Starting...", "Complete", "Skipped", "Queued", "Fetching Info..."]:
                     logger.warning(f"Skipping download trigger for '{item.title}': Status is '{item.status}'")
-                    continue # Don't re-download if already processing or done
+                    continue
 
-                if not item.download_type:
-                    missing_format.append(item.title)
+                # --- Check if *any* format ID is selected ---
+                if not item.selected_audio_format_id and not item.selected_video_format_id:
+                    missing_selection.append(item.title)
                 else:
                     # Reset error/cancelled status before retrying
                     if item.status in ["Error", "Cancelled"]:
@@ -464,9 +478,10 @@ class DownloaderTUI:
                          self._schedule_ui_update(item)
                     items_to_download.append(item)
 
-            if missing_format:
-                missing_titles = "\n - ".join(missing_format)
-                self.show_message_dialog(f"Cannot start download. Format not selected for:\n - {missing_titles}\n\nUse Enter on each item to select a format first.", title="Format Missing")
+            if missing_selection:
+                missing_titles = "\n - ".join(missing_selection)
+                # --- Update message ---
+                self.show_message_dialog(f"Cannot start download. Format not selected for:\n - {missing_titles}\n\nUse Enter on each item to select formats first.", title="Format Not Selected")
                 return True # Indicate key was handled
 
             if not items_to_download:
@@ -498,7 +513,7 @@ class DownloaderTUI:
               self.loop.widget = self.frame
 
 
-    async def fetch_video_info(self, url: str) -> Optional[DownloadItem]:
+    async def fetch_video_info(self, url: str, args: argparse.Namespace) -> Optional[DownloadItem]: # Add args parameter
         # Find the existing placeholder item
         item = next((i for i in self.downloads if i.url == url), None)
         if not item:
@@ -565,15 +580,70 @@ class DownloaderTUI:
             logger.debug(f"Found {len(item.format_info['audio'])} audio-only formats and "
                        f"{len(item.format_info['video'])} video formats for {url}")
 
-            item.status = "Pending" # Ready for format selection or auto-download
-            item.error = None # Clear any previous placeholder error
+            # --- Auto-select best formats (optional) ---
+            best_video = item.format_info['video'][0] if item.format_info['video'] else None
+            best_audio = item.format_info['audio'][0] if item.format_info['audio'] else None
+
+            # Reset previous selections before auto-selecting
+            item.selected_video_format_id = None
+            item.selected_audio_format_id = None
+            item.selected_video_details = ""
+            item.selected_audio_details = ""
+
+            # Determine initial selection based on batch args or default to best video+audio
+            preselect_audio = args.audio_only # From command line args (need access or pass it)
+            preselect_video = args.video     # From command line args
+
+            if preselect_audio and best_audio:
+                 item.selected_audio_format_id = best_audio['format_id']
+                 item.selected_audio_details = f"{best_audio.get('ext')} {best_audio.get('acodec')} {best_audio.get('abr', 0)}k"
+                 logger.debug(f"Pre-selected best audio for {item.title}: {item.selected_audio_format_id}")
+            elif preselect_video and best_video:
+                 item.selected_video_format_id = best_video['format_id']
+                 item.selected_video_details = f"{best_video.get('ext')} {best_video.get('height')}p {best_video.get('vcodec')}"
+                 # If best video has audio, pre-select it; otherwise, pre-select best separate audio
+                 if best_video.get('acodec', 'none') != 'none':
+                      item.selected_audio_format_id = best_video['format_id']
+                      item.selected_audio_details = "(from video)"
+                 elif best_audio:
+                      item.selected_audio_format_id = best_audio['format_id']
+                      item.selected_audio_details = f"{best_audio.get('ext')} {best_audio.get('acodec')} {best_audio.get('abr', 0)}k"
+                 logger.debug(f"Pre-selected best video (and maybe audio) for {item.title}: V:{item.selected_video_format_id} A:{item.selected_audio_format_id}")
+            elif best_video: # Default interactive mode: pre-select best video + best audio
+                 item.selected_video_format_id = best_video['format_id']
+                 item.selected_video_details = f"{best_video.get('ext')} {best_video.get('height')}p {best_video.get('vcodec')}"
+                 if best_video.get('acodec', 'none') != 'none':
+                      item.selected_audio_format_id = best_video['format_id']
+                      item.selected_audio_details = "(from video)"
+                 elif best_audio:
+                      item.selected_audio_format_id = best_audio['format_id']
+                      item.selected_audio_details = f"{best_audio.get('ext')} {best_audio.get('acodec')} {best_audio.get('abr', 0)}k"
+                 logger.debug(f"Pre-selected default best video/audio for {item.title}: V:{item.selected_video_format_id} A:{item.selected_audio_format_id}")
+            elif best_audio: # Fallback if only audio exists
+                 item.selected_audio_format_id = best_audio['format_id']
+                 item.selected_audio_details = f"{best_audio.get('ext')} {best_audio.get('acodec')} {best_audio.get('abr', 0)}k"
+                 logger.debug(f"Pre-selected fallback best audio for {item.title}: {item.selected_audio_format_id}")
+            # --- End auto-select ---
+
+            item.status = "Pending"
+            item.error = None
+
             self._schedule_ui_update(item)
             self.update_footer()
 
-            # --- Trigger automatic download if in batch mode ---
-            if item.download_type and item.status == "Pending":
-                 logger.info(f"Auto-starting batch download for '{item.title}' ({item.download_type})")
+            # --- Trigger automatic download if in batch mode AND formats were pre-selected ---
+            # Check if *required* formats for the batch mode were successfully pre-selected
+            batch_ready = False
+            if args.audio_only and item.selected_audio_format_id:
+                 batch_ready = True
+            elif args.video and item.selected_video_format_id: # Video might implicitly include audio
+                 batch_ready = True
+
+            if batch_ready and item.status == "Pending":
+                 logger.info(f"Auto-starting batch download for '{item.title}' (Pre-selected)")
                  asyncio.create_task(self.start_download(item))
+
+            return item
             # --- End of batch trigger ---
 
             return item # Return the updated item
@@ -641,15 +711,29 @@ class DownloaderTUI:
 
 
     async def start_download(self, item: DownloadItem):
-        if not item.download_type:
-             logger.error(f"Cannot start download for {item.title}: Download type not set.")
+        if not item.selected_audio_format_id and not item.selected_video_format_id:
+             logger.error(f"Cannot start download for {item.title}: No format selected.")
              item.status = "Error"
-             item.error = "Download type missing"
+             item.error = "No format selected"
              self._schedule_ui_update(item)
              self.update_footer()
              return
 
-        logger.info(f"Starting download for '{item.title}' ({item.download_type})")
+        # Determine intended download type based on selection
+        download_intent = "Unknown"
+        if item.selected_audio_format_id and not item.selected_video_format_id:
+             download_intent = "Audio Only"
+        elif item.selected_video_format_id and not item.selected_audio_format_id:
+             download_intent = "Video Only (or Video+Audio combined)"
+        elif item.selected_video_format_id and item.selected_audio_format_id:
+             # Check if they are the same ID (combined format)
+             if item.selected_video_format_id == item.selected_audio_format_id:
+                  download_intent = "Video+Audio (Combined Format)"
+             else:
+                  download_intent = "Video+Audio (Merged)"
+
+        logger.info(f"Starting download for '{item.title}' ({download_intent})")
+        
         item.status = "Starting..."
         item.progress = 0
         item.error = None
@@ -658,10 +742,8 @@ class DownloaderTUI:
 
         # Ensure this task is tracked
         task = asyncio.current_task()
-        if task:
-             self.current_download_tasks[item.url] = task
-
-        temp_file_path = None # To store the path of the initially downloaded file
+        if task: self.current_download_tasks[item.url] = task
+        temp_file_path = None
 
         try:
             # Create a temporary directory *per download* for isolation
@@ -672,59 +754,72 @@ class DownloaderTUI:
                 # Sanitize the output filename (base name)
                 safe_title_base = sanitize_filename(item.title)
 
+                # --- Construct format string from selected IDs ---
+                format_string = ""
+                if item.selected_video_format_id and item.selected_audio_format_id:
+                    if item.selected_video_format_id == item.selected_audio_format_id:
+                        format_string = item.selected_video_format_id # Combined format
+                    else:
+                        format_string = f"{item.selected_video_format_id}+{item.selected_audio_format_id}" # Separate streams
+                elif item.selected_video_format_id:
+                    format_string = item.selected_video_format_id # Video only (might contain audio)
+                elif item.selected_audio_format_id:
+                    format_string = item.selected_audio_format_id # Audio only
+                else:
+                    # This case is already handled at the start, but defensive check
+                    raise ValueError("No format ID selected for download")
+
+                logger.debug(f"Using format string: {format_string}")
+                
                 # Define base yt-dlp options
                 ydl_opts = {
+                    'format': format_string, # Use the constructed format string
                     'progress_hooks': [functools.partial(self.download_progress_hook, item=item)],
-                    # Use a generic template in temp dir, we'll rename later
                     'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
                     'windowsfilenames': sys.platform == 'win32',
-                    'quiet': True,
-                    'no_warnings': True,
-                    'verbose': False,
-                    'ignoreerrors': False, # Fail on download error for this item
-                    'noprogress': True, # Disable yt-dlp's console progress bar
-                    'postprocessor_args': {}, # Initialize dict
-                    'ffmpeg_location': shutil.which('ffmpeg'), # Explicitly provide path
+                    'quiet': True, 'no_warnings': True, 'verbose': False,
+                    'ignoreerrors': False, 'noprogress': True,
+                    'postprocessor_args': {},
+                    'ffmpeg_location': shutil.which('ffmpeg'),
+                    'postprocessors': [], # Start with empty list
                 }
 
-                # --- Format Selection ---
-                # Choose best format based on type, preferring specific codecs if desired
-                if item.download_type == 'audio':
-                    # Prefer opus or m4a if available, otherwise best audio
-                    ydl_opts['format'] = 'bestaudio[ext=opus]/bestaudio[ext=m4a]/bestaudio/best'
-                    ydl_opts['postprocessors'] = [{
+                # --- Adjust postprocessors based on selection ---
+                final_extension = ".?" # Determine based on download
+                is_audio_download = item.selected_audio_format_id and not item.selected_video_format_id
+                is_video_download = bool(item.selected_video_format_id)
+
+                if is_audio_download:
+                    # Audio only download - convert to MP3
+                    ydl_opts['postprocessors'].append({
                         'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3', # Convert to MP3
-                        'preferredquality': '192', # Target quality
-                    }]
-                    # Add metadata args for audio
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    })
+                    # Add metadata args
                     ydl_opts['postprocessor_args'].setdefault('FFmpegExtractAudio', [])
                     ydl_opts['postprocessor_args']['FFmpegExtractAudio'].extend([
                         '-metadata', f'title={item.title}',
-                        # Add more metadata if available (artist, album etc.)
-                        # '-metadata', f'artist={info.get("artist", "")}',
                     ])
-                    # Embed thumbnail using yt-dlp's built-in feature if possible
+                    # Embed thumbnail
                     ydl_opts['writethumbnail'] = True
                     ydl_opts['postprocessors'].append({
-                         'key': 'EmbedThumbnail',
-                         'already_have_thumbnail': False, # Let yt-dlp download it
+                         'key': 'EmbedThumbnail', 'already_have_thumbnail': False,
                     })
-
                     final_extension = ".mp3"
-
-                elif item.download_type == 'video':
-                    # Prefer mp4 container, h264 codec if possible
-                    # Select best video format that has audio, or best video and best audio separately
-                    ydl_opts['format'] = 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
-                    # Remux to MP4 if necessary (e.g., if downloaded as mkv)
-                    ydl_opts['postprocessors'] = [{
+                elif is_video_download:
+                    # Video download - ensure MP4 container
+                    ydl_opts['postprocessors'].append({
                         'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4', # Ensure output is mp4
-                    }]
+                        'preferedformat': 'mp4',
+                    })
                     final_extension = ".mp4"
-                else:
-                     raise ValueError(f"Invalid download_type: {item.download_type}")
+                    # Optionally embed thumbnail for video too?
+                    # ydl_opts['writethumbnail'] = True
+                    # ydl_opts['postprocessors'].append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
+
+
+                # --- Final path and download execution ---
 
                 final_filename_base = f"{safe_title_base}{final_extension}"
                 final_output_path = pathlib.Path.cwd() / final_filename_base # Download to current dir
@@ -742,20 +837,19 @@ class DownloaderTUI:
                 logger.debug(f"Starting yt-dlp download with options: {ydl_opts}")
                 loop = asyncio.get_event_loop()
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    await loop.run_in_executor(
-                        None, ydl.download, [item.url])
+                    await loop.run_in_executor(None, ydl.download, [item.url])
 
                 # --- Post-Download Processing ---
                 item.status = "Processing"
                 self._schedule_ui_update(item)
 
-                # Find the processed file in the temp directory
+                # Find the processed file (use final_extension)
                 processed_files = list(temp_dir.glob(f'*{final_extension}'))
                 if not processed_files:
-                     # Maybe the postprocessor failed silently or created a different extension?
+                     # Try finding based on original extension if postprocessor failed? More complex.
                      all_files = list(temp_dir.glob('*.*'))
                      logger.error(f"Could not find expected '{final_extension}' file in temp dir '{temp_dir}'. Found: {all_files}")
-                     raise FileNotFoundError(f"Processed file with extension {final_extension} not found in temp dir.")
+                     raise FileNotFoundError(f"Processed file with extension {final_extension} not found.")
 
                 temp_file_path = processed_files[0]
                 logger.debug(f"Processed file found: {temp_file_path}")
@@ -763,24 +857,6 @@ class DownloaderTUI:
                 # Move the final file from temp dir to destination
                 logger.info(f"Moving '{temp_file_path.name}' to '{final_output_path}'")
                 shutil.move(str(temp_file_path), str(final_output_path))
-
-                # --- Optional: Further Metadata/Cover Art (if yt-dlp didn't handle it) ---
-                # Example using eyed3 for MP3 if needed (yt-dlp usually handles this now)
-                # if item.download_type == 'audio' and final_extension == '.mp3':
-                #     try:
-                #         logger.debug(f"Verifying metadata for {final_output_path}")
-                #         audiofile = eyed3.load(str(final_output_path))
-                #         if audiofile and audiofile.tag:
-                #             if not audiofile.tag.title:
-                #                 audiofile.tag.title = item.title
-                #                 logger.debug("Set title metadata via eyed3")
-                #             # Add more checks/settings if yt-dlp missed something
-                #             audiofile.tag.save(version=eyed3.id3.ID3_V2_3, encoding='utf-8') # Specify version and encoding
-                #         else:
-                #              logger.warning(f"Could not load audio tag with eyed3 for {final_output_path}")
-                #     except Exception as meta_err:
-                #         logger.error(f"Error during final metadata check/set for {final_output_path}: {meta_err}", exc_info=True)
-
 
             # If we reach here, the download and move were successful
             item.status = "Complete"
@@ -824,43 +900,6 @@ class DownloaderTUI:
             # Remove task from tracking once done or failed
             if item.url in self.current_download_tasks:
                 del self.current_download_tasks[item.url]
-
-
-    def show_format_selection(self, item: DownloadItem):
-        logger.debug(f"Showing format selection for {item.title}")
-
-        body = [
-            urwid.Text(f"Select format for:\n{item.title}", align='center'),
-            urwid.Divider('-'),
-        ]
-
-        # Add buttons for choices
-        audio_button = urwid.AttrMap(urwid.Button("Audio Only (MP3)", on_press=self.format_selected, user_data=('audio', item)), 'button', focus_map='button_focus')
-        video_button = urwid.AttrMap(urwid.Button("Video + Audio (MP4)", on_press=self.format_selected, user_data=('video', item)), 'button', focus_map='button_focus')
-        cancel_button = urwid.AttrMap(urwid.Button("Cancel", on_press=self.close_dialog), 'button', focus_map='button_focus')
-
-        body.extend([
-            urwid.Padding(audio_button, align='center', width=('relative', 80)),
-            urwid.Padding(video_button, align='center', width=('relative', 80)),
-            urwid.Divider(),
-            urwid.Padding(cancel_button, align='center', width=('relative', 50)),
-        ])
-
-        list_box = urwid.ListBox(urwid.SimpleFocusListWalker(body))
-        # --- Remove top=1 and bottom=1 from Padding ---
-        dialog = urwid.LineBox(urwid.Padding(list_box), title="Format Selection")
-        dialog = urwid.AttrMap(dialog, 'dialog_border')
-
-        # Overlay the dialog
-        overlay = urwid.Overlay(
-            dialog,
-            self.frame,
-            align='center', width=('relative', 60),
-            valign='middle', height=('relative', 50), # Adjust height as needed, 'pack' might also work
-            min_width=40, min_height=10
-        )
-        self.loop.widget = overlay
-
 
     def format_selected(self, button, data):
         download_type, item = data
@@ -932,6 +971,282 @@ class DownloaderTUI:
              # Log errors happening during the scheduled update
              logger.error(f"Error during scheduled UI update for {item.title}: {e}", exc_info=True)
 
+    def _format_dict_to_str(self, f: Dict) -> str:
+        """Helper to create a display string for a format dictionary."""
+        details = []
+        # Prioritize format_note if available
+        if f.get('format_note'):
+            details.append(f['format_note'])
+        # Add resolution if it's a video format
+        elif f.get('height'):
+             details.append(f"{f['height']}p")
+
+        # Add FPS if available
+        if f.get('fps'):
+            details.append(f"{f['fps']}fps")
+
+        # Add video codec if available and not 'none'
+        vcodec = f.get('vcodec')
+        if vcodec and vcodec != 'none':
+            details.append(vcodec)
+
+        # Add audio codec if available and not 'none'
+        acodec = f.get('acodec')
+        if acodec and acodec != 'none':
+            details.append(acodec)
+
+        # Add bitrate (prefer audio bitrate, fallback to video bitrate)
+        if f.get('abr'):
+            details.append(f"{f['abr']:.0f}k") # Format as integer kbps
+        elif f.get('vbr'):
+            details.append(f"{f['vbr']:.0f}k") # Format as integer kbps
+
+        # --- Use pre-formatted filesize strings ---
+        if f.get('filesize_str'):
+            details.append(f['filesize_str'])
+        elif f.get('filesize_approx_str'):
+             details.append(f"~{f['filesize_approx_str']}")
+        # --- Remove incorrect calc_width usage ---
+        # if f.get('filesize'): details.append(urwid.util.calc_width(f['filesize'], 0)) # Incorrect usage
+        # elif f.get('filesize_approx'): details.append(f"~{urwid.util.calc_width(f['filesize_approx'], 0)}") # Incorrect usage
+
+        ext = f.get('ext', '?')
+        # Construct the final string, ensuring format_id exists
+        format_id = f.get('format_id', 'N/A')
+        details_str = ' / '.join(map(str, filter(None, details))) # Filter out None values before joining
+        return f"[{format_id}] {ext} - {details_str}"
+
+
+    def show_detailed_format_selection(self, item: DownloadItem):
+        logger.debug(f"Showing detailed format selection for {item.title}")
+
+        # --- Radio Button Groups ---
+        video_group: List[urwid.RadioButton] = []
+        audio_group: List[urwid.RadioButton] = []
+
+        # --- Populate Video Formats ---
+        video_widgets = [urwid.Text(("bold", "Video Formats:"))]
+        
+        # Option for video-only download (no separate audio merge)
+        video_only_selected = (item.selected_video_format_id is not None and 
+                            item.selected_audio_format_id is None)
+        video_only_rb = urwid.RadioButton(video_group, "(Video Only - No Audio Merge)",
+                                        state=video_only_selected)
+        video_widgets.append(video_only_rb)
+        
+        for i, f in enumerate(item.format_info.get('video', [])):
+            label = self._format_dict_to_str(f)
+            is_selected = (item.selected_video_format_id == f['format_id'])
+            rb = urwid.RadioButton(video_group, label, state=is_selected)
+            video_widgets.append(rb)
+        
+        if not item.format_info.get('video'):
+            video_widgets.append(urwid.Text(" (None available)"))
+
+        # --- Populate Audio Formats ---
+        audio_widgets = [urwid.Text(("bold", "Audio Formats (for merging or audio-only):"))]
+        
+        # Option for audio-only download (no video)
+        audio_only_selected = (item.selected_audio_format_id is not None and 
+                            item.selected_video_format_id is None)
+        audio_only_rb = urwid.RadioButton(audio_group, "(Audio Only - No Video)",
+                                        state=audio_only_selected)
+        audio_widgets.append(audio_only_rb)
+        
+        for i, f in enumerate(item.format_info.get('audio', [])):
+            label = self._format_dict_to_str(f)
+            is_selected = (item.selected_audio_format_id == f['format_id'])
+            rb = urwid.RadioButton(audio_group, label, state=is_selected)
+            audio_widgets.append(rb)
+        
+        if not item.format_info.get('audio'):
+            audio_widgets.append(urwid.Text(" (None available)"))
+
+        # --- Dialog Layout ---
+        # Create button widgets
+        confirm_button = urwid.Button("Confirm Selection", 
+                                    on_press=self._confirm_format_selection,
+                                    user_data=(item, video_group, audio_group))
+        cancel_button = urwid.Button("Cancel", on_press=self.close_dialog)
+        
+        # Apply styling to buttons
+        confirm_button = urwid.AttrMap(confirm_button, 'button', focus_map='button_focus')
+        cancel_button = urwid.AttrMap(cancel_button, 'button', focus_map='button_focus')
+
+        # Create fixed-height ListBoxes with scrollbars if needed
+        video_list = urwid.BoxAdapter(
+            urwid.ListBox(urwid.SimpleListWalker(video_widgets)), 
+            height=min(10, len(video_widgets))
+        )
+        
+        audio_list = urwid.BoxAdapter(
+            urwid.ListBox(urwid.SimpleListWalker(audio_widgets)), 
+            height=min(10, len(audio_widgets))
+        )
+
+        # Place lists in LineBoxes with titles
+        video_box = urwid.LineBox(video_list, title="Video")
+        audio_box = urwid.LineBox(audio_list, title="Audio")
+
+        # Create columns with video and audio sections
+        body_columns = urwid.Columns([
+            ('weight', 1, video_box),
+            ('weight', 1, audio_box)
+        ], dividechars=2)
+
+        # Title section with item name
+        title_text = urwid.Text(f"Select formats for:\n{item.title}", align='center')
+        
+        # Button row
+        button_row = urwid.Columns([
+            ('pack', confirm_button),
+            ('pack', cancel_button),
+        ], dividechars=4)
+
+        # Build the dialog pile with explicit sizing
+        dialog_pile = urwid.Pile([
+            ('pack', title_text),
+            ('pack', urwid.Divider('-')),
+            ('weight', 1, body_columns),
+            ('pack', urwid.Divider('-')),
+            ('pack', button_row)
+        ])
+
+        # Create a padded container for the dialog
+        padded_dialog = urwid.Padding(dialog_pile, left=1, right=1)
+        
+        # Wrap dialog content in LineBox and AttrMap
+        dialog = urwid.LineBox(padded_dialog, title="Detailed Format Selection")
+        dialog = urwid.AttrMap(dialog, 'dialog_border')
+
+        # Create overlay with fixed size
+        overlay = urwid.Overlay(
+            dialog,
+            self.frame,
+            align='center', 
+            width=('relative', 80),
+            valign='middle', 
+            height=('relative', 80),  # Use relative height instead of 'pack'
+            min_width=60, 
+            min_height=20
+        )
+        
+        # Set as the main widget
+        self.loop.widget = overlay
+
+    def _confirm_format_selection(self, button, user_data):
+        """Callback when 'Confirm' is pressed in the detailed format dialog."""
+        item, video_group, audio_group = user_data
+        
+        # Find selected radio buttons
+        selected_video_rb = next((rb for rb in video_group if rb.state), None)
+        selected_audio_rb = next((rb for rb in audio_group if rb.state), None)
+        
+        # Reset selections before applying new ones
+        item.selected_video_format_id = None
+        item.selected_audio_format_id = None
+        item.selected_video_details = ""
+        item.selected_audio_details = ""
+        
+        # --- Process video selection ---
+        video_format = None
+        is_video_only = False
+        
+        if selected_video_rb:
+            # Check if this is the "Video Only" option (first in the group)
+            is_video_only = (video_group.index(selected_video_rb) == 0)
+            
+            # Get format data safely - use getattr to avoid AttributeError
+            format_data = getattr(selected_video_rb, 'user_data', None)
+            if format_data:
+                video_format = format_data
+            # If we don't have format data but a regular video option is selected,
+            # try to get it from the format_info dictionary
+            elif not is_video_only:
+                try:
+                    # Calculate index in format_info (skip "Video Only" option)
+                    video_index = video_group.index(selected_video_rb) - 1
+                    if 0 <= video_index < len(item.format_info.get('video', [])):
+                        video_format = item.format_info['video'][video_index]
+                except (ValueError, IndexError):
+                    logger.warning("Failed to retrieve video format information.")
+        
+        # --- Process audio selection ---
+        audio_format = None
+        is_audio_only = False
+        
+        if selected_audio_rb:
+            # Check if this is the "Audio Only" option (first in the group)
+            is_audio_only = (audio_group.index(selected_audio_rb) == 0)
+            
+            # Get format data safely - use getattr to avoid AttributeError
+            format_data = getattr(selected_audio_rb, 'user_data', None)
+            if format_data:
+                audio_format = format_data
+            # If we don't have format data but a regular audio option is selected,
+            # try to get it from the format_info dictionary
+            elif not is_audio_only:
+                try:
+                    # Calculate index in format_info (skip "Audio Only" option)
+                    audio_index = audio_group.index(selected_audio_rb) - 1
+                    if 0 <= audio_index < len(item.format_info.get('audio', [])):
+                        audio_format = item.format_info['audio'][audio_index]
+                except (ValueError, IndexError):
+                    logger.warning("Failed to retrieve audio format information.")
+        
+        # --- Apply selections based on modes and available formats ---
+        
+        # Audio-only mode
+        if is_audio_only and audio_format:
+            item.selected_audio_format_id = audio_format['format_id']
+            item.selected_audio_details = f"{audio_format.get('ext', '?')} {audio_format.get('acodec', '?')} {audio_format.get('abr', 0)}k"
+            logger.info(f"Format confirmed for '{item.title}': Audio Only - {item.selected_audio_format_id}")
+        
+        # Video-only mode
+        elif is_video_only and video_format:
+            item.selected_video_format_id = video_format['format_id']
+            item.selected_video_details = f"{video_format.get('ext', '?')} {video_format.get('height', '?')}p {video_format.get('vcodec', '?')}"
+            
+            # Check if this video format also has audio
+            if video_format.get('acodec', 'none') != 'none':
+                item.selected_audio_format_id = video_format['format_id']
+                item.selected_audio_details = "(from video)"
+            
+            logger.info(f"Format confirmed for '{item.title}': Video Only - {item.selected_video_format_id}")
+        
+        # Regular mode (video + audio, potentially for merging)
+        elif video_format and audio_format:
+            item.selected_video_format_id = video_format['format_id']
+            item.selected_video_details = f"{video_format.get('ext', '?')} {video_format.get('height', '?')}p {video_format.get('vcodec', '?')}"
+            item.selected_audio_format_id = audio_format['format_id']
+            item.selected_audio_details = f"{audio_format.get('ext', '?')} {audio_format.get('acodec', '?')} {audio_format.get('abr', 0)}k"
+            logger.info(f"Format confirmed for '{item.title}': Video+Audio Merge - V:{item.selected_video_format_id} + A:{item.selected_audio_format_id}")
+        
+        # Only video format selected (may include audio)
+        elif video_format:
+            item.selected_video_format_id = video_format['format_id']
+            item.selected_video_details = f"{video_format.get('ext', '?')} {video_format.get('height', '?')}p {video_format.get('vcodec', '?')}"
+            
+            # Check if this video format also has audio
+            if video_format.get('acodec', 'none') != 'none':
+                item.selected_audio_format_id = video_format['format_id']
+                item.selected_audio_details = "(from video)"
+            
+            logger.info(f"Format confirmed for '{item.title}': Video (maybe w/ audio) - {item.selected_video_format_id}")
+        
+        # Only audio format selected
+        elif audio_format:
+            item.selected_audio_format_id = audio_format['format_id']
+            item.selected_audio_details = f"{audio_format.get('ext', '?')} {audio_format.get('acodec', '?')} {audio_format.get('abr', 0)}k"
+            logger.info(f"Format confirmed for '{item.title}': Audio Only - {item.selected_audio_format_id}")
+        
+        # No valid selection
+        else:
+            logger.warning(f"No valid format selection confirmed for '{item.title}'")
+        
+        self.close_dialog(button)
+        self._schedule_ui_update(item)  # Update the main list item display
+
 # --- Main Execution Logic ---
 
 async def setup_application(args) -> urwid.MainLoop:
@@ -998,8 +1313,8 @@ async def setup_application(args) -> urwid.MainLoop:
     logger.info("Starting background tasks to fetch video info")
     for item in tui.downloads:
         logger.debug(f"Creating info fetch task for: {item.url}")
-        # Create task but don't await here, let the loop run them
-        asyncio.create_task(tui.fetch_video_info(item.url))
+        # --- Pass args to the fetch function ---
+        asyncio.create_task(tui.fetch_video_info(item.url, args)) # Pass args here
 
     # --- Batch downloads are now triggered within fetch_video_info ---
     # (Remove the explicit batch download loop from here)
