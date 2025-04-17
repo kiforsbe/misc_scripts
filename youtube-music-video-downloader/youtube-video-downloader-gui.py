@@ -1085,14 +1085,6 @@ class DownloaderTUI:
         
         # Set conservative fixed heights
         mode_box = urwid.BoxAdapter(mode_list, height=3)  # Just enough for 3 radio buttons
-        
-        # Calculate available height for video/audio boxes (smaller of the two values)
-        # video_height = min(6, len(video_widgets))
-        # audio_height = min(6, len(audio_widgets))
-        # format_height = min(video_height, audio_height)
-        
-        # video_box = urwid.BoxAdapter(video_list, height=format_height)
-        # audio_box = urwid.BoxAdapter(audio_list, height=format_height)
 
         # Place lists in LineBoxes with titles
         mode_box_framed = urwid.LineBox(mode_box, title="Mode")
