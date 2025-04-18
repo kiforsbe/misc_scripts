@@ -237,6 +237,32 @@ A Text-based User Interface (TUI) built with urwid for downloading YouTube video
 - ffmpeg (must be installed and in the system PATH)
 - **Note! (Windows specific):** ctypes (standard library, used for console setup)
 
+### youtube-video-downloader-flask-ws.py & youtube-video-downloader-user-script.js
+A Flask web service that allows downloading YouTube videos and audio via a web interface. It accepts video URLs via POST requests, fetches metadata, and downloads the content. The service supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory. It returns download progress and status updates in JSON format. To use it, run the Flask web service and send POST requests with the video URL and desired parameters. The web service can be accessed via a user script (e.g., Tampermonkey) that adds a button to download videos directly from YouTube pages.
+The user script can be installed in a browser extension like Tampermonkey, which allows users to add custom scripts to web pages. The script adds a button to YouTube video pages, enabling users to download videos directly from the page.
+
+#### Usage (Examples)
+```bash
+# Start the Flask web service
+python youtube-video-downloader-flask-ws.py
+
+# Send a POST request to download a video
+curl -X POST -H "Content-Type: application/json" -d '{"url": "VIDEO_URL", "format": "mp4", "resolution": "720p", "audio_bitrate": "192k", "output_dir": "./downloads"}' http://localhost:5000/download
+``` 
+
+#### Features
+- Accepts video URLs via POST requests.
+- Fetches metadata and downloads content in various formats.
+- Provides download progress and status updates in JSON format.
+- Supports output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
+- Returns download progress and status updates in JSON format.
+- Logs activity to logs/youtube_downloader.log.
+
+#### Requires
+- Flask
+- ytdl_helper (and its dependencies, likely yt-dlp)
+- ffmpeg (must be installed and in the system PATH)
+
 # Experimental
 
 ## lyrics-timing-generator.py
