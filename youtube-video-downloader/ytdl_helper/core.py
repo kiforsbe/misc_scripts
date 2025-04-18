@@ -15,8 +15,6 @@ from .utils import sanitize_filename, check_ffmpeg
 logger = logging.getLogger(__name__)
 
 # Define callback types for clarity
-# ProgressCallbackType = Callable[[DownloadItem, Dict[str, Any]], None]
-# StatusCallbackType = Callable[[DownloadItem, str, Optional[str]], None]
 ProgressCallbackType = Callable # Simplified for now
 StatusCallbackType = Callable   # Simplified for now
 
@@ -144,24 +142,26 @@ async def fetch_info(url: str) -> DownloadItem:
 async def download_item(
     item: DownloadItem,
     output_dir: pathlib.Path,
+    target_format: Optional[str] = None,
     progress_callback: Optional[ProgressCallbackType] = None,
     status_callback: Optional[StatusCallbackType] = None
 ) -> None:
     """
-    Downloads the specified DownloadItem based on its selected formats.
+    Downloads the specified DownloadItem based on its selected formats,
+    optionally converting to a target container format.
 
     Args:
         item: The DownloadItem to download (must have format IDs selected).
         output_dir: The directory where the final file should be saved.
+        target_format: Desired output container format (e.g., 'mp4', 'mkv',
+                       'webm', 'mp3', 'm4a', 'ogg'). If None, uses defaults
+                       (mp4 for video, m4a for audio).
         progress_callback: Function called with download progress updates.
-                           Signature: callback(item: DownloadItem, progress_data: dict)
-                           progress_data keys: 'status', 'downloaded_bytes', 'total_bytes',
-                                               'total_bytes_estimate', 'percentage', 'speed', 'eta'
         status_callback: Function called when the overall status changes.
-                         Signature: callback(item: DownloadItem, status: str, error: Optional[str])
 
     Raises:
-        ValueError: If required format selections are missing or FFmpeg is not found.
+        ValueError: If required format selections are missing, FFmpeg is not found,
+                    or target_format is invalid for the download type.
         yt_dlp.utils.DownloadError: If the download itself fails.
         FileNotFoundError: If the expected output file is not found after processing.
         Exception: For other unexpected errors during download.
@@ -172,9 +172,13 @@ async def download_item(
 
     ffmpeg_path = check_ffmpeg()
     if not ffmpeg_path:
-        raise ValueError("FFmpeg is required for processing (metadata/thumbnails) but was not found.")
+        raise ValueError("FFmpeg is required for processing but was not found.")
 
     output_dir.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
+
+    # --- Normalize target_format ---
+    if target_format:
+        target_format = target_format.lower().strip('.') # Ensure lowercase, no leading dot
 
     # --- Helper for status updates ---
     def _update_status(status: str, error: Optional[str] = None):
@@ -291,16 +295,49 @@ async def download_item(
             }
 
             # --- Configure Postprocessors ---
-            final_extension = ".?" # Determine based on processing
+            final_extension = ".?" # The final desired extension
+            temp_extension = ".?" # The extension expected in temp dir after PP
             add_metadata_pp = {'key': 'FFmpegMetadata', 'add_metadata': True}
             embed_thumbnail_pp = {'key': 'EmbedThumbnail', 'already_have_thumbnail': False}
 
-            if is_audio_only:
-                # --- Audio only download - Transcode to M4A (AAC) with original bitrate ---
-                final_extension = ".m4a" # Target extension
-                preferred_codec = 'm4a' # yt-dlp uses this for AAC in M4A container
+            # Define valid formats
+            valid_audio_formats = {'mp3', 'm4a', 'aac', 'ogg', 'vorbis', 'opus', 'webm'}
+            valid_video_formats = {'mp4', 'mkv', 'webm'}
 
-                # Determine target quality based on selected format's bitrate
+            # Determine default format if not specified
+            if not target_format:
+                target_format = 'm4a' if is_audio_only else 'mp4'
+                logger.debug(f"No target format specified, using default: '{target_format}'")
+
+            if is_audio_only:
+                # --- Audio Only Download ---
+                if target_format not in valid_audio_formats:
+                    logger.warning(f"Invalid or unsupported target audio format '{target_format}'. Falling back to 'm4a'. Valid: {valid_audio_formats}")
+                    target_format = 'm4a'
+
+                # Map target format to preferredcodec and final extension
+                preferred_codec = None
+                if target_format == 'mp3':
+                    preferred_codec = 'mp3'
+                    final_extension = '.mp3'
+                    temp_extension = '.mp3' # FFmpeg usually outputs .mp3
+                elif target_format in ('m4a', 'aac'):
+                    preferred_codec = 'm4a'
+                    final_extension = '.m4a'
+                    temp_extension = '.m4a' # FFmpeg usually outputs .m4a
+                elif target_format in ('ogg', 'vorbis'):
+                    preferred_codec = 'vorbis'
+                    final_extension = '.ogg'
+                    temp_extension = '.ogg' # FFmpeg usually outputs .ogg
+                elif target_format in ('webm', 'opus'):
+                    preferred_codec = 'opus'
+                    final_extension = '.webm' # Final desired container
+                    temp_extension = '.opus' # FFmpegExtractAudio with opus codec outputs .opus
+
+                if not preferred_codec: # Should not happen with the fallback logic
+                     raise ValueError(f"Internal error: Could not determine preferred codec for target format '{target_format}'")
+
+                # Determine target quality (bitrate)
                 target_quality = '192' # Default fallback quality
                 if selected_audio_format and selected_audio_format.abr:
                     # Use the bitrate of the selected audio stream
@@ -313,32 +350,41 @@ async def download_item(
                     {
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': preferred_codec,
-                        'preferredquality': target_quality, # Use determined quality
+                        'preferredquality': target_quality,
                     },
                     add_metadata_pp, # Add metadata after conversion
                     embed_thumbnail_pp, # Embed thumbnail after conversion
                 ])
-                logger.info(f"Audio download: Configured transcoding to {preferred_codec.upper()} at {target_quality}k.")
+                logger.info(f"Audio download: Configured transcoding to {preferred_codec.upper()} (target container: {final_extension}) at {target_quality}k.")
 
-            elif is_video_merge or selected_video_format: # Video involved
-                # Ensure MP4 container, add metadata, embed thumb
-                # (Keeping MP4 conversion for video for compatibility)
-                final_extension = ".mp4"
+            else: # Video Download (is_video_merge or selected_video_format)
+                # --- Video Download ---
+                if target_format not in valid_video_formats:
+                    logger.warning(f"Invalid or unsupported target video format '{target_format}'. Falling back to 'mp4'. Valid: {valid_video_formats}")
+                    target_format = 'mp4'
+
+                final_extension = f".{target_format}"
+                temp_extension = final_extension
+
                 ydl_opts['postprocessors'].extend([
                     {
                         'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4',
+                        'preferedformat': target_format, # Use the validated target format
                     },
                     add_metadata_pp,
-                    embed_thumbnail_pp, # Embed thumb after conversion
+                    embed_thumbnail_pp,
                 ])
+                logger.info(f"Video download: Configured conversion to container '{target_format}'.")
+
 
             # --- Determine Final Output Path ---
-            safe_title_base = sanitize_filename(item.title or "untitled")
-            # Handle cases where final_extension might still be ".?" (shouldn't happen now)
+            artist_part = item.artist or "Unknown Artist"
+            title_part = item.title or "Unknown Title"
+            base_filename_raw = f"{artist_part} - {title_part}"
+            safe_title_base = sanitize_filename(base_filename_raw)
             if final_extension == ".?":
-                 logger.error("Could not determine final file extension. Defaulting to .media")
-                 final_extension = ".media" # Last resort fallback
+                 logger.error("Internal error: Final file extension was not determined.")
+                 final_extension = ".media"
 
             final_filename = f"{safe_title_base}{final_extension}"
             item.final_filepath = output_dir / final_filename
@@ -359,39 +405,44 @@ async def download_item(
                 await loop.run_in_executor(None, ydl.download, [item.url])
 
             # --- Post-Download Processing (Finding and Moving) ---
-            _update_status("Processing") # Status update after ydl.download finishes
+            _update_status("Processing")
 
-            # Find the processed file (should have the final_extension)
-            processed_files = list(temp_dir.glob(f'*{final_extension}'))
+            # Find the processed file
+            # Use the *sanitized* base name for globbing, as yt-dlp uses the sanitized name
+            # in the temp directory before post-processing might rename it.
+            search_pattern = f'{safe_title_base}{temp_extension}'
+            logger.debug(f"Searching for processed file in temp dir using pattern: '{search_pattern}'")
+            processed_files = list(temp_dir.glob(search_pattern))
             if not processed_files:
-                 # Fallback: Check if yt-dlp used a slightly different extension?
-                # e.g., selected .webm audio, but ffmpeg saved it as .opus? Unlikely with no conversion.
-                # Check for *any* file matching the base name.
-                fallback_pattern = f"{safe_title_base}.*"
-                processed_files = list(temp_dir.glob(fallback_pattern))
+                # Fallback check: Use the pattern based on the *original* title template
+                # This might catch cases where sanitization differs slightly or PP fails rename
+                original_temp_pattern = sanitize_filename(item.title or "untitled") + temp_extension
+                processed_files = list(temp_dir.glob(original_temp_pattern))
                 if processed_files:
-                     logger.warning(f"Could not find exact '{final_extension}' file, but found matching base name: {processed_files[0]}. Using this.")
+                     logger.warning(f"Could not find exact '{search_pattern}', but found matching original pattern: {processed_files[0]}. Using this.")
                 else:
-                    all_files = list(temp_dir.glob('*.*'))
-                    logger.error(f"Could not find expected '{final_extension}' or fallback '{fallback_pattern}' file in temp dir '{temp_dir}'. Found: {all_files}")
-                    raise FileNotFoundError(f"Processed file ('*{final_extension}') not found in temp dir.")
+                    # Last resort: Check for *any* file with the temp_extension
+                    processed_files = list(temp_dir.glob(f'*{temp_extension}'))
+                    if processed_files:
+                         logger.warning(f"Could not find exact name match, using first file with extension '{final_extension}': {processed_files[0]}")
+                    else:
+                        all_files = list(temp_dir.glob('*.*'))
+                        logger.error(f"Could not find expected file ('{search_pattern}' or fallbacks with ext '{temp_extension}') in temp dir '{temp_dir}'. Found: {all_files}")
+                        raise FileNotFoundError(f"Processed file ('*{temp_extension}') not found in temp dir.")
 
+
+            # Handle multiple matches (less likely now with specific extension)
             if len(processed_files) > 1:
-                # This might happen if the original download and the converted file both exist briefly
-                # Prioritize the one with the correct final extension
-                correct_ext_files = [f for f in processed_files if f.suffix.lower() == final_extension.lower()]
-                if correct_ext_files:
-                    temp_download_path = correct_ext_files[0]
-                    logger.warning(f"Multiple files found in temp dir, using the one with correct extension: {temp_download_path}")
-                else:
-                    temp_download_path = processed_files[0] # Fallback to first found
-                    logger.warning(f"Multiple files found in temp dir, none with exact extension '{final_extension}'. Using the first one: {temp_download_path}")
+                # Prefer the one matching the expected sanitized name if possible
+                exact_match = [f for f in processed_files if f.name == f"{safe_title_base}{temp_extension}"]
+                temp_download_path = exact_match[0] if exact_match else processed_files[0]
+                logger.warning(f"Multiple files found matching '{temp_extension}', using: {temp_download_path}")
             else:
                  temp_download_path = processed_files[0]
-                 
+
             logger.debug(f"Processed file found: {temp_download_path}")
 
-            # Move the final file from temp dir to destination
+            # Move the final file (shutil.move handles the rename to final_filepath)
             logger.info(f"Moving '{temp_download_path.name}' to '{item.final_filepath}'")
             shutil.move(str(temp_download_path), str(item.final_filepath))
 
@@ -400,7 +451,7 @@ async def download_item(
             item.progress = 100 # Ensure progress hits 100% on success
             logger.info(f"Download successful for '{item.title}' -> '{item.final_filepath}'")
 
-        # Temp directory is automatically cleaned up here by the 'with' statement
+        # Temp directory cleaned up automatically
 
     except FileNotFoundError as e:
         logger.error(f"Download failed for '{item.title}': {e}", exc_info=False)
@@ -414,9 +465,6 @@ async def download_item(
     except asyncio.CancelledError:
         logger.warning(f"Download cancelled for '{item.title}'")
         _update_status("Cancelled", "User cancelled")
-        # Temp dir cleanup is handled by 'with', but if a file was partially moved,
-        # it might need manual cleanup depending on exact cancel point.
-        # For simplicity, we assume 'shutil.move' is atomic enough or fails cleanly.
         raise # Re-raise CancelledError so the caller knows
     except Exception as e:
         error_msg = str(e)

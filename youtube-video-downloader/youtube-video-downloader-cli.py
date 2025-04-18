@@ -333,6 +333,8 @@ def handle_download_sync(args: argparse.Namespace):
     output_dir = pathlib.Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {output_dir}")
+    if args.format: # Log the chosen format
+        logger.info(f"Target format: {args.format}")
 
     items_to_process: List[DownloadItem] = []
     fetch_errors = 0
@@ -466,6 +468,7 @@ def handle_download_sync(args: argparse.Namespace):
                 download_item(
                     item,
                     output_dir,
+                    target_format=args.format,
                     progress_callback=sync_progress_callback,
                     status_callback=sync_status_callback
                 )
@@ -510,16 +513,22 @@ def main():
         epilog="""
 Examples:
   # Get info for a video as JSON
-  python ytdl_cli.py info https://www.youtube.com/watch?v=dQw4w9WgXcQ
+  python youtube-video-downloader-cli.py info https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
-  # Download best available video+audio
-  python ytdl_cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ
+  # Download best available video+audio (defaults to MP4)
+  python youtube-video-downloader-cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
-  # Download audio only (best quality) to a specific directory
-  python ytdl_cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ -a -o ./music
+  # Download as MKV
+  python youtube-video-downloader-cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ --format mkv
 
-  # Download 720p video (closest match) with 128k audio (closest match)
-  python ytdl_cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ -r 720p -b 128k
+  # Download audio only (defaults to M4A) to a specific directory
+  python youtube-video-downloader-cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ -a -o ./music
+
+  # Download audio only as MP3
+  python youtube-video-downloader-cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ -a --format mp3
+
+  # Download 720p video (closest) with 128k audio (closest) into an MKV container
+  python youtube-video-downloader-cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ -r 720p -b 128k --format mkv
 """
     )
     subparsers = parser.add_subparsers(dest="command", required=True, help="Sub-command help")
@@ -538,7 +547,7 @@ Examples:
     )
     parser_download.add_argument(
         "-a", "--audio-only", action="store_true",
-        help="Download audio only (MP3 format)"
+        help="Download audio only. Use --format to specify type (default: m4a)."
     )
     parser_download.add_argument(
         "-r", "--resolution", metavar="HEIGHT",
@@ -546,13 +555,18 @@ Examples:
     )
     parser_download.add_argument(
         "-b", "--audio-bitrate", metavar="KBPS",
-        help="Desired audio bitrate in kbps (e.g., 192, 128k). Selects closest available. (Default: best)"
+        help="Desired audio bitrate in kbps (e.g., 192, 128k). Selects closest available for format selection. (Default: best)"
     )
-    parser_download.set_defaults(func=handle_download_sync) # Use sync handler
+    # --- Add format argument ---
+    parser_download.add_argument(
+        "-f", "--format", metavar="EXT",
+        help="Target container format (e.g., mp4, mkv, webm, mp3, m4a, ogg). Overrides defaults."
+    )
+    parser_download.set_defaults(func=handle_download_sync)
 
     args = parser.parse_args()
 
-    # Execute the appropriate handler function directly
+    # Execute the appropriate handler function
     args.func(args)
 
 if __name__ == "__main__":
