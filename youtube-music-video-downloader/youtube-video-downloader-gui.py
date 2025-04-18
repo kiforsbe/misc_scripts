@@ -209,6 +209,8 @@ class DownloadItem:
         # --- Store format details for display ---
         self.selected_audio_details: str = ""
         self.selected_video_details: str = ""
+        self.artist: Optional[str] = None
+        self.year: Optional[int] = None
 
 class DownloaderTUI:
     palette = [
@@ -553,6 +555,21 @@ class DownloaderTUI:
             logger.debug(f"Successfully fetched info for {url}")
             item.title = info.get('title', 'Unknown Title')
             item.duration = info.get('duration', 0)
+            item.artist = info.get('channel') or info.get('uploader') or "Unknown Artist"
+            logger.debug(f"Found artist/channel: {item.artist}")
+            # --- Extract and store year ---
+            upload_date_str = info.get('upload_date') # Format typically 'YYYYMMDD'
+            if upload_date_str and isinstance(upload_date_str, str) and len(upload_date_str) == 8:
+                try:
+                    item.year = int(upload_date_str[:4])
+                    logger.debug(f"Found year: {item.year}")
+                except ValueError:
+                    logger.warning(f"Could not parse year from upload_date: {upload_date_str}")
+                    item.year = None
+            else:
+                logger.debug(f"Upload date not found or in unexpected format: {upload_date_str}")
+                item.year = None
+                
             item.status = "Pending"
             item.error = None
 
@@ -770,6 +787,13 @@ class DownloaderTUI:
                     raise ValueError("No format ID selected for download")
 
                 logger.debug(f"Using format string: {format_string}")
+
+                # --- Prepare metadata dictionary for embedding ---
+                metadata_dict = {
+                    'title': str(item.title) if item.title else None,
+                    'artist': str(item.artist) if item.artist else None,
+                    'date': str(item.year) if item.year else None,
+                }
                 
                 # Define base yt-dlp options
                 ydl_opts = {
@@ -782,7 +806,14 @@ class DownloaderTUI:
                     'postprocessor_args': {},
                     'ffmpeg_location': shutil.which('ffmpeg'),
                     'postprocessors': [], # Start with empty list
+                    'metadata': metadata_dict,
                 }
+
+                # This helps ensure the metadata gets embedded correctly.
+                ydl_opts['postprocessors'].append({
+                    'key': 'FFmpegMetadata',
+                    'add_metadata': True, # Add or update metadata
+                })
 
                 # --- Adjust postprocessors based on selection ---
                 final_extension = ".?" # Determine based on download
@@ -796,11 +827,7 @@ class DownloaderTUI:
                         'preferredcodec': 'mp3',
                         'preferredquality': '192',
                     })
-                    # Add metadata args
-                    ydl_opts['postprocessor_args'].setdefault('FFmpegExtractAudio', [])
-                    ydl_opts['postprocessor_args']['FFmpegExtractAudio'].extend([
-                        '-metadata', f'title={item.title}',
-                    ])
+
                     # Embed thumbnail
                     ydl_opts['writethumbnail'] = True
                     ydl_opts['postprocessors'].append({
@@ -814,9 +841,8 @@ class DownloaderTUI:
                         'preferedformat': 'mp4',
                     })
                     final_extension = ".mp4"
-                    # Optionally embed thumbnail for video too?
-                    # ydl_opts['writethumbnail'] = True
-                    # ydl_opts['postprocessors'].append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
+                    ydl_opts['writethumbnail'] = True
+                    ydl_opts['postprocessors'].append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
 
 
                 # --- Final path and download execution ---
