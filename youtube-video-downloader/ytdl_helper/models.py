@@ -1,5 +1,5 @@
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Any
 
 @dataclass
@@ -37,6 +37,32 @@ class FormatInfo:
 
         details_str = ' / '.join(filter(None, details))
         return f"[{self.format_id}] {self.ext} - {details_str}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Converts the FormatInfo object to a dictionary suitable for JSON serialization."""
+        # Use dataclasses.asdict to get most fields, excluding raw_data by default
+        # if we keep repr=False for it. Or manually build if more control is needed.
+
+        # Manual approach for explicit control and filtering None:
+        data = {
+            "format_id": self.format_id,
+            "ext": self.ext,
+            "note": self.note,
+            "vcodec": self.vcodec,
+            "acodec": self.acodec,
+            "height": self.height,
+            "width": self.width,
+            "fps": self.fps,
+            "abr": self.abr,
+            "vbr": self.vbr,
+            "filesize": self.filesize,
+            "filesize_approx": self.filesize_approx,
+            "filesize_str": self.filesize_str,
+            "filesize_approx_str": self.filesize_approx_str,
+            # Add other fields if needed, but avoid 'raw_data' unless necessary
+        }
+        # Filter out keys where the value is None for cleaner JSON
+        return {k: v for k, v in data.items() if v is not None}
 
 @dataclass
 class DownloadItem:
