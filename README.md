@@ -185,10 +185,17 @@ A script to parse RSS feeds and download enclosures (e.g., audio, video, or othe
 - urllib
 - json
 
-## youtube-video-downloader-cli.py
+## youtube-video-downloader
+A collection of youtube download scripts using the `ytdl_helper` library. It includes a command-line interface and a text-based user interface (TUI) for downloading YouTube videos and audio.
+
+### ytdl_helper library
+This library provides functionalities for downloading YouTube videos and audio efficiently. Users can fetch video information (metadata, available formats) and download content directly. The library supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
+It is used by both the command-line and TUI scripts.
+
+### youtube-video-downloader-cli.py
 A command-line tool for downloading YouTube videos and audio using the `ytdl_helper` library. It allows fetching video information (metadata, available formats) as JSON or downloading content directly. Users can specify desired resolution, audio bitrate, output format (e.g., mp4, mp3), and target directory via command-line arguments. Download progress is displayed using `tqdm` progress bars.
 
-### Usage (Examples)
+#### Usage (Examples)
 ```bash
 # Get video info as JSON
 python youtube-video-downloader-cli.py info "VIDEO_URL"
@@ -202,15 +209,15 @@ python youtube-video-downloader-cli.py download "VIDEO_URL" -a --format mp3 -o .
 # Download 720p video (closest) with 192k audio (closest) as mkv
 python youtube-video-downloader-cli.py download "VIDEO_URL" -r 720p -b 192k -f mkv
 ```
-### Requires
+#### Requires
 - ytdl_helper (and its dependencies, likely yt-dlp)
 - tqdm
 - ffmpeg (must be installed and in the system PATH)
 
-## youtube-video-downloader-gui.py
+### youtube-video-downloader-gui.py
 A Text-based User Interface (TUI) built with urwid for downloading YouTube videos. It takes video URLs as command-line arguments, fetches their information asynchronously using ytdl_helper, and displays them in an interactive list. Users can select items, choose specific video and audio formats via a detailed dialog, and initiate downloads. The TUI shows status updates and progress bars for each item. Batch pre-selection of best audio or video is possible via command-line flags (--audio-only, --video).
 
-### Features
+#### Features
 - Interactive TUI powered by urwid.
 - Handles multiple URLs provided via command line.
 - Displays video title, duration, status, and progress.
@@ -224,7 +231,7 @@ A Text-based User Interface (TUI) built with urwid for downloading YouTube video
 - Batch mode flags (--audio-only, --video) for quick downloads.
 - Logs activity to logs/youtube_downloader.log.
 
-### Requires
+#### Requires
 - ytdl_helper (and its dependencies, likely yt-dlp)
 - urwid
 - ffmpeg (must be installed and in the system PATH)
