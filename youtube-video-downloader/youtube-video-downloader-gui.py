@@ -7,14 +7,11 @@ import yt_dlp
 import logging
 import pathlib
 import re
-import locale
 import shutil
 import tempfile
 import atexit
 from datetime import timedelta
 from logging.handlers import RotatingFileHandler
-from moviepy.editor import VideoFileClip # Consider lazy import if startup time is critical
-import eyed3 # Consider lazy import
 from typing import List, Dict, Optional
 import functools
 
