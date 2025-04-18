@@ -185,6 +185,51 @@ A script to parse RSS feeds and download enclosures (e.g., audio, video, or othe
 - urllib
 - json
 
+## youtube-video-downloader-cli.py
+A command-line tool for downloading YouTube videos and audio using the `ytdl_helper` library. It allows fetching video information (metadata, available formats) as JSON or downloading content directly. Users can specify desired resolution, audio bitrate, output format (e.g., mp4, mp3), and target directory via command-line arguments. Download progress is displayed using `tqdm` progress bars.
+
+### Usage (Examples)
+```bash
+# Get video info as JSON
+python youtube-video-downloader-cli.py info "VIDEO_URL"
+
+# Download best available video+audio (defaults to mp4)
+python youtube-video-downloader-cli.py download "VIDEO_URL"
+
+# Download audio only as mp3 to a specific directory
+python youtube-video-downloader-cli.py download "VIDEO_URL" -a --format mp3 -o ./downloads
+
+# Download 720p video (closest) with 192k audio (closest) as mkv
+python youtube-video-downloader-cli.py download "VIDEO_URL" -r 720p -b 192k -f mkv
+```
+### Requires
+- ytdl_helper (and its dependencies, likely yt-dlp)
+- tqdm
+- ffmpeg (must be installed and in the system PATH)
+
+## youtube-video-downloader-gui.py
+A Text-based User Interface (TUI) built with urwid for downloading YouTube videos. It takes video URLs as command-line arguments, fetches their information asynchronously using ytdl_helper, and displays them in an interactive list. Users can select items, choose specific video and audio formats via a detailed dialog, and initiate downloads. The TUI shows status updates and progress bars for each item. Batch pre-selection of best audio or video is possible via command-line flags (--audio-only, --video).
+
+### Features
+- Interactive TUI powered by urwid.
+- Handles multiple URLs provided via command line.
+- Displays video title, duration, status, and progress.
+- Item selection using +/- keys.
+- Detailed format selection dialog (Enter key) allowing choice of:
+- Mode (Video+Audio, Video Only, Audio Only).
+- Specific video streams (resolution, codec, etc.).
+- Specific audio streams (bitrate, codec, etc.).
+- Initiates downloads for selected items (d key).
+- Real-time status and progress updates.
+- Batch mode flags (--audio-only, --video) for quick downloads.
+- Logs activity to logs/youtube_downloader.log.
+
+### Requires
+- ytdl_helper (and its dependencies, likely yt-dlp)
+- urwid
+- ffmpeg (must be installed and in the system PATH)
+- **Note! (Windows specific):** ctypes (standard library, used for console setup)
+
 # Experimental
 
 ## lyrics-timing-generator.py
