@@ -26,6 +26,12 @@
   let retryCount = 0;
   let currentVideoId = null;
 
+  // --- State for Format Caching ---
+  let formatDataCache = null;
+  let isFetchingFormats = false;
+  let formatFetchError = null;
+  // --- End State ---
+
   // --- Styles ---
   GM_addStyle(`
         .ytdl-custom-button-container {
@@ -42,6 +48,7 @@
             cursor: pointer;
             height: 36px; /* Match YouTube button height */
             /* overflow: hidden; */ /* REMOVED THIS LINE */
+            width: fit-content; /* <--- ADD THIS LINE */
         }
         .ytdl-download-button {
             padding: 0 16px;
@@ -72,7 +79,7 @@
             cursor: pointer;
         }
         .ytdl-dropdown-arrow:hover {
-             background-color: var(--yt-spec-badge-chip-background-hover);
+            background-color: var(--yt-spec-badge-chip-background-hover);
         }
         .ytdl-dropdown-menu {
             display: none; /* Hidden by default */
@@ -101,12 +108,12 @@
             text-decoration: none; /* Remove underline if it's an anchor */
             color: inherit; /* Inherit text color */
         }
-         .ytdl-dropdown-header {
-            font-weight: bold;
-            cursor: default;
-            border-bottom: 1px solid var(--yt-spec-10-percent-layer);
-            margin-bottom: 4px;
-         }
+        .ytdl-dropdown-header {
+          font-weight: bold;
+          cursor: default;
+          border-bottom: 1px solid var(--yt-spec-10-percent-layer);
+          margin-bottom: 4px;
+        }
         .ytdl-dropdown-item:hover {
             /* Use YouTube's standard hover background */
             background-color: var(--yt-spec-hover-background, rgba(0, 0, 0, 0.1)); /* Added fallback */
@@ -125,7 +132,11 @@
         }
         /* Hide original YT download button */
         ytd-download-button-renderer {
-             display: none !important;
+            display: none !important;
+        }
+
+        #owner.ytd-watch-metadata {
+            min-width: calc(25% - 6px) !important;
         }
     `);
 
@@ -136,8 +147,8 @@
     return urlParams.get('v');
   }
 
-  function showSpinner(button) {
-    button.textContent = '⏳'; // Simple loading indicator
+  function showSpinner(button, defaultText = 'Downloading... ') {
+    button.textContent = defaultText + '⏳'; // Simple loading indicator
     button.disabled = true;
   }
 
@@ -256,8 +267,15 @@
 
 
   function fetchFormats(url, dropdownMenu) {
-    console.log("Fetching formats for:", url);
-    showDropdownSpinner(dropdownMenu);
+    // Don't fetch if already fetching or if data is cached
+    if (isFetchingFormats || formatDataCache) {
+      console.log("Skipping format fetch (already fetching or cached).");
+      return;
+    }
+
+    console.log("Fetching formats proactively for:", url);
+    isFetchingFormats = true;
+    formatFetchError = null; // Clear previous error
 
     const params = new URLSearchParams();
     params.append('url', url);
@@ -270,22 +288,23 @@
       timeout: 30000, // 30 seconds timeout for fetching formats
       onload: function (response) {
         if (response.status >= 200 && response.status < 300) {
-          const data = response.response;
-          console.log("Formats received:", data);
-          populateDropdown(dropdownMenu, data);
+          formatDataCache = response.response; // Store in cache
+          console.log("Formats received and cached:", formatDataCache);
         } else {
-          const errorMsg = response.response?.error || `Server responded with status ${response.status}`;
-          showDropdownError(dropdownMenu, errorMsg);
+          formatFetchError = response.response?.error || `Server responded with status ${response.status}`;
           console.error("Error fetching formats:", response.status, response.response);
         }
+        isFetchingFormats = false; // Mark fetching as complete
       },
       onerror: function (response) {
-        showDropdownError(dropdownMenu, `Could not connect to service at ${FLASK_SERVICE_BASE_URL}. Is it running?`);
+        formatFetchError = `Could not connect to service at ${FLASK_SERVICE_BASE_URL}. Is it running?`;
         console.error("GM_xmlhttpRequest error fetching formats:", response);
+        isFetchingFormats = false;
       },
       ontimeout: function () {
-        showDropdownError(dropdownMenu, "Request timed out fetching formats.");
+        formatFetchError = "Request timed out fetching formats.";
         console.error("Format fetch request timed out.");
+        isFetchingFormats = false;
       }
     });
   }
@@ -309,6 +328,12 @@
     // 1. Clear previous items using standard DOM methods
     while (menu.firstChild) {
       menu.removeChild(menu.firstChild);
+    }
+
+    if (!data || typeof data !== 'object') {
+      console.error("Invalid data passed to populateDropdown:", data);
+      showDropdownError(menu, "Invalid format data received.");
+      return;
     }
 
     const videoTitle = data.title || 'video';
@@ -395,16 +420,6 @@
         }
       });
     }
-
-    // --- Raw Format Lists (Optional - keep commented if too verbose) ---
-    /*
-    // Add logic similar to above using createElement/appendChild if uncommented
-    */
-
-    // 3. Ensure the menu is visible *after* populating
-    // This should already be handled if showDropdownSpinner was called,
-    // but adding it here ensures visibility even if loading was instant.
-    menu.classList.add('show');
   }
 
 
@@ -436,13 +451,31 @@
     dropdownMenu.id = 'ytdl-dropdown-menu';
 
     dropdownArrow.addEventListener('click', (e) => {
-      e.stopPropagation(); // Prevent triggering body click listener immediately
+      e.stopPropagation();
       if (dropdownMenu.classList.contains('show')) {
         dropdownMenu.classList.remove('show');
       } else {
-        const videoUrl = window.location.href;
-        showDropdownSpinner(dropdownMenu); // Make menu visible with loading indicator
-        fetchFormats(videoUrl, dropdownMenu); // Fetch formats (will replace spinner content on success/error)
+        // Check cache status
+        if (formatDataCache) {
+          console.log("Populating dropdown from cache.");
+          populateDropdown(dropdownMenu, formatDataCache);
+          dropdownMenu.classList.add('show');
+        } else if (isFetchingFormats) {
+          console.log("Formats are being fetched, showing spinner.");
+          showDropdownSpinner(dropdownMenu); // Already adds 'show' class
+        } else if (formatFetchError) {
+          console.log("Showing fetch error in dropdown.");
+          showDropdownError(dropdownMenu, formatFetchError); // Already adds 'show' class
+        } else {
+          // Fallback: Should not happen with proactive fetching, but just in case
+          console.warn("Formats not fetched yet and no error, attempting fetch now.");
+          const videoUrl = window.location.href;
+          showDropdownSpinner(dropdownMenu);
+          fetchFormats(videoUrl); // Trigger fetch (will update cache)
+          // Note: The menu will show loading, but won't auto-populate when fetch completes
+          // in this fallback case. User would need to close and reopen.
+          // Ideally, the proactive fetch prevents this state.
+        }
       }
     });
 
@@ -461,57 +494,64 @@
   }
 
   function insertButton() {
-    // Try to find the container for buttons below the video title
-    // This selector might change with YouTube updates
-    const actionsContainer = document.querySelector('#actions #menu.ytd-watch-metadata'); // More specific selector
+    // Try a more specific and potentially stable selector for the button container row
+    const actionsContainer = document.querySelector('#actions #actions-inner #menu ytd-menu-renderer');
+    // Fallback selector if the first one fails (might be needed in some YT layouts)
+    const fallbackContainer = document.querySelector('#actions-inner');
+
+    const targetContainer = actionsContainer || fallbackContainer; // Use the first one found
+
     const existingButton = document.getElementById('ytdl-custom-button-container');
 
-    if (actionsContainer && !existingButton) {
-      console.log("Action container found, inserting download button.");
+    if (targetContainer && !existingButton) {
+      const containerName = actionsContainer ? '#actions-inner #flexible-item-buttons' : '#actions-inner';
+      console.log(`Action container (${containerName}) found, inserting download button.`);
       const newButton = createDownloadButton();
 
-      // Find the original download button and hide it (or insert relative to it)
-      const originalDownloadButton = actionsContainer.querySelector('ytd-download-button-renderer');
-      if (originalDownloadButton) {
-        console.log("Hiding original YT download button.");
-        originalDownloadButton.style.display = 'none';
-        // Insert our button before or after it, or just append to container
+      // Append the button container to the end of the target container's children
+      targetContainer.appendChild(newButton);
 
-        //actionsContainer.insertBefore(newButton, originalDownloadButton.nextSibling); // Place after original
-        actionsContainer.appendChild(newButton);
-      } else {
-        // Fallback: Append to the actions container if original not found
-        console.log("Original YT download button not found, appending to actions container.");
-        actionsContainer.appendChild(newButton);
-      }
-
+      // No need to manually hide the original button here, CSS rule handles it.
 
       if (buttonContainerInterval) {
         clearInterval(buttonContainerInterval); // Stop polling
         console.log("Button inserted, polling stopped.");
       }
+
+      // Trigger proactive format fetch
+      const videoUrl = window.location.href;
+      fetchFormats(videoUrl);
+
       return true; // Indicate success
+
     } else if (existingButton) {
-      console.log("Custom download button already exists.");
+      // Button already exists, ensure polling stops and fetch formats if needed
+      // console.log("Custom download button already exists."); // Less verbose logging
       if (buttonContainerInterval) clearInterval(buttonContainerInterval);
-      return true; // Already exists, count as success
-    }
+      if (!isFetchingFormats && !formatDataCache && !formatFetchError) {
+        const videoUrl = window.location.href;
+        // console.log("Proactively fetching formats for existing button."); // Less verbose logging
+        fetchFormats(videoUrl);
+      }
+      return true; // Indicate success (already exists)
 
-    retryCount++;
-    if (retryCount > MAX_RETRIES) {
-      console.error("Could not find button container after multiple retries. YouTube layout may have changed.");
-      if (buttonContainerInterval) clearInterval(buttonContainerInterval);
-      return false; // Indicate failure
+    } else {
+      // Container not found yet, continue polling or give up
+      retryCount++;
+      if (retryCount > MAX_RETRIES) {
+        console.error(`Could not find button container (#actions-inner #flexible-item-buttons or #actions-inner) after ${MAX_RETRIES} retries. YouTube layout may have changed.`);
+        if (buttonContainerInterval) clearInterval(buttonContainerInterval);
+        return false; // Indicate failure
+      }
+      // console.log(`Button container not found, retrying (${retryCount}/${MAX_RETRIES})...`); // Less verbose logging
+      return false; // Indicate not found yet
     }
-
-    console.log(`Button container not found, retrying (${retryCount}/${MAX_RETRIES})...`);
-    return false; // Indicate not found yet
   }
 
   function handleUrlChange() {
     const newVideoId = getVideoIdFromUrl();
     if (newVideoId !== currentVideoId) {
-      console.log(`URL changed to video ID: ${newVideoId}. Resetting button.`);
+      console.log(`URL changed to video ID: ${newVideoId}. Resetting button and cache.`);
       currentVideoId = newVideoId;
       retryCount = 0; // Reset retry count for the new page
 
@@ -524,13 +564,13 @@
       // Restart the polling process
       if (buttonContainerInterval) clearInterval(buttonContainerInterval);
       buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
-      insertButton(); // Try immediately first
+      insertButton(); // Try immediately (will trigger fetchFormats on success)
     }
   }
 
   // --- Initialization ---
 
-  console.log("YouTube Downloader Service UI script running.");
+  console.log("YouTube Downloader Service UI script running (v1.2).");
 
   // Initial setup
   currentVideoId = getVideoIdFromUrl();
@@ -545,26 +585,5 @@
     titleObserver.observe(titleElement, { childList: true });
   } else {
     console.warn("Could not find <title> element to observe for navigation.");
-    // Fallback: Less reliable, check URL periodically (might miss fast navigations)
-    // setInterval(handleUrlChange, 2000);
   }
-
-  // Alternative: Observe the player element for changes (might be more robust)
-  let playerObserver = null;
-  function observePlayer() {
-    const playerElement = document.getElementById('movie_player');
-    if (playerElement && !playerObserver) {
-      console.log("Player element found, observing for changes.");
-      playerObserver = new MutationObserver(handleUrlChange);
-      // Observe attributes that change during navigation (like video data)
-      // This is heuristic and might need adjustment
-      playerObserver.observe(playerElement, { attributes: true, attributeFilter: ['class'] }); // Example: Observe class changes
-    } else if (!playerElement) {
-      // If player isn't ready yet, try again shortly
-      setTimeout(observePlayer, 500);
-    }
-  }
-  // observePlayer(); // Start observing the player - uncomment if title observation is unreliable
-
-
 })();
