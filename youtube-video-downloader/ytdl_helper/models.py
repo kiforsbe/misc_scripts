@@ -58,6 +58,7 @@ class DownloadItem:
     # --- User Selection ---
     selected_audio_format_id: Optional[str] = None
     selected_video_format_id: Optional[str] = None
+    is_selected: bool = False
     # --- Output ---
     # The final path is determined during download based on output_dir and sanitized title
     final_filepath: Optional[pathlib.Path] = None

@@ -15,8 +15,8 @@ from .utils import sanitize_filename, check_ffmpeg
 logger = logging.getLogger(__name__)
 
 # Define callback types for clarity
-ProgressCallbackType = Callable # Simplified for now
-StatusCallbackType = Callable   # Simplified for now
+ProgressCallbackType = Callable  # Simplified for now
+StatusCallbackType = Callable  # Simplified for now
 
 
 async def fetch_info(url: str) -> DownloadItem:
@@ -39,14 +39,14 @@ async def fetch_info(url: str) -> DownloadItem:
     try:
         # Use specific options for info fetching
         info_ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False, # Need full format info
-            'skip_download': True,
-            'verbose': False,
-            'ignoreerrors': False, # Raise error if info fetch fails for this URL
-            'forcejson': True,
-            'dump_single_json': True, # Get info as JSON string
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,  # Need full format info
+            "skip_download": True,
+            "verbose": False,
+            "ignoreerrors": False,  # Raise error if info fetch fails for this URL
+            "forcejson": True,
+            "dump_single_json": True,  # Get info as JSON string
             # 'simulate': True, # Alternative to skip_download? Test needed.
         }
 
@@ -61,73 +61,100 @@ async def fetch_info(url: str) -> DownloadItem:
             raise yt_dlp.utils.DownloadError(f"No information extracted for {url}")
 
         logger.debug(f"Successfully fetched info for {url}")
-        item._raw_info = info_dict # Store raw info
+        item._raw_info = info_dict  # Store raw info
 
         # Populate DownloadItem fields
-        item.title = info_dict.get('title', 'Unknown Title')
-        item.duration = info_dict.get('duration')
-        item.artist = info_dict.get('channel') or info_dict.get('uploader') or "Unknown Artist"
+        item.title = info_dict.get("title", "Unknown Title")
+        item.duration = info_dict.get("duration")
+        item.artist = (
+            info_dict.get("channel") or info_dict.get("uploader") or "Unknown Artist"
+        )
 
-        upload_date_str = info_dict.get('upload_date') # Format typically 'YYYYMMDD'
-        if upload_date_str and isinstance(upload_date_str, str) and len(upload_date_str) == 8:
+        upload_date_str = info_dict.get("upload_date")  # Format typically 'YYYYMMDD'
+        if (
+            upload_date_str
+            and isinstance(upload_date_str, str)
+            and len(upload_date_str) == 8
+        ):
             try:
                 item.year = int(upload_date_str[:4])
             except ValueError:
-                logger.warning(f"Could not parse year from upload_date: {upload_date_str}")
+                logger.warning(
+                    f"Could not parse year from upload_date: {upload_date_str}"
+                )
 
         # Process formats
-        formats_raw = info_dict.get('formats', [])
+        formats_raw = info_dict.get("formats", [])
         if not formats_raw:
-             logger.warning(f"No 'formats' array found for {url}. Trying 'requested_formats'.")
-             formats_raw = info_dict.get('requested_formats', []) # Fallback for playlists?
+            logger.warning(
+                f"No 'formats' array found for {url}. Trying 'requested_formats'."
+            )
+            formats_raw = info_dict.get(
+                "requested_formats", []
+            )  # Fallback for playlists?
 
         if not formats_raw:
-             raise yt_dlp.utils.DownloadError(f"No downloadable formats found for {url}")
+            raise yt_dlp.utils.DownloadError(f"No downloadable formats found for {url}")
 
         all_formats = []
         for f_raw in formats_raw:
             # Pre-calculate filesize strings if yt-dlp provided them
-            f_raw['filesize_str'] = f_raw.get('filesize') and yt_dlp.utils.format_bytes(f_raw['filesize'])
-            f_raw['filesize_approx_str'] = f_raw.get('filesize_approx') and yt_dlp.utils.format_bytes(f_raw['filesize_approx'])
+            f_raw["filesize_str"] = f_raw.get("filesize") and yt_dlp.utils.format_bytes(
+                f_raw["filesize"]
+            )
+            f_raw["filesize_approx_str"] = f_raw.get(
+                "filesize_approx"
+            ) and yt_dlp.utils.format_bytes(f_raw["filesize_approx"])
 
             fmt = FormatInfo(
-                format_id=f_raw['format_id'],
-                ext=f_raw.get('ext'),
-                note=f_raw.get('format_note'),
-                vcodec=f_raw.get('vcodec'),
-                acodec=f_raw.get('acodec'),
-                height=f_raw.get('height'),
-                width=f_raw.get('width'),
-                fps=f_raw.get('fps'),
-                abr=f_raw.get('abr'),
-                vbr=f_raw.get('vbr'),
-                filesize=f_raw.get('filesize'),
-                filesize_approx=f_raw.get('filesize_approx'),
-                filesize_str=f_raw.get('filesize_str'),
-                filesize_approx_str=f_raw.get('filesize_approx_str'),
-                raw_data=f_raw
+                format_id=f_raw["format_id"],
+                ext=f_raw.get("ext"),
+                note=f_raw.get("format_note"),
+                vcodec=f_raw.get("vcodec"),
+                acodec=f_raw.get("acodec"),
+                height=f_raw.get("height"),
+                width=f_raw.get("width"),
+                fps=f_raw.get("fps"),
+                abr=f_raw.get("abr"),
+                vbr=f_raw.get("vbr"),
+                filesize=f_raw.get("filesize"),
+                filesize_approx=f_raw.get("filesize_approx"),
+                filesize_str=f_raw.get("filesize_str"),
+                filesize_approx_str=f_raw.get("filesize_approx_str"),
+                raw_data=f_raw,
             )
             all_formats.append(fmt)
 
         # Separate and sort formats
         item.audio_formats = sorted(
-            [f for f in all_formats if f.acodec and f.acodec != 'none' and (not f.vcodec or f.vcodec == 'none')],
-            key=lambda x: x.abr or 0, reverse=True
+            [
+                f
+                for f in all_formats
+                if f.acodec
+                and f.acodec != "none"
+                and (not f.vcodec or f.vcodec == "none")
+            ],
+            key=lambda x: x.abr or 0,
+            reverse=True,
         )
         item.video_formats = sorted(
-            [f for f in all_formats if f.vcodec and f.vcodec != 'none'],
+            [f for f in all_formats if f.vcodec and f.vcodec != "none"],
             key=lambda x: (x.height or 0, x.fps or 0, x.vbr or 0.0),
-            reverse=True
+            reverse=True,
         )
 
-        logger.debug(f"Found {len(item.audio_formats)} audio-only and "
-                     f"{len(item.video_formats)} video formats for {url}")
+        logger.debug(
+            f"Found {len(item.audio_formats)} audio-only and "
+            f"{len(item.video_formats)} video formats for {url}"
+        )
 
-        item.status = "Pending" # Ready for format selection or download
+        item.status = "Pending"  # Ready for format selection or download
         return item
 
     except yt_dlp.utils.DownloadError as e:
-        logger.error(f"yt-dlp DownloadError fetching info for {url}: {e}", exc_info=False)
+        logger.error(
+            f"yt-dlp DownloadError fetching info for {url}: {e}", exc_info=False
+        )
         item.status = "Error"
         item.error = f"yt-dlp error: {e}"
         # Re-raise or return the item with error status? Re-raising is clearer.
@@ -136,7 +163,7 @@ async def fetch_info(url: str) -> DownloadItem:
         logger.error(f"Unexpected error fetching info for {url}: {e}", exc_info=True)
         item.status = "Error"
         item.error = f"Unexpected error: {e}"
-        raise e # Re-raise unexpected errors
+        raise e  # Re-raise unexpected errors
 
 
 async def download_item(
@@ -144,7 +171,7 @@ async def download_item(
     output_dir: pathlib.Path,
     target_format: Optional[str] = None,
     progress_callback: Optional[ProgressCallbackType] = None,
-    status_callback: Optional[StatusCallbackType] = None
+    status_callback: Optional[StatusCallbackType] = None,
 ) -> None:
     """
     Downloads the specified DownloadItem based on its selected formats,
@@ -168,17 +195,21 @@ async def download_item(
     """
     # --- Pre-checks ---
     if not item.selected_audio_format_id and not item.selected_video_format_id:
-        raise ValueError(f"Cannot start download for '{item.title}': No format selected.")
+        raise ValueError(
+            f"Cannot start download for '{item.title}': No format selected."
+        )
 
     ffmpeg_path = check_ffmpeg()
     if not ffmpeg_path:
         raise ValueError("FFmpeg is required for processing but was not found.")
 
-    output_dir.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)  # Ensure output directory exists
 
     # --- Normalize target_format ---
     if target_format:
-        target_format = target_format.lower().strip('.') # Ensure lowercase, no leading dot
+        target_format = target_format.lower().strip(
+            "."
+        )  # Ensure lowercase, no leading dot
 
     # --- Helper for status updates ---
     def _update_status(status: str, error: Optional[str] = None):
@@ -193,19 +224,19 @@ async def download_item(
     # --- Helper for progress updates ---
     def _progress_hook(d: Dict[str, Any]):
         # Update item's internal progress
-        if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate')
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
             if total and total > 0:
-                item.progress = min(100.0, (d.get('downloaded_bytes', 0) / total) * 100)
+                item.progress = min(100.0, (d.get("downloaded_bytes", 0) / total) * 100)
             else:
-                item.progress = 0 # Indicate indeterminate? Or use downloaded_bytes?
+                item.progress = 0  # Indicate indeterminate? Or use downloaded_bytes?
             # Don't change overall item status here, let the main flow handle it
-        elif d['status'] == 'finished':
+        elif d["status"] == "finished":
             # 'finished' hook might fire before post-processing, don't set to 100% yet
             # Let the status callback handle the final "Complete" state.
             # We can set status to "Processing" here if needed, but the main flow does that too.
             pass
-        elif d['status'] == 'error':
+        elif d["status"] == "error":
             item.progress = 0.0
 
         # Call the external callback
@@ -213,17 +244,17 @@ async def download_item(
             try:
                 # Pass a copy or relevant parts of 'd'
                 progress_data = {
-                    'status': d['status'],
-                    'downloaded_bytes': d.get('downloaded_bytes'),
-                    'total_bytes': d.get('total_bytes'),
-                    'total_bytes_estimate': d.get('total_bytes_estimate'),
-                    'percentage': item.progress, # Use our calculated percentage
-                    'speed': d.get('speed'), # yt-dlp v2021.12.17+ uses 'speed'
-                    '_speed_str': d.get('_speed_str'), # Older versions might use this
-                    'eta': d.get('eta'), # yt-dlp v2021.12.17+ uses 'eta'
-                    '_eta_str': d.get('_eta_str'), # Older versions
-                    'filename': d.get('filename'),
-                    'info_dict': d.get('info_dict') # Be careful, can be large
+                    "status": d["status"],
+                    "downloaded_bytes": d.get("downloaded_bytes"),
+                    "total_bytes": d.get("total_bytes"),
+                    "total_bytes_estimate": d.get("total_bytes_estimate"),
+                    "percentage": item.progress,  # Use our calculated percentage
+                    "speed": d.get("speed"),  # yt-dlp v2021.12.17+ uses 'speed'
+                    "_speed_str": d.get("_speed_str"),  # Older versions might use this
+                    "eta": d.get("eta"),  # yt-dlp v2021.12.17+ uses 'eta'
+                    "_eta_str": d.get("_eta_str"),  # Older versions
+                    "filename": d.get("filename"),
+                    "info_dict": d.get("info_dict"),  # Be careful, can be large
                 }
                 progress_callback(item, progress_data)
             except Exception as cb_err:
@@ -232,13 +263,15 @@ async def download_item(
     # --- Prepare Download ---
     _update_status("Starting")
     item.progress = 0.0
-    temp_download_path: Optional[pathlib.Path] = None # Track the file within temp dir
+    temp_download_path: Optional[pathlib.Path] = None  # Track the file within temp dir
 
     try:
         # Create a temporary directory *per download* for isolation
         # Prefix helps identify temp dirs if they aren't cleaned up properly
         safe_title_prefix = sanitize_filename(item.title or "untitled")[:20]
-        with tempfile.TemporaryDirectory(prefix=f"ytdl_{safe_title_prefix}_") as temp_dir_str:
+        with tempfile.TemporaryDirectory(
+            prefix=f"ytdl_{safe_title_prefix}_"
+        ) as temp_dir_str:
             temp_dir = pathlib.Path(temp_dir_str)
             logger.debug(f"Using temp directory: {temp_dir}")
 
@@ -251,131 +284,162 @@ async def download_item(
 
             if item.selected_video_format_id and item.selected_audio_format_id:
                 if item.selected_video_format_id == item.selected_audio_format_id:
-                    format_string = item.selected_video_format_id # Combined format
+                    format_string = item.selected_video_format_id  # Combined format
                 else:
                     format_string = f"{item.selected_video_format_id}+{item.selected_audio_format_id}"
                     is_video_merge = True
             elif item.selected_video_format_id:
-                format_string = item.selected_video_format_id # Video (might contain audio)
+                format_string = (
+                    item.selected_video_format_id
+                )  # Video (might contain audio)
             elif item.selected_audio_format_id:
-                format_string = item.selected_audio_format_id # Audio only
+                format_string = item.selected_audio_format_id  # Audio only
                 is_audio_only = True
             else:
-                 # Should be caught earlier, but defensive check
-                 raise ValueError("No format ID selected for download")
+                # Should be caught earlier, but defensive check
+                raise ValueError("No format ID selected for download")
 
             logger.debug(f"Using format string: {format_string}")
 
             # --- Prepare yt-dlp options ---
             # Base filename in temp dir (yt-dlp adds extension)
-            temp_out_tmpl = temp_dir / '%(title)s.%(ext)s'
+            temp_out_tmpl = temp_dir / "%(title)s.%(ext)s"
 
             # Metadata for embedding
             metadata_dict = {
-                'title': str(item.title) if item.title else None,
-                'artist': str(item.artist) if item.artist else None,
-                'date': str(item.year) if item.year else None, # yt-dlp expects string date
+                "title": str(item.title) if item.title else None,
+                "artist": str(item.artist) if item.artist else None,
+                "date": (
+                    str(item.year) if item.year else None
+                ),  # yt-dlp expects string date
                 # Add more fields if needed, e.g., 'album', 'track'
             }
             # Filter out None values
             metadata_dict = {k: v for k, v in metadata_dict.items() if v is not None}
 
             ydl_opts = {
-                'format': format_string,
-                'progress_hooks': [_progress_hook],
-                'outtmpl': str(temp_out_tmpl),
-                'windowsfilenames': sys.platform == 'win32', # Use OS-specific sanitization
-                'quiet': True, 'no_warnings': True, 'verbose': False,
-                'ignoreerrors': False, # Fail on download errors
-                'noprogress': True, # Disable yt-dlp's console progress bar
-                'ffmpeg_location': ffmpeg_path,
-                'postprocessors': [],
-                'writethumbnail': True,
-                'metadata': metadata_dict,
+                "format": format_string,
+                "progress_hooks": [_progress_hook],
+                "outtmpl": str(temp_out_tmpl),
+                "windowsfilenames": sys.platform
+                == "win32",  # Use OS-specific sanitization
+                "quiet": True,
+                "no_warnings": True,
+                "verbose": False,
+                "ignoreerrors": False,  # Fail on download errors
+                "noprogress": True,  # Disable yt-dlp's console progress bar
+                "ffmpeg_location": ffmpeg_path,
+                "postprocessors": [],
+                "writethumbnail": True,
+                "metadata": metadata_dict,
             }
 
             # --- Configure Postprocessors ---
-            final_extension = ".?" # The final desired extension
-            temp_extension = ".?" # The extension expected in temp dir after PP
-            add_metadata_pp = {'key': 'FFmpegMetadata', 'add_metadata': True}
-            embed_thumbnail_pp = {'key': 'EmbedThumbnail', 'already_have_thumbnail': False}
+            final_extension = ".?"  # The final desired extension
+            temp_extension = ".?"  # The extension expected in temp dir after PP
+            add_metadata_pp = {"key": "FFmpegMetadata", "add_metadata": True}
+            embed_thumbnail_pp = {
+                "key": "EmbedThumbnail",
+                "already_have_thumbnail": False,
+            }
 
             # Define valid formats
-            valid_audio_formats = {'mp3', 'm4a', 'aac', 'ogg', 'vorbis', 'opus', 'webm'}
-            valid_video_formats = {'mp4', 'mkv', 'webm'}
+            valid_audio_formats = {"mp3", "m4a", "aac", "ogg", "vorbis", "opus", "webm"}
+            valid_video_formats = {"mp4", "mkv", "webm"}
 
             # Determine default format if not specified
             if not target_format:
-                target_format = 'm4a' if is_audio_only else 'mp4'
-                logger.debug(f"No target format specified, using default: '{target_format}'")
+                target_format = "m4a" if is_audio_only else "mp4"
+                logger.debug(
+                    f"No target format specified, using default: '{target_format}'"
+                )
 
             if is_audio_only:
                 # --- Audio Only Download ---
                 if target_format not in valid_audio_formats:
-                    logger.warning(f"Invalid or unsupported target audio format '{target_format}'. Falling back to 'm4a'. Valid: {valid_audio_formats}")
-                    target_format = 'm4a'
+                    logger.warning(
+                        f"Invalid or unsupported target audio format '{target_format}'. Falling back to 'm4a'. Valid: {valid_audio_formats}"
+                    )
+                    target_format = "m4a"
 
                 # Map target format to preferredcodec and final extension
                 preferred_codec = None
-                if target_format == 'mp3':
-                    preferred_codec = 'mp3'
-                    final_extension = '.mp3'
-                    temp_extension = '.mp3' # FFmpeg usually outputs .mp3
-                elif target_format in ('m4a', 'aac'):
-                    preferred_codec = 'm4a'
-                    final_extension = '.m4a'
-                    temp_extension = '.m4a' # FFmpeg usually outputs .m4a
-                elif target_format in ('ogg', 'vorbis'):
-                    preferred_codec = 'vorbis'
-                    final_extension = '.ogg'
-                    temp_extension = '.ogg' # FFmpeg usually outputs .ogg
-                elif target_format in ('webm', 'opus'):
-                    preferred_codec = 'opus'
-                    final_extension = '.webm' # Final desired container
-                    temp_extension = '.opus' # FFmpegExtractAudio with opus codec outputs .opus
+                if target_format == "mp3":
+                    preferred_codec = "mp3"
+                    final_extension = ".mp3"
+                    temp_extension = ".mp3"  # FFmpeg usually outputs .mp3
+                elif target_format in ("m4a", "aac"):
+                    preferred_codec = "m4a"
+                    final_extension = ".m4a"
+                    temp_extension = ".m4a"  # FFmpeg usually outputs .m4a
+                elif target_format in ("ogg", "vorbis"):
+                    preferred_codec = "vorbis"
+                    final_extension = ".ogg"
+                    temp_extension = ".ogg"  # FFmpeg usually outputs .ogg
+                elif target_format in ("webm", "opus"):
+                    preferred_codec = "opus"
+                    final_extension = ".webm"  # Final desired container
+                    temp_extension = (
+                        ".opus"  # FFmpegExtractAudio with opus codec outputs .opus
+                    )
 
-                if not preferred_codec: # Should not happen with the fallback logic
-                     raise ValueError(f"Internal error: Could not determine preferred codec for target format '{target_format}'")
+                if not preferred_codec:  # Should not happen with the fallback logic
+                    raise ValueError(
+                        f"Internal error: Could not determine preferred codec for target format '{target_format}'"
+                    )
 
                 # Determine target quality (bitrate)
-                target_quality = '192' # Default fallback quality
+                target_quality = "192"  # Default fallback quality
                 if selected_audio_format and selected_audio_format.abr:
                     # Use the bitrate of the selected audio stream
                     target_quality = str(int(selected_audio_format.abr))
-                    logger.info(f"Audio download: Using source bitrate {target_quality}k for transcoding.")
+                    logger.info(
+                        f"Audio download: Using source bitrate {target_quality}k for transcoding."
+                    )
                 else:
-                    logger.warning(f"Could not determine source bitrate for format {item.selected_audio_format_id}. Falling back to {target_quality}k.")
+                    logger.warning(
+                        f"Could not determine source bitrate for format {item.selected_audio_format_id}. Falling back to {target_quality}k."
+                    )
 
-                ydl_opts['postprocessors'].extend([
-                    {
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': preferred_codec,
-                        'preferredquality': target_quality,
-                    },
-                    add_metadata_pp, # Add metadata after conversion
-                    embed_thumbnail_pp, # Embed thumbnail after conversion
-                ])
-                logger.info(f"Audio download: Configured transcoding to {preferred_codec.upper()} (target container: {final_extension}) at {target_quality}k.")
+                ydl_opts["postprocessors"].extend(
+                    [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": preferred_codec,
+                            "preferredquality": target_quality,
+                        },
+                        add_metadata_pp,  # Add metadata after conversion
+                        embed_thumbnail_pp,  # Embed thumbnail after conversion
+                    ]
+                )
+                logger.info(
+                    f"Audio download: Configured transcoding to {preferred_codec.upper()} (target container: {final_extension}) at {target_quality}k."
+                )
 
-            else: # Video Download (is_video_merge or selected_video_format)
+            else:  # Video Download (is_video_merge or selected_video_format)
                 # --- Video Download ---
                 if target_format not in valid_video_formats:
-                    logger.warning(f"Invalid or unsupported target video format '{target_format}'. Falling back to 'mp4'. Valid: {valid_video_formats}")
-                    target_format = 'mp4'
+                    logger.warning(
+                        f"Invalid or unsupported target video format '{target_format}'. Falling back to 'mp4'. Valid: {valid_video_formats}"
+                    )
+                    target_format = "mp4"
 
                 final_extension = f".{target_format}"
                 temp_extension = final_extension
 
-                ydl_opts['postprocessors'].extend([
-                    {
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': target_format, # Use the validated target format
-                    },
-                    add_metadata_pp,
-                    embed_thumbnail_pp,
-                ])
-                logger.info(f"Video download: Configured conversion to container '{target_format}'.")
-
+                ydl_opts["postprocessors"].extend(
+                    [
+                        {
+                            "key": "FFmpegVideoConvertor",
+                            "preferedformat": target_format,  # Use the validated target format
+                        },
+                        add_metadata_pp,
+                        embed_thumbnail_pp,
+                    ]
+                )
+                logger.info(
+                    f"Video download: Configured conversion to container '{target_format}'."
+                )
 
             # --- Determine Final Output Path ---
             artist_part = item.artist or "Unknown Artist"
@@ -383,18 +447,20 @@ async def download_item(
             base_filename_raw = f"{artist_part} - {title_part}"
             safe_title_base = sanitize_filename(base_filename_raw)
             if final_extension == ".?":
-                 logger.error("Internal error: Final file extension was not determined.")
-                 final_extension = ".media"
+                logger.error("Internal error: Final file extension was not determined.")
+                final_extension = ".media"
 
             final_filename = f"{safe_title_base}{final_extension}"
             item.final_filepath = output_dir / final_filename
 
             # Check for existing final file *before* download
             if item.final_filepath.exists():
-                logger.warning(f"Output file already exists: '{item.final_filepath}'. Skipping.")
+                logger.warning(
+                    f"Output file already exists: '{item.final_filepath}'. Skipping."
+                )
                 _update_status("Skipped", "File already exists")
-                item.progress = 100 # Mark as complete visually
-                return # Exit download process for this item
+                item.progress = 100  # Mark as complete visually
+                return  # Exit download process for this item
 
             # --- Execute Download ---
             _update_status("Downloading")
@@ -410,46 +476,69 @@ async def download_item(
             # Find the processed file
             # Use the *sanitized* base name for globbing, as yt-dlp uses the sanitized name
             # in the temp directory before post-processing might rename it.
-            search_pattern = f'{safe_title_base}{temp_extension}'
-            logger.debug(f"Searching for processed file in temp dir using pattern: '{search_pattern}'")
+            search_pattern = f"{safe_title_base}{temp_extension}"
+            logger.debug(
+                f"Searching for processed file in temp dir using pattern: '{search_pattern}'"
+            )
             processed_files = list(temp_dir.glob(search_pattern))
             if not processed_files:
                 # Fallback check: Use the pattern based on the *original* title template
                 # This might catch cases where sanitization differs slightly or PP fails rename
-                original_temp_pattern = sanitize_filename(item.title or "untitled") + temp_extension
+                original_temp_pattern = (
+                    sanitize_filename(item.title or "untitled") + temp_extension
+                )
                 processed_files = list(temp_dir.glob(original_temp_pattern))
                 if processed_files:
-                     logger.warning(f"Could not find exact '{search_pattern}', but found matching original pattern: {processed_files[0]}. Using this.")
+                    logger.warning(
+                        f"Could not find exact '{search_pattern}', but found matching original pattern: {processed_files[0]}. Using this."
+                    )
                 else:
                     # Last resort: Check for *any* file with the temp_extension
-                    processed_files = list(temp_dir.glob(f'*{temp_extension}'))
+                    processed_files = list(temp_dir.glob(f"*{temp_extension}"))
                     if processed_files:
-                         logger.warning(f"Could not find exact name match, using first file with extension '{final_extension}': {processed_files[0]}")
+                        logger.warning(
+                            f"Could not find exact name match, using first file with extension '{final_extension}': {processed_files[0]}"
+                        )
                     else:
-                        all_files = list(temp_dir.glob('*.*'))
-                        logger.error(f"Could not find expected file ('{search_pattern}' or fallbacks with ext '{temp_extension}') in temp dir '{temp_dir}'. Found: {all_files}")
-                        raise FileNotFoundError(f"Processed file ('*{temp_extension}') not found in temp dir.")
-
+                        all_files = list(temp_dir.glob("*.*"))
+                        logger.error(
+                            f"Could not find expected file ('{search_pattern}' or fallbacks with ext '{temp_extension}') in temp dir '{temp_dir}'. Found: {all_files}"
+                        )
+                        raise FileNotFoundError(
+                            f"Processed file ('*{temp_extension}') not found in temp dir."
+                        )
 
             # Handle multiple matches (less likely now with specific extension)
             if len(processed_files) > 1:
                 # Prefer the one matching the expected sanitized name if possible
-                exact_match = [f for f in processed_files if f.name == f"{safe_title_base}{temp_extension}"]
-                temp_download_path = exact_match[0] if exact_match else processed_files[0]
-                logger.warning(f"Multiple files found matching '{temp_extension}', using: {temp_download_path}")
+                exact_match = [
+                    f
+                    for f in processed_files
+                    if f.name == f"{safe_title_base}{temp_extension}"
+                ]
+                temp_download_path = (
+                    exact_match[0] if exact_match else processed_files[0]
+                )
+                logger.warning(
+                    f"Multiple files found matching '{temp_extension}', using: {temp_download_path}"
+                )
             else:
-                 temp_download_path = processed_files[0]
+                temp_download_path = processed_files[0]
 
             logger.debug(f"Processed file found: {temp_download_path}")
 
             # Move the final file (shutil.move handles the rename to final_filepath)
-            logger.info(f"Moving '{temp_download_path.name}' to '{item.final_filepath}'")
+            logger.info(
+                f"Moving '{temp_download_path.name}' to '{item.final_filepath}'"
+            )
             shutil.move(str(temp_download_path), str(item.final_filepath))
 
             # --- Success ---
             _update_status("Complete")
-            item.progress = 100 # Ensure progress hits 100% on success
-            logger.info(f"Download successful for '{item.title}' -> '{item.final_filepath}'")
+            item.progress = 100  # Ensure progress hits 100% on success
+            logger.info(
+                f"Download successful for '{item.title}' -> '{item.final_filepath}'"
+            )
 
         # Temp directory cleaned up automatically
 
@@ -458,20 +547,24 @@ async def download_item(
         _update_status("Error", str(e))
         raise e
     except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e).split(':')[-1].strip() # Get cleaner error message
-        logger.error(f"yt-dlp DownloadError during download for '{item.title}': {error_msg}", exc_info=False)
+        error_msg = str(e).split(":")[-1].strip()  # Get cleaner error message
+        logger.error(
+            f"yt-dlp DownloadError during download for '{item.title}': {error_msg}",
+            exc_info=False,
+        )
         _update_status("Error", f"yt-dlp: {error_msg}")
         raise e
     except asyncio.CancelledError:
         logger.warning(f"Download cancelled for '{item.title}'")
         _update_status("Cancelled", "User cancelled")
-        raise # Re-raise CancelledError so the caller knows
+        raise  # Re-raise CancelledError so the caller knows
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Unexpected download error for '{item.title}': {error_msg}", exc_info=True)
+        logger.error(
+            f"Unexpected download error for '{item.title}': {error_msg}", exc_info=True
+        )
         _update_status("Error", f"Unexpected: {error_msg[:100]}")
         raise e
     finally:
         # Final status update is handled within the try/except blocks
         pass
-
