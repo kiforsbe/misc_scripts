@@ -7,6 +7,7 @@ import sys
 import tempfile
 from typing import Optional, Callable, Dict, Any
 
+from flask import json
 import yt_dlp
 
 from .models import DownloadItem, FormatInfo
@@ -69,6 +70,8 @@ async def fetch_info(url: str) -> DownloadItem:
         item.artist = (
             info_dict.get("channel") or info_dict.get("uploader") or "Unknown Artist"
         )
+        item.description = info_dict.get("description") # Fetch the description
+        logger.debug(f"Fetched description for '{item.title}': '{str(item.description)[:100]}...'") # Log fetched description
 
         upload_date_str = info_dict.get("upload_date")  # Format typically 'YYYYMMDD'
         if (
@@ -309,11 +312,10 @@ async def download_item(
             metadata_dict = {
                 "title": str(item.title) if item.title else None,
                 "artist": str(item.artist) if item.artist else None,
-                "date": (
-                    str(item.year) if item.year else None
-                ),  # yt-dlp expects string date
-                # Add more fields if needed, e.g., 'album', 'track'
+                "date": str(item.year) if item.year else None,  # yt-dlp expects string date
+                "description": json.dumps(str(item.description)) if item.description else None,
             }
+            
             # Filter out None values
             metadata_dict = {k: v for k, v in metadata_dict.items() if v is not None}
 
@@ -321,8 +323,7 @@ async def download_item(
                 "format": format_string,
                 "progress_hooks": [_progress_hook],
                 "outtmpl": str(temp_out_tmpl),
-                "windowsfilenames": sys.platform
-                == "win32",  # Use OS-specific sanitization
+                "windowsfilenames": sys.platform == "win32",  # Use OS-specific sanitization
                 "quiet": True,
                 "no_warnings": True,
                 "verbose": False,

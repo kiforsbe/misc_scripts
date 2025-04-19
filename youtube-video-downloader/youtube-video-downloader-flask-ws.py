@@ -50,13 +50,13 @@ else:
 # --- Flask App and Logging Setup ---
 app = Flask(__name__)
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.WARN, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger(__name__)  # Use a specific logger for the app
 
 # --- Temporary Directory Management ---
 TEMP_DIR = ".temp"  # Use a distinct name
-DELETE_DELAY = 300  # 5 minutes in seconds
+DELETE_DELAY = 2*60 # seconds until files are deleted (2 minutes)
 os.makedirs(TEMP_DIR, exist_ok=True)
 delete_queue = []
 queue_lock = threading.Lock()  # For thread safety

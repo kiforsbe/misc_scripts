@@ -73,6 +73,7 @@ class DownloadItem:
     duration: Optional[int] = None # Seconds
     artist: Optional[str] = None
     year: Optional[int] = None
+    description: Optional[str] = None
     # --- Format Information (populated after fetching info) ---
     # Store lists of FormatInfo objects
     audio_formats: List[FormatInfo] = field(default_factory=list)
