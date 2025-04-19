@@ -38,7 +38,7 @@
             display: flex;
             align-items: center;
             margin-left: 8px; /* Adjust spacing as needed */
-            position: relative; /* For dropdown positioning */
+            /* position: relative; */ /* <-- REMOVE THIS */
             font-size: 1.4rem;
             color: var(--yt-spec-text-primary);
             background-color: var(--yt-spec-badge-chip-background);
@@ -83,14 +83,14 @@
         }
         .ytdl-dropdown-menu {
             display: none; /* Hidden by default */
-            position: absolute;
-            top: 100%; /* Position below the button */
-            left: 0;
+            /* position: absolute; */ /* <-- CHANGE */
+            position: fixed;      /* <-- TO FIXED */
+            /* Remove top/bottom/left - will be set dynamically */
             background-color: var(--yt-spec-menu-background);
             border: 1px solid var(--yt-spec-10-percent-layer);
             border-radius: 4px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            z-index: 9999; /* INCREASED z-index significantly */
+            z-index: 10000; /* Even higher z-index */
             min-width: 200px;
             max-height: 300px;
             overflow-y: auto; /* Keep this for scrolling within the menu */
@@ -439,6 +439,12 @@
       const videoTitle = videoTitleElement?.textContent?.trim() || document.title.split(" - YouTube")[0] || 'youtube_video'; // Fallback title
       const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
       triggerDownload(videoUrl, null, null, null, safeFilenameHint); // Default download
+      // Ensure dropdown is hidden if open when main button is clicked
+      const menu = document.getElementById('ytdl-dropdown-menu');
+      if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
+        menu.classList.remove('show');
+        document.body.removeChild(menu); // Remove from body
+      }
     });
 
     const dropdownArrow = document.createElement('button');
@@ -446,47 +452,91 @@
     dropdownArrow.className = 'ytdl-dropdown-arrow';
     dropdownArrow.title = 'Show download options';
 
+    // Create the dropdown menu but DON'T append it to the container yet
     const dropdownMenu = document.createElement('div');
     dropdownMenu.className = 'ytdl-dropdown-menu';
     dropdownMenu.id = 'ytdl-dropdown-menu';
 
     dropdownArrow.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (dropdownMenu.classList.contains('show')) {
+      e.stopPropagation(); // Prevent body click listener closing it immediately
+
+      // Check if the menu is already shown (and attached to body)
+      const isShown = dropdownMenu.classList.contains('show') && dropdownMenu.parentNode === document.body;
+
+      if (isShown) {
+        // Hide and remove from body
         dropdownMenu.classList.remove('show');
+        document.body.removeChild(dropdownMenu);
       } else {
-        // Check cache status
+        // --- Calculate Position ---
+        const arrowRect = dropdownArrow.getBoundingClientRect(); // Position relative to the arrow
+        const menuMaxHeight = 300; // Match CSS max-height
+        const spaceBelow = window.innerHeight - arrowRect.bottom;
+        const spaceAbove = arrowRect.top;
+        const margin = 5; // Small margin
+
+        // Reset position styles before calculation
+        dropdownMenu.style.top = 'auto';
+        dropdownMenu.style.bottom = 'auto';
+        dropdownMenu.style.left = `${arrowRect.left}px`; // Align left with arrow
+
+        // Decide whether to place above or below
+        if (spaceBelow >= menuMaxHeight || spaceBelow >= spaceAbove) {
+          // Place below
+          dropdownMenu.style.top = `${arrowRect.bottom + margin}px`;
+          console.log("Dropdown positioned below arrow.");
+        } else {
+          // Place above
+          dropdownMenu.style.bottom = `${window.innerHeight - arrowRect.top + margin}px`;
+          console.log("Dropdown positioned above arrow.");
+        }
+
+        // --- Populate Content ---
+        // (Clear previous content just in case it wasn't removed properly)
+        while (dropdownMenu.firstChild) {
+            dropdownMenu.removeChild(dropdownMenu.firstChild);
+        }
+        // Check cache status and populate (same logic as before)
         if (formatDataCache) {
           console.log("Populating dropdown from cache.");
           populateDropdown(dropdownMenu, formatDataCache);
-          dropdownMenu.classList.add('show');
         } else if (isFetchingFormats) {
           console.log("Formats are being fetched, showing spinner.");
-          showDropdownSpinner(dropdownMenu); // Already adds 'show' class
+          showDropdownSpinner(dropdownMenu); // Needs to work without assuming menu is visible
         } else if (formatFetchError) {
           console.log("Showing fetch error in dropdown.");
-          showDropdownError(dropdownMenu, formatFetchError); // Already adds 'show' class
+          showDropdownError(dropdownMenu, formatFetchError); // Needs to work standalone
         } else {
-          // Fallback: Should not happen with proactive fetching, but just in case
+          // Fallback fetch
           console.warn("Formats not fetched yet and no error, attempting fetch now.");
           const videoUrl = window.location.href;
           showDropdownSpinner(dropdownMenu);
-          fetchFormats(videoUrl); // Trigger fetch (will update cache)
-          // Note: The menu will show loading, but won't auto-populate when fetch completes
-          // in this fallback case. User would need to close and reopen.
-          // Ideally, the proactive fetch prevents this state.
+          fetchFormats(videoUrl);
         }
+
+        // --- Append to body and show ---
+        document.body.appendChild(dropdownMenu);
+        // Use rAF to ensure styles are applied before adding 'show'
+        requestAnimationFrame(() => {
+            dropdownMenu.classList.add('show');
+        });
       }
     });
 
     container.appendChild(downloadButton);
     container.appendChild(dropdownArrow);
-    container.appendChild(dropdownMenu); // Append menu to container
+    // Note: dropdownMenu is NOT appended to container
 
     // Close dropdown if clicking outside
+    // Consider moving this listener setup outside createDownloadButton to avoid duplicates
     document.body.addEventListener('click', (e) => {
-      if (!container.contains(e.target) && dropdownMenu.classList.contains('show')) {
-        dropdownMenu.classList.remove('show');
+      const menu = document.getElementById('ytdl-dropdown-menu');
+      // Check if menu exists in body, is shown, and click was outside button container AND menu
+      if (menu && menu.parentNode === document.body && menu.classList.contains('show')) {
+          if (!container.contains(e.target) && !menu.contains(e.target)) {
+              menu.classList.remove('show');
+              document.body.removeChild(menu);
+          }
       }
     }, true); // Use capture phase
 
@@ -497,6 +547,8 @@
     // Try a more specific and potentially stable selector for the button container row
     const actionsContainer = document.querySelector('#actions #actions-inner #menu ytd-menu-renderer');
     // Fallback selector if the first one fails (might be needed in some YT layouts)
+
+    // Fallback selector remains the same
     const fallbackContainer = document.querySelector('#actions-inner');
 
     const targetContainer = actionsContainer || fallbackContainer; // Use the first one found
@@ -504,7 +556,7 @@
     const existingButton = document.getElementById('ytdl-custom-button-container');
 
     if (targetContainer && !existingButton) {
-      const containerName = actionsContainer ? '#actions-inner #flexible-item-buttons' : '#actions-inner';
+      const containerName = actionsContainer ? '#actions #actions-inner #menu ytd-menu-renderer' : '#actions-inner'; // Log correct name
       console.log(`Action container (${containerName}) found, inserting download button.`);
       const newButton = createDownloadButton();
 
@@ -539,7 +591,7 @@
       // Container not found yet, continue polling or give up
       retryCount++;
       if (retryCount > MAX_RETRIES) {
-        console.error(`Could not find button container (#actions-inner #flexible-item-buttons or #actions-inner) after ${MAX_RETRIES} retries. YouTube layout may have changed.`);
+        console.error(`Could not find button container (#menu-container #top-level-buttons-computed or #actions-inner) after ${MAX_RETRIES} retries. YouTube layout may have changed.`);
         if (buttonContainerInterval) clearInterval(buttonContainerInterval);
         return false; // Indicate failure
       }
@@ -561,10 +613,41 @@
         existingButton.remove();
       }
 
+      // --- START: Remove Menu from Body ---
+      const existingMenu = document.getElementById('ytdl-dropdown-menu');
+      if (existingMenu && existingMenu.parentNode === document.body) {
+        console.log("Removing dropdown menu from body due to URL change.");
+        document.body.removeChild(existingMenu);
+      }
+      // --- END: Remove Menu from Body ---
+
+      // Clear cache and reset fetch state
+      formatDataCache = null;
+      isFetchingFormats = false;
+      formatFetchError = null;
+      console.log("Format cache and fetch state cleared.");
+
       // Restart the polling process
       if (buttonContainerInterval) clearInterval(buttonContainerInterval);
       buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
-      insertButton(); // Try immediately (will trigger fetchFormats on success)
+      insertButton(); // Try immediately
+    } else {
+      // Optional: Check if button exists even on same URL
+      const existingButton = document.getElementById('ytdl-custom-button-container');
+      const existingMenu = document.getElementById('ytdl-dropdown-menu'); // Check menu too
+      if (!existingButton && buttonContainerInterval) {
+          console.log("Button missing on same video ID, restarting poll.");
+          retryCount = 0;
+          // Clean up menu if it somehow got left behind
+          if (existingMenu && existingMenu.parentNode === document.body) {
+              document.body.removeChild(existingMenu);
+          }
+          formatDataCache = null;
+          isFetchingFormats = false;
+          formatFetchError = null;
+          buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
+          insertButton();
+      }
     }
   }
 
