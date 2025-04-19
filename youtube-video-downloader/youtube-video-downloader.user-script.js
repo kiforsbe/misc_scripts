@@ -141,7 +141,9 @@
     `);
 
   // --- Core Functions ---
-
+  function gcd(a, b) {
+    return b === 0 ? a : gcd(b, a % b);
+  }
   function getVideoIdFromUrl() {
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get('v');
@@ -313,15 +315,29 @@
     return bitrate ? `${Math.round(bitrate)}k` : '';
   }
 
-  function formatResolution(format) {
-    let res = '';
+  function formatVideoDetails(format) {
+    let ratioStr = '';
+    let resStr = '';
+
     if (format.width && format.height) {
-      res += `${format.height}p`;
+      // Calculate aspect ratio
+      const commonDivisor = gcd(format.width, format.height);
+      const ratioW = format.width / commonDivisor;
+      const ratioH = format.height / commonDivisor;
+      ratioStr = `[${ratioW}:${ratioH}]`;
+
+      // Format resolution and FPS
+      resStr = `${format.height}p`;
       if (format.fps) {
-        res += `${format.fps}`;
+        resStr += `${format.fps}`;
       }
+    } else if (format.height) {
+      // Fallback if only height is known
+      resStr = `${format.height}p${format.fps || ''}`;
+      ratioStr = '[?:?]'; // Indicate unknown ratio
     }
-    return res;
+
+    return `${ratioStr} ${resStr}`.trim(); // Combine ratio and resolution/fps
   }
 
   function populateDropdown(menu, data) {
@@ -339,6 +355,8 @@
     const videoTitle = data.title || 'video';
     // Basic sanitization for filename hint
     const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
+    const bestAudio = (data.audio_formats && data.audio_formats.length > 0) ? data.audio_formats[0] : null;
+    const bestVideo = (data.video_formats && data.video_formats.length > 0) ? data.video_formats[0] : null; // Assuming sorted best first by yt-dlp
 
     // 2. Create and append new elements
 
@@ -350,72 +368,131 @@
 
     // --- Helper to create item ---
     const createItem = (text, audioId, videoId, targetFormat = null) => {
-      const item = document.createElement('a'); // Use anchor for better semantics
-      item.href = '#'; // Prevent page jump
+      const item = document.createElement('a');
+      item.href = '#';
       item.className = 'ytdl-dropdown-item';
-      item.textContent = text;
+      // Add a little space after the icon
+      item.textContent = text.replace(/^(\S+)/, '$1 '); // Adds space after first non-space sequence (the icon)
       item.addEventListener('click', (e) => {
-        e.preventDefault(); // Prevent anchor jump
-        e.stopPropagation(); // Prevent closing menu immediately if not intended
+        e.preventDefault();
+        e.stopPropagation();
         triggerDownload(data.url, audioId, videoId, targetFormat, safeFilenameHint);
-        menu.classList.remove('show'); // Hide menu after click
+        // Find the menu again by ID in case it was re-created
+        const currentMenu = document.getElementById('ytdl-dropdown-menu');
+        if (currentMenu && currentMenu.parentNode === document.body) {
+          currentMenu.classList.remove('show');
+          document.body.removeChild(currentMenu);
+        }
       });
       return item;
     };
 
     // --- Populate with format options ---
 
-    // 1. Best Video + Audio (Default)
-    menu.appendChild(createItem('Best Quality (Video+Audio)', null, null));
-
-    // 2. Best Video Only
-    if (data.video_formats && data.video_formats.length > 0) {
-      const bestVideo = data.video_formats[0]; // Assuming sorted best first by yt-dlp
-      const text = `Best Video Only (${formatResolution(bestVideo)}, ${bestVideo.ext}, ${bestVideo.vcodec || ''})`;
-      menu.appendChild(createItem(text, null, bestVideo.format_id));
+    // 1. Best Video + Audio (Default) - Now with details
+    if (bestVideo && bestAudio) {
+      const videoDetails = formatVideoDetails(bestVideo);
+      const audioDetails = `${formatBitrate(bestAudio.abr)} ${bestAudio.ext}`;
+      const text = `⭐🎬 ${videoDetails} (${bestVideo.ext}) + 🎧 (${audioDetails})`;
+      menu.appendChild(createItem(text, null, null)); // Still uses null, null to trigger default merge
+    } else if (bestVideo) {
+      // Fallback if only best video is found (e.g., no separate audio streams)
+      const videoDetails = formatVideoDetails(bestVideo);
+      let text = `⭐🎬 ${videoDetails} (${bestVideo.ext})`;
+      if (bestVideo.acodec) {
+        text += ` + 🎧 (${bestVideo.acodec})`; // If video includes audio
+      } else {
+        text += ' (Video Only)'; // Should be rare with default yt-dlp behavior
+      }
+      menu.appendChild(createItem(text, null, null)); // Still trigger default
+    } else if (bestAudio) {
+      // Fallback if only best audio is found (highly unlikely for default)
+      const text = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.ext}, ${bestAudio.acodec || '?'})`;
+      menu.appendChild(createItem(text, null, null)); // Still trigger default (will likely just download audio)
+    } else {
+      // Absolute fallback if no formats found - unlikely
+      menu.appendChild(createItem('🎬 Best Quality (Unavailable)', null, null));
     }
 
-    // 3. Best Audio Only
-    if (data.audio_formats && data.audio_formats.length > 0) {
-      const bestAudio = data.audio_formats[0]; // Assuming sorted best first
-      const text = `Best Audio Only (${formatBitrate(bestAudio.abr)}, ${bestAudio.ext}, ${bestAudio.acodec || ''})`;
+    // 2. Best Audio Only
+    if (bestAudio) {
+      const text = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.ext}, ${bestAudio.acodec || '?'})`;
       menu.appendChild(createItem(text, bestAudio.format_id, null));
 
-      // 4. Best Audio converted to MP3
-      const textMp3 = `Best Audio (-> MP3) (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || ''})`;
+      // 3. Best Audio converted to MP3
+      const textMp3 = `⭐🎧 Best Audio -> MP3 (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || '?'})`;
       menu.appendChild(createItem(textMp3, bestAudio.format_id, null, 'mp3'));
     }
 
-    // 5. Specific Video Resolutions with Best Audio
-    const commonResolutions = [1080, 720, 480, 360];
-    const addedResolutions = new Set();
-    const bestAudio = (data.audio_formats && data.audio_formats.length > 0) ? data.audio_formats[0] : null;
+    // 4. Specific Video Resolutions with Best Audio (if available) or Video's own audio
+    const commonResolutions = [
+      2160, // 4K UHD (16:9)
+      1920, // Common Portrait (e.g., 1080x1920), Square (1920x1920)
+      1440, // QHD (16:9), Common Ultrawide (e.g., 3440x1440)
+      1280, // Common Portrait (e.g., 720x1280)
+      1200, // WUXGA (16:10), UXGA (4:3)
+      1080, // Full HD (16:9), Common Ultrawide (e.g., 2560x1080), Square (1080x1080)
+      1050, // WSXGA+ (16:10), SXGA+ (4:3)
+      960,  // (4:3)
+      900,  // WXGA+ (16:10)
+      854,  // FWVGA (approx 16:9 portrait)
+      800,  // WXGA (16:10)
+      768,  // XGA (4:3)
+      720,  // HD (16:9), Square (720x720)
+      600,  // SVGA (4:3)
+      480,  // SD (various ratios)
+      360   // SD (various ratios)
+    ];
+    const addedFormats = new Set(); // Track added format_ids to avoid duplicates
 
     if (data.video_formats) {
-      data.video_formats.forEach(vf => {
-        if (vf.height && commonResolutions.includes(vf.height) && !addedResolutions.has(vf.height)) {
-          // Prefer mp4 if available for this resolution, otherwise take first found
-          let chosenFormat = vf;
-          const mp4Version = data.video_formats.find(f => f.height === vf.height && f.ext === 'mp4');
-          if (mp4Version) {
-            chosenFormat = mp4Version;
-          }
+      // Prioritize common resolutions first
+      commonResolutions.forEach(resHeight => {
+        // Define tolerance range (approx 10%)
+        const minHeight = resHeight * 0.9;
+        const maxHeight = resHeight * 1.1;
+
+        // Find the best format within the tolerance range for this resolution
+        // Prioritize mp4, then webm, then the first found within range.
+        let chosenFormat = data.video_formats.find(f =>
+            f.height >= minHeight && f.height <= maxHeight && // Check within tolerance
+            f.ext === 'mp4' &&
+            !addedFormats.has(f.format_id)
+          )
+          || data.video_formats.find(f =>
+            f.height >= minHeight && f.height <= maxHeight && // Check within tolerance
+            f.ext === 'webm' &&
+            !addedFormats.has(f.format_id)
+          )
+          || data.video_formats.find(f =>
+            f.height >= minHeight && f.height <= maxHeight && // Check within tolerance
+            !addedFormats.has(f.format_id)
+          );
+
+        if (chosenFormat) {
+          const videoDetails = formatVideoDetails(chosenFormat);
+          let text = '';
+          let audioId = null;
+          let videoId = chosenFormat.format_id;
+          let shouldAddItem = false; // Flag to control adding the item
 
           if (bestAudio) {
-            // Offer combined format download
-            const text = `${formatResolution(chosenFormat)} (${chosenFormat.ext}) + Best Audio (${formatBitrate(bestAudio.abr)} ${bestAudio.ext})`;
-            menu.appendChild(createItem(text, bestAudio.format_id, chosenFormat.format_id));
-            addedResolutions.add(vf.height);
+            // Offer combined format download with best separate audio
+            text = `🎬 ${videoDetails} (${chosenFormat.ext}) + 🎧 (${formatBitrate(bestAudio.abr)} ${bestAudio.ext})`;
+            audioId = bestAudio.format_id;
+            shouldAddItem = true;
           } else if (chosenFormat.acodec) {
             // If video format has audio itself (no separate best audio needed/available)
-            const text = `${formatResolution(chosenFormat)} (${chosenFormat.ext}, ${chosenFormat.vcodec || ''}+${chosenFormat.acodec})`;
-            menu.appendChild(createItem(text, null, chosenFormat.format_id));
-            addedResolutions.add(vf.height);
-          } else {
-            // Offer video-only if no audio available at all
-            const text = `${formatResolution(chosenFormat)} Video Only (${chosenFormat.ext}, ${chosenFormat.vcodec || ''})`;
-            menu.appendChild(createItem(text, null, chosenFormat.format_id));
-            addedResolutions.add(vf.height);
+            text = `🎬 ${videoDetails} (${chosenFormat.ext}, ${chosenFormat.vcodec || '?'} + ${chosenFormat.acodec})`;
+            // audioId remains null, videoId is set
+            shouldAddItem = true;
+          }
+          // REMOVED: The 'else' block that previously created the "[V] Video Only" option is gone.
+          // We only add items if they include audio (either separate or muxed).
+
+          if (shouldAddItem) {
+            menu.appendChild(createItem(text, audioId, videoId));
+            addedFormats.add(chosenFormat.format_id);
           }
         }
       });
@@ -494,7 +571,7 @@
         // --- Populate Content ---
         // (Clear previous content just in case it wasn't removed properly)
         while (dropdownMenu.firstChild) {
-            dropdownMenu.removeChild(dropdownMenu.firstChild);
+          dropdownMenu.removeChild(dropdownMenu.firstChild);
         }
         // Check cache status and populate (same logic as before)
         if (formatDataCache) {
@@ -518,7 +595,7 @@
         document.body.appendChild(dropdownMenu);
         // Use rAF to ensure styles are applied before adding 'show'
         requestAnimationFrame(() => {
-            dropdownMenu.classList.add('show');
+          dropdownMenu.classList.add('show');
         });
       }
     });
@@ -533,10 +610,10 @@
       const menu = document.getElementById('ytdl-dropdown-menu');
       // Check if menu exists in body, is shown, and click was outside button container AND menu
       if (menu && menu.parentNode === document.body && menu.classList.contains('show')) {
-          if (!container.contains(e.target) && !menu.contains(e.target)) {
-              menu.classList.remove('show');
-              document.body.removeChild(menu);
-          }
+        if (!container.contains(e.target) && !menu.contains(e.target)) {
+          menu.classList.remove('show');
+          document.body.removeChild(menu);
+        }
       }
     }, true); // Use capture phase
 
@@ -636,17 +713,17 @@
       const existingButton = document.getElementById('ytdl-custom-button-container');
       const existingMenu = document.getElementById('ytdl-dropdown-menu'); // Check menu too
       if (!existingButton && buttonContainerInterval) {
-          console.log("Button missing on same video ID, restarting poll.");
-          retryCount = 0;
-          // Clean up menu if it somehow got left behind
-          if (existingMenu && existingMenu.parentNode === document.body) {
-              document.body.removeChild(existingMenu);
-          }
-          formatDataCache = null;
-          isFetchingFormats = false;
-          formatFetchError = null;
-          buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
-          insertButton();
+        console.log("Button missing on same video ID, restarting poll.");
+        retryCount = 0;
+        // Clean up menu if it somehow got left behind
+        if (existingMenu && existingMenu.parentNode === document.body) {
+          document.body.removeChild(existingMenu);
+        }
+        formatDataCache = null;
+        isFetchingFormats = false;
+        formatFetchError = null;
+        buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
+        insertButton();
       }
     }
   }

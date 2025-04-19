@@ -50,7 +50,7 @@ else:
 # --- Flask App and Logging Setup ---
 app = Flask(__name__)
 logging.basicConfig(
-    level=logging.WARN, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 log = logging.getLogger(__name__)  # Use a specific logger for the app
 

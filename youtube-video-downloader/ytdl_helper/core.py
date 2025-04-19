@@ -428,16 +428,22 @@ async def download_item(
                 final_extension = f".{target_format}"
                 temp_extension = final_extension
 
-                ydl_opts["postprocessors"].extend(
-                    [
-                        {
-                            "key": "FFmpegVideoConvertor",
-                            "preferedformat": target_format,  # Use the validated target format
-                        },
-                        add_metadata_pp,
-                        embed_thumbnail_pp,
-                    ]
-                )
+                # mp4 is handled by merge_output_format
+                if target_format == "mp4":
+                    # Remux only, no transcoding, do not add the merger postprocessor!!!
+                    ydl_opts["merge_output_format"] = "mp4"
+                else:
+                    ydl_opts["postprocessors"].append({
+                        "key": "FFmpegVideoRemuxer",
+                        "preferedformat": target_format,  # Use the validated target format
+                    })
+
+                # Add metadata and thumbnail embedding
+                # These should be after the remuxer to ensure they apply to the final file
+                ydl_opts["postprocessors"].extend([
+                    add_metadata_pp,
+                    embed_thumbnail_pp,
+                ])
                 logger.info(
                     f"Video download: Configured conversion to container '{target_format}'."
                 )
