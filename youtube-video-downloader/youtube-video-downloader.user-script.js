@@ -392,13 +392,12 @@
     // 1. Best Video + Audio (Default) - Now with details
     if (bestVideo && bestAudio) {
       const videoDetails = formatVideoDetails(bestVideo);
-      const audioDetails = `${formatBitrate(bestAudio.abr)} ${bestAudio.ext}`;
-      const text = `⭐🎬 ${videoDetails} (${bestVideo.ext}) + 🎧 (${audioDetails})`;
+      const text = `⭐🎬 ${videoDetails} (${bestVideo.vcodec}) + 🎧 (${formatBitrate(bestAudio.abr)} ${bestAudio.acodec})`;
       menu.appendChild(createItem(text, null, null)); // Still uses null, null to trigger default merge
     } else if (bestVideo) {
       // Fallback if only best video is found (e.g., no separate audio streams)
       const videoDetails = formatVideoDetails(bestVideo);
-      let text = `⭐🎬 ${videoDetails} (${bestVideo.ext})`;
+      let text = `⭐🎬 ${videoDetails} (${bestVideo.vcodec})`;
       if (bestVideo.acodec) {
         text += ` + 🎧 (${bestVideo.acodec})`; // If video includes audio
       } else {
@@ -407,7 +406,7 @@
       menu.appendChild(createItem(text, null, null)); // Still trigger default
     } else if (bestAudio) {
       // Fallback if only best audio is found (highly unlikely for default)
-      const text = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.ext}, ${bestAudio.acodec || '?'})`;
+      const text = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || '?'})`;
       menu.appendChild(createItem(text, null, null)); // Still trigger default (will likely just download audio)
     } else {
       // Absolute fallback if no formats found - unlikely
@@ -416,11 +415,11 @@
 
     // 2. Best Audio Only
     if (bestAudio) {
-      const text = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.ext}, ${bestAudio.acodec || '?'})`;
+      const text = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || '?'})`;
       menu.appendChild(createItem(text, bestAudio.format_id, null));
 
       // 3. Best Audio converted to MP3
-      const textMp3 = `⭐🎧 Best Audio -> MP3 (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || '?'})`;
+      const textMp3 = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || '?'}) -> MP3`;
       menu.appendChild(createItem(textMp3, bestAudio.format_id, null, 'mp3'));
     }
 
@@ -478,12 +477,12 @@
 
           if (bestAudio) {
             // Offer combined format download with best separate audio
-            text = `🎬 ${videoDetails} (${chosenFormat.ext}) + 🎧 (${formatBitrate(bestAudio.abr)} ${bestAudio.ext})`;
+            text = `🎬 ${videoDetails} (${chosenFormat.vcodec}) + 🎧 (${formatBitrate(bestAudio.abr)} ${bestAudio.acodec})`;
             audioId = bestAudio.format_id;
             shouldAddItem = true;
           } else if (chosenFormat.acodec) {
             // If video format has audio itself (no separate best audio needed/available)
-            text = `🎬 ${videoDetails} (${chosenFormat.ext}, ${chosenFormat.vcodec || '?'} + ${chosenFormat.acodec})`;
+            text = `🎬 ${videoDetails} (${chosenFormat.vcodec}, ${chosenFormat.vcodec || '?'} + ${chosenFormat.acodec})`;
             // audioId remains null, videoId is set
             shouldAddItem = true;
           }
