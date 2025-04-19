@@ -536,6 +536,13 @@
     dropdownArrow.addEventListener('click', (e) => {
       e.stopPropagation(); // Prevent body click listener closing it immediately
 
+      // Get the main container element (needed for right alignment)
+      const buttonContainer = document.getElementById('ytdl-custom-button-container');
+      if (!buttonContainer) {
+          console.error("Could not find button container for positioning dropdown.");
+          return; // Should not happen, but good practice
+      }
+
       // Check if the menu is already shown (and attached to body)
       const isShown = dropdownMenu.classList.contains('show') && dropdownMenu.parentNode === document.body;
 
@@ -545,7 +552,8 @@
         document.body.removeChild(dropdownMenu);
       } else {
         // --- Calculate Position ---
-        const arrowRect = dropdownArrow.getBoundingClientRect(); // Position relative to the arrow
+        const arrowRect = dropdownArrow.getBoundingClientRect(); // Still needed for vertical positioning
+        const containerRect = buttonContainer.getBoundingClientRect();
         const menuMaxHeight = 300; // Match CSS max-height
         const spaceBelow = window.innerHeight - arrowRect.bottom;
         const spaceAbove = arrowRect.top;
@@ -554,7 +562,13 @@
         // Reset position styles before calculation
         dropdownMenu.style.top = 'auto';
         dropdownMenu.style.bottom = 'auto';
-        dropdownMenu.style.left = `${arrowRect.left}px`; // Align left with arrow
+        dropdownMenu.style.left = 'auto'; // Reset left
+        dropdownMenu.style.right = 'auto'; // Reset right
+
+        // --- Set Right Alignment ---
+        // Align the menu's right edge with the container's right edge
+        dropdownMenu.style.right = `${window.innerWidth - containerRect.right - 24}px`;
+        console.log(`Dropdown right aligned to: ${window.innerWidth - containerRect.right - 24}px`);
 
         // Decide whether to place above or below
         if (spaceBelow >= menuMaxHeight || spaceBelow >= spaceAbove) {
