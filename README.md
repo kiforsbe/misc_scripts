@@ -186,7 +186,9 @@ A script to parse RSS feeds and download enclosures (e.g., audio, video, or othe
 - json
 
 ## youtube-video-downloader
-A collection of youtube download scripts using the `ytdl_helper` library. It includes a command-line interface and a text-based user interface (TUI) for downloading YouTube videos and audio.
+A collection of youtube download scripts using the `ytdl_helper` library.
+It includes a command-line interface and a text-based user interface (TUI) for downloading YouTube videos and audio. It also includes a Flask web service for downloading YouTube videos and audio via a web interface, and a user script for adding a download button to YouTube pages.
+Now integrates with `music_style_classifier.py` to classify the music style of downloaded audio files.
 
 ### ytdl_helper library
 This library provides functionalities for downloading YouTube videos and audio efficiently. Users can fetch video information (metadata, available formats) and download content directly. The library supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
@@ -213,6 +215,7 @@ python youtube-video-downloader-cli.py download "VIDEO_URL" -r 720p -b 192k -f m
 - ytdl_helper (and its dependencies, likely yt-dlp)
 - tqdm
 - ffmpeg (must be installed and in the system PATH)
+- music_style_classifier.py
 
 ### youtube-video-downloader-gui.py
 A Text-based User Interface (TUI) built with urwid for downloading YouTube videos. It takes video URLs as command-line arguments, fetches their information asynchronously using ytdl_helper, and displays them in an interactive list. Users can select items, choose specific video and audio formats via a detailed dialog, and initiate downloads. The TUI shows status updates and progress bars for each item. Batch pre-selection of best audio or video is possible via command-line flags (--audio-only, --video).
@@ -235,6 +238,7 @@ A Text-based User Interface (TUI) built with urwid for downloading YouTube video
 - ytdl_helper (and its dependencies, likely yt-dlp)
 - urwid
 - ffmpeg (must be installed and in the system PATH)
+- music_style_classifier.py
 - **Note! (Windows specific):** ctypes (standard library, used for console setup)
 
 ### youtube-video-downloader-flask-ws.py & youtube-video-downloader-user-script.js
@@ -262,6 +266,18 @@ curl -X POST -H "Content-Type: application/json" -d '{"url": "VIDEO_URL", "forma
 - Flask
 - ytdl_helper (and its dependencies, likely yt-dlp)
 - ffmpeg (must be installed and in the system PATH)
+- music_style_classifier.py
+
+## music_style_classifier.py
+A script that takes as imput an audio/video file to classify the music style of the file. It uses a pre-trained model to classify the music style and outputs the result.
+It is intended to be used as a command line tool, but it can also be used as a library (get_music_genre(file_path: str, track_index: int = None) -> str | None:).
+
+### Requires
+- librosa
+- tensorflow
+- numpy
+- ffmpeg
+- transformers
 
 # Experimental
 
