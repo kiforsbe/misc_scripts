@@ -531,6 +531,15 @@ Examples:
   python youtube-video-downloader-cli.py download https://www.youtube.com/watch?v=dQw4w9WgXcQ -r 720p -b 128k --format mkv
 """
     )
+
+    # --- Add log level argument to the main parser ---
+    parser.add_argument(
+        '--log-level',
+        default='WARN',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help='Set the logging level (default: INFO)'
+    )
+
     subparsers = parser.add_subparsers(dest="command", required=True, help="Sub-command help")
 
     # --- Info Sub-parser ---
@@ -557,7 +566,6 @@ Examples:
         "-b", "--audio-bitrate", metavar="KBPS",
         help="Desired audio bitrate in kbps (e.g., 192, 128k). Selects closest available for format selection. (Default: best)"
     )
-    # --- Add format argument ---
     parser_download.add_argument(
         "-f", "--format", metavar="EXT",
         help="Target container format (e.g., mp4, mkv, webm, mp3, m4a, ogg). Overrides defaults."
@@ -565,6 +573,27 @@ Examples:
     parser_download.set_defaults(func=handle_download_sync)
 
     args = parser.parse_args()
+
+    # --- Configure logging based on args ---
+    log_level_str = args.log_level.upper()
+    log_level = getattr(logging, log_level_str, logging.WARN)
+
+    # Reconfigure the root logger
+    # Remove existing handlers if basicConfig was called before
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    logging.basicConfig(
+        level=log_level, # Set the level based on the argument
+        format='%(levelname)s: %(message)s',
+        stream=sys.stderr
+    )
+    # Re-apply tqdm silencing if needed, though setting root level might cover it
+    logging.getLogger('tqdm').setLevel(logging.WARNING)
+    # Optionally set ytdl_helper level based on main level
+    logging.getLogger("ytdl_helper").setLevel(max(log_level, logging.INFO)) # Keep ytdl_helper at least INFO unless main level is DEBUG
+
+    logger.info(f"Log level set to {log_level_str}")
 
     # Execute the appropriate handler function
     args.func(args)

@@ -12,8 +12,14 @@ import yt_dlp
 
 from .models import DownloadItem, FormatInfo
 from .utils import sanitize_filename, check_ffmpeg
+from .ffmpeg_genre_pp import FFmpegGenrePP
 
 logger = logging.getLogger(__name__)
+
+# Register your custom postprocessor with yt-dlp's registry
+# The key should be the class name ('FFmpegGenrePP')
+yt_dlp.postprocessor.postprocessors.value['FFmpegGenrePP'] = FFmpegGenrePP
+logger.info("Registered custom postprocessor: FFmpegGenrePP")
 
 # Define callback types for clarity
 ProgressCallbackType = Callable  # Simplified for now
@@ -338,7 +344,14 @@ async def download_item(
             # --- Configure Postprocessors ---
             final_extension = ".?"  # The final desired extension
             temp_extension = ".?"  # The extension expected in temp dir after PP
-            add_metadata_pp = {"key": "FFmpegMetadata", "add_metadata": True}
+            add_metadata_pp = {
+                "key": "FFmpegMetadata",
+                "add_metadata": True,
+                "add_chapters": True,
+            }
+            add_genremetadata_pp = {
+                "key": "FFmpegGenre",
+            }
             embed_thumbnail_pp = {
                 "key": "EmbedThumbnail",
                 "already_have_thumbnail": False,
@@ -410,6 +423,7 @@ async def download_item(
                             "preferredquality": target_quality,
                         },
                         add_metadata_pp,  # Add metadata after conversion
+                        add_genremetadata_pp,  # Add genre metadata after conversion
                         embed_thumbnail_pp,  # Embed thumbnail after conversion
                     ]
                 )
@@ -442,6 +456,7 @@ async def download_item(
                 # These should be after the remuxer to ensure they apply to the final file
                 ydl_opts["postprocessors"].extend([
                     add_metadata_pp,
+                    add_genremetadata_pp,
                     embed_thumbnail_pp,
                 ])
                 logger.info(
