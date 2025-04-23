@@ -183,7 +183,7 @@
     menu.classList.add('show'); // Ensure it's visible
   }
 
-  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, filenameHint = 'download') {
+  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download') {
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
 
     const downloadButton = document.getElementById('ytdl-download-button');
@@ -194,6 +194,8 @@
     if (audioId) params.append('audio_format_id', audioId);
     if (videoId) params.append('video_format_id', videoId);
     if (targetFormat) params.append('target_format', targetFormat);
+    if (targetAudioParams) params.append('target_audio_params', targetAudioParams);
+    if (targetVideoParams) params.append('target_video_params', targetVideoParams);
 
     const requestUrl = `${FLASK_SERVICE_BASE_URL}/download?${params.toString()}`;
 
@@ -367,7 +369,7 @@
     menu.appendChild(header);
 
     // --- Helper to create item ---
-    const createItem = (text, audioId, videoId, targetFormat = null) => {
+    const createItem = (text, audioId, videoId, targetFormat = null, targetAudioParams = null, targetVideoParams = null) => {
       const item = document.createElement('a');
       item.href = '#';
       item.className = 'ytdl-dropdown-item';
@@ -376,7 +378,7 @@
       item.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        triggerDownload(data.url, audioId, videoId, targetFormat, safeFilenameHint);
+        triggerDownload(data.url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, safeFilenameHint);
         // Find the menu again by ID in case it was re-created
         const currentMenu = document.getElementById('ytdl-dropdown-menu');
         if (currentMenu && currentMenu.parentNode === document.body) {
@@ -415,12 +417,32 @@
 
     // 2. Best Audio Only
     if (bestAudio) {
-      const text = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || '?'})`;
-      menu.appendChild(createItem(text, bestAudio.format_id, null));
+      const sourceBitrate = bestAudio.abr; // Get the source bitrate
+      const sourceBitrateText = formatBitrate(sourceBitrate);
+      const sourceCodec = bestAudio.acodec || '?';
 
-      // 3. Best Audio converted to MP3
-      const textMp3 = `⭐🎧 Best Audio (${formatBitrate(bestAudio.abr)}, ${bestAudio.acodec || '?'}) -> MP3`;
-      menu.appendChild(createItem(textMp3, bestAudio.format_id, null, 'mp3'));
+      // --- Option: Best Audio (Original Format) ---
+      const originalText = `⭐🎧 Best Audio (${sourceBitrateText}, ${sourceCodec})`;
+      menu.appendChild(createItem(originalText, bestAudio.format_id, null));
+
+      // --- Option: Best Audio -> MP3 (Source Bitrate) ---
+      // Note: The backend needs to handle 'mp3' without a specific bitrate to mean 'best possible mp3' or 'source bitrate mp3'
+      const mp3SourceText = `⭐🎧 Best Audio (${sourceBitrateText}, ${sourceCodec}) -> MP3 (Source)`;
+      menu.appendChild(createItem(mp3SourceText, bestAudio.format_id, null, 'mp3')); // Pass 'mp3' as target
+
+      // --- Options: Best Audio -> MP3 (Specific Lower Bitrates) ---
+      const targetMp3Bitrates = [192, 128, 96]; // Desired lower bitrates
+
+      targetMp3Bitrates.forEach(targetBr => {
+        // Only add the option if the target bitrate is lower than the source bitrate
+        if (sourceBitrate && targetBr < sourceBitrate) {
+          // Construct the target format string (e.g., 'mp3:192')
+          // IMPORTANT: Your Flask backend needs to be updated to parse this format string
+          // (e.g., split by ':' to get format and bitrate)
+          const mp3TargetText = `⭐🎧 Best Audio (${sourceBitrateText}, ${sourceCodec}) -> MP3 (${targetBr}k)`;
+          menu.appendChild(createItem(mp3TargetText, bestAudio.format_id, null, "mp3", targetBr)); // Pass 'mp3' and target bitrate
+        }
+      });
     }
 
     // 4. Specific Video Resolutions with Best Audio (if available) or Video's own audio

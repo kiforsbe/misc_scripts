@@ -179,6 +179,8 @@ async def download_item(
     item: DownloadItem,
     output_dir: pathlib.Path,
     target_format: Optional[str] = None,
+    target_audio_params: Optional[str] = None,
+    target_video_params: Optional[str] = None,
     progress_callback: Optional[ProgressCallbackType] = None,
     status_callback: Optional[StatusCallbackType] = None,
 ) -> None:
@@ -404,7 +406,10 @@ async def download_item(
 
                 # Determine target quality (bitrate)
                 target_quality = "192"  # Default fallback quality
-                if selected_audio_format and selected_audio_format.abr:
+                if target_audio_params:
+                    # Use the provided target audio parameters (e.g., "192k")
+                    target_quality = target_audio_params.strip("kK")
+                elif selected_audio_format and selected_audio_format.abr:
                     # Use the bitrate of the selected audio stream
                     target_quality = str(int(selected_audio_format.abr))
                     logger.info(

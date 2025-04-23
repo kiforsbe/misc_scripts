@@ -127,6 +127,8 @@ async def _process_download(
     audio_format_id: str | None,
     video_format_id: str | None,
     target_format: str | None,
+    target_audio_params: str | None,
+    target_video_params: str | None,
 ) -> pathlib.Path:
     """
     Fetches info, selects formats, downloads the item into TEMP_DIR,
@@ -207,7 +209,7 @@ async def _process_download(
         item.selected_video_format_id = selected_video_id
 
         log.info(
-            f"Starting download for '{item.title}' (V:{selected_video_id}, A:{selected_audio_id}, Target:{target_format})"
+            f"Starting download for '{item.title}' (V:{selected_video_id}, A:{selected_audio_id}, Target:{target_format}, AudioParams:{target_audio_params}, VideoParams:{target_video_params})"
         )
 
         # Define simple callbacks for logging within the async task
@@ -245,6 +247,8 @@ async def _process_download(
             item,
             output_dir=temp_dir_path,  # Download directly into our temp dir
             target_format=target_format,
+            target_audio_params=target_audio_params,
+            target_video_params=target_video_params,
             status_callback=status_callback,
             progress_callback=progress_callback,
         )
@@ -387,6 +391,8 @@ def download():
     audio_format_id = data.get("audio_format_id") or None
     video_format_id = data.get("video_format_id") or None
     target_format = data.get("target_format") or None
+    target_audio_params = data.get("target_audio_params") or None
+    target_video_params = data.get("target_video_params") or None
 
     if not url:
         log.warning("Download request missing 'url' parameter.")
@@ -421,10 +427,10 @@ def download():
         # Note: This blocks the current Flask worker thread until completion.
         # For production, consider async Flask routes or a task queue (Celery).
         log.info(
-            f"Processing download request for URL: {url} (A_ID: {audio_format_id}, V_ID: {video_format_id}, Target: {target_format})"
+            f"Processing download request for URL: {url} (A_ID: {audio_format_id}, V_ID: {video_format_id}, Target: {target_format}), TargetAudioParams: {target_audio_params}), TargetVideoParams: {target_video_params})"
         )
         final_filepath = asyncio.run(
-            _process_download(url, audio_format_id, video_format_id, target_format)
+            _process_download(url, audio_format_id, video_format_id, target_format, target_audio_params, target_video_params)
         )
 
         if final_filepath and final_filepath.exists():
