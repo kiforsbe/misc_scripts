@@ -72,7 +72,7 @@
       link.textContent = 'Download';
       button.appendChild(link);
 
-      const mp3Url = getMetadata('og:audio:url');
+      const mp3Url = getMetadata('og:audio');
       const imageUrl = getMetadata('og:image');
       const ogTitle = getMetadata('og:title');
       const { artist, title } = parseArtistAndTitle(ogTitle);
