@@ -51,8 +51,13 @@
   // Function to get lyrics
   function getLyrics() {
       const lyricsHeader = Array.from(document.querySelectorAll('div')).find(div => div.textContent.trim() === 'Lyrics');
-      if (lyricsHeader && lyricsHeader.nextElementSibling) {
-          return lyricsHeader.nextElementSibling.textContent.trim();
+      if (lyricsHeader) {
+          if (lyricsHeader.nextElementSibling) {
+            return lyricsHeader.nextElementSibling.textContent.trim();
+          } else {
+            // If the next sibling is not available, then the lyrics are empty, so return an empty string
+            return "";
+          }
       }
       return null;
   }
@@ -99,7 +104,9 @@
   function waitForExistingButton() {
       const observer = new MutationObserver((mutations, obs) => {
           const existingButton = getExistingButton();
-          if (existingButton && getCreationYear() && getLyrics()) {
+          const creationYear = getCreationYear();
+          const lyrics = getLyrics();
+          if (existingButton && creationYear && (lyrics !== null)) {
               addDownloadButton();
               obs.disconnect();
           }
