@@ -10,7 +10,7 @@ import magic
 from io import BytesIO
 
 # Set up logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.WARN, format='%(asctime)s - %(levelname)s - %(message)s')
 eyed3.log.setLevel("ERROR")
 
 # --- Import the music genre classifier ---
