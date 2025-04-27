@@ -126,6 +126,7 @@ Simple merge a bunch of audio files into one single output file. Just drag all t
 
 ## udio-flask-webservice.py (udio-download_ext-button.user.js)
 A flask web service that adds metadata including cover art to your song files downloaded from Udio. It comes with a user script (e.g. Tampermonkey) that simplifies this process by adding a new button to the song pages "Download with metadata" that calls the webservice.
+This webservice now also supports Riffusion and .m4a audio files.
 
 The webservice exposes the following interfaces:
 | Interface | Methods | Functions | Parameters |
@@ -145,12 +146,30 @@ Downloads the specified `.mp3` file and adds the provided metadata to it.
 | genre | Genre | The genre of the track. |
 | year | Year | Year of release. |
 | cannonical | WWWAUDIOFILE | The source url of the track where it can be found permanently. |
-| lyrics | UNSYNCEDLYRICS | Lyrics to add to the track. |
 
 ### Requires
 - flask
+- requests
+- python-magic-bin
+- audio_metadata
+- bidict
+- importlib-resources
+- moviepy
 - eyed3
-- magic (python-magic-bin on windows)
+- ffmpeg
+- pillow
+
+#### Optional Dependencies
+- music_style_classifier.py
+  - librosa
+  - tensorflow 
+  - numpy
+  - transformers
+
+### User Scripts
+These user scripts enhance the webservice functionality by integrating download buttons directly into the respective web interfaces. They automatically capture song metadata and cover art, then send this information to the webservice for processing, making the download process seamless and efficient. They have been tested with Tampermonkey on Chrome.
+- `udio-download_ext-button.user.js`: Adds a "Download with metadata" button to Udio song pages
+- `riffusion-download_ext-button.user.js`: Adds a "Download with metadata" button to Riffusion song pages
 
 ## video-optimizer-v2
 A script that allows for quick and easy optimization of videos. Just supply a list of videos on the command line or drag and drop them onto the script. You get a list of choices based on the contents of the videos such as which subtitles to make default, and which audio to make default along with target quality and resolution.
