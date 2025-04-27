@@ -8,9 +8,12 @@ import requests
 import eyed3
 import magic
 from io import BytesIO
+from mutagen.mp4 import MP4, MP4Cover
+from PIL import Image
+from audio_metadata import AudioMetadata, get_metadata_writer
 
 # Set up logging
-logging.basicConfig(level=logging.WARN, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 eyed3.log.setLevel("ERROR")
 
 # --- Import the music genre classifier ---
@@ -71,12 +74,12 @@ def home():
         <!DOCTYPE html>
         <html>
         <head>
-            <title>MP3 downloader with external metadata</title>
+            <title>Audio downloader with external metadata</title>
         </head>
         <body>
-            <h1>MP3 downloader with external metadata</h1>
+            <h1>Audio downloader with external metadata</h1>
             <form action="/api/download_ext" method="post">
-                <input type="text" name="mp3_url" placeholder="Enter MP3 URL" required /><br/>
+                <input type="text" name="audio_url" placeholder="Enter Audio URL (MP3 or M4A)" required /><br/>
                 <input type="text" name="image_url" placeholder="Enter Cover Image URL" required /><br/>
                 <input type="text" name="title" placeholder="Enter title" /><br/>
                 <input type="text" name="artist" placeholder="Enter artist" /><br/>
@@ -89,30 +92,66 @@ def home():
         </html>
     ''')
 
+def convert_to_jpeg(image_data: bytes) -> bytes:
+    """Convert image data to JPEG format."""
+    try:
+        # Open the image from bytes
+        img = Image.open(BytesIO(image_data))
+        # Convert to RGB if necessary (e.g., for PNG with transparency)
+        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.convert('RGBA').split()[-1])
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Save as JPEG
+        output = BytesIO()
+        img.save(output, format='JPEG', quality=95)
+        return output.getvalue()
+    except Exception as e:
+        logging.error(f"Error converting image to JPEG: {e}", exc_info=True)
+        return image_data  # Return original data if conversion fails
+
 @app.route('/api/download_ext', methods=['POST', 'GET'])
 def download_ext():
     if request.is_json:
         data = request.json
     elif request.method == 'POST':
         data = request.form
-    else: # GET request
+    else:
         data = request.args
 
-    mp3_url = data.get('mp3_url')
+    audio_url = data.get('audio_url', data.get('mp3_url'))  # Support both new and old parameter
     image_url = data.get('image_url')
 
-    if not mp3_url or not image_url:
-        logging.warning("Missing mp3_url or image_url in request.")
-        return jsonify({"error": "Both 'mp3_url' and 'image_url' parameters are required"}), 400
+    if not audio_url or not image_url:
+        logging.warning("Missing audio_url or image_url in request.")
+        return jsonify({"error": "Both 'audio_url' and 'image_url' parameters are required"}), 400
 
-    temp_mp3_path = None # Initialize path variable
+    # Determine audio_mime_type from URL
+    is_m4a = audio_url.lower().endswith('.m4a')
+    extension = '.m4a' if is_m4a else '.mp3'
+    audio_mime_type = 'audio/mp4' if is_m4a else 'audio/mpeg'
+
+    temp_audio_path = None
     try:
-        # --- Download MP3 file ---
-        logging.info(f"Downloading MP3 from: {mp3_url}")
-        mp3_response = requests.get(mp3_url, timeout=60) # Add timeout
-        mp3_response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-        mp3_bytes_io = BytesIO(mp3_response.content)
-        logging.info("MP3 downloaded successfully.")
+        # Set up MIME type detection
+        mime_detector = magic.Magic(mime=True)
+
+        # --- Download audio file ---
+        logging.info(f"Downloading audio from: {audio_url}")
+        audio_response = requests.get(audio_url, timeout=60)
+        audio_response.raise_for_status()
+        audio_bytes_io = BytesIO(audio_response.content)
+        logging.info("Audio downloaded successfully.")
+
+        # --- Detect audio mime-type ---
+        audio_mime_type = mime_detector.from_buffer(audio_bytes_io.getvalue())
+        logging.info(f"Detected audio MIME type: {audio_mime_type}")
+        if audio_mime_type not in ['audio/mpeg', 'audio/mp4']:
+            logging.warning(f"Downloaded file from audio_url might not be an audio file (MIME: {audio_mime_type}). Proceeding anyway.")
+            # You could choose to return an error here if strict audio type is required
 
         # --- Download image file ---
         logging.info(f"Downloading cover image from: {image_url}")
@@ -122,127 +161,70 @@ def download_ext():
         logging.info("Cover image downloaded successfully.")
 
         # --- Detect image mime-type ---
-        # Use context manager for magic object if possible, though it's usually fine globally
-        mime_detector = magic.Magic(mime=True)
-        mime_type = mime_detector.from_buffer(img_data)
-        logging.info(f"Detected image MIME type: {mime_type}")
-        if not mime_type.startswith('image/'):
-            logging.warning(f"Downloaded file from image_url might not be an image (MIME: {mime_type}). Proceeding anyway.")
+        img_mime_type = mime_detector.from_buffer(img_data)
+        logging.info(f"Detected image MIME type: {img_mime_type}")
+        if not img_mime_type.startswith('image/'):
+            logging.warning(f"Downloaded file from image_url might not be an image (MIME: {img_mime_type}). Proceeding anyway.")
             # You could choose to return an error here if strict image type is required
 
-        # --- Create a temporary file for the MP3 ---
-        # Generate a unique name for the temp file
-        temp_filename = f"temp_{generate_uuid(mp3_url)}_{uuid.uuid4().hex[:8]}.mp3"
-        temp_mp3_path = os.path.join(TEMP_DIR, temp_filename)
-        logging.info(f"Saving MP3 temporarily to: {temp_mp3_path}")
-        with open(temp_mp3_path, 'wb') as f:
-            f.write(mp3_bytes_io.getvalue()) # Use getvalue() instead of reading again
+        # Convert image to JPEG if it's not already JPEG
+        if not img_mime_type.lower() in ['image/jpeg', 'image/jpg']:
+            logging.info(f"Converting {img_mime_type} image to JPEG")
+            img_data = convert_to_jpeg(img_data)
+            # Recheck mime type from the converted data
+            img_mime_type = mime_detector.from_buffer(img_data)
+            logging.info(f"Image converted and new mime type detected: {img_mime_type}")
+            if not img_mime_type.lower() in ['image/jpeg', 'image/jpg']:
+                logging.warning(f"Conversion may have failed, got {img_mime_type} instead of JPEG")
 
-        # --- Load MP3 file with eyed3 ---
-        logging.info("Loading MP3 metadata with eyed3.")
-        audio = eyed3.load(temp_mp3_path)
-        if audio is None:
-            # This can happen if the file is not a valid MP3 or unsupported version
-            logging.error(f"eyed3 failed to load the MP3 file: {temp_mp3_path}. It might be corrupt or not an MP3.")
-            # Clean up the temp file immediately in this case
-            if os.path.exists(temp_mp3_path):
-                os.remove(temp_mp3_path)
-            return jsonify({"error": "Failed to process the MP3 file. It might be corrupt or not a valid MP3."}), 422 # Unprocessable Entity
+        # --- Create a temporary file for the audio ---
+        temp_filename = f"temp_{generate_uuid(audio_url)}_{uuid.uuid4().hex[:8]}{extension}"
+        temp_audio_path = os.path.join(TEMP_DIR, temp_filename)
+        logging.info(f"Saving audio temporarily to: {temp_audio_path}")
+        with open(temp_audio_path, 'wb') as f:
+            f.write(audio_bytes_io.getvalue())
 
-        if audio.tag is None:
-            logging.info("No existing ID3 tag found, initializing a new one.")
-            audio.initTag(version=eyed3.id3.ID3_V2_3) # Specify a version if desired
-        else:
-            logging.info(f"Loaded existing ID3 tag (Version: {audio.tag.version})")
-
-        # --- Update ID3 tags ---
-        # Set the ID3 version to 2.3 for better compatibility
-        logging.info("Updating metadata tags...")
-
-        # Set Cover Art
-        # Remove existing front cover before adding new one to avoid duplicates
-        existing_covers = [img for img in audio.tag.images if img.picture_type == eyed3.id3.frames.ImageFrame.FRONT_COVER]
-        for cover in existing_covers:
-            audio.tag.images.remove(cover.description)
-            logging.debug("Removed existing front cover image.")
-        audio.tag.images.set(eyed3.id3.frames.ImageFrame.FRONT_COVER, img_data, mime_type, u'Cover')
-        logging.info("Set front cover image.")
-
-        # Set other text tags
-        title = data.get('title')
-        artist = data.get('artist')
-        provided_genre = data.get('genre') # Store provided genre separately
-
-        # Set title and artist if provided
-        if title:
-            audio.tag.title = title
-            logging.info(f"Set title: {title}")
-            
-        # Set artist if provided, else use the one from the MP3 file
-        if artist:
-            audio.tag.artist = artist
-            logging.info(f"Set artist: {artist}")
-
-        # Set album if provided
-        if data.get('album'):
-            audio.tag.album = data.get('album')
-            logging.info(f"Set album: {data.get('album')}")
-
-        # Set genre
-        # Check if genre is provided or if classifier is available
-        # Use provided genre if available, else try to classify
-        # If both are available, prefer the provided genre
-        # This allows the user to override the classifier if they want
-        if provided_genre:
-            audio.tag.genre = provided_genre
-            logging.info(f"Set genre from provided value: {provided_genre}")
-        elif MUSIC_CLASSIFIER_AVAILABLE:
-            logging.info("Genre not provided. Attempting automatic classification...")
+        # Get genre from classifier if available
+        classified_genre = None
+        if MUSIC_CLASSIFIER_AVAILABLE:
+            logging.info("Attempting automatic genre classification...")
             try:
-                # Call the classifier on the temporary MP3 file
-                predicted_genre = get_music_genre(temp_mp3_path)
-                if predicted_genre:
-                    audio.tag.genre = predicted_genre
-                    logging.info(f"Automatically classified and set genre: {predicted_genre}")
+                classified_genre = get_music_genre(temp_audio_path)
+                if classified_genre:
+                    logging.info(f"Successfully classified genre: {classified_genre}")
                 else:
                     logging.warning("Music classifier did not return a genre.")
             except Exception as classifier_err:
-                # Log the error but don't fail the whole request
-                logging.error(f"Error during music classification: {classifier_err}", exc_info=True) # Log traceback
-        else:
-            logging.info("Genre not provided and music classifier is not available. Skipping genre tag.")
+                logging.error(f"Error during music classification: {classifier_err}", exc_info=True)
 
-        # Set the year (recording date)
-        if data.get('year'):
-            try:
-                audio.tag.recording_date = eyed3.core.Date(int(data.get('year'))) # Use recording_date for year
-                # audio.tag.year = int(data.get('year')) # 'year' attribute might be deprecated/less standard
-                logging.info(f"Set year: {data.get('year')}")
-            except ValueError:
-                logging.warning(f"Invalid year provided: {data.get('year')}. Skipping year tag.")
+        # Create metadata object with all available data
+        try:
+            year_value = int(data.get('year')) if data.get('year') else None
+        except ValueError:
+            logging.warning(f"Invalid year value: {data.get('year')}")
+            year_value = None
 
-        # Set the canonical URL (WXXX frame)
-        if data.get('canonical'):
-            audio.tag.audio_file_url = data.get('canonical') # WXXX frame
-            logging.info(f"Set canonical URL: {data.get('canonical')}")
+        metadata = AudioMetadata(
+            title=data.get('title'),
+            artist=data.get('artist'),
+            album=data.get('album'),
+            genre=classified_genre or data.get('genre'),
+            year=year_value,
+            lyrics=data.get('lyrics'),
+            canonical_url=data.get('canonical'),
+            cover_art=img_data
+        )
 
-        # Set the lyrics (USLT frame)
-        lyrics_text = data.get('lyrics')
-        if lyrics_text:
-            try:
-                # Ensure lyrics are added correctly (description='', lang=b"eng")
-                # Pass lang as bytes as required by eyed3's internal validation
-                audio.tag.lyrics.set(lyrics_text, description=u"", lang=b"eng")
-                logging.info("Set lyrics.")
-            except Exception as lyrics_err:
-                # Log potential errors during lyrics setting but don't stop the process
-                logging.error(f"Error setting lyrics: {lyrics_err}", exc_info=True)
-
-        # --- Save the changes to the temporary file ---
-        logging.info("Saving updated ID3 tags...")
-        # Use version=eyed3.id3.ID3_V2_3 for better compatibility if needed
-        audio.tag.save(version=eyed3.id3.ID3_V2_3, encoding='utf-8')
-        logging.info("Tags saved successfully.")
+        # Get appropriate writer and apply metadata
+        try:
+            writer = get_metadata_writer(temp_audio_path)
+            writer.write_metadata(temp_audio_path, metadata)
+            logging.info("Audio metadata written successfully")
+        except Exception as e:
+            logging.error(f"Error writing metadata: {e}", exc_info=True)
+            if os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
+            return jsonify({"error": "Failed to write audio metadata"}), 500
 
         # --- Construct the final filename ---
         # Sanitize title and artist for use in filename
@@ -253,32 +235,33 @@ def download_ext():
             name = name.replace('/', '-').replace('\\', '-').replace(':', '-').replace('*', '-').replace('?', '').replace('"', "'").replace('<', '').replace('>', '').replace('|', '')
             return name.strip()
 
-        safe_artist = sanitize_filename(audio.tag.artist)
-        safe_title = sanitize_filename(audio.tag.title)
+        # Use metadata for filename construction
+        safe_artist = sanitize_filename(metadata.artist) if metadata.artist else ''
+        safe_title = sanitize_filename(metadata.title) if metadata.title else ''
 
         if safe_artist and safe_title:
-            filename = f"{safe_artist} - {safe_title}.mp3"
+            filename = f"{safe_artist} - {safe_title}{extension}"
         elif safe_title:
-            filename = f"{safe_title}.mp3"
+            filename = f"{safe_title}{extension}"
         elif safe_artist:
-            filename = f"{safe_artist} - Unknown Title.mp3"
+            filename = f"{safe_artist} - Unknown Title{extension}"
         else:
             # Fallback to a generic name if no artist/title
-            filename = f"processed_{generate_uuid(mp3_url)}.mp3"
+            filename = f"processed_{generate_uuid(audio_url)}{extension}"
         logging.info(f"Generated download filename: {filename}")
 
         # --- Queue the file for deletion ---
         with delete_lock:
-            delete_queue.append({'path': temp_mp3_path, 'time': time.time()})
-        logging.info(f"Scheduled temporary file for deletion: {temp_mp3_path}")
+            delete_queue.append({'path': temp_audio_path, 'time': time.time()})
+        logging.info(f"Scheduled temporary file for deletion: {temp_audio_path}")
 
         # --- Send the modified file back to the user ---
-        logging.info("Sending modified MP3 file to client...")
+        logging.info("Sending modified audio file to client...")
         return send_file(
-            temp_mp3_path,
+            temp_audio_path,
             as_attachment=True,
             download_name=filename,
-            mimetype='audio/mpeg' # Explicitly set mimetype
+            mimetype=audio_mime_type
             )
 
     except requests.exceptions.RequestException as e:
