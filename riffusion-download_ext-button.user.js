@@ -172,15 +172,15 @@
       }
 
       // Create button with the same style as other action buttons
-      const button = document.createElement('button');
-      button.className = 'aspect-square h-full rounded-full bg-secondary text-primary hover:bg-secondary-hover disabled:hover:bg-secondary transition-colors disabled:opacity-50';
+      const button = document.createElement('a');
+      button.className = 'aspect-square h-full rounded-full bg-secondary text-primary hover:bg-secondary-hover disabled:hover:bg-secondary transition-colors disabled:opacity-50 flex items-center justify-center';
       button.title = 'Download';
       
       // Create an SVG icon for the download button
       const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('aria-hidden', 'true');
       svg.setAttribute('focusable', 'false');
-      svg.setAttribute('class', 'svg-inline--fa fa-download');
+      svg.setAttribute('class', 'svg-inline--fa fa-download w-5 h-5'); // Add size classes
       svg.setAttribute('role', 'img');
       svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       svg.setAttribute('viewBox', '0 0 512 512');
@@ -201,26 +201,20 @@
       const lyrics = getLyrics();
 
       // Create a click event handler for the button
-      button.addEventListener('click', function(e) {
-          e.preventDefault();
-          
-          const params = new URLSearchParams({
-              mp3_url: audioUrl || '',
-              image_url: imageUrl || '',
-              artist: artist || '',
-              title: title || '',
-              year: year || '',
-              album: 'Riffusion',
-              canonical: canonical || '',
-              description: description || '',
-              lyrics: lyrics || ''
-          });
-          
-          const downloadUrl = `http://localhost:5000/api/download_ext?${params.toString()}`;
-          window.open(downloadUrl);
+      const params = new URLSearchParams({
+          mp3_url: audioUrl || '',
+          image_url: imageUrl || '',
+          artist: artist || '',
+          title: title || '',
+          year: year || '',
+          album: 'Riffusion',
+          canonical: canonical || '',
+          description: description || '',
+          lyrics: lyrics || ''
       });
 
       // Insert after the VibeUseButton
+      button.href = `http://localhost:5000/api/download_ext?${params.toString()}`;
       buttonContainer.insertBefore(button, vibeUseButton.nextSibling);
   }
 
