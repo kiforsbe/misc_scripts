@@ -126,8 +126,8 @@
               // Handle block-level elements by adding newlines
               const style = window.getComputedStyle(node);
               const isBlock = style.display === 'block' || style.display === 'flex' || 
-                             style.display === 'grid' || node.tagName === 'DIV' || 
-                             node.tagName === 'P';
+                              style.display === 'grid' || node.tagName === 'DIV' || 
+                              node.tagName === 'P';
               
               // Add a newline before block elements if not at the start
               if (isBlock && text.length > 0 && !text.endsWith('\n')) {
@@ -210,13 +210,14 @@
               artist: artist || '',
               title: title || '',
               year: year || '',
+              album: 'Riffusion',
               canonical: canonical || '',
               description: description || '',
               lyrics: lyrics || ''
           });
           
           const downloadUrl = `http://localhost:5000/api/download_ext?${params.toString()}`;
-          window.open(downloadUrl, '_blank');
+          window.open(downloadUrl);
       });
 
       // Insert after the VibeUseButton

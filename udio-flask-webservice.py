@@ -13,7 +13,8 @@ from PIL import Image
 from audio_metadata import AudioMetadata, get_metadata_writer
 
 # Set up logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.WARN, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.getLogger('numba').setLevel(logging.WARNING)
 eyed3.log.setLevel("ERROR")
 
 # --- Import the music genre classifier ---

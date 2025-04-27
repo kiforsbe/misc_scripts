@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Add Download Button to Udio Song Pages
 // @namespace    http://tampermonkey.net/
-// @version      0.6
+// @version      0.7
 // @description  Adds a download button next to the existing download button on Udio song pages, using POST with JSON payload including lyrics
 // @match        https://www.udio.com/*
 // @icon         https://udio.com/favicon.ico
@@ -62,6 +62,11 @@
       return null;
   }
 
+  // Function to get description/tags
+  function getDescription() {
+      return getMetadata('og:description') || '';
+  }
+
   // Function to create and add the download button
   function addDownloadButton() {
       const existingButton = getExistingButton();
@@ -83,6 +88,7 @@
       const { artist, title } = parseArtistAndTitle(ogTitle);
       const year = getCreationYear();
       const canonical = getCanonicalUrl();
+      const description = getDescription();
       const lyrics = getLyrics();
 
       const params = new URLSearchParams({
@@ -91,7 +97,9 @@
           artist: artist || '',
           title: title || '',
           year: year || '',
+          album: 'Udio',
           canonical: canonical || '',
+          description: description || '',
           lyrics: lyrics || ''
       });
 

@@ -49,9 +49,10 @@ class MP3MetadataWriter(AudioMetadataWriter):
             except ValueError:
                 logging.warning(f"Invalid year: {metadata.year}")
 
-        # Set canonical URL
+        # Set canonical URL in both URL frame and comments
         if metadata.canonical_url:
             audio.tag.audio_file_url = metadata.canonical_url
+            audio.tag.comments.set(metadata.canonical_url, description=u"SOURCE_URL")
 
         # Set lyrics
         if metadata.lyrics:
@@ -99,9 +100,10 @@ class M4AMetadataWriter(AudioMetadataWriter):
         if metadata.lyrics:
             audio['\xa9lyr'] = [metadata.lyrics]
 
-        # Set canonical URL
+        # Set canonical URL in both URL tag and comments
         if metadata.canonical_url:
-            audio['\xa9url'] = [metadata.canonical_url]
+            audio['\xa9url'] = [metadata.canonical_url]  # Standard URL tag
+            audio['\xa9cmt'] = [metadata.canonical_url]  # Comments field
 
         # Set cover art
         if metadata.cover_art:
