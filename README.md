@@ -66,6 +66,7 @@ If the user approves them, the user simply responds "y", or "yes" or presses ent
 A flask web service that takes a m3u8 file as input and converts it into an MP4 file.
 
 The webservice exposes the following interfaces:
+
 | Interface | Methods | Functions | Parameters |
 | --- | --- | --- | --- |
 | stream_info | GET | stream_info | url |
@@ -99,6 +100,7 @@ Converts an input m3u8 file into a MP4 file. The input is sent as a multipart/fo
 A flask web service that takes a m3u8 file as input and converts it into an MP4 file.
 
 The webservice exposes the following interfaces:
+
 | Interface | Methods | Functions | Parameters |
 | --- | --- | --- | --- |
 | get | POST & GET | convert_m3u8_to_mp4 | url, filename |
@@ -129,6 +131,7 @@ A flask web service that adds metadata including cover art to your song files do
 This webservice now also supports Riffusion and .m4a audio files.
 
 The webservice exposes the following interfaces:
+
 | Interface | Methods | Functions | Parameters |
 | --- | --- | --- | --- |
 | /api/download_ext | POST & GET | download_ext | mp3_url, image_url, title, artist, album, genre, year, cannonical, lyrics |
@@ -297,6 +300,34 @@ It is intended to be used as a command line tool, but it can also be used as a l
 - numpy
 - ffmpeg
 - transformers
+
+## md_to_docx.py
+A script that converts Markdown files to Microsoft Word DOCX format. It processes Markdown content by first converting it to HTML using mistletoe, then parsing the HTML with BeautifulSoup to create properly formatted Word documents. The converter handles various Markdown elements including headings, paragraphs, lists (ordered and unordered with nesting), tables, bold/italic text, code blocks, links, and blockquotes. Tables are automatically formatted with proper styling and column widths.
+
+The script can be used from the command line by specifying an input Markdown file and optionally an output DOCX file. If no output filename is provided, it will generate one based on the input filename and avoid overwriting existing files.
+
+### Usage (Examples)
+```bash
+# Convert README.md to README.docx
+python md_to_docx.py README.md
+
+# Convert with specific output filename
+python md_to_docx.py input.md output.docx
+```
+
+### Features
+- Converts Markdown to properly formatted Word documents
+- Handles headings (H1-H9), paragraphs, lists, and tables
+- Supports inline formatting (bold, italic, code)
+- Processes nested lists with appropriate indentation
+- Formats tables with automatic column sizing and styling
+- Generates debug HTML file for troubleshooting
+- Automatic output filename generation to avoid overwriting
+
+### Requires
+- mistletoe
+- beautifulsoup4
+- python-docx
 
 # Experimental
 

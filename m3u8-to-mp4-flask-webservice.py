@@ -30,9 +30,9 @@ logging.basicConfig(level=logging.INFO,
 
 # Setting up some hard coded configuration variables
 TEMP_DIR = ".temp" # Temporary directory for downloaded files and generated streams
-DELETE_DELAY = 300  # 5 minutes in seconds
+DELETE_DELAY = 60  # 1 minute in seconds
 FILENAME_MAX_LENGTH = 96 # Maximum length of filenames in bytes
-OLLAMA_MODEL = "qwen2.5:latest" # The Ollama model to use for summary generation
+OLLAMA_MODEL = "deepseek-r1:8b" # The Ollama model to use for summary generation
 USE_OLLAMA = True # Use ollama to generate streams
 
 # Ensure the temporary directory exists
@@ -155,7 +155,7 @@ def get_stream_info(m3u8_url):
         else:
             # If not a variant playlist, it's likely a simple playlist without different resolutions
             segments = playlist.segments
-            duration = sum(segment.duration for segment in segments)
+            duration = sum(segment.duration or 0 for segment in segments if segment.duration is not None)
 
             # Return basic information about the single video stream and the audio streams, if any
             return {
@@ -360,20 +360,29 @@ def stream_info():
         # If an error occurs, return it in the JSON response with a 500 status code
         return jsonify({"error": str(e)}), 500
     
+def get_request_data(param_name, default=None):
+    """
+    Helper function to get parameter data from either JSON or form/query parameters.
+    
+    Parameters:
+    - param_name (str): The name of the parameter to retrieve
+    - default: The default value to return if parameter is not found
+    
+    Returns:
+    - The parameter value or default if not found
+    """
+    if request.is_json and request.json:
+        return request.json.get(param_name, default)
+    else:
+        return request.form.get(param_name) or request.args.get(param_name, default)
+
 @app.route('/convert', methods=['POST', 'GET'])
 def convert_m3u8_to_mp4():
-    if request.is_json:
-        m3u8_url = request.json.get('url')
-        alt_url = request.json.get('alt_url')
-        title = request.json.get('title')
-        video_id = request.json.get('video_id')
-        description = request.json.get('description', '')
-    else:
-        m3u8_url = request.args.get('url')
-        alt_url = request.args.get('alt_url')
-        title = request.args.get('title')
-        video_id = request.args.get('video_id')
-        description = request.args.get('description', '')
+    m3u8_url = get_request_data('url')
+    alt_url = get_request_data('alt_url')
+    title = get_request_data('title')
+    video_id = get_request_data('video_id')
+    description = get_request_data('description', '')
 
     # If the url is not set, return Bad Request
     if not m3u8_url:
