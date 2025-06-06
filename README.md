@@ -329,6 +329,47 @@ python md_to_docx.py input.md output.docx
 - beautifulsoup4
 - python-docx
 
+## gog_galaxy_exporter.py
+A script that exports game library data from GOG Galaxy 2.0 database to CSV, JSON, and Excel formats. It extracts comprehensive game information including titles, platforms, playtime, purchase dates, ratings, features, and enhanced metadata from the GamePieces system.
+
+The script automatically locates the GOG Galaxy database, processes game data with proper title extraction (especially for non-GOG platforms like Amazon, Steam, Epic), and exports the data in multiple formats for analysis and backup purposes.
+
+### Features
+- Exports to CSV, JSON, and Excel (.xlsx) formats with proper table formatting
+- Extracts comprehensive game metadata including:
+  - Game titles, descriptions, and platform information
+  - Purchase dates, playtime tracking, and last played dates
+  - Review scores, personal ratings, and user tags
+  - Store features, OS compatibility, and screenshot counts
+  - Enhanced title extraction from GamePieces for all platforms
+- Supports all platforms integrated with GOG Galaxy (GOG, Steam, Epic, Xbox, Amazon, etc.)
+- Automatic database discovery and read-only access
+- Professional Excel export with formatted tables and auto-adjusted columns
+- Command-line interface with flexible export format selection
+
+### Usage (Examples)
+```bash
+# Export to both JSON and CSV (default)
+python gog_galaxy_exporter.py
+
+# Export to Excel only
+python gog_galaxy_exporter.py xlsx
+
+# Export to all formats
+python gog_galaxy_exporter.py all
+
+# Export to CSV only
+python gog_galaxy_exporter.py csv
+```
+
+### Requires
+- sqlite3 (standard library)
+- json (standard library)
+- csv (standard library)
+- datetime (standard library)
+- pathlib (standard library)
+- openpyxl (optional, for Excel export functionality)
+
 # Experimental
 
 ## lyrics-timing-generator.py
