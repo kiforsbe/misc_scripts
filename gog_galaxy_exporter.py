@@ -218,6 +218,11 @@ class GOGGalaxyExporter:
         themes = []
         original_release_date = None
         
+        # Image URLs from originalImages
+        background_image = None
+        square_icon = None
+        vertical_cover = None
+        
         # Enhanced title extraction with priority order
         game_title = None
         title_sources = ['title', 'originalTitle', 'sortingTitle', 'originalSortingTitle']
@@ -348,6 +353,16 @@ class GOGGalaxyExporter:
             except (json.JSONDecodeError, KeyError):
                 pass
         
+        # Extract originalImages data
+        if 'originalImages' in game_pieces:
+            try:
+                images_data = json.loads(game_pieces['originalImages'])
+                background_image = images_data.get('background')
+                square_icon = images_data.get('squareIcon')
+                vertical_cover = images_data.get('verticalCover')
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
         return {
             # Primary identifiers
             'release_key': row_dict.get('release_key'),
@@ -386,6 +401,11 @@ class GOGGalaxyExporter:
             'publishers': publishers,
             'genres': genres,
             'themes': themes,
+            
+            # Image URLs
+            'background_image': background_image,
+            'square_icon': square_icon,
+            'vertical_cover': vertical_cover,
             
             # Additional data
             'tags': tags,
@@ -427,6 +447,7 @@ class GOGGalaxyExporter:
                     'time_played', 'playtime_hours', 'review_score', 'my_rating', 
                     'critics_score', 'features', 'os_compatibility', 'screenshots_count', 
                     'store_tags', 'developers', 'publishers', 'genres', 'themes', 
+                    'background_image', 'square_icon', 'vertical_cover',
                     'tags', 'library_id'
                 ]
                 

@@ -335,16 +335,20 @@ A script that exports game library data from GOG Galaxy 2.0 database to CSV, JSO
 The script automatically locates the GOG Galaxy database, processes game data with proper title extraction (especially for non-GOG platforms like Amazon, Steam, Epic), and exports the data in multiple formats for analysis and backup purposes.
 
 ### Features
-- Exports to CSV, JSON, and Excel (.xlsx) formats with proper table formatting
+- Exports to CSV, JSON, and Excel (.xlsx) formats with professional table formatting
 - Extracts comprehensive game metadata including:
   - Game titles, descriptions, and platform information
   - Purchase dates, playtime tracking, and last played dates
   - Review scores, personal ratings, and user tags
   - Store features, OS compatibility, and screenshot counts
   - Enhanced title extraction from GamePieces for all platforms
+  - Developer/publisher information, genres, and themes
+  - Original release dates and critics scores
+  - Image URLs (background, square icon, vertical cover)
 - Supports all platforms integrated with GOG Galaxy (GOG, Steam, Epic, Xbox, Amazon, etc.)
-- Automatic database discovery and read-only access
+- Automatic database discovery with read-only access for safety
 - Professional Excel export with formatted tables and auto-adjusted columns
+- Game data consolidation to merge duplicate entries across platforms
 - Command-line interface with flexible export format selection
 
 ### Usage (Examples)
@@ -363,12 +367,70 @@ python gog_galaxy_exporter.py csv
 ```
 
 ### Requires
-- sqlite3 (standard library)
-- json (standard library)
-- csv (standard library)
-- datetime (standard library)
-- pathlib (standard library)
 - openpyxl (optional, for Excel export functionality)
+
+## gog_csv_to_html.py
+A Python script that converts GOG Galaxy CSV export files into a modern, interactive HTML game library viewer. It creates a responsive web application with game browsing, filtering, search functionality, and rich media integration including YouTube trailers, gameplay videos, and game screenshots.
+
+The script automatically fetches additional media content from online sources and caches it locally for improved performance. It provides a professional game library interface similar to modern gaming platforms, with detailed game information, ratings, playtime tracking, and visual elements.
+
+### Features
+- **Modern Interactive Interface**: Responsive React-based web application with dual-pane layout
+- **Rich Media Integration**:
+  - Automatic YouTube trailer and gameplay video embedding
+  - Game screenshot galleries with carousel navigation and modal view
+  - Cover art and background images from game metadata
+- **Advanced Filtering & Search**:
+  - Real-time search across titles, descriptions, genres, and tags
+  - Filter by played/unplayed games and recently played titles
+  - Platform-based filtering and sorting options
+- **Game Information Display**:
+  - Comprehensive game details including playtime, ratings, release dates
+  - Developer/publisher information and genre classifications
+  - Platform badges and compatibility information
+  - Purchase and last played date tracking
+- **Performance Optimizations**:
+  - Local SQLite database for media content caching
+  - React virtualization for smooth scrolling of large game libraries
+  - Lazy loading of images and content
+- **Professional Presentation**:
+  - Modern gradient backgrounds and card-based layouts
+  - Star rating displays and playtime formatting
+  - Responsive design for desktop and mobile viewing
+  - Bootstrap-based styling with custom enhancements
+
+### Usage (Examples)
+```bash
+# Convert CSV to HTML with media fetching (recommended)
+python gog_csv_to_html.py gog_export.csv
+
+# Convert with custom output filename
+python gog_csv_to_html.py gog_export.csv -o my_game_library.html
+
+# Skip media fetching for faster processing
+python gog_csv_to_html.py gog_export.csv --no-media
+
+# Disable media caching
+python gog_csv_to_html.py gog_export.csv --no-cache
+
+# Open result in browser automatically
+python gog_csv_to_html.py gog_export.csv --open
+
+# Show cache statistics
+python gog_csv_to_html.py --cache-stats
+```
+
+### Template Dependency
+- **gog_csv_to_html_template.html**: Jinja2 template file containing the HTML structure, CSS styling, and React-based JavaScript application. Must be present in the same directory as the Python script.
+
+### Requires
+- requests
+- beautifulsoup4
+- jinja2
+
+#### Optional Dependencies
+- **Image Processing**: gzip, zlib, brotli (for handling compressed web responses)
+- **Web Browser Integration**: webbrowser (standard library, for --open flag)
 
 # Experimental
 
