@@ -207,10 +207,16 @@ class GOGGalaxyExporter:
         # Extract data from GamePieces JSON
         review_score = None
         my_rating = None
+        critics_score = None
         features = []
         os_compatibility = []
         screenshots = []
         store_tags = []
+        developers = []
+        publishers = []
+        genres = []
+        themes = []
+        original_release_date = None
         
         # Enhanced title extraction with priority order
         game_title = None
@@ -256,6 +262,53 @@ class GOGGalaxyExporter:
                 my_rating = rating_data.get('rating')
             except (json.JSONDecodeError, KeyError):
                 pass
+        
+        # Extract originalMeta data
+        if 'originalMeta' in game_pieces:
+            try:
+                meta_data = json.loads(game_pieces['originalMeta'])
+                critics_score = meta_data.get('criticsScore')
+                developers = meta_data.get('developers', [])
+                publishers = meta_data.get('publishers', [])
+                genres = meta_data.get('genres', [])
+                themes = meta_data.get('themes', [])
+                
+                # Handle release date (Unix timestamp)
+                release_timestamp = meta_data.get('releaseDate')
+                if release_timestamp:
+                    try:
+                        from datetime import datetime
+                        original_release_date = datetime.fromtimestamp(release_timestamp).strftime('%Y-%m-%d')
+                    except (ValueError, OSError):
+                        pass
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
+        # Also try to extract from 'meta' GamePiece (id 394) as fallback
+        if not original_release_date and 'meta' in game_pieces:
+            try:
+                meta_data = json.loads(game_pieces['meta'])
+                release_timestamp = meta_data.get('releaseDate')
+                if release_timestamp:
+                    try:
+                        from datetime import datetime
+                        original_release_date = datetime.fromtimestamp(release_timestamp).strftime('%Y-%m-%d')
+                    except (ValueError, OSError):
+                        pass
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
+        # Extract description from summary (GamePieceType 401)
+        description = row_dict.get('description', '')
+        if 'summary' in game_pieces:
+            try:
+                summary_data = json.loads(game_pieces['summary'])
+                if isinstance(summary_data, dict):
+                    description = summary_data.get('description') or summary_data.get('summary', '')
+                elif isinstance(summary_data, str):
+                    description = summary_data
+            except (json.JSONDecodeError, KeyError):
+                pass
                 
         # Extract features
         if 'storeFeatures' in game_pieces:
@@ -297,15 +350,12 @@ class GOGGalaxyExporter:
         
         return {
             # Primary identifiers
-            'product_id': row_dict.get('product_id'),
             'release_key': row_dict.get('release_key'),
             'game_id': row_dict.get('gameId') or row_dict.get('release_key'),
             
             # Game info
             'title': game_title,
-            'name': game_title,
-            'slug': row_dict.get('slug'),
-            'description': row_dict.get('description'),
+            'description': description,
             
             # Platform and visibility
             'platform': row_dict.get('platform_name'),
@@ -313,7 +363,7 @@ class GOGGalaxyExporter:
             'is_visible': bool(row_dict.get('isVisibleInLibrary', 1)),
             
             # Dates
-            'release_date': row_dict.get('release_date'),
+            'release_date': original_release_date,
             'purchase_date': row_dict.get('purchaseDate'),
             'added_date': row_dict.get('addedDate'),
             'last_played': row_dict.get('last_played'),
@@ -325,10 +375,17 @@ class GOGGalaxyExporter:
             # Enhanced data from GamePieces
             'review_score': review_score,
             'my_rating': my_rating,
+            'critics_score': critics_score,
             'features': features,
             'os_compatibility': os_compatibility,
             'screenshots_count': len(screenshots),
             'store_tags': store_tags,
+            
+            # Enhanced metadata from originalMeta
+            'developers': developers,
+            'publishers': publishers,
+            'genres': genres,
+            'themes': themes,
             
             # Additional data
             'tags': tags,
@@ -364,25 +421,26 @@ class GOGGalaxyExporter:
             if games_data:
                 # Define the CSV field order including enhanced GamePieces data
                 fieldnames = [
-                    'product_id', 'release_key', 'game_id', 'title', 'name', 'slug', 
-                    'description', 'platform', 'is_dlc', 'is_visible', 'release_date', 
-                    'purchase_date', 'added_date', 'last_played', 'time_played', 
-                    'playtime_hours', 'review_score', 'features', 'os_compatibility',
-                    'screenshots_count', 'tags', 'library_id'
+                    'release_key', 'game_id', 'title', 'description', 
+                    'platform', 'is_dlc', 'is_visible', 'release_date', 
+                    'purchase_date', 'added_date', 'last_played', 
+                    'time_played', 'playtime_hours', 'review_score', 'my_rating', 
+                    'critics_score', 'features', 'os_compatibility', 'screenshots_count', 
+                    'store_tags', 'developers', 'publishers', 'genres', 'themes', 
+                    'tags', 'library_id'
                 ]
                 
-                # Prepare data for CSV (convert lists to strings)
-                csv_data = []
-                for game in games_data:
-                    row = game.copy()
-                    row['tags'] = '; '.join(game.get('tags', []))
-                    row['features'] = '; '.join(game.get('features', []))
-                    row['os_compatibility'] = '; '.join(game.get('os_compatibility', []))
-                    csv_data.append(row)
-                
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
-                writer.writerows(csv_data)
+                
+                for game in games_data:
+                    # Convert list fields to comma-separated strings for CSV
+                    csv_game = game.copy()
+                    for field in ['features', 'os_compatibility', 'store_tags', 'developers', 'publishers', 'genres', 'themes', 'tags']:
+                        if field in csv_game and isinstance(csv_game[field], list):
+                            csv_game[field] = ', '.join(str(item) for item in csv_game[field] if item)
+                    
+                    writer.writerow(csv_game)
         
         print(f"Data exported to CSV: {filepath}")
         return str(filepath)
