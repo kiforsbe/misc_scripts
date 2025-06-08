@@ -7,710 +7,20 @@
   <title>GOG Galaxy Game Library</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+  <link href="gog_csv_to_html_template.css" rel="stylesheet">
   <script type="importmap">
     {
         "imports": {
             "react": "https://esm.sh/react@18",
             "react-dom/client": "https://esm.sh/react-dom@18/client",
-            "react-window": "https://esm.sh/react-window@1.8.8"
+            "react-window": "https://esm.sh/react-window@1.8.8",
+            "@xenova/transformers": "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js",
+            "plotly.js-dist": "https://esm.sh/plotly.js-dist@2.27.0",
+            "ml-matrix": "https://esm.sh/ml-matrix@6.10.4",
+            "ml-kmeans": "https://esm.sh/ml-kmeans@4.0.0"
         }
     }
-    </script>
-  <style>
-    :root {
-      --primary-color: #6f42c1;
-      --secondary-color: #495057;
-      --accent-color: #20c997;
-      --bg-dark: #1a1d23;
-      --card-bg: #2d3748;
-      --border-color: #4a5568;
-    }
-
-    body {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      margin: 0;
-      padding: 0;
-    }
-
-    .main-container {
-      background: rgba(255, 255, 255, 0.95);
-      /* backdrop-filter: blur(10px); */
-      border-radius: 0px;
-      /* box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1); */
-      margin: 0px;
-      padding: 0;
-      overflow: hidden;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .header {
-      background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
-      color: white;
-      padding: 20px 30px;
-      text-align: center;
-      position: relative;
-      flex-shrink: 0;
-    }
-
-    .header::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="0.5"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>');
-      opacity: 0.3;
-    }
-
-    .header h1 {
-      font-size: 2rem;
-      font-weight: 700;
-      margin-bottom: 8px;
-      position: relative;
-      z-index: 1;
-    }
-
-    .stats-row {
-      display: flex;
-      justify-content: center;
-      gap: 30px;
-      margin-top: 15px;
-      position: relative;
-      z-index: 1;
-    }
-
-    .stat-item {
-      text-align: center;
-    }
-
-    .stat-number {
-      font-size: 1.4rem;
-      font-weight: 700;
-      display: block;
-    }
-
-    .stat-label {
-      font-size: 0.8rem;
-      opacity: 0.9;
-    }
-
-    .controls {
-      padding: 15px 20px;
-      background: #f8f9fa;
-      border-bottom: 1px solid #dee2e6;
-      flex-shrink: 0;
-    }
-
-    .search-box {
-      position: relative;
-    }
-
-    .search-box input {
-      border-radius: 20px;
-      padding: 8px 35px 8px 15px;
-      border: 2px solid #e9ecef;
-      transition: all 0.3s ease;
-      width: 100%;
-      font-size: 0.9rem;
-    }
-
-    .search-box input:focus {
-      border-color: var(--primary-color);
-      box-shadow: 0 0 0 0.2rem rgba(111, 66, 193, 0.25);
-      outline: none;
-    }
-
-    .search-box i {
-      position: absolute;
-      right: 12px;
-      top: 50%;
-      transform: translateY(-50%);
-      color: #6c757d;
-    }
-
-    .main-content {
-      display: flex;
-      flex: 1;
-      overflow: hidden;
-    }
-
-    .games-list-panel {
-      width: 50%;
-      border-right: 1px solid #dee2e6;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .games-grid {
-      flex: 1;
-      padding: 15px 5px 15px 15px;
-    }
-
-    .game-card {
-      background: white;
-      border-radius: 8px;
-      padding: 8px 12px;
-      margin: 2px 8px 2px 0;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-      transition: all 0.2s ease;
-      border-left: 3px solid var(--primary-color);
-      cursor: pointer;
-      height: 100px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      overflow: hidden;
-      position: relative;
-    }
-
-    .game-card::before {
-      content: '';
-      position: absolute;
-      top: 3px;
-      left: 3px;
-      width: 80px;
-      height: calc(100% - 6px);
-      background-size: cover;
-      background-position: left center;
-      background-repeat: no-repeat;
-      opacity: 0.75;
-      z-index: 0;
-      transition: opacity 0.2s ease;
-      border-radius: 5px 0 0 5px;
-      mask: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.9) 70%, rgba(0,0,0,0.3) 85%, transparent 100%);
-      -webkit-mask: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.9) 70%, rgba(0,0,0,0.3) 85%, transparent 100%);
-    }
-
-    .game-card:hover::before {
-      opacity: 0.9;
-    }
-
-    .game-card > * {
-      position: relative;
-      z-index: 1;
-      margin-left: 85px;
-    }
-
-    .game-card:hover,
-    .game-card.selected {
-      transform: translateX(2px);
-      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
-      border-left-color: var(--accent-color);
-    }
-
-    .game-card.selected {
-      background: #f8f9fa;
-    }
-
-    .game-card.selected::before {
-      opacity: 1;
-    }
-
-    .game-title {
-      font-size: 1.15rem;
-      font-weight: 600;
-      color: #2d3748;
-      margin-bottom: 3px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      line-height: 1.1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .game-subtitle {
-      font-size: 0.85rem;
-      color: #6c757d;
-      margin-bottom: 4px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .platform-badges {
-      display: flex;
-      gap: 2px;
-      flex-wrap: wrap;
-      margin-bottom: 4px;
-    }
-
-    .platform-badge {
-      padding: 1px 4px;
-      border-radius: 4px;
-      background: var(--accent-color);
-      color: white;
-      font-size: 0.6rem;
-      text-transform: uppercase;
-      font-weight: 600;
-    }
-
-    .game-meta-compact {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 0.7rem;
-      color: #6c757d;
-      gap: 8px;
-    }
-
-    .game-meta-left {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: 1;
-      min-width: 0;
-    }
-
-    .game-meta-right {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-
-    .playtime-badge {
-      background: linear-gradient(45deg, #28a745, #20c997);
-      color: white;
-      padding: 1px 5px;
-      border-radius: 8px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-
-    .rating-badge {
-      background: #ffc107;
-      color: #212529;
-      padding: 1px 4px;
-      border-radius: 6px;
-      font-size: 0.6rem;
-      font-weight: 600;
-    }
-
-    .genre-preview {
-      color: #495057;
-      font-size: 0.75rem;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 120px;
-    }
-
-    .release-year {
-      color: #6c757d;
-      font-size: 0.85rem;
-      font-weight: 500;
-    }
-
-    .detail-panel {
-      width: 50%;
-      /* padding: 20px; */
-      background: #f8f9fa;
-      overflow-y: auto;
-    }
-
-    .detail-content {
-      background: white;
-      /* border-radius: 12px; */
-      padding: 20px;
-      /* box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1); */
-      position: relative;
-      overflow: hidden;
-      min-height: 100%;
-    }
-
-    .detail-content::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 200px;
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      opacity: 0.25;
-      z-index: 0;
-      /* border-radius: 12px 12px 0 0; */
-      mask: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,0.8) 60%, rgba(0,0,0,0.3) 85%, transparent 100%);
-      -webkit-mask: linear-gradient(to bottom, rgba(0,0,0,1) 0%, rgba(0,0,0,0.8) 60%, rgba(0,0,0,0.3) 85%, transparent 100%);
-    }
-
-    .detail-content::after {
-      content: '';
-      position: absolute;
-      top: 20px;
-      right: 20px;
-      width: 300px;
-      height: 420px;
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      opacity: 0.9;
-      z-index: 1;
-      border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
-    }
-
-    .detail-content > * {
-      position: relative;
-    }
-
-    .detail-title {
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: #2d3748;
-      margin-bottom: 15px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding-right: 320px;
-    }
-
-    .detail-platforms {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 20px;
-      padding-right: 320px;
-    }
-
-    .detail-meta {
-      margin-bottom: 20px;
-      /* padding-right: 320px; */
-    }
-
-    .detail-meta-item {
-      display: flex;
-      align-items: center;
-      margin-bottom: 8px;
-      font-size: 0.9rem;
-      color: #495057;
-    }
-
-    .meta-icon {
-      margin-right: 8px;
-      color: var(--primary-color);
-      width: 16px;
-    }
-
-    .meta-label {
-      font-weight: 600;
-      margin-right: 0.3rem;
-    }
-
-    .meta-value {
-      color: #495057;
-    }
-
-    .detail-description {
-      background: #f8f9fa;
-      padding: 20px;
-      border-radius: 8px;
-      margin-bottom: 20px;
-      margin-right: 320px;
-      font-size: 1rem;
-      line-height: 1.7;
-      color: #343a40;
-      border-left: 4px solid var(--accent-color);
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      text-align: justify;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-      position: relative;
-    }
-
-    .detail-tag-genres {
-      /* margin-right: 320px; */
-      margin-bottom: 20px;
-    }
-
-    .detail-tags {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      /* padding-right: 320px; */
-      flex-direction: row;
-    }
-
-    .detail-tag {
-      padding: 3px 8px;
-      border-radius: 12px;
-      background: var(--accent-color);
-      color: white;
-      font-size: 1rem;
-      font-weight: 500;
-    }
-
-    /* .detail-media-section {
-      margin-bottom: 20px;
-    } */
-
-    .rating-stars {
-      color: #ffc107;
-      font-weight: 600;
-    }
-
-    .no-results {
-      text-align: center;
-      padding: 60px 20px;
-      color: #6c757d;
-    }
-
-    .no-results i {
-      font-size: 3rem;
-      margin-bottom: 20px;
-      opacity: 0.5;
-    }
-
-    .filter-buttons {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .filter-btn {
-      padding: 4px 12px;
-      border: 2px solid #e9ecef;
-      background: white;
-      border-radius: 15px;
-      font-size: 0.8rem;
-      cursor: pointer;
-      transition: all 0.3s ease;
-    }
-
-    .filter-btn.active {
-      background: var(--primary-color);
-      color: white;
-      border-color: var(--primary-color);
-    }
-
-    .filter-btn:hover {
-      border-color: var(--primary-color);
-    }
-
-    .empty-detail {
-      text-align: center;
-      color: #6c757d;
-      padding: 40px 20px;
-    }
-
-    .empty-detail i {
-      font-size: 3rem;
-      margin-bottom: 15px;
-      opacity: 0.3;
-    }
-
-    /* Custom scrollbar styling */
-    .games-grid ::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    .games-grid ::-webkit-scrollbar-track {
-      background: #f1f1f1;
-      border-radius: 4px;
-      margin: 5px 0;
-    }
-
-    .games-grid ::-webkit-scrollbar-thumb {
-      background: var(--primary-color);
-      border-radius: 4px;
-      transition: background 0.3s ease;
-    }
-
-    .games-grid ::-webkit-scrollbar-thumb:hover {
-      background: var(--accent-color);
-    }
-
-    /* Firefox scrollbar styling */
-    .games-grid {
-      scrollbar-width: thin;
-      scrollbar-color: var(--primary-color) #f1f1f1;
-    }
-
-    /* Media carousel styles */
-    .carousel-container {
-      position: relative;
-      overflow: hidden;
-      border-radius: 8px;
-      margin-right: 320px;
-      height: calc(20rem * 9 / 16 + 10px); /* Height for max width (20rem) in 16:10 + padding */
-      width: calc(100% - 320px);
-      min-height: calc(16rem * 9 / 16 + 10px); /* Height for min width (16rem) in 16:10 + padding */
-    }
-
-    .carousel-slide {
-      padding: 0 5px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: clamp(16rem, 18rem, 20rem);
-      min-width: 16rem;
-      max-width: 20rem;
-      height: 100%;
-    }
-
-    .carousel-image {
-      width: 100%;
-      height: auto;
-      max-height: calc(100% - 8px);
-      object-fit: contain;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: transform 0.2s ease;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-      aspect-ratio: auto;
-    }
-
-    .carousel-btn {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-      background: rgba(0, 0, 0, 0.7);
-      color: white;
-      border: none;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      font-size: 18px;
-      cursor: pointer;
-      z-index: 10;
-      transition: background 0.2s ease;
-    }
-
-    .carousel-btn:hover {
-      background: rgba(0, 0, 0, 0.9);
-    }
-
-    .carousel-prev {
-      left: 10px;
-    }
-
-    .carousel-next {
-      right: 10px;
-    }
-
-    .carousel-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    /* Image popup modal styles */
-    .image-modal {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.75);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 10000;
-      cursor: pointer;
-      opacity: 0;
-      transition: opacity 1s ease;
-      backdrop-filter: blur(4px);
-    }
-
-    .image-modal.show {
-      opacity: 1;
-    }
-
-    .image-modal img {
-      max-width: 90vw;
-      max-height: 90vh;
-      min-width: 25vw;
-      min-height: 25vh;
-      width: auto;
-      height: auto;
-      object-fit: contain;
-      border-radius: 20px;
-      border: 0.4rem solid white;
-      outline: 0.2rem solid black;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2), 0 8px 40px rgba(0, 0, 0, 0.3);
-      transition: none;
-      cursor: pointer;
-    }
-
-    .video-section {
-      margin-right: 320px;
-    }
-
-    .video-players {
-      display: flex;
-      gap: 15px;
-    }
-
-    .video-player {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .video-player iframe {
-      width: 100%;
-      height: 250px;
-      border-radius: 8px;
-      border: none;
-    }
-
-    .video-title {
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: #495057;
-      text-align: center;
-    }
-
-    @media (max-width: 768px) {
-      .main-content {
-        flex-direction: column;
-      }
-
-      .games-list-panel {
-        width: 100%;
-        border-right: none;
-        border-bottom: 1px solid #dee2e6;
-      }
-
-      .detail-panel {
-        width: 100%;
-      }
-
-      .stats-row {
-        gap: 20px;
-      }
-
-      .stat-number {
-        font-size: 1.2rem;
-      }
-
-      .header h1 {
-        font-size: 1.6rem;
-      }
-
-      .carousel-slide {
-        flex: 0 0 calc(50% - 5px);
-      }
-
-      .video-players {
-        flex-direction: column;
-        gap: 10px;
-      }
-
-      .video-player iframe {
-        height: 200px;
-      }
-    }
-  </style>
+  </script>
 </head>
 
 <body>
@@ -720,6 +30,14 @@
     import React from 'react';
     import { createRoot } from 'react-dom/client';
     import { FixedSizeList as List } from 'react-window';
+    import { pipeline, env } from '@xenova/transformers';
+    import Plotly from 'plotly.js-dist';
+    import { Matrix } from 'ml-matrix';
+    import KMeans from 'ml-kmeans';
+
+    // Configure transformers to use CDN models
+    env.allowRemoteModels = true;
+    env.allowLocalModels = false;
 
     const { useState, useEffect, useMemo, memo, useRef } = React;
 
@@ -751,6 +69,298 @@
       return PLATFORM_ICONS[platform.toLowerCase()] || '🎮';
     }
 
+    // Axis configuration with short labels for compact display
+    const AXIS_CONFIG = [
+      { key: 'core_mechanics_complexity', label: 'Mech Cmplx', shortLabel: 'MC' },
+      { key: 'core_mechanics_count', label: 'Mech Count', shortLabel: 'Ct' },
+      { key: 'player_agency', label: 'Agency', shortLabel: 'Ag' },
+      { key: 'player_impact', label: 'Impact', shortLabel: 'Im' },
+      { key: 'narrative_density', label: 'Story', shortLabel: 'St' },
+      { key: 'narrative_integration', label: 'Story Int', shortLabel: 'SI' },
+      { key: 'scope_scale', label: 'Scope', shortLabel: 'Sc' },
+      { key: 'pacing_controlled', label: 'Pace Ctrl', shortLabel: 'PC' },
+      { key: 'pacing_compelled', label: 'Pace Push', shortLabel: 'PP' },
+      { key: 'replayability', label: 'Replay', shortLabel: 'Re' },
+      { key: 'player_driven_world_change', label: 'World Chg', shortLabel: 'WC' },
+      { key: 'multiplayer_integration', label: 'Multi', shortLabel: 'Mp' },
+      { key: 'technical_execution', label: 'Tech', shortLabel: 'Te' },
+      { key: 'aesthetics_core', label: 'Visual', shortLabel: 'Vi' }
+    ];
+
+    // Game recommendation system using axis data
+    function extractAxisVector(game) {
+      if (!game.axis_info) return null;
+      return AXIS_CONFIG.map(axis => game.axis_info[axis.key] || 0);
+    }
+
+    // MiniLM embedding pipeline - will be initialized async
+    let embeddingPipeline = null;
+    const embeddingQueue = new Map();
+    let isInitializing = false;
+
+    // Initialize the embedding pipeline
+    async function initializeEmbeddings() {
+      if (isInitializing || embeddingPipeline) return embeddingPipeline;
+      
+      isInitializing = true;
+      try {
+        console.log('Initializing MiniLM embedding pipeline...');
+        embeddingPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+        console.log('MiniLM embedding pipeline initialized successfully');
+        
+        // Process any queued embedding requests
+        for (const [text, resolver] of embeddingQueue) {
+          try {
+            const result = await embeddingPipeline(text, { pooling: 'mean', normalize: true });
+            resolver.resolve(Array.from(result.data));
+          } catch (error) {
+            console.warn('Error processing queued embedding:', error);
+            resolver.reject(error);
+          }
+        }
+        embeddingQueue.clear();
+        
+        return embeddingPipeline;
+      } catch (error) {
+        console.error('Failed to initialize embedding pipeline:', error);
+        isInitializing = false;
+        throw error;
+      }
+    }
+
+    // Get MiniLM embedding for text
+    async function createMiniLMEmbedding(text) {
+      const normalizedText = text.toLowerCase().trim();
+      
+      if (!normalizedText) {
+        return new Array(384).fill(0); // MiniLM-L6-v2 produces 384-dimensional vectors
+      }
+
+      try {
+        if (!embeddingPipeline) {
+          if (!isInitializing) {
+            // Start initialization if not already started
+            initializeEmbeddings().catch(console.error);
+          }
+          
+          // Queue the request and return a promise
+          return new Promise((resolve, reject) => {
+            embeddingQueue.set(normalizedText, { resolve, reject });
+          });
+        }
+
+        const result = await embeddingPipeline(normalizedText, { pooling: 'mean', normalize: true });
+        return Array.from(result.data);
+      } catch (error) {
+        console.warn('Error creating MiniLM embedding, falling back to simple hash:', error);
+        
+        // Fallback to a simple hash-based embedding if MiniLM fails
+        const embedding = new Array(384).fill(0);
+        for (let i = 0; i < 384; i++) {
+          let hashValue = 0;
+          for (let j = 0; j < normalizedText.length; j++) {
+            hashValue += normalizedText.charCodeAt(j) * (i + 1);
+          }
+          embedding[i] = Math.tanh(Math.sin(hashValue / 10000));
+        }
+        
+        // Normalize the fallback embedding
+        const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+        if (magnitude > 0) {
+          for (let i = 0; i < 384; i++) {
+            embedding[i] = embedding[i] / magnitude;
+          }
+        }
+        
+        return embedding;
+      }
+    }
+
+    // Cache for computed embeddings
+    const embeddingCache = new Map();
+
+    async function getTextEmbedding(text) {
+      if (embeddingCache.has(text)) {
+        return embeddingCache.get(text);
+      }
+      
+      try {
+        const embedding = await createMiniLMEmbedding(text);
+        embeddingCache.set(text, embedding);
+        return embedding;
+      } catch (error) {
+        console.warn('Error getting text embedding:', error);
+        // Return zero vector as fallback
+        const fallback = new Array(384).fill(0);
+        embeddingCache.set(text, fallback);
+        return fallback;
+      }
+    }
+
+    // Create comprehensive game vector with better normalization
+    async function extractComprehensiveGameVector(game) {
+      const axisVector = extractAxisVector(game);
+      if (!axisVector) return null;
+      
+      try {
+        // Get individual embeddings for each genre/tag and average them
+        const allTerms = [...(game.genres || []), ...(game.tags || [])];
+        
+        let semanticEmbedding;
+        if (allTerms.length === 0) {
+          semanticEmbedding = new Array(384).fill(0);
+        } else {
+          // Get embeddings for each term individually
+          const termEmbeddings = await Promise.all(
+            allTerms.map(term => getTextEmbedding(term.trim()))
+          );
+          
+          // Average the embeddings (this handles varying numbers of terms better)
+          semanticEmbedding = new Array(384).fill(0);
+          for (const embedding of termEmbeddings) {
+            for (let i = 0; i < 384; i++) {
+              semanticEmbedding[i] += embedding[i];
+            }
+          }
+          
+          // Normalize by number of terms
+          for (let i = 0; i < 384; i++) {
+            semanticEmbedding[i] = semanticEmbedding[i] / termEmbeddings.length;
+          }
+        }
+        
+        // Scale axis vector to be comparable to semantic embeddings
+        // Axis values are 0-1, semantic embeddings are normalized around 0
+        const scaledAxisVector = axisVector.map(val => (val - 0.5) * 2); // Convert 0-1 to -1 to 1
+        
+        // Weight the components - give more weight to axis data since it's more structured
+        const axisWeight = 2.0;
+        const semanticWeight = 1.0;
+        
+        const weightedAxisVector = scaledAxisVector.map(val => val * axisWeight);
+        const weightedSemanticVector = semanticEmbedding.map(val => val * semanticWeight);
+        
+        // Combine weighted vectors
+        const combinedVector = [...weightedAxisVector, ...weightedSemanticVector];
+        
+        // L2 normalize the entire vector for better clustering
+        const magnitude = Math.sqrt(combinedVector.reduce((sum, val) => sum + val * val, 0));
+        if (magnitude > 0) {
+          return combinedVector.map(val => val / magnitude);
+        }
+        
+        return combinedVector;
+      } catch (error) {
+        console.warn('Error extracting comprehensive game vector:', error);
+        // Return axis vector with zero semantic embedding as fallback
+        return [...axisVector, ...new Array(384).fill(0)];
+      }
+    }
+
+    function euclideanDistance(a, b) {
+      if (!a || !b || a.length !== b.length) return Infinity;
+      return Math.sqrt(a.reduce((sum, val, i) => sum + (val - b[i]) ** 2, 0));
+    }
+
+    async function findSimilarGames(selectedGame, allGames, k = 5) {
+      try {
+        const selectedVector = await extractComprehensiveGameVector(selectedGame);
+        if (!selectedVector) return [];
+
+        const candidates = [];
+        
+        // Process games in batches to avoid blocking the UI
+        const batchSize = 10;
+        for (let i = 0; i < allGames.length; i += batchSize) {
+          const batch = allGames.slice(i, i + batchSize);
+          
+          for (const game of batch) {
+            if (game.id === selectedGame.id) continue;
+            
+            try {
+              const gameVector = await extractComprehensiveGameVector(game);
+              if (!gameVector) continue;
+              
+              // Calculate euclidean distance
+              const distance = euclideanDistance(selectedVector, gameVector);
+              
+              // Convert distance to similarity (0-1 scale, where 0 = identical, smaller distance = higher similarity)
+              const maxPossibleDistance = Math.sqrt(selectedVector.length);
+              const similarity = Math.max(0, 1 - (distance / maxPossibleDistance));
+              
+              candidates.push({
+                game,
+                vector: gameVector,
+                distance: distance,
+                similarity: similarity
+              });
+            } catch (error) {
+              console.warn(`Error processing game ${game.title}:`, error);
+            }
+          }
+          
+          // Yield control to prevent UI blocking
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        return candidates
+          .sort((a, b) => a.distance - b.distance) // Sort by distance ascending (smallest distance = most similar)
+          .slice(0, k);
+      } catch (error) {
+        console.error('Error finding similar games:', error);
+        return [];
+      }
+    }
+
+    function AxisVisualization({ axisInfo }) {
+      if (!axisInfo) {
+        return React.createElement('div', { 
+          className: 'axis-visualization',
+          style: { 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            color: '#6c757d',
+            fontSize: '0.6rem',
+            fontStyle: 'italic'
+          }
+        }, 'No axis data');
+      }
+
+      return React.createElement('div', { className: 'axis-visualization' },
+        React.createElement('div', { className: 'axis-grid' },
+          AXIS_CONFIG.map((axis, index) => {
+            const value = axisInfo[axis.key] || 0;
+            const percentage = Math.round(value * 100);
+            
+            return React.createElement('div', { 
+              className: 'axis-item', 
+              key: axis.key,
+              title: `${axis.label}: ${(value * 100).toFixed(0)}%`
+            }, [
+              React.createElement('div', { 
+                className: 'axis-label', 
+                key: 'label'
+              }, axis.shortLabel),
+              React.createElement('div', { 
+                className: 'axis-bar', 
+                key: 'bar'
+              },
+                React.createElement('div', {
+                  className: 'axis-fill',
+                  style: { width: `${percentage}%` }
+                })
+              ),
+              React.createElement('div', { 
+                className: 'axis-value', 
+                key: 'value'
+              }, percentage)
+            ]);
+          })
+        )
+      );
+    }
+
     function GameCard({ game, isSelected, onClick }) {
       const platformIcons = game.platforms.map(p => getPlatformIcon(p)).join(' ');
 
@@ -764,7 +374,7 @@
         : '';
 
       // Get first 2 genres for preview
-      const genrePreview = game.genres.slice(0, 2).join(', ');
+      const genrePreview = game.genres.join(', ');
 
       // Developer preview (first developer only)
       const developerPreview = game.developers.length > 0 ? game.developers[0] : '';
@@ -774,33 +384,37 @@
         onClick: () => onClick(game),
         style: cardStyle
       }, [
-        React.createElement('div', { key: 'header' }, [
-          React.createElement('div', { className: 'game-title', key: 'title' }, [
-            React.createElement('span', { key: 'icons' }, platformIcons),
-            game.title
-          ]),
-          React.createElement('div', { className: 'game-subtitle', key: 'subtitle' }, [
-            developerPreview && React.createElement('span', { key: 'dev' }, developerPreview),
-            releaseYear && React.createElement('span', { className: 'release-year', key: 'year' }, releaseYear)
-          ].filter(Boolean)),
-          React.createElement('div', { className: 'platform-badges', key: 'badges' },
-            game.platforms.slice(0, 4).map(platform =>
-              React.createElement('span', {
-                className: 'platform-badge',
-                key: platform
-              }, platform.toUpperCase())
-            )
-          )
-        ]),
-
         React.createElement('div', { className: 'game-meta-compact', key: 'meta' }, [
           React.createElement('div', { className: 'game-meta-left', key: 'left' }, [
+            React.createElement('div', { className: 'game-card-header', key: 'header' }, [
+              React.createElement('div', { className: 'game-title', key: 'title' }, [
+                React.createElement('span', { key: 'icons' }, platformIcons),
+                game.title
+              ]),
+              React.createElement('div', { className: 'game-subtitle', key: 'subtitle' }, [
+                React.createElement('span', { key: 'dev' }, developerPreview ? developerPreview : 'Unknown Developer'),
+                React.createElement('span', { className: 'release-year', key: 'year' }, releaseYear ? releaseYear : 'Unknown Year')
+              ].filter(Boolean)),
+              // React.createElement('div', { className: 'platform-badges', key: 'badges' },
+              //   game.platforms.slice(0, 4).map(platform =>
+              //     React.createElement('span', {
+              //       className: 'platform-badge',
+              //       key: platform
+              //     }, platform.toUpperCase())
+              //   )
+              // )
+            ]),
             React.createElement('span', { className: 'playtime-badge', key: 'playtime' }, game.playtime_display),
-            genrePreview && React.createElement('span', { className: 'genre-preview', key: 'genres' }, genrePreview)
+            React.createElement('span', { className: 'genre-preview', key: 'genres' }, genrePreview)
           ].filter(Boolean)),
           React.createElement('div', { className: 'game-meta-right', key: 'right' }, [
             game.rating_stars ? React.createElement('span', { className: 'rating-stars', key: 'rating', style: { fontSize: '0.7rem' } }, game.rating_stars) : null,
-            game.my_rating && parseFloat(game.my_rating) > 0 ? React.createElement('span', { className: 'rating-badge', key: 'rating-num' }, game.my_rating) : null
+            game.my_rating && parseFloat(game.my_rating) > 0 ? React.createElement('span', { className: 'rating-badge', key: 'rating-num' }, game.my_rating) : null,
+            // Axis Visualization Section
+            React.createElement(AxisVisualization, {
+              key: 'axis-viz',
+              axisInfo: game.axis_info
+            }),
           ].filter(Boolean))
         ])
       ]);
@@ -961,7 +575,95 @@
       ].filter(Boolean));
     }
 
-    function DetailPanel({ selectedGame }) {
+    function GameRecommendations({ selectedGame, onGameSelect }) {
+      const [recommendations, setRecommendations] = useState([]);
+      const [isLoading, setIsLoading] = useState(false);
+
+      useEffect(() => {
+        if (!selectedGame) {
+          setRecommendations([]);
+          return;
+        }
+
+        setIsLoading(true);
+        findSimilarGames(selectedGame, GAMES_DATA, 10)
+          .then(results => {
+            setRecommendations(results);
+            setIsLoading(false);
+          })
+          .catch(error => {
+            console.error('Error getting recommendations:', error);
+            setRecommendations([]);
+            setIsLoading(false);
+          });
+      }, [selectedGame]);
+
+      if (!selectedGame) {
+        return null;
+      }
+
+      if (isLoading) {
+        return React.createElement('div', { className: 'recommendations-section' }, [
+          React.createElement('div', { className: 'recommendations-title', key: 'title' }, [
+            React.createElement('i', { className: 'bi bi-lightbulb', key: 'icon' }),
+            'Loading Similar Games...'
+          ]),
+          React.createElement('div', { 
+            key: 'loading',
+            style: { 
+              textAlign: 'center', 
+              padding: '20px', 
+              color: '#6c757d',
+              fontSize: '0.9rem'
+            }
+          }, 'Analyzing game similarities with MiniLM embeddings...')
+        ]);
+      }
+
+      if (recommendations.length === 0) {
+        return null;
+      }
+
+      return React.createElement('div', { className: 'recommendations-section' }, [
+        React.createElement('div', { className: 'recommendations-title', key: 'title' }, [
+          React.createElement('i', { className: 'bi bi-lightbulb', key: 'icon' }),
+          'Similar Games You Might Like'
+        ]),
+        React.createElement('div', { className: 'recommendations-grid', key: 'grid' },
+          recommendations.map(({ game, similarity }) => {
+            const similarityPercent = Math.round(similarity * 100);
+            
+            return React.createElement('div', {
+              className: 'recommendation-item',
+              key: game.id,
+              onClick: () => onGameSelect(game),
+              title: `Click to view ${game.title}`
+            }, [
+              React.createElement('img', {
+                className: 'recommendation-image',
+                src: game.square_icon || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="%23f8f9fa"/><text x="50" y="50" text-anchor="middle" dominant-baseline="middle" fill="%236c757d" font-size="12">No Image</text></svg>',
+                alt: game.title,
+                key: 'image',
+                onError: (e) => {
+                  e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="%23f8f9fa"/><text x="50" y="50" text-anchor="middle" dominant-baseline="middle" fill="%236c757d" font-size="12">No Image</text></svg>';
+                }
+              }),
+              React.createElement('div', { className: 'recommendation-content', key: 'content' }, [
+                React.createElement('div', { className: 'recommendation-title', key: 'title' }, game.title),
+                React.createElement('div', { className: 'recommendation-similarity', key: 'similarity' }, 
+                  `${similarityPercent}% similarity match`
+                ),
+                React.createElement('div', { className: 'recommendation-axis', key: 'axis' },
+                  React.createElement(AxisVisualization, { axisInfo: game.axis_info })
+                )
+              ])
+            ])
+          })
+        )
+      ]);
+    }
+
+    function DetailPanel({ selectedGame, onGameSelect }) {
       if (!selectedGame) {
         return React.createElement('div', { className: 'empty-detail' }, [
           React.createElement('i', { className: 'bi bi-controller', key: 'icon' }),
@@ -1051,7 +753,6 @@
 
           // Right column - Tags & Genres Section
           (selectedGame.genres.length > 0 || selectedGame.tags.length > 0) ? React.createElement('div', { className: 'detail-tag-genres', key: 'tags-section', style: { flex: 1 } }, [
-            // React.createElement('h6', { key: 'title', style: { marginBottom: '10px', color: '#495057' } }, 'Tags & Genres'),
             React.createElement('div', { className: 'detail-tags', key: 'tags' },
               [...selectedGame.genres, ...selectedGame.tags].map(tag =>
                 React.createElement('span', { className: 'detail-tag', key: tag }, tag)
@@ -1072,10 +773,9 @@
                   key: 'trailer-iframe',
                   src: `https://www.youtube.com/embed/${selectedGame.trailer_id}?rel=0&modestbranding=1`,
                   title: `${selectedGame.title} Trailer`,
-                  allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
+                  allow: 'accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
                   allowFullScreen: true
-                }),
-                //React.createElement('div', { className: 'video-title', key: 'trailer-title' }, 'Official Trailer'),
+                })
               ]) : null,
               
               // Gameplay
@@ -1084,10 +784,9 @@
                   key: 'gameplay-iframe',
                   src: `https://www.youtube.com/embed/${selectedGame.gameplay_id}?rel=0&modestbranding=1`,
                   title: `${selectedGame.title} Gameplay`,
-                  allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
+                  allow: 'accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture',
                   allowFullScreen: true
-                }),
-                //React.createElement('div', { className: 'video-title', key: 'gameplay-title' }, 'Gameplay Footage'),
+                })
               ]) : null
             ].filter(Boolean))
           ]) : null,
@@ -1105,8 +804,15 @@
         ].filter(Boolean)),
 
         // Detailed Description
-        React.createElement('h6', { key: 'gallery-title', style: { marginBottom: '7px', marginTop: '15px', color: '#495057', fontSize: '1.1rem', fontWeight: '600' } }, 'Detailed Description'),
+        React.createElement('h6', { key: 'description-title', style: { marginBottom: '7px', marginTop: '15px', color: '#495057', fontSize: '1.1rem', fontWeight: '600' } }, 'Detailed Description'),
         selectedGame.description ? React.createElement('div', { className: 'detail-description', key: 'description' }, selectedGame.description) : null,
+
+        // Recommendations Section
+        React.createElement(GameRecommendations, {
+          key: 'recommendations',
+          selectedGame: selectedGame,
+          onGameSelect: onGameSelect
+        }),
 
       ].filter(Boolean));
     }
@@ -1146,11 +852,641 @@
     // Optimized list item renderer with memoization
     const MemoizedListItem = memo(ListItem);
 
+    // t-SNE implementation using ml-matrix for better performance
+    class SimpleTSNE {
+      constructor(options = {}) {
+        this.perplexity = options.perplexity || 30;
+        this.learningRate = options.learningRate || 200;
+        this.iterations = options.iterations || 1000;
+        this.momentum = 0.8;
+        this.finalMomentum = 0.8;
+        this.momentumSwitchIter = 250;
+        this.stopLyingIter = 100;
+        this.lyingCoeff = 4;
+        this.epsilon = 1e-12;
+      }
+
+      // Compute pairwise squared Euclidean distances using ml-matrix
+      computeDistances(X) {
+        const matrix = new Matrix(X);
+        const n = matrix.rows;
+        const distances = new Matrix(n, n);
+        
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const row1 = matrix.getRow(i);
+            const row2 = matrix.getRow(j);
+            let dist = 0;
+            for (let k = 0; k < row1.length; k++) {
+              const diff = row1[k] - row2[k];
+              dist += diff * diff;
+            }
+            distances.set(i, j, dist);
+            distances.set(j, i, dist);
+          }
+        }
+        return distances.to2DArray();
+      }
+
+      // Compute P matrix (high-dimensional similarities)
+      computeP(distances) {
+        const n = distances.length;
+        const P = new Matrix(n, n);
+        
+        // For each point, find perplexity-based sigma
+        for (let i = 0; i < n; i++) {
+          const beta = this.findBeta(distances[i], i);
+          for (let j = 0; j < n; j++) {
+            if (i !== j) {
+              P.set(i, j, Math.exp(-distances[i][j] * beta));
+            }
+          }
+          
+          // Normalize row
+          let rowSum = 0;
+          for (let j = 0; j < n; j++) {
+            rowSum += P.get(i, j);
+          }
+          if (rowSum > 0) {
+            for (let j = 0; j < n; j++) {
+              P.set(i, j, P.get(i, j) / rowSum);
+            }
+          }
+        }
+        
+        // Symmetrize
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < n; j++) {
+            const symValue = (P.get(i, j) + P.get(j, i)) / (2 * n);
+            P.set(i, j, Math.max(symValue, 1e-12));
+          }
+        }
+        
+        return P.to2DArray();
+      }
+
+      // Binary search for beta that gives desired perplexity
+      findBeta(distances, excludeIndex) {
+        let beta = 1;
+        let minBeta = 0;
+        let maxBeta = Infinity;
+        const targetPerplexity = this.perplexity;
+        
+        for (let iter = 0; iter < 50; iter++) {
+          let pSum = 0;
+          let entropy = 0;
+          
+          for (let j = 0; j < distances.length; j++) {
+            if (j !== excludeIndex) {
+              const p = Math.exp(-distances[j] * beta);
+              pSum += p;
+              entropy -= p * distances[j] * beta;
+            }
+          }
+          
+          if (pSum === 0) break;
+          
+          entropy = entropy / pSum + Math.log(pSum);
+          const perplexity = Math.pow(2, entropy);
+          
+          if (Math.abs(perplexity - targetPerplexity) < 1e-5) break;
+          
+          if (perplexity > targetPerplexity) {
+            minBeta = beta;
+            beta = maxBeta === Infinity ? beta * 2 : (beta + maxBeta) / 2;
+          } else {
+            maxBeta = beta;
+            beta = (beta + minBeta) / 2;
+          }
+        }
+        
+        return beta;
+      }
+
+      // Compute Q matrix (low-dimensional similarities)
+      computeQ(Y) {
+        const n = Y.length;
+        const Q = new Matrix(n, n);
+        let sum = 0;
+        
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const dx = Y[i][0] - Y[j][0];
+            const dy = Y[i][1] - Y[j][1];
+            const dist = 1 / (1 + dx * dx + dy * dy);
+            Q.set(i, j, dist);
+            Q.set(j, i, dist);
+            sum += 2 * dist;
+          }
+        }
+        
+        // Normalize
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < n; j++) {
+            Q.set(i, j, Math.max(Q.get(i, j) / sum, 1e-12));
+          }
+        }
+        
+        return Q.to2DArray();
+      }
+
+      // Run t-SNE with improved initialization and parameters
+      run(X) {
+        const n = X.length;
+        
+        if (n < 3) {
+          console.warn('Too few data points for t-SNE, returning random positions');
+          return Array(n).fill().map(() => [Math.random() * 2 - 1, Math.random() * 2 - 1]);
+        }
+        
+        // Better initialization using PCA-like approach
+        const Y = this.initializeY(X);
+        
+        // Adjust perplexity based on data size
+        this.perplexity = Math.min(this.perplexity, Math.floor((n - 1) / 3));
+        
+        // Compute P matrix
+        console.log('Computing distance matrix...');
+        const distances = this.computeDistances(X);
+        console.log('Computing P matrix...');
+        const P = this.computeP(distances);
+        
+        // Initialize gradients and gains
+        const dY = Array(n).fill().map(() => [0, 0]);
+        const gains = Array(n).fill().map(() => [1, 1]);
+        
+        console.log('Starting t-SNE iterations...');
+        
+        for (let iter = 0; iter < this.iterations; iter++) {
+          // Compute Q matrix
+          const Q = this.computeQ(Y);
+          
+          // Compute gradients
+          const grads = Array(n).fill().map(() => [0, 0]);
+          
+          for (let i = 0; i < n; i++) {
+            for (let j = 0; j < n; j++) {
+              if (i !== j) {
+                const mult = (P[i][j] - Q[i][j]) * Q[i][j];
+                grads[i][0] += mult * (Y[i][0] - Y[j][0]);
+                grads[i][1] += mult * (Y[i][1] - Y[j][1]);
+              }
+            }
+          }
+          
+          // Apply lying coefficient
+          const lying = iter < this.stopLyingIter ? this.lyingCoeff : 1;
+          
+          // Update gains and apply gradients
+          const momentum = iter < this.momentumSwitchIter ? 0.5 : this.finalMomentum;
+          
+          for (let i = 0; i < n; i++) {
+            for (let d = 0; d < 2; d++) {
+              // Update gains
+              const signCheck = Math.sign(grads[i][d]) !== Math.sign(dY[i][d]);
+              gains[i][d] = Math.max(
+                gains[i][d] * (signCheck ? 1.2 : 0.8),
+                0.01
+              );
+              
+              // Update momentum
+              dY[i][d] = momentum * dY[i][d] - this.learningRate * gains[i][d] * grads[i][d] * lying;
+              
+              // Update Y
+              Y[i][d] += dY[i][d];
+            }
+          }
+          
+          // Center Y
+          const meanX = Y.reduce((sum, point) => sum + point[0], 0) / n;
+          const meanY = Y.reduce((sum, point) => sum + point[1], 0) / n;
+          for (let i = 0; i < n; i++) {
+            Y[i][0] -= meanX;
+            Y[i][1] -= meanY;
+          }
+          
+          if (iter % 100 === 0) {
+            console.log(`t-SNE iteration ${iter}/${this.iterations}`);
+          }
+        }
+        
+        return Y;
+      }
+      
+      // Better initialization using variance-based spread
+      initializeY(X) {
+        const n = X.length;
+        
+        if (n === 0) return [];
+        
+        // Calculate variance in first few dimensions for scaling
+        const numDims = Math.min(10, X[0].length);
+        let totalVariance = 0;
+        
+        for (let d = 0; d < numDims; d++) {
+          const mean = X.reduce((sum, x) => sum + x[d], 0) / n;
+          const variance = X.reduce((sum, x) => sum + (x[d] - mean) ** 2, 0) / n;
+          totalVariance += variance;
+        }
+        
+        const scale = Math.sqrt(totalVariance / numDims) * 0.0001;
+        
+        return Array(n).fill().map(() => [
+          (Math.random() - 0.5) * scale,
+          (Math.random() - 0.5) * scale
+        ]);
+      }
+    }
+
+    // Generate t-SNE visualization with better preprocessing
+    async function generateClusterVisualization() {
+      try {
+        console.log('Starting cluster visualization generation...');
+        
+        // Get vectors for all games - limit to first 300 for performance
+        const gameVectors = [];
+        const gameLabels = [];
+        const gameGenres = [];
+        const gameInfo = [];
+        
+        const gamesToProcess = GAMES_DATA; // Limit to first 300 games
+        console.log(`Processing first ${gamesToProcess.length} games for clustering...`);
+        
+        for (const game of gamesToProcess) {
+          const vector = await extractComprehensiveGameVector(game);
+          if (vector && vector.length > 0) {
+            gameVectors.push(vector);
+            gameLabels.push(game.title);
+            gameGenres.push(game.genres.length > 0 ? game.genres[0] : 'Unknown');
+            gameInfo.push({
+              title: game.title,
+              genres: game.genres,
+              playtime: game.playtime_minutes || 0,
+              isPlayed: game.is_played || false
+            });
+          }
+        }
+        
+        if (gameVectors.length < 3) {
+          throw new Error('Not enough valid game vectors for clustering');
+        }
+        
+        console.log(`Actually processing ${gameVectors.length} games for clustering...`);
+        
+        // Standardize the vectors (z-score normalization)
+        const standardizedVectors = standardizeVectors(gameVectors);
+        
+        // Adjust parameters based on data size
+        const perplexity = 50; //Math.min(30, Math.max(5, Math.floor(gameVectors.length / 4)));
+        const numClusters = 32; //Math.min(8, Math.max(2, Math.floor(gameVectors.length / 15)));
+        
+        console.log(`Using perplexity: ${perplexity}, clusters: ${numClusters}`);
+        
+        // Run t-SNE on standardized data
+        const tsne = new SimpleTSNE({
+          perplexity: perplexity,
+          iterations: 1000,
+          learningRate: 200, /*Math.max(100, gameVectors.length * 2)*/
+        });
+        
+        const tsneResult = tsne.run(standardizedVectors);
+        
+        // Run K-means clustering on standardized vectors
+        const kmeans = new KMeans(standardizedVectors, numClusters, {
+          initialization: 'kmeans++',
+          maxIterations: 300,
+          tolerance: 1e-6
+        });
+        
+        const clusterResult = kmeans.clusters;
+        
+        // Analyze clusters for meaningful groupings
+        const clusterAnalysis = analyzeClusterMeanings(gameInfo, clusterResult, numClusters);
+        
+        console.log(`Generated ${numClusters} clusters:`, clusterAnalysis);
+        
+        // Prepare data for plotting with better hover info
+        const x = tsneResult.map(point => point[0]);
+        const y = tsneResult.map(point => point[1]);
+        const colors = clusterResult;
+        const text = gameLabels.map((label, i) => {
+          const info = gameInfo[i];
+          const cluster = clusterAnalysis[colors[i]];
+          return `${label}<br>` +
+                 `Genre: ${gameGenres[i]}<br>` +
+                 `Playtime: ${Math.round(info.playtime / 60)}h<br>` +
+                 `Cluster: ${cluster.name}<br>` +
+                 `Played: ${info.isPlayed ? 'Yes' : 'No'}`;
+        });
+        
+        // Create color palette with better contrast
+        const colorPalette = [
+          '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+          '#1abc9c', '#34495e', '#e67e22', '#95a5a6', '#d35400'
+        ];
+        
+        const trace = {
+          x: x,
+          y: y,
+          mode: 'markers',
+          type: 'scatter',
+          text: text,
+          hovertemplate: '%{text}<extra></extra>',
+          marker: {
+            size: 10,
+            color: colors,
+            colorscale: colorPalette.slice(0, numClusters).map((color, i) => [i / Math.max(1, numClusters - 1), color]),
+            showscale: true,
+            line: {
+              width: 1,
+              color: 'white'
+            },
+            colorbar: {
+              title: 'Cluster',
+              titleside: 'right',
+              tickmode: 'array',
+              tickvals: Array.from({length: numClusters}, (_, i) => i),
+              ticktext: Array.from({length: numClusters}, (_, i) => clusterAnalysis[i].name)
+            }
+          }
+        };
+        
+        const layout = {
+          title: {
+            text: `Game Library Clusters (t-SNE + K-Means)<br><sub>First ${gamesToProcess.length} games - Perplexity: ${perplexity}, Clusters: ${numClusters}</sub>`,
+            font: { size: 16 }
+          },
+          xaxis: { 
+            title: 't-SNE Dimension 1', 
+            showgrid: true,
+            zeroline: false
+          },
+          yaxis: { 
+            title: 't-SNE Dimension 2', 
+            showgrid: true,
+            zeroline: false
+          },
+          hovermode: 'closest',
+          plot_bgcolor: '#f8f9fa',
+          paper_bgcolor: 'white',
+          margin: { t: 80, r: 120, b: 60, l: 60 }
+        };
+        
+        const config = {
+          responsive: true,
+          displayModeBar: true,
+          modeBarButtonsToRemove: ['pan2d', 'select2d', 'lasso2d', 'autoScale2d'],
+          displaylogo: false
+        };
+        
+        return { trace, layout, config, clusterAnalysis };
+        
+      } catch (error) {
+        console.error('Error generating cluster visualization:', error);
+        throw error;
+      }
+    }
+
+    // Standardize vectors for better clustering
+    function standardizeVectors(vectors) {
+      if (vectors.length === 0) return vectors;
+      
+      const numFeatures = vectors[0].length;
+      const means = new Array(numFeatures).fill(0);
+      const stds = new Array(numFeatures).fill(0);
+      
+      // Calculate means
+      for (let i = 0; i < vectors.length; i++) {
+        for (let j = 0; j < numFeatures; j++) {
+          means[j] += vectors[i][j];
+        }
+      }
+      for (let j = 0; j < numFeatures; j++) {
+        means[j] /= vectors.length;
+      }
+      
+      // Calculate standard deviations
+      for (let i = 0; i < vectors.length; i++) {
+        for (let j = 0; j < numFeatures; j++) {
+          stds[j] += (vectors[i][j] - means[j]) ** 2;
+        }
+      }
+      for (let j = 0; j < numFeatures; j++) {
+        stds[j] = Math.sqrt(stds[j] / vectors.length);
+        if (stds[j] === 0) stds[j] = 1; // Avoid division by zero
+      }
+      
+      // Standardize
+      return vectors.map(vector => 
+        vector.map((val, j) => (val - means[j]) / stds[j])
+      );
+    }
+
+    // Analyze what each cluster represents
+    function analyzeClusterMeanings(gameInfo, clusterResult, numClusters) {
+      const clusters = Array(numClusters).fill().map(() => ({
+        games: [],
+        genres: {},
+        avgPlaytime: 0,
+        playedRatio: 0
+      }));
+      
+      // Group games by cluster
+      gameInfo.forEach((game, i) => {
+        const clusterId = clusterResult[i];
+        clusters[clusterId].games.push(game);
+        
+        // Count genres
+        game.genres.forEach(genre => {
+          clusters[clusterId].genres[genre] = (clusters[clusterId].genres[genre] || 0) + 1;
+        });
+      });
+      
+      // Analyze each cluster
+      return clusters.map((cluster, i) => {
+        if (cluster.games.length === 0) {
+          return { name: `Cluster ${i + 1}`, description: 'Empty cluster' };
+        }
+        
+        // Most common genre
+        const topGenre = Object.entries(cluster.genres)
+          .sort(([,a], [,b]) => b - a)[0];
+        
+        // Average playtime
+        const avgPlaytime = cluster.games.reduce((sum, game) => sum + game.playtime, 0) / cluster.games.length;
+        
+        // Played ratio
+        const playedCount = cluster.games.filter(game => game.isPlayed).length;
+        const playedRatio = playedCount / cluster.games.length;
+        
+        // Generate cluster name
+        let name = `Cluster ${i + 1}`;
+        if (topGenre && topGenre[1] > 1) {
+          name = `${topGenre[0]} Games`;
+        }
+        
+        if (avgPlaytime > 600) { // 10+ hours
+          name += ' (High Playtime)';
+        } else if (avgPlaytime < 60) { // <1 hour
+          name += ' (Low Playtime)';
+        }
+        
+        if (playedRatio > 0.8) {
+          name += ' - Played';
+        } else if (playedRatio < 0.2) {
+          name += ' - Unplayed';
+        }
+        
+        return {
+          name: name,
+          topGenre: topGenre ? topGenre[0] : 'Mixed',
+          avgPlaytime: Math.round(avgPlaytime / 60),
+          playedRatio: Math.round(playedRatio * 100),
+          gameCount: cluster.games.length
+        };
+      });
+    }
+
+    // Cluster visualization modal component
+    function ClusterModal({ isOpen, onClose }) {
+      const [isLoading, setIsLoading] = useState(true);
+      const [plotData, setPlotData] = useState(null);
+      const [error, setError] = useState(null);
+      const plotRef = useRef(null);
+
+      useEffect(() => {
+        if (isOpen && !plotData) {
+          setIsLoading(true);
+          setError(null);
+          
+          generateClusterVisualization()
+            .then(data => {
+              setPlotData(data);
+              setIsLoading(false);
+            })
+            .catch(err => {
+              console.error('Cluster visualization error:', err);
+              setError(err.message);
+              setIsLoading(false);
+            });
+        }
+      }, [isOpen, plotData]);
+
+      useEffect(() => {
+        if (plotData && plotRef.current && !isLoading) {
+          Plotly.newPlot(plotRef.current, [plotData.trace], plotData.layout, plotData.config);
+        }
+      }, [plotData, isLoading]);
+
+      if (!isOpen) return null;
+
+      return React.createElement('div', {
+        className: `cluster-modal ${isOpen ? 'show' : ''}`,
+        onClick: onClose
+      }, 
+        React.createElement('div', {
+          className: 'cluster-modal-content',
+          onClick: (e) => e.stopPropagation()
+        }, [
+          React.createElement('div', { className: 'cluster-modal-header', key: 'header' }, [
+            React.createElement('h3', { className: 'cluster-modal-title', key: 'title' }, 
+              'Game Library Cluster Analysis'
+            ),
+            React.createElement('button', {
+              className: 'cluster-close-btn',
+              onClick: onClose,
+              key: 'close'
+            }, '×')
+          ]),
+          React.createElement('div', { className: 'cluster-plot-container', key: 'content' }, [
+            isLoading ? React.createElement('div', { className: 'cluster-loading', key: 'loading' }, [
+              React.createElement('i', { className: 'bi bi-arrow-repeat', key: 'icon' }),
+              React.createElement('div', { key: 'text' }, [
+                React.createElement('h4', { key: 'title' }, 'Generating Cluster Visualization'),
+                React.createElement('p', { key: 'desc' }, 'Computing t-SNE embeddings and K-means clusters...')
+              ])
+            ]) : null,
+            error ? React.createElement('div', { 
+              key: 'error',
+              style: { 
+                textAlign: 'center', 
+                padding: '40px',
+                color: '#dc3545' 
+              }
+            }, [
+              React.createElement('h4', { key: 'title' }, 'Error generating visualization'),
+              React.createElement('p', { key: 'msg' }, error)
+            ]) : null,
+            !isLoading && !error ? React.createElement('div', {
+              ref: plotRef,
+              key: 'plot',
+              style: { width: '100%', height: '100%' }
+            }) : null
+          ])
+        ])
+      );
+    }
+
     function GameLibrary() {
       const [searchTerm, setSearchTerm] = useState('');
       const [activeFilter, setActiveFilter] = useState('all');
       const [selectedGame, setSelectedGame] = useState(null);
       const [containerHeight, setContainerHeight] = useState(600);
+      const [showClusterModal, setShowClusterModal] = useState(false);
+
+      // URL-based navigation and history management
+      const handleGameSelect = (game) => {
+        if (game && game.id) {
+          // Update URL without page reload
+          window.history.pushState({ gameId: game.id }, '', `#game-${game.id}`);
+          setSelectedGame(game);
+        } else {
+          // Clear selection
+          window.history.pushState({}, '', window.location.pathname);
+          setSelectedGame(null);
+        }
+      };
+
+      // Function to find and set game from URL hash
+      const setGameFromHash = (hash) => {
+        if (hash.startsWith('#game-')) {
+          const gameId = hash.replace('#game-', '');
+          const game = GAMES_DATA.find(g => g.id === gameId);
+          if (game) {
+            setSelectedGame(game);
+            return true;
+          } else {
+            // Game not found, clear URL
+            window.history.replaceState({}, '', window.location.pathname);
+            setSelectedGame(null);
+            return false;
+          }
+        } else {
+          setSelectedGame(null);
+          return true;
+        }
+      };
+
+      // Handle browser back/forward navigation
+      useEffect(() => {
+        const handlePopState = (event) => {
+          const hash = window.location.hash;
+          setGameFromHash(hash);
+        };
+
+        // Handle initial page load with hash
+        const initialHash = window.location.hash;
+        if (initialHash) {
+          setGameFromHash(initialHash);
+        }
+
+        // Listen for browser navigation events
+        window.addEventListener('popstate', handlePopState);
+        
+        return () => {
+          window.removeEventListener('popstate', handlePopState);
+        };
+      }, []); // Empty dependency array to run only once
 
       // Calculate optimal container height based on viewport
       useEffect(() => {
@@ -1165,7 +1501,15 @@
         return () => window.removeEventListener('resize', updateHeight);
       }, []);
 
-      // Fixed item height for compact cards
+      // Expose game selection function for recommendations
+      useEffect(() => {
+        window.selectGameFromRecommendation = handleGameSelect;
+        return () => {
+          delete window.selectGameFromRecommendation;
+        };
+      }, []);
+
+      // Updated item height for taller cards with axis visualization
       const itemHeight = 105;
       const visibleItemCount = Math.ceil(containerHeight / itemHeight);
       const bufferSize = Math.min(3, Math.ceil(visibleItemCount * 0.5));
@@ -1192,8 +1536,10 @@
             case 'recent':
               matchesFilter = game.is_recent;
               break;
+            case 'all':
             default:
               matchesFilter = true;
+              break;
           }
 
           return matchesSearch && matchesFilter;
@@ -1203,7 +1549,7 @@
       const listData = useMemo(() => ({
         games: filteredGames,
         selectedGame,
-        onGameSelect: setSelectedGame
+        onGameSelect: handleGameSelect
       }), [filteredGames, selectedGame]);
 
       // Add CSS for dynamic background images
@@ -1225,8 +1571,17 @@
         // Header
         React.createElement('div', { className: 'header', key: 'header' }, [
           React.createElement('h1', { key: 'title' }, [
-            React.createElement('i', { className: 'bi bi-controller', key: 'icon' }),
-            ' GOG Galaxy Game Library'
+            React.createElement('i', { className: 'bi bi-joystick', key: 'icon' }),
+            ' GOG Galaxy Game Library',
+            React.createElement('button', {
+              className: 'cluster-viz-btn',
+              onClick: () => setShowClusterModal(true),
+              key: 'cluster-btn',
+              title: 'View cluster analysis of your game library'
+            }, [
+              React.createElement('i', { className: 'bi bi-diagram-3', key: 'cluster-icon' }),
+              'Cluster Analysis'
+            ])
           ]),
           React.createElement('div', { className: 'stats-row', key: 'stats' }, [
             React.createElement('div', { className: 'stat-item', key: 'total' }, [
@@ -1235,11 +1590,11 @@
             ]),
             React.createElement('div', { className: 'stat-item', key: 'played' }, [
               React.createElement('span', { className: 'stat-number', key: 'num' }, '[[played_games]]'),
-              React.createElement('span', { className: 'stat-label', key: 'label' }, 'Played')
+              React.createElement('span', { className: 'stat-label', key: 'label' }, 'Games Played')
             ]),
             React.createElement('div', { className: 'stat-item', key: 'hours' }, [
               React.createElement('span', { className: 'stat-number', key: 'num' }, '[[total_hours]]h'),
-              React.createElement('span', { className: 'stat-label', key: 'label' }, 'Total Hours')
+              React.createElement('span', { className: 'stat-label', key: 'label' }, 'Hours Played')
             ]),
             React.createElement('div', { className: 'stat-item', key: 'platforms' }, [
               React.createElement('span', { className: 'stat-number', key: 'num' }, '[[platform_count]]'),
@@ -1250,31 +1605,31 @@
 
         // Controls
         React.createElement('div', { className: 'controls', key: 'controls' }, [
-          React.createElement('div', { className: 'row align-items-center', key: 'row' }, [
+          React.createElement('div', { className: 'row g-3', key: 'row' }, [
             React.createElement('div', { className: 'col-md-6', key: 'search-col' }, [
-              React.createElement('div', { className: 'search-box', key: 'search-box' }, [
+              React.createElement('div', { className: 'search-box', key: 'search' }, [
                 React.createElement('input', {
+                  key: 'input',
                   type: 'text',
                   className: 'form-control',
                   placeholder: 'Search games...',
                   value: searchTerm,
-                  onChange: (e) => setSearchTerm(e.target.value),
-                  key: 'input'
+                  onChange: (e) => setSearchTerm(e.target.value)
                 }),
                 React.createElement('i', { className: 'bi bi-search', key: 'icon' })
               ])
             ]),
             React.createElement('div', { className: 'col-md-6', key: 'filter-col' }, [
-              React.createElement('div', { className: 'filter-buttons', key: 'filter-buttons' }, [
+              React.createElement('div', { className: 'filter-buttons', key: 'filters' }, [
                 ['all', 'All Games'],
-                ['played', 'Played Only'],
+                ['played', 'Played'],
                 ['unplayed', 'Unplayed'],
-                ['recent', 'Recently Played']
+                ['recent', 'Recent']
               ].map(([filter, label]) =>
                 React.createElement('button', {
-                  className: 'filter-btn' + (filter === activeFilter ? ' active' : ''),
-                  onClick: () => setActiveFilter(filter),
-                  key: filter
+                  key: filter,
+                  className: `filter-btn ${activeFilter === filter ? 'active' : ''}`,
+                  onClick: () => setActiveFilter(filter)
                 }, label)
               ))
             ])
@@ -1282,31 +1637,41 @@
         ]),
 
         // Main Content
-        React.createElement('div', { className: 'main-content', key: 'main-content' }, [
+
+        React.createElement('div', { className: 'main-content', key: 'main' }, [
           // Games List Panel
-          React.createElement('div', { className: 'games-list-panel', key: 'games-list' }, [
-            React.createElement('div', { className: 'games-grid', key: 'games' }, [
-              filteredGames.length > 0 ?
-                React.createElement(List, {
-                  height: containerHeight,
-                  itemCount: filteredGames.length,
-                  itemSize: itemHeight,
-                  itemData: listData,
-                  overscanCount: bufferSize
-                }, MemoizedListItem) :
-                React.createElement('div', { className: 'no-results', key: 'no-results' }, [
-                  React.createElement('i', { className: 'bi bi-search', key: 'icon' }),
-                  React.createElement('h4', { key: 'title' }, 'No games found'),
-                  React.createElement('p', { key: 'text' }, 'Try adjusting your search or filter criteria')
-                ])
-            ])
+          React.createElement('div', { className: 'games-list-panel', key: 'list-panel' }, [
+            filteredGames.length > 0 ? React.createElement('div', { className: 'games-grid', key: 'grid' },
+              React.createElement(List, {
+                height: containerHeight,
+                itemCount: filteredGames.length,
+                itemSize: itemHeight,
+                itemData: listData,
+                overscanCount: bufferSize
+              }, MemoizedListItem)
+            ) : React.createElement('div', { className: 'no-results', key: 'no-results' }, [
+              React.createElement('i', { className: 'bi bi-search', key: 'icon' }),
+              React.createElement('h4', { key: 'title' }, 'No games found'),
+              React.createElement('p', { key: 'text' }, 'Try adjusting your search or filter criteria.')
+            ]),
           ]),
 
           // Detail Panel
-          React.createElement('div', { className: 'detail-panel', key: 'detail-panel' }, [
-            React.createElement(DetailPanel, { selectedGame, key: 'detail-content' })
-          ])
-        ])
+          React.createElement('div', { className: 'detail-panel', key: 'detail-panel' },
+            React.createElement(DetailPanel, { 
+              selectedGame, 
+              onGameSelect: handleGameSelect,
+              key: 'detail' 
+            })
+          )
+        ]),
+
+        // Cluster Modal
+        React.createElement(ClusterModal, {
+          key: 'cluster-modal',
+          isOpen: showClusterModal,
+          onClose: () => setShowClusterModal(false)
+        })
       ]);
     }
 

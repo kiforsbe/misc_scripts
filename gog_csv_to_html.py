@@ -5,23 +5,54 @@ import argparse
 import json
 import requests
 import re
+import time
+import sqlite3
+import urllib.parse
+import gzip
+import zlib
+import brotli
+import ollama
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from jinja2 import Environment, FileSystemLoader
-import urllib.parse
-import time
-import sqlite3
-import json
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-import gzip
-import zlib
-import brotli
+from pydantic import BaseModel, Field
 
 class GOGMediaCache:
     def __init__(self, db_path: str = "gog_media_cache.db"):
         self.db_path = db_path
+        self._ensure_tables()
+    
+    def _ensure_tables(self):
+        """Ensure database tables exist with proper schema"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Create tables if they don't exist
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS games (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                trailer_id TEXT,
+                gameplay_id TEXT,
+                images TEXT,
+                background_image TEXT,
+                square_icon TEXT,
+                vertical_cover TEXT,
+                axis_info TEXT
+            )
+        ''')
+        
+        # Check if axis_info column exists, add if missing
+        cursor.execute("PRAGMA table_info(games)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'axis_info' not in columns:
+            cursor.execute('ALTER TABLE games ADD COLUMN axis_info TEXT')
+        
+        conn.commit()
+        conn.close()
     
     def get_cached_media(self, game_id: str, game_title: str) -> Optional[Dict[str, Any]]:
         """Get cached media data for a game"""
@@ -29,21 +60,22 @@ class GOGMediaCache:
         cursor = conn.cursor()
         
         # Try to find by ID first, then by title
-        cursor.execute('SELECT trailer_id, gameplay_id, images, background_image, square_icon, vertical_cover FROM games WHERE id = ? OR title = ?', 
+        cursor.execute('SELECT trailer_id, gameplay_id, images, background_image, square_icon, vertical_cover, axis_info FROM games WHERE id = ? OR title = ?', 
                       (game_id, game_title))
         result = cursor.fetchone()
         
         conn.close()
         
         if result:
-            trailer_id, gameplay_id, images_json, bg_image, square_icon, vertical_cover = result
+            trailer_id, gameplay_id, images_json, bg_image, square_icon, vertical_cover, axis_info = result
             return {
                 'trailer_id': trailer_id if trailer_id else None,
                 'gameplay_id': gameplay_id if gameplay_id else None,
                 'images': json.loads(images_json) if images_json else [],
                 'background_image': bg_image if bg_image else '',
                 'square_icon': square_icon if square_icon else '',
-                'vertical_cover': vertical_cover if vertical_cover else ''
+                'vertical_cover': vertical_cover if vertical_cover else '',
+                'axis_info': json.loads(axis_info) if axis_info else None
             }
         
         return None
@@ -56,8 +88,8 @@ class GOGMediaCache:
         try:
             cursor.execute('''
                 INSERT OR REPLACE INTO games 
-                (id, title, trailer_id, gameplay_id, images, background_image, square_icon, vertical_cover)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, trailer_id, gameplay_id, images, background_image, square_icon, vertical_cover, axis_info)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 game_id,
                 game_title,
@@ -66,7 +98,8 @@ class GOGMediaCache:
                 json.dumps(media_data.get('images', [])),
                 media_data.get('background_image', ''),
                 media_data.get('square_icon', ''),
-                media_data.get('vertical_cover', '')
+                media_data.get('vertical_cover', ''),
+                json.dumps(media_data.get('axis_info')) if media_data.get('axis_info') else None
             ))
             
             conn.commit()
@@ -92,14 +125,35 @@ class GOGMediaCache:
         cursor.execute('SELECT COUNT(*) FROM games WHERE images IS NOT NULL AND images != "[]"')
         games_with_images = cursor.fetchone()[0]
         
+        cursor.execute('SELECT COUNT(*) FROM games WHERE axis_info IS NOT NULL AND axis_info != ""')
+        games_with_axis = cursor.fetchone()[0]
+        
         conn.close()
         
         return {
             'total_games': total_games,
             'games_with_trailers': games_with_trailers,
             'games_with_gameplay': games_with_gameplay,
-            'games_with_images': games_with_images
+            'games_with_images': games_with_images,
+            'games_with_axis': games_with_axis
         }
+
+class GameAxisScores(BaseModel):
+    """Pydantic model for game axis scoring structured output"""
+    core_mechanics_complexity: float = Field(ge=0.0, le=1.0, description="How intricate and numerous are the fundamental rules and systems")
+    core_mechanics_count: float = Field(ge=0.0, le=1.0, description="How many distinct core gameplay systems does the game feature")
+    player_agency: float = Field(ge=0.0, le=1.0, description="The degree of freedom and perceived impact the player has")
+    player_impact: float = Field(ge=0.0, le=1.0, description="How significantly can the player's actions change the game world")
+    narrative_density: float = Field(ge=0.0, le=1.0, description="The amount and depth of story elements integrated into gameplay")
+    narrative_integration: float = Field(ge=0.0, le=1.0, description="How closely is the story connected to core mechanics")
+    scope_scale: float = Field(ge=0.0, le=1.0, description="The size and complexity of the game world relative to its mechanics")
+    pacing_controlled: float = Field(ge=0.0, le=1.0, description="How much control does the player have over progression speed")
+    pacing_compelled: float = Field(ge=0.0, le=1.0, description="How much does the game compel progression at its natural pace")
+    replayability: float = Field(ge=0.0, le=1.0, description="The extent to which the game encourages multiple distinct playthroughs")
+    player_driven_world_change: float = Field(ge=0.0, le=1.0, description="To what degree can players meaningfully alter the game state")
+    multiplayer_integration: float = Field(ge=0.0, le=1.0, description="How tightly integrated are multiplayer features with core experience")
+    technical_execution: float = Field(ge=0.0, le=1.0, description="How well are the defined game mechanics implemented")
+    aesthetics_core: float = Field(ge=0.0, le=1.0, description="How well does the visual style support core mechanics")
 
 class GOGCSVToHTML:
     def __init__(self):
@@ -121,6 +175,10 @@ class GOGCSVToHTML:
         # Rate limiting for API calls
         self.last_api_call = 0
         self.api_delay = 0.5  # 500ms between calls
+        
+        # Ollama configuration
+        self.ollama_host = "http://localhost:11434"
+        self.ollama_model = "deepseek-r1"
     
     def rate_limit(self):
         """Simple rate limiting for API calls"""
@@ -315,7 +373,100 @@ class GOGCSVToHTML:
             except UnicodeDecodeError:
                 return content.decode('utf-8', errors='replace')
 
-    def fetch_media_for_game(self, game: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_axis_scores(self, game: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Generate axis scores for a game using Ollama with Pydantic structured output"""
+        try:
+            self.rate_limit()
+            
+            game_title = game.get('title', 'Unknown Game')
+            description = game.get('description', '')
+            genres = game.get('genres', '').split(', ') if game.get('genres') else []
+            developers = game.get('developers', '').split(', ') if game.get('developers') else []
+            tags = game.get('tags', '').split(', ') if game.get('tags') else []
+            platforms = game.get('platforms', [])
+            
+            # Build game information for analysis
+            game_info = f"""
+                Game Title: {game_title}
+                Platforms: {', '.join(platforms) if platforms else 'Unknown'}
+                Developers: {', '.join(developers) if developers else 'Unknown'}
+                Genres: {', '.join(genres) if genres else 'Unknown'}
+                Tags: {', '.join(tags) if tags else 'Unknown'}
+                Description: {description or 'No description available'}
+                """.strip()
+            
+            system_prompt = """
+                You are an expert game analyst and reviewer with deep knowledge of game design, mechanics, and player experience. Your specialty is comparing games across multiple analytical dimensions.
+
+                You will analyze games based on 14 specific axes, each scored from 0.0 to 1.0:
+                1. Core Mechanics Complexity (0.0 = simple rules, 1.0 = highly complex interconnected systems)
+                2. Core Mechanics Count (0.0 = single mechanic, 1.0 = multiple integrated mechanics)
+                3. Player Agency (0.0 = passive gameplay, 1.0 = high freedom with meaningful consequences)
+                4. Player Impact (0.0 = minimal long-term effect, 1.0 = actions significantly alter game world)
+                5. Narrative Density (0.0 = minimal story, 1.0 = rich detailed storytelling)
+                6. Narrative Integration (0.0 = story separate from mechanics, 1.0 = mechanics reinforce narrative)
+                7. Scope/Scale (0.0 = tiny confined environment, 1.0 = massive complex scope)
+                8. Pacing Controlled (0.0 = forced pacing, 1.0 = high player control over progression speed)
+                9. Pacing Compelled (0.0 = no progression pressure, 1.0 = strong momentum encouraging faster play)
+                10. Replayability (0.0 = single-playable, 1.0 = high replay value from multiple factors)
+                11. Player-Driven World Change (0.0 = static world, 1.0 = players can significantly modify environment)
+                12. Multiplayer Integration (0.0 = no multiplayer or disconnected, 1.0 = multiplayer fundamental to core loop)
+                13. Technical Execution (0.0 = broken/buggy systems, 1.0 = flawless mechanical implementation)
+                14. Aesthetics Core (0.0 = visuals detract from gameplay, 1.0 = visual style highly effective for mechanics)
+
+                Analyze the provided game information and provide scores for all 14 axes. Be thorough in your analysis and provide realistic scores based on the game's actual design and implementation."""
+            
+            user_prompt = f"""
+                Analyze this game and provide scores for all 14 axes based on your expert knowledge of game design:
+                {game_info}
+
+                Consider the game's genre, mechanics described in tags/description, and typical implementation patterns for games of this type. Provide accurate scores that reflect the game's actual design complexity and player experience."""
+            
+            # Use ollama chat with Pydantic schema
+            response = ollama.chat(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    },
+                ],
+                model=self.ollama_model,
+                format=GameAxisScores.model_json_schema(),
+                options={
+                    "temperature": 0.1,
+                    "top_p": 0.9
+                }
+            )
+
+            # Validate and parse the structured response
+            try:
+                content = response.message.content if response.message.content else ""
+                axis_scores_model = GameAxisScores.model_validate_json(content)
+                axis_scores = axis_scores_model.model_dump()
+                
+                print(f"    🎯 Generated axis scores successfully")
+                return axis_scores
+                
+            except Exception as e:
+                print(f"  ⚠️  Failed to validate structured response: {e}")
+                print(f"  ⚠️  Raw content: {content[:200]}...")
+                return None
+                
+        except ollama.ResponseError as e:
+            print(f"  ⚠️  Ollama response error for '{game.get('title', 'Unknown')}': {e}")
+            return None
+        except ollama.RequestError as e:
+            print(f"  ⚠️  Ollama request error for '{game.get('title', 'Unknown')}': {e}")
+            return None
+        except Exception as e:
+            print(f"  ⚠️  Axis scoring failed for '{game.get('title', 'Unknown')}': {e}")
+            return None
+
+    def fetch_media_for_game(self, game: Dict[str, Any], include_axis_scoring: bool = False) -> Dict[str, Any]:
         """Fetch trailer and images for a specific game, using cache when available"""
         game_id = game.get('game_id', game.get('title', 'unknown'))
         game_title = game.get('title', '')
@@ -331,7 +482,8 @@ class GOGCSVToHTML:
             'images': [],
             'background_image': '',
             'square_icon': '',
-            'vertical_cover': ''
+            'vertical_cover': '',
+            'axis_info': None
         }
 
         # Check cache first
@@ -344,12 +496,13 @@ class GOGCSVToHTML:
                 has_trailer = bool(media_data.get('trailer_id'))
                 has_gameplay = bool(media_data.get('gameplay_id'))
                 has_images = bool(media_data.get('images'))
+                has_axis = bool(media_data.get('axis_info'))
                 
-                if has_trailer and has_gameplay and has_images:
+                if has_trailer and has_gameplay and has_images and has_axis:
                     #print(f"    ✅ Using cached data (trailer: {has_trailer}, gameplay: {has_gameplay}, images: {len(media_data.get('images', []))})")
                     return media_data
                 else:
-                    print(f"    🔄 Cached data is empty, fetching new data...")
+                    print(f"    🔄 Cached data is incomplete, fetching missing data...")
         
         # Search for YouTube trailer if missing
         if not bool(media_data.get('trailer_id')):
@@ -374,6 +527,14 @@ class GOGCSVToHTML:
             if images:
                 media_data['images'] = images
                 print(f"    🖼️  Found {len(images)} images")
+        
+        # Generate axis scores if requested and missing
+        if include_axis_scoring and not bool(media_data.get('axis_info')):
+            print(f"    🎯 Generating axis scores...")
+            axis_scores = self.generate_axis_scores(game)
+            if axis_scores:
+                media_data['axis_info'] = axis_scores
+                print(f"    🎯 Generated axis scores with {len(axis_scores)} metrics")
         
         # Cache the results (even if empty, to avoid repeated failed searches)
         if self.media_cache:
@@ -603,7 +764,7 @@ class GOGCSVToHTML:
             return '★' * full_stars + '☆' * half_star + '☆' * empty_stars
         except (ValueError, TypeError):
             return ""
-    def generate_html(self, output_file: str | None = None, fetch_media: bool = True) -> str:
+    def generate_html(self, output_file: str | None = None, fetch_media: bool = True, include_axis_scoring: bool = False) -> str:
         """Generate HTML file from games data using Jinja2 template"""
         if not self.games_data:
             print("No games data to convert")
@@ -636,9 +797,11 @@ class GOGCSVToHTML:
         # Fetch media data if requested
         if fetch_media:
             print("🎬 Fetching media data for games...")
+            if include_axis_scoring:
+                print("🎯 Axis scoring enabled - this may take longer...")
             for i, game in enumerate(sorted_games):
                 print(f"📺 Processing {i+1}/{len(sorted_games)}: {game.get('title', 'Unknown')}")
-                media_data = self.fetch_media_for_game(game)
+                media_data = self.fetch_media_for_game(game, include_axis_scoring)
                 game.update(media_data)
         
         # Prepare games data for JavaScript
@@ -669,7 +832,9 @@ class GOGCSVToHTML:
                 # Media data
                 'trailer_id': game.get('trailer_id', ''),
                 'gameplay_id': game.get('gameplay_id', ''),
-                'images': game.get('images', [])
+                'images': game.get('images', []),
+                # Axis scoring data
+                'axis_info': game.get('axis_info')
             }
             js_games_data.append(js_game)
         
@@ -713,12 +878,14 @@ class GOGCSVToHTML:
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(description='Convert GOG Galaxy CSV export to modern HTML page')
-    parser.add_argument('csv_file', help='Path to CSV file from GOG Galaxy Exporter')
+    parser.add_argument('csv_file', nargs='?', help='Path to CSV file from GOG Galaxy Exporter')
     parser.add_argument('-o', '--output', help='Output HTML file name')
     parser.add_argument('--no-media', action='store_true', help='Skip fetching trailer and image data')
     parser.add_argument('--no-cache', action='store_true', help='Skip using media cache')
     parser.add_argument('--open', action='store_true', help='Open the generated HTML file in browser')
     parser.add_argument('--cache-stats', action='store_true', help='Show cache statistics and exit')
+    parser.add_argument('--axis-scoring', default=True, action='store_true', help='Generate axis scores using Ollama (requires deepseek-r1 model)')
+    parser.add_argument('--ollama-host', default='http://localhost:11434', help='Ollama server host (default: http://localhost:11434)')
     
     args = parser.parse_args()
     
@@ -731,7 +898,14 @@ def main():
         print(f"  Games with trailers: {stats['games_with_trailers']}")
         print(f"  Games with gameplay: {stats['games_with_gameplay']}")
         print(f"  Games with images: {stats['games_with_images']}")
+        print(f"  Games with axis scores: {stats['games_with_axis']}")
         return
+    
+    # Check if CSV file is provided
+    if not args.csv_file:
+        print("❌ CSV file argument is required")
+        parser.print_help()
+        sys.exit(1)
     
     # Check if CSV file exists
     if not os.path.exists(args.csv_file):
@@ -741,17 +915,42 @@ def main():
     # Create converter and process
     converter = GOGCSVToHTML()
     
+    # Configure Ollama host if provided
+    if args.ollama_host:
+        converter.ollama_host = args.ollama_host
+    
     # Disable cache if requested
     if args.no_cache:
         converter.media_cache = None
         print("🚫 Media cache disabled")
+    
+    # Check Ollama availability if axis scoring is requested
+    if args.axis_scoring and not args.no_media:
+        try:
+            client = ollama.Client(host=converter.ollama_host)
+            models = client.list()
+            model_names = [model['model'] for model in models['models']]
+            
+            if converter.ollama_model not in model_names:
+                print(f"⚠️  Warning: {converter.ollama_model} model not found in Ollama")
+                print(f"   Available models: {', '.join(model_names)}")
+                print(f"   Please install with: ollama pull {converter.ollama_model}")
+            else:
+                print(f"✅ Ollama connected, {converter.ollama_model} model available")
+        except Exception as e:
+            print(f"⚠️  Warning: Ollama connection failed: {e}")
+            print(f"   Axis scoring will be skipped if Ollama is not available")
     
     print("📖 Loading CSV data...")
     if not converter.load_csv_data(args.csv_file):
         sys.exit(1)
     
     print("🏗️  Generating HTML...")
-    output_file = converter.generate_html(args.output, fetch_media=not args.no_media)
+    output_file = converter.generate_html(
+        args.output, 
+        fetch_media=not args.no_media,
+        include_axis_scoring=args.axis_scoring and not args.no_media
+    )
     
     if output_file:
         print(f"✨ Done! Open {output_file} in your browser to view your game library.")
@@ -760,6 +959,8 @@ def main():
         if not args.no_cache and not args.no_media and converter.media_cache:
             cache_stats = converter.media_cache.get_cache_stats()
             print(f"💾 Media cache now contains {cache_stats['total_games']} games")
+            if args.axis_scoring:
+                print(f"🎯 Axis scores cached for {cache_stats['games_with_axis']} games")
         
         # Optionally open in browser
         if args.open:
