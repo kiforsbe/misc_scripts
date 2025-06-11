@@ -480,36 +480,42 @@ class GOGCSVToHTML:
             'trailer_id': None,
             'gameplay_id': None,
             'images': [],
-            'background_image': '',
-            'square_icon': '',
-            'vertical_cover': '',
+            'background_image': None,
+            'square_icon': None,
+            'vertical_cover': None,
             'axis_info': None
         }
+
+        # Dirty flag
+        cache_isDirty = False
 
         # Check cache first
         if self.media_cache:
             temp = self.media_cache.get_cached_media(game_id, game_title)
             media_data = temp if temp else media_data
-            if media_data:
-                #print(f"    💾 Found cached media data")
-                # Check if we have meaningful data
-                has_trailer = bool(media_data.get('trailer_id'))
-                has_gameplay = bool(media_data.get('gameplay_id'))
-                has_images = bool(media_data.get('images'))
-                has_axis = bool(media_data.get('axis_info'))
-                
-                if has_trailer and has_gameplay and has_images and has_axis:
-                    #print(f"    ✅ Using cached data (trailer: {has_trailer}, gameplay: {has_gameplay}, images: {len(media_data.get('images', []))})")
-                    return media_data
-                else:
-                    print(f"    🔄 Cached data is incomplete, fetching missing data...")
+
+        # Check for background image
+        if not(media_data.get('background_image')) and media_data['background_image'] != game.get('background_image', ''):
+            media_data['background_image'] = game.get('background_image', '')
+            cache_isDirty = True
         
+        # Check for square icon
+        if not(media_data.get('square_icon')) and media_data['square_icon'] != game.get('square_icon', ''):
+            media_data['square_icon'] = game.get('square_icon', '')
+            cache_isDirty = True
+
+        # Check for vertical cover
+        if not(media_data.get('vertical_cover')) and media_data['vertical_cover'] != game.get('vertical_cover', ''):
+            media_data['vertical_cover'] = game.get('vertical_cover', '')
+            cache_isDirty = True
+
         # Search for YouTube trailer if missing
         if not bool(media_data.get('trailer_id')):
             print(f"    📺 Searching for trailer...")
             trailer_id = self.search_youtube_trailer(game_title)
             if trailer_id:
                 media_data['trailer_id'] = trailer_id
+                cache_isDirty = True
                 print(f"    📺 Found trailer: {trailer_id}")
         
         # Search for YouTube gameplay if missing
@@ -518,6 +524,7 @@ class GOGCSVToHTML:
             gameplay_id = self.search_youtube_gameplay(game_title)
             if gameplay_id:
                 media_data['gameplay_id'] = gameplay_id
+                cache_isDirty = True
                 print(f"    🎮 Found gameplay: {gameplay_id}")
         
         # Search for game images
@@ -526,6 +533,7 @@ class GOGCSVToHTML:
             images = self.search_game_images(game_title, developer, 10)
             if images:
                 media_data['images'] = images
+                cache_isDirty = True
                 print(f"    🖼️  Found {len(images)} images")
         
         # Generate axis scores if requested and missing
@@ -534,10 +542,11 @@ class GOGCSVToHTML:
             axis_scores = self.generate_axis_scores(game)
             if axis_scores:
                 media_data['axis_info'] = axis_scores
+                cache_isDirty = True
                 print(f"    🎯 Generated axis scores with {len(axis_scores)} metrics")
         
         # Cache the results (even if empty, to avoid repeated failed searches)
-        if self.media_cache:
+        if self.media_cache and cache_isDirty:
             self.media_cache.cache_media_data(game_id, game_title, media_data)
             print(f"    💾 Cached media data for future use")
         
@@ -764,6 +773,7 @@ class GOGCSVToHTML:
             return '★' * full_stars + '☆' * half_star + '☆' * empty_stars
         except (ValueError, TypeError):
             return ""
+        
     def generate_html(self, output_file: str | None = None, fetch_media: bool = True, include_axis_scoring: bool = False) -> str:
         """Generate HTML file from games data using Jinja2 template"""
         if not self.games_data:
