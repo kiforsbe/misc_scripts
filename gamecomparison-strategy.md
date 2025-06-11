@@ -4,8 +4,42 @@ Each game will be scored on each axis by an assessor (or automatically via some 
 
 **Assessor Note:** Define specific criteria for each score point, e.g., "0.0 means the player has no choice/impact; '0.5' might mean basic choices exist but don't fundamentally change outcomes; '1.0' means almost ny action or sequence of actions can lead to major consequences."
 
+## Table of Contents
+- [List of axis](#list-of-axis)
+  - [Axis 1: Core Mechanics Complexity](#axis-1-core-mechanics-complexity)
+  - [Axis 2: Core Mechanics Count](#axis-2-core-mechanics-count)
+  - [Axis 3: Player Agency](#axis-3-player-agency)
+  - [Axis 4: Player Impact](#axis-4-player-impact)
+  - [Axis 5: Narrative Density](#axis-5-narrative-density)
+  - [Axis 6: Narrative Integration](#axis-6-narrative-integration)
+  - [Axis 7: Scope / Scale](#axis-7-scope--scale)
+  - [Axis 8: Pacing (Controlled)](#axis-8-pacing-controlled)
+  - [Axis 9: Pacing (Compelled)](#axis-9-pacing-compelled)
+  - [Axis 10: Replayability](#axis-10-replayability)
+  - [Axis 11: Player-Driven World Change](#axis-11-player-driven-world-change)
+  - [Axis 12: Multiplayer Integration](#axis-12-multiplayer-integration)
+  - [Axis 13: Technical Execution (Core)](#axis-13-technical-execution-core)
+  - [Axis 14: Aesthetics (Core)](#axis-14-aesthetics-core)
+- [Scoring Similarity](#scoring-similarity)
+- [Recommendation](#recommendation)
+
 ---
 ## List of axis
+
+- **Core Mechanics Complexity** - How intricate and interconnected the fundamental game systems are
+- **Core Mechanics Count** - Number of distinct core gameplay systems
+- **Player Agency** - Degree of freedom and perceived impact on game state/narrative
+- **Player Impact** - How significantly actions change the game world long-term
+- **Narrative Density** - Amount and depth of story elements integrated into gameplay
+- **Narrative Integration** - How closely story/theme connects to core mechanics
+- **Scope / Scale** - Size and complexity of game world relative to mechanics
+- **Pacing (Controlled)** - Player control over progression speed
+- **Pacing (Compelled)** - How much the game compels natural pace progression
+- **Replayability** - Extent game encourages multiple distinct playthroughs
+- **Player-Driven World Change** - Degree players can meaningfully alter game state
+- **Multiplayer Integration** - How tightly online features integrate with core experience
+- **Technical Execution (Core)** - Quality of mechanics implementation and polish
+- **Aesthetics (Core)** - How well visual style supports and enhances mechanics
 
 ### Axis 1: Core Mechanics Complexity
 *   **Definition:** How intricate and numerous are the fundamental rules and systems governing interaction within

@@ -229,21 +229,29 @@
           }
         }
         
-        // Scale axis vector to be comparable to semantic embeddings
-        // Axis values are 0-1, semantic embeddings are normalized around 0
-        const scaledAxisVector = axisVector.map(val => (val - 0.5) * 2); // Convert 0-1 to -1 to 1
+        // Improved scaling: Keep axis values in 0-1 range but apply variance normalization
+        // This preserves the meaning of the axis values while making them comparable to embeddings
+        const axisVariance = axisVector.reduce((sum, val) => sum + (val - 0.5) ** 2, 0) / axisVector.length;
+        const axisScale = Math.max(0.1, Math.sqrt(axisVariance)); // Prevent division by very small numbers
+        const normalizedAxisVector = axisVector.map(val => val / axisScale);
         
-        // Weight the components - give more weight to axis data since it's more structured
-        const axisWeight = 2.0;
-        const semanticWeight = 1.0;
+        // Semantic embeddings are already normalized, but ensure they have proper magnitude
+        const semanticMagnitude = Math.sqrt(semanticEmbedding.reduce((sum, val) => sum + val * val, 0));
+        const normalizedSemanticVector = semanticMagnitude > 0 
+          ? semanticEmbedding.map(val => val / semanticMagnitude)
+          : semanticEmbedding;
         
-        const weightedAxisVector = scaledAxisVector.map(val => val * axisWeight);
-        const weightedSemanticVector = semanticEmbedding.map(val => val * semanticWeight);
+        // Balanced weighting - axis data is more structured but semantic adds context
+        const axisWeight = 1.2;  // Slightly higher weight for structured data
+        const semanticWeight = 2.0;
+        
+        const weightedAxisVector = normalizedAxisVector.map(val => val * axisWeight);
+        const weightedSemanticVector = normalizedSemanticVector.map(val => val * semanticWeight);
         
         // Combine weighted vectors
         const combinedVector = [...weightedAxisVector, ...weightedSemanticVector];
         
-        // L2 normalize the entire vector for better clustering
+        // Final L2 normalization for cosine similarity calculations
         const magnitude = Math.sqrt(combinedVector.reduce((sum, val) => sum + val * val, 0));
         if (magnitude > 0) {
           return combinedVector.map(val => val / magnitude);
@@ -252,14 +260,36 @@
         return combinedVector;
       } catch (error) {
         console.warn('Error extracting comprehensive game vector:', error);
-        // Return axis vector with zero semantic embedding as fallback
-        return [...axisVector, ...new Array(384).fill(0)];
+        // Better fallback: normalize axis vector properly
+        const normalizedAxisFallback = axisVector.map(val => val / Math.sqrt(axisVector.length));
+        return [...normalizedAxisFallback, ...new Array(384).fill(0)];
       }
     }
 
     function euclideanDistance(a, b) {
       if (!a || !b || a.length !== b.length) return Infinity;
       return Math.sqrt(a.reduce((sum, val, i) => sum + (val - b[i]) ** 2, 0));
+    }
+
+    function cosineSimilarity(a, b) {
+      if (!a || !b || a.length !== b.length) return 0;
+      
+      let dotProduct = 0;
+      let magnitudeA = 0;
+      let magnitudeB = 0;
+      
+      for (let i = 0; i < a.length; i++) {
+        dotProduct += a[i] * b[i];
+        magnitudeA += a[i] * a[i];
+        magnitudeB += b[i] * b[i];
+      }
+      
+      magnitudeA = Math.sqrt(magnitudeA);
+      magnitudeB = Math.sqrt(magnitudeB);
+      
+      if (magnitudeA === 0 || magnitudeB === 0) return 0;
+      
+      return dotProduct / (magnitudeA * magnitudeB);
     }
 
     async function findSimilarGames(selectedGame, allGames, k = 5) {
@@ -281,17 +311,12 @@
               const gameVector = await extractComprehensiveGameVector(game);
               if (!gameVector) continue;
               
-              // Calculate euclidean distance
-              const distance = euclideanDistance(selectedVector, gameVector);
-              
-              // Convert distance to similarity (0-1 scale, where 0 = identical, smaller distance = higher similarity)
-              const maxPossibleDistance = Math.sqrt(selectedVector.length);
-              const similarity = Math.max(0, 1 - (distance / maxPossibleDistance));
+              // Calculate cosine similarity (ranges from -1 to 1, where 1 = identical)
+              const similarity = cosineSimilarity(selectedVector, gameVector);
               
               candidates.push({
                 game,
                 vector: gameVector,
-                distance: distance,
                 similarity: similarity
               });
             } catch (error) {
@@ -304,7 +329,7 @@
         }
 
         return candidates
-          .sort((a, b) => a.distance - b.distance) // Sort by distance ascending (smallest distance = most similar)
+          .sort((a, b) => b.similarity - a.similarity) // Sort by similarity descending (highest similarity first)
           .slice(0, k);
       } catch (error) {
         console.error('Error finding similar games:', error);
@@ -651,7 +676,7 @@
               React.createElement('div', { className: 'recommendation-content', key: 'content' }, [
                 React.createElement('div', { className: 'recommendation-title', key: 'title' }, game.title),
                 React.createElement('div', { className: 'recommendation-similarity', key: 'similarity' }, 
-                  `${similarityPercent}% similarity match`
+                  `${similarityPercent}% similarity similarity`
                 ),
                 React.createElement('div', { className: 'recommendation-axis', key: 'axis' },
                   React.createElement(AxisVisualization, { axisInfo: game.axis_info })
