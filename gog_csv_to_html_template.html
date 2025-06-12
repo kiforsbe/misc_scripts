@@ -730,15 +730,10 @@
         // Two-column layout for meta data and tags
         React.createElement('div', { 
           key: 'meta-tags-container',
-          style: { 
-            display: 'flex', 
-            gap: '20px', 
-            marginRight: '320px',
-            marginBottom: '0px'
-          }
+          className: 'meta-tags-container'
         }, [
           // Left column - Detailed Meta Data
-          React.createElement('div', { className: 'detail-meta', key: 'meta', style: { flex: 1 } }, [
+          React.createElement('div', { className: 'detail-meta', key: 'meta' }, [
             React.createElement('div', { className: 'detail-meta-item', key: 'playtime' }, [
               React.createElement('i', { className: 'bi bi-clock meta-icon', key: 'icon' }),
               React.createElement('span', { className: 'meta-label', key: 'label' }, 'Playtime:'),
@@ -1631,7 +1626,7 @@
         // Controls
         React.createElement('div', { className: 'controls', key: 'controls' }, [
           React.createElement('div', { className: 'row g-3', key: 'row' }, [
-            React.createElement('div', { className: 'col-md-6', key: 'search-col' }, [
+            React.createElement('div', { className: 'search-col', key: 'search-col' }, [
               React.createElement('div', { className: 'search-box', key: 'search' }, [
                 React.createElement('input', {
                   key: 'input',

@@ -158,7 +158,7 @@ body {
 
 .games-grid {
   flex: 1;
-  padding: 15px 5px 15px 15px;
+  padding: 0.5rem;
 }
 
 .game-card {
@@ -281,7 +281,7 @@ body {
 
 .game-meta-left {
   display: flex;
-  align-items: left;
+  align-items: normal;
   flex-direction: column;
   flex: 1;
   min-width: 0;
@@ -402,8 +402,18 @@ body {
   padding-right: 320px;
 }
 
+.meta-tags-container { 
+  display: flex;
+  flex-direction: row;
+  gap: 20px;
+  margin-right: 320px;
+  margin-bottom: 0px;
+}
+
 .detail-meta {
   margin-bottom: 20px;
+  min-width: fit-content;
+  flex: 0 0 auto;
   /* padding-right: 320px; */
 }
 
@@ -449,6 +459,7 @@ body {
 .detail-tag-genres {
   /* margin-right: 320px; */
   margin-bottom: 20px;
+  flex: 1 1 auto;
 }
 
 .detail-tags {
@@ -949,8 +960,45 @@ body {
   to { transform: rotate(360deg); }
 }
 
-/* Responsive styles for smaller screens */
-@media (max-width: 768px) {
+/* Panel width controls for different viewport sizes */
+@media (min-width: 130rem) {
+  .games-list-panel,
+  .search-col {
+    width: 65rem; /* Fixed width beyond 130rem */
+    max-width: 65rem;
+    flex-shrink: 1; /* Allow shrinking if needed */
+    flex-grow: 0; /* Prevent growing */
+  }
+  
+  .detail-panel {
+    width: calc(100% - 65rem); /* Take remaining space */
+    flex-grow: 1; /* Allow growing */
+  }
+}
+
+/* Alternative: Use container-based logic for detail panel */
+@media (max-width: 130rem) {
+  .detail-content::after {
+    display: none;
+  }
+  
+  .detail-title,
+  .detail-platforms,
+  .detail-description,
+  .video-section,
+  .carousel-container,
+  .meta-tags-container,
+  .recommendations-section {
+    margin-right: 0;
+    padding-right: 0;
+  }
+  
+  .carousel-container {
+    width: 100%;
+  }
+}
+
+@media (max-width: 80rem) {
   .main-content {
     flex-direction: column;
   }
@@ -988,5 +1036,17 @@ body {
 
   .video-player iframe {
     height: 200px;
+  }
+}
+
+@media (max-width: 40rem) {
+  .game-meta-right {
+    display: none;
+  }
+  .game-card {
+    padding: 8px;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
   }
 }
