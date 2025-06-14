@@ -582,14 +582,10 @@ class GOGCSVToHTML:
         consolidated_games = []
         
         for game_id, game_entries in games_by_id.items():
-            if len(game_entries) == 1:
-                # Single entry, use as-is
-                consolidated_games.append(game_entries[0])
-            else:
-                # Multiple entries, merge them
-                merged_game = self.merge_game_entries(game_entries)
-                merged_game['game_id'] = game_id
-                consolidated_games.append(merged_game)
+            # Multiple entries, merge them
+            merged_game = self.merge_game_entries(game_entries)
+            merged_game['game_id'] = game_id
+            consolidated_games.append(merged_game)
         
         return consolidated_games
     
@@ -618,7 +614,6 @@ class GOGCSVToHTML:
             if platform:
                 platforms.add(platform)
         merged['platforms'] = list(platforms)
-        merged['platform'] = ', '.join(sorted(platforms)) if platforms else 'unknown'
         
         # Use the latest dates
         latest_last_played = self.get_latest_date([e.get('last_played', '') for e in entries])
@@ -727,35 +722,6 @@ class GOGCSVToHTML:
         except ValueError:
             return date_str or "Unknown"
     
-    def get_platform_icon(self, platform: str) -> str:
-        """Get platform icon/emoji"""
-        platform_icons = {
-            'gog': '🎮',
-            'steam': '🚂',
-            'epic': '🏪',
-            'xboxone': '🎯',
-            'xbox': '🎯',
-            'amazon': '📦',
-            'ubisoft': '🌀',
-            'origin': '🔶',
-            'battlenet': '⚔️',
-            'playstation': '🎮',
-        }
-        return platform_icons.get(platform.lower() if platform else '', '🎮')
-    
-    def get_platform_icons(self, platforms: List[str]) -> str:
-        """Get platform icons for multiple platforms"""
-        if not platforms:
-            return '🎮'
-        
-        icons = []
-        for platform in platforms:
-            icon = self.get_platform_icon(platform)
-            if icon not in icons:
-                icons.append(icon)
-        
-        return ' '.join(icons)
-    
     def get_rating_stars(self, rating_str: str) -> str:
         """Convert numeric rating to star display"""
         try:
@@ -822,7 +788,6 @@ class GOGCSVToHTML:
                 'title': game.get('title', 'Unknown Game'),
                 'description': game.get('description', ''),
                 'platforms': game.get('platforms', []),
-                'platform_display': game.get('platform', 'unknown'),
                 'playtime_hours': float(game.get('playtime_hours', 0) or 0),
                 'playtime_display': self.format_playtime(game.get('playtime_hours', '0')),
                 'release_date': self.format_date(game.get('release_date', '')),
