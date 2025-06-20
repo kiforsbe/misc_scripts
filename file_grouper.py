@@ -7,6 +7,29 @@ from pathlib import Path
 from typing import Dict, List, Set, Any, Optional
 import fnmatch
 
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle complex data structures from guessit and other sources."""
+    
+    def default(self, obj):
+        # Handle Path objects
+        if isinstance(obj, Path):
+            return str(obj)
+        
+        # Handle sets
+        if isinstance(obj, set):
+            return list(obj)
+        
+        # Handle any object with __dict__ attribute (custom objects)
+        if hasattr(obj, '__dict__'):
+            return obj.__dict__
+        
+        # Handle objects that have a string representation but aren't basic types
+        if hasattr(obj, '__str__') and not isinstance(obj, (str, int, float, bool, list, dict, type(None))):
+            return str(obj)
+        
+        # Let the base class handle other cases
+        return super().default(obj)
+
 try:
     from guessit import guessit
 except ImportError:
@@ -46,6 +69,7 @@ class FileGrouper:
         self.metadata = {}
         self.enhanced_metadata = {}  # Store metadata from providers
         self.group_metadata = {}     # Store metadata for groups
+        self.title_metadata = {}     # Store unique title metadata
         self.metadata_manager = metadata_manager
         self.file_extensions = {'.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', 
                                '.m4v', '.mpg', '.mpeg', '.3gp', '.ogv', '.ts', '.m2ts'}
@@ -91,12 +115,12 @@ class FileGrouper:
             # Check include patterns
             if not any(fnmatch.fnmatch(filename, pattern) for pattern in include_patterns):
                 continue
-                
+
             # Check exclude patterns
             if any(fnmatch.fnmatch(filename, pattern) for pattern in exclude_patterns):
                 continue
                 
-            filtered_files.append(file_path)        
+            filtered_files.append(file_path)
         return filtered_files
     
     def _is_path_excluded(self, file_path: Path, excluded_path: Path) -> bool:
@@ -104,7 +128,8 @@ class FileGrouper:
         try:
             file_path.resolve().relative_to(excluded_path)
             return True
-        except ValueError:            return False
+        except ValueError:
+            return False
     
     def extract_metadata(self, file_path: Path) -> Dict[str, Any]:
         """Extract metadata from filename using guessit."""
@@ -116,25 +141,45 @@ class FileGrouper:
             result['filename'] = file_path.name
             result['file_size'] = file_path.stat().st_size if file_path.exists() else 0
             
-            # Add enhanced metadata if available
+            # Add enhanced metadata reference if available
             if self.metadata_manager and MetadataManager:
                 title = result.get('title')
                 year = result.get('year')
                 if title:
                     try:
-                        enhanced_info, provider = self.metadata_manager.find_title(title, year)
-                        if enhanced_info:
-                            enhanced_key = str(file_path)
-                            self.enhanced_metadata[enhanced_key] = self._serialize_title_info(enhanced_info)
+                        # Create a unique key for this title+year combination
+                        title_key = f"{title}_{year}" if year else title
+                        
+                        # Only fetch metadata once per unique title
+                        if title_key not in self.title_metadata:
+                            enhanced_info, provider = self.metadata_manager.find_title(title, year)
+                            if enhanced_info:
+                                self.title_metadata[title_key] = {
+                                    'metadata': self._serialize_title_info(enhanced_info),
+                                    'provider': provider.__class__.__name__ if provider else None
+                                }
+                        
+                        # Add reference to title metadata
+                        if title_key in self.title_metadata:
+                            result['title_metadata_key'] = title_key
                             
                             # Add episode info if it's a TV show
-                            if enhanced_info.type in ['tv', 'anime_series']:
-                                season = result.get('season')
-                                episode = result.get('episode')
-                                if season and episode and provider:
-                                    episode_info = self.metadata_manager.get_episode_info(provider, enhanced_info.id, season, episode)
-                                    if episode_info:
-                                        self.enhanced_metadata[enhanced_key]['episode_info'] = self._serialize_episode_info(episode_info)
+                            if title_key in self.title_metadata:
+                                enhanced_info_dict = self.title_metadata[title_key]['metadata']
+                                provider = self.title_metadata[title_key]['provider']
+                                if enhanced_info_dict.get('type') in ['tv', 'anime_series']:
+                                    season = result.get('season')
+                                    episode = result.get('episode')
+                                    if season and episode and provider:
+                                        # Store episode info directly in file metadata since it's file-specific
+                                        enhanced_info, _ = self.metadata_manager.find_title(title, year)
+                                        if enhanced_info:
+                                            episode_info = self.metadata_manager.get_episode_info(
+                                                next(p for p in self.metadata_manager.providers if p.__class__.__name__ == provider),
+                                                enhanced_info.id, season, episode
+                                            )
+                                            if episode_info:
+                                                result['episode_info'] = self._serialize_episode_info(episode_info)
                     except Exception as metadata_error:
                         print(f"Warning: Enhanced metadata lookup failed for {file_path.name}: {metadata_error}")
             
@@ -169,10 +214,12 @@ class FileGrouper:
             
             group_key = ' | '.join(group_key_parts)
             self.groups[group_key].append(metadata)
-        
+
         # Get group metadata after all files are processed
         for group_key, group_files in self.groups.items():
-            self.group_metadata[group_key] = self._get_group_metadata(group_files)
+            group_metadata = self._get_group_metadata(group_files, group_by)
+            if group_metadata:
+                self.group_metadata[group_key] = group_metadata
         
         return dict(self.groups)
     
@@ -194,24 +241,25 @@ class FileGrouper:
                     'file_count': len(files),
                     'total_size_bytes': sum(f.get('file_size', 0) for f in files)
                 }
-                for group_name, files in self.groups.items()
-            }
+                for group_name, files in self.groups.items()            }
         }
     
     def export_to_json(self, output_path: str, include_summary: bool = True) -> None:
-        """Export grouped data to JSON file."""
+        """Export grouped data to JSON file."""        # Create title_metadata dict with just the metadata (not the provider info)
+        title_metadata_export = {}
+        for key, value in self.title_metadata.items():
+            title_metadata_export[key] = value['metadata']
+        
         export_data = {
             'groups': dict(self.groups),
-            'metadata': self.metadata,
-            'enhanced_metadata': self.enhanced_metadata,
-            'group_metadata': self.group_metadata
+            'title_metadata': title_metadata_export
         }
         
         if include_summary:
             export_data['summary'] = self.get_summary()
         
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(export_data, f, indent=2, ensure_ascii=False)
+            json.dump(export_data, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
             print(f"Exported data to: {output_path}")
     
     def _serialize_title_info(self, title_info) -> Dict[str, Any]:
@@ -252,20 +300,17 @@ class FileGrouper:
             'air_date': episode_info.air_date
         }
     
-    def _get_group_metadata(self, group_files: List[Dict]) -> Dict[str, Any]:
-        """Get metadata for a group based on the first file's metadata"""
-        if not group_files or not self.metadata_manager:
+    def _get_group_metadata(self, group_files: List[Dict], group_by: List[str]) -> Dict[str, Any]:
+        """Get metadata for a group based on the first file's metadata or title metadata if grouping by title"""
+        if not group_files:
             return {}
             
-        # Use the first file to get group metadata
-        first_file = group_files[0]
-        title = first_file.get('title')
-        year = first_file.get('year')
-        
-        if title:
-            enhanced_info, provider = self.metadata_manager.find_title(title, year)
-            if enhanced_info:
-                return self._serialize_title_info(enhanced_info)
+        # If grouping by title, add title metadata directly to the group
+        if 'title' in group_by and self.metadata_manager:
+            first_file = group_files[0]
+            title_metadata_key = first_file.get('title_metadata_key')
+            if title_metadata_key and title_metadata_key in self.title_metadata:
+                return self.title_metadata[title_metadata_key]['metadata']
         
         return {}
 
@@ -358,22 +403,14 @@ Examples:
                     # Create a copy without filepath for cleaner output
                     metadata_copy = file_info.copy()
                     metadata_copy.pop('filepath', None)
-                    metadata_copy.pop('filename', None)  # Already shown above
-                                        
-                    # Convert non-serializable objects to strings
-                    for key, value in metadata_copy.items():
-                        if hasattr(value, '__str__') and not isinstance(value, (str, int, float, bool, list, dict, type(None))):
-                            metadata_copy[key] = str(value)
-                        elif isinstance(value, list):
-                            metadata_copy[key] = [str(item) if hasattr(item, '__str__') and not isinstance(item, (str, int, float, bool, dict, type(None))) else item for item in value]
+                    metadata_copy.pop('filename', None)  # Already shown above  
                     
-                    print(f"    {json.dumps(metadata_copy, separators=(',', ':'), ensure_ascii=False)}")
-                    
+                    print(f"    {json.dumps(metadata_copy, separators=(',', ':'), ensure_ascii=False, cls=CustomJSONEncoder)}")
                     # Show enhanced metadata if available
-                    enhanced_key = file_info.get('filepath')
-                    if enhanced_key and enhanced_key in grouper.enhanced_metadata:
-                        enhanced_data = grouper.enhanced_metadata[enhanced_key]
-                        print(f"    {json.dumps(enhanced_data, separators=(',', ':'), ensure_ascii=False)}")
+                    title_metadata_key = file_info.get('title_metadata_key')
+                    if title_metadata_key and title_metadata_key in grouper.title_metadata:
+                        enhanced_data = grouper.title_metadata[title_metadata_key]['metadata']
+                        print(f"    {json.dumps(enhanced_data, separators=(',', ':'), ensure_ascii=False, cls=CustomJSONEncoder)}")
     
     # Export if requested
     if args.export:
