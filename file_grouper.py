@@ -251,6 +251,14 @@ Examples:
                     metadata_copy = file_info.copy()
                     metadata_copy.pop('filepath', None)
                     metadata_copy.pop('filename', None)  # Already shown above
+                                        
+                    # Convert non-serializable objects to strings
+                    for key, value in metadata_copy.items():
+                        if hasattr(value, '__str__') and not isinstance(value, (str, int, float, bool, list, dict, type(None))):
+                            metadata_copy[key] = str(value)
+                        elif isinstance(value, list):
+                            metadata_copy[key] = [str(item) if hasattr(item, '__str__') and not isinstance(item, (str, int, float, bool, dict, type(None))) else item for item in value]
+                    
                     print(f"    {json.dumps(metadata_copy, separators=(',', ':'), ensure_ascii=False)}")
     
     # Export if requested
