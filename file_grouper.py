@@ -140,15 +140,15 @@ class FileGrouper:
             result['filepath'] = str(file_path)
             result['filename'] = file_path.name
             result['file_size'] = file_path.stat().st_size if file_path.exists() else 0
-            
+
             # Add enhanced metadata reference if available
             if self.metadata_manager and MetadataManager:
                 title = result.get('title')
                 year = result.get('year')
                 if title:
                     try:
-                        # Create a unique key for this title+year combination
-                        title_key = f"{title}_{year}" if year else title
+                        # Create a unique key for this title+year combination (case insensitive)
+                        title_key = f"{title.lower()}_{year}" if year else title.lower()
                         
                         # Only fetch metadata once per unique title
                         if title_key not in self.title_metadata:
@@ -203,14 +203,15 @@ class FileGrouper:
         for file_path in files:
             metadata = self.extract_metadata(file_path)
             self.metadata[str(file_path)] = metadata
-            
-            # Create group key based on specified fields
+            # Create group key based on specified fields (case insensitive)
             group_key_parts = []
             for field in group_by:
                 value = metadata.get(field, 'Unknown')
                 if isinstance(value, list):
                     value = ', '.join(str(v) for v in value)
-                group_key_parts.append(f"{field}:{value}")
+                # Convert to lowercase for case insensitive grouping
+                value_str = str(value).lower() if value != 'Unknown' else 'Unknown'
+                group_key_parts.append(f"{field}:{value_str}")
             
             group_key = ' | '.join(group_key_parts)
             self.groups[group_key].append(metadata)
@@ -235,19 +236,15 @@ class FileGrouper:
             'total_files': total_files,
             'total_groups': len(self.groups),
             'total_size_bytes': total_size,
-            'total_size_mb': round(total_size / (1024 * 1024), 2),
-            'groups': {
-                group_name: {
-                    'file_count': len(files),
-                    'total_size_bytes': sum(f.get('file_size', 0) for f in files)
-                }
-                for group_name, files in self.groups.items()            }
+            'total_size_mb': round(total_size / (1024 * 1024), 2)
         }
     
     def export_to_json(self, output_path: str, include_summary: bool = True) -> None:
-        """Export grouped data to JSON file."""        # Create title_metadata dict with just the metadata (not the provider info)
+        """Export grouped data to JSON file."""
+        # Create title_metadata dict with just the metadata (not the provider info)
         title_metadata_export = {}
         for key, value in self.title_metadata.items():
+            # Key is already lowercase, so we can use it as-is
             title_metadata_export[key] = value['metadata']
         
         export_data = {
@@ -260,7 +257,6 @@ class FileGrouper:
         
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
-            print(f"Exported data to: {output_path}")
     
     def _serialize_title_info(self, title_info) -> Dict[str, Any]:
         """Convert TitleInfo object to serializable dict"""
