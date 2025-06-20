@@ -185,7 +185,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                     raise
         
             raise RuntimeError("Failed to load anime database after multiple attempts")
-    
+        
     def _build_title_index(self) -> None:
         """Build an efficient search index of titles"""
         if self._df is None or self._synonyms_df is None:
@@ -237,57 +237,25 @@ class AnimeDataProvider(BaseMetadataProvider):
         # Look for exact matches first
         if title in self._title_index:
             entry = self._title_index[title]
+            main_entry = None
             
             # Find corresponding main entry
             if entry.title_type == 'main':
-                main_entry = self._df[self._df['title'] == entry.title].iloc[0]
+                main_matches = self._df[self._df['title'] == entry.title]
+                if not main_matches.empty:
+                    main_entry = main_matches.iloc[0]
             else:
-                main_entry = self._df[self._df['id'].isin(
-                    self._synonyms_df[self._synonyms_df['title'] == entry.title]['id']
-                )].iloc[0]
+                # Handle synonyms safely
+                if self._synonyms_df is not None:
+                    synonym_matches = self._synonyms_df[self._synonyms_df['title'] == entry.title]
+                    if not synonym_matches.empty:
+                        synonym_ids = synonym_matches['id'].tolist()
+                        main_matches = self._df[self._df['id'].isin(synonym_ids)]
+                        if not main_matches.empty:
+                            main_entry = main_matches.iloc[0]
             
-            score = 100 * entry.relevance
-            
-            # Add year match bonus
-            if year and pd.notna(main_entry['season_year']):
-                entry_year = self.safe_int(main_entry['season_year'])
-                if entry_year and entry_year == year:
-                    score += 20
-                elif entry_year and abs(entry_year - year) <= 1:
-                    score += 10
-            
-            # Add bonus for having episodes count
-            if pd.notna(main_entry['episodes']):
-                score += 10
-            
-            if score > best_score:
-                best_score = score
-                best_match = main_entry
-        
-        # If no exact match, try fuzzy matching
-        if not best_match:
-            matches = process.extract(
-                title,
-                list(self._title_index.keys()),
-                scorer=fuzz.ratio,
-                limit=5
-            )
-            
-            for matched_title, fuzzy_score, _ in matches:
-                if fuzzy_score < 80:
-                    continue
-                
-                entry = self._title_index[matched_title]
-                
-                # Find corresponding main entry
-                if entry.title_type == 'main':
-                    main_entry = self._df[self._df['title'] == entry.title].iloc[0]
-                else:
-                    main_entry = self._df[self._df['id'].isin(
-                        self._synonyms_df[self._synonyms_df['title'] == entry.title]['id']
-                    )].iloc[0]
-                
-                score = fuzzy_score * entry.relevance
+            if main_entry is not None:
+                score = 100 * entry.relevance
                 
                 # Add year match bonus
                 if year and pd.notna(main_entry['season_year']):
@@ -304,6 +272,59 @@ class AnimeDataProvider(BaseMetadataProvider):
                 if score > best_score:
                     best_score = score
                     best_match = main_entry
+        # If no exact match, try fuzzy matching
+        if best_match is None:
+            try:
+                title_list = [str(k) for k in self._title_index.keys()]
+                matches = process.extract(
+                    title,
+                    title_list,
+                    scorer=fuzz.ratio,
+                    limit=5
+                )
+                
+                for matched_title, fuzzy_score, _ in matches:
+                    if fuzzy_score < 80:
+                        continue
+                    
+                    entry = self._title_index[matched_title]
+                    main_entry = None
+                    
+                    # Find corresponding main entry
+                    if entry.title_type == 'main':
+                        main_matches = self._df[self._df['title'] == entry.title]
+                        if not main_matches.empty:
+                            main_entry = main_matches.iloc[0]
+                    else:
+                        # Handle synonyms safely
+                        if self._synonyms_df is not None:
+                            synonym_matches = self._synonyms_df[self._synonyms_df['title'] == entry.title]
+                            if not synonym_matches.empty:
+                                synonym_ids = synonym_matches['id'].tolist()
+                                main_matches = self._df[self._df['id'].isin(synonym_ids)]
+                                if not main_matches.empty:
+                                    main_entry = main_matches.iloc[0]
+                    
+                    if main_entry is not None:
+                        score = fuzzy_score * entry.relevance
+                        
+                        # Add year match bonus
+                        if year and pd.notna(main_entry['season_year']):
+                            entry_year = self.safe_int(main_entry['season_year'])
+                            if entry_year and entry_year == year:
+                                score += 20
+                            elif entry_year and abs(entry_year - year) <= 1:
+                                score += 10
+                        
+                        # Add bonus for having episodes count
+                        if pd.notna(main_entry['episodes']):
+                            score += 10
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_match = main_entry
+            except Exception as e:
+                logging.error(f"Error during fuzzy matching: {str(e)}")
         
         if best_match is not None:
             tags = best_match['tags'].split(',') if pd.notna(best_match['tags']) else []
