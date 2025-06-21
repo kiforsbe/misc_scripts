@@ -53,7 +53,7 @@ try:
             # Initialize providers
             anime_provider = AnimeDataProvider()
             imdb_provider = IMDbDataProvider()
-            METADATA_MANAGER = MetadataManager([anime_provider, ]) #imdb_provider
+            METADATA_MANAGER = MetadataManager([anime_provider, imdb_provider]) #imdb_provider
         return METADATA_MANAGER
 except ImportError:
     print("Warning: metadata_provider not found. Enhanced metadata features will be disabled.")
