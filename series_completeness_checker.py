@@ -5,6 +5,50 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
 
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    # Fallback progress indicator
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc=None, unit=None, disable=False):
+            self.iterable = iterable
+            self.total = total or (len(iterable) if iterable else 0)
+            self.desc = desc
+            self.current = 0
+            self.disable = disable
+            if not disable and desc:
+                print(f"{desc}...")
+        
+        def __iter__(self):
+            if self.iterable:
+                for item in self.iterable:
+                    yield item
+                    self.update(1)
+            return self
+        
+        def __enter__(self):
+            return self
+        
+        def __exit__(self, *args):
+            if not self.disable and self.desc:
+                print(f"{self.desc} completed.")
+        
+        def update(self, n=1):
+            self.current += n
+            if not self.disable and self.total > 0:
+                percent = (self.current / self.total) * 100
+                if self.current % max(1, self.total // 10) == 0 or self.current == self.total:
+                    print(f"  Progress: {self.current}/{self.total} ({percent:.1f}%)")
+        
+        def set_description(self, desc):
+            self.desc = desc
+        
+        def set_postfix(self, **kwargs):
+            # Simple implementation for fallback
+            pass
+
 # Import the FileGrouper class and related components
 from file_grouper import FileGrouper, CustomJSONEncoder
 
@@ -28,10 +72,10 @@ class SeriesCompletenessChecker:
         self.metadata_manager = metadata_manager
         self.completeness_results = {}
     
-    def analyze_series_collection(self, files: List[Path]) -> Dict[str, Any]:
+    def analyze_series_collection(self, files: List[Path], show_progress: bool = True) -> Dict[str, Any]:
         """Analyze series collection for completeness."""
-        # Group files by title and season
-        groups = self.file_grouper.group_files(files, ['title', 'season'])
+        # Group files by title and season with progress tracking
+        groups = self.file_grouper.group_files(files, ['title', 'season'], show_progress)
 
         # Export title metadata for completeness analysis
         title_metadata_export = {}
@@ -52,21 +96,29 @@ class SeriesCompletenessChecker:
             }
         }
         
-        for group_key, group_files in groups.items():
-            analysis = self._analyze_group_completeness(group_key, group_files)
-            results['groups'][group_key] = analysis
-            
-            # Update summary
-            results['completeness_summary']['total_series'] += 1
-            if analysis['status'] == 'complete':
-                results['completeness_summary']['complete_series'] += 1
-            elif analysis['status'] == 'incomplete':
-                results['completeness_summary']['incomplete_series'] += 1
-            else:
-                results['completeness_summary']['unknown_series'] += 1
+        # Analyze completeness with progress tracking
+        with tqdm(groups.items(), desc="Analyzing completeness", unit="series", disable=not show_progress) as pbar:
+            for group_key, group_files in pbar:
+                analysis = self._analyze_group_completeness(group_key, group_files)
+                results['groups'][group_key] = analysis
+                
+                # Update summary
+                results['completeness_summary']['total_series'] += 1
+                if analysis['status'] == 'complete':
+                    results['completeness_summary']['complete_series'] += 1
+                elif analysis['status'] == 'incomplete':
+                    results['completeness_summary']['incomplete_series'] += 1
+                else:
+                    results['completeness_summary']['unknown_series'] += 1
 
-            results['completeness_summary']['total_episodes_found'] += analysis['episodes_found']
-            results['completeness_summary']['total_episodes_expected'] += analysis.get('episodes_expected', 0)
+                results['completeness_summary']['total_episodes_found'] += analysis['episodes_found']
+                results['completeness_summary']['total_episodes_expected'] += analysis.get('episodes_expected', 0)
+                
+                # Update progress with current series name
+                title = analysis.get('title', 'Unknown')[:30]
+                if len(analysis.get('title', '')) > 30:
+                    title += "..."
+                pbar.set_postfix(current=title)
         
         return results
     

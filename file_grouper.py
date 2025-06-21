@@ -7,6 +7,50 @@ from pathlib import Path
 from typing import Dict, List, Set, Any, Optional
 import fnmatch
 
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    # Fallback progress indicator
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc=None, unit=None, disable=False):
+            self.iterable = iterable
+            self.total = total or (len(iterable) if iterable else 0)
+            self.desc = desc
+            self.current = 0
+            self.disable = disable
+            if not disable and desc:
+                print(f"{desc}...")
+        
+        def __iter__(self):
+            if self.iterable:
+                for item in self.iterable:
+                    yield item
+                    self.update(1)
+            return self
+        
+        def __enter__(self):
+            return self
+        
+        def __exit__(self, *args):
+            if not self.disable and self.desc:
+                print(f"{self.desc} completed.")
+        
+        def update(self, n=1):
+            self.current += n
+            if not self.disable and self.total > 0:
+                percent = (self.current / self.total) * 100
+                if self.current % max(1, self.total // 10) == 0 or self.current == self.total:
+                    print(f"  Progress: {self.current}/{self.total} ({percent:.1f}%)")
+        
+        def set_description(self, desc):
+            self.desc = desc
+        
+        def set_postfix(self, **kwargs):
+            # Simple implementation for fallback
+            pass
+
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle complex data structures from guessit and other sources."""
     
@@ -70,13 +114,10 @@ class FileGrouper:
         self.enhanced_metadata = {}  # Store metadata from providers
         self.group_metadata = {}     # Store metadata for groups
         self.title_metadata = {}     # Store unique title metadata
-        self.metadata_manager = metadata_manager
-        self.file_extensions = {'.mkv', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', 
-                               '.m4v', '.mpg', '.mpeg', '.3gp', '.ogv', '.ts', '.m2ts'}
-    
+        self.metadata_manager = metadata_manager        
     def discover_files(self, input_paths: List[str], excluded_paths: List[str] | None = None,
                       include_patterns: List[str] | None = None, exclude_patterns: List[str] | None = None,
-                      recursive: bool = False) -> List[Path]:
+                      recursive: bool = False, show_progress: bool = True) -> List[Path]:
         """Discover files based on input paths and filtering criteria."""
         excluded_paths = excluded_paths or []
         include_patterns = include_patterns or ['*']
@@ -85,42 +126,51 @@ class FileGrouper:
         discovered_files = []
         excluded_path_objects = [Path(p).resolve() for p in excluded_paths]
         
-        for input_path in input_paths:
-            path_obj = Path(input_path)
-            if not path_obj.exists():
-                print(f"Warning: Path does not exist: {input_path}")
-                continue
-                
-            if path_obj.is_file():
-                discovered_files.append(path_obj)
-            else:
-                # Find files based on recursion setting
-                if recursive:
-                    file_pattern = path_obj.rglob('*')
+        # First pass: discover all candidate files
+        with tqdm(input_paths, desc="Discovering files", unit="path", disable=not show_progress) as pbar:
+            for input_path in pbar:
+                path_obj = Path(input_path)
+                if not path_obj.exists():
+                    print(f"Warning: Path does not exist: {input_path}")
+                    continue
+                    
+                if path_obj.is_file():
+                    discovered_files.append(path_obj)
                 else:
-                    file_pattern = path_obj.glob('*')
-                
-                for file_path in file_pattern:
-                    if file_path.is_file():
-                        # Check if file is in excluded paths
-                        if any(self._is_path_excluded(file_path, exc_path) for exc_path in excluded_path_objects):
-                            continue
-                        discovered_files.append(file_path)
+                    # Find files based on recursion setting
+                    if recursive:
+                        file_pattern = path_obj.rglob('*')
+                    else:
+                        file_pattern = path_obj.glob('*')
+                    
+                    path_files = []
+                    for file_path in file_pattern:
+                        if file_path.is_file():
+                            # Check if file is in excluded paths
+                            if any(self._is_path_excluded(file_path, exc_path) for exc_path in excluded_path_objects):
+                                continue
+                            path_files.append(file_path)
+                    
+                    discovered_files.extend(path_files)
+                    pbar.set_postfix(found=len(discovered_files))
         
-        # Apply include/exclude patterns
+        # Apply include/exclude patterns with progress
         filtered_files = []
-        for file_path in discovered_files:
-            filename = file_path.name
-            
-            # Check include patterns
-            if not any(fnmatch.fnmatch(filename, pattern) for pattern in include_patterns):
-                continue
-
-            # Check exclude patterns
-            if any(fnmatch.fnmatch(filename, pattern) for pattern in exclude_patterns):
-                continue
+        with tqdm(discovered_files, desc="Filtering files", unit="file", disable=not show_progress) as pbar:
+            for file_path in pbar:
+                filename = file_path.name
                 
-            filtered_files.append(file_path)
+                # Check include patterns
+                if not any(fnmatch.fnmatch(filename, pattern) for pattern in include_patterns):
+                    continue
+
+                # Check exclude patterns
+                if any(fnmatch.fnmatch(filename, pattern) for pattern in exclude_patterns):
+                    continue
+                    
+                filtered_files.append(file_path)
+                pbar.set_postfix(matched=len(filtered_files))
+                
         return filtered_files
     
     def _is_path_excluded(self, file_path: Path, excluded_path: Path) -> bool:
@@ -170,10 +220,9 @@ class FileGrouper:
                                 if enhanced_info_dict.get('type') in ['tv', 'anime_series']:
                                     season = result.get('season')
                                     episode = result.get('episode')
-                                    if season and episode and provider:
-                                        # Store episode info directly in file metadata since it's file-specific
+                                    if season and episode and provider:                                        # Store episode info directly in file metadata since it's file-specific
                                         enhanced_info, _ = self.metadata_manager.find_title(title, year)
-                                        if enhanced_info:
+                                        if enhanced_info:                                            
                                             episode_info = self.metadata_manager.get_episode_info(
                                                 next(p for p in self.metadata_manager.providers if p.__class__.__name__ == provider),
                                                 enhanced_info.id, season, episode
@@ -192,7 +241,7 @@ class FileGrouper:
                 'file_size': file_path.stat().st_size if file_path.exists() else 0
             }
     
-    def group_files(self, files: List[Path], group_by: List[str] | None = None) -> Dict[str, List[Dict]]:
+    def group_files(self, files: List[Path], group_by: List[str] | None = None, show_progress: bool = True) -> Dict[str, List[Dict]]:
         """Group files based on specified metadata fields."""
         group_by = group_by or ['title', 'year']
         
@@ -200,27 +249,38 @@ class FileGrouper:
         self.metadata.clear()
         self.group_metadata.clear()
         
-        for file_path in files:
-            metadata = self.extract_metadata(file_path)
-            self.metadata[str(file_path)] = metadata
-            # Create group key based on specified fields (case insensitive)
-            group_key_parts = []
-            for field in group_by:
-                value = metadata.get(field, 'Unknown')
-                if isinstance(value, list):
-                    value = ', '.join(str(v) for v in value)
-                # Convert to lowercase for case insensitive grouping
-                value_str = str(value).lower() if value != 'Unknown' else 'Unknown'
-                group_key_parts.append(f"{field}:{value_str}")
-            
-            group_key = ' | '.join(group_key_parts)
-            self.groups[group_key].append(metadata)
+        # Extract metadata with progress tracking
+        with tqdm(files, desc="Extracting metadata", unit="file", disable=not show_progress) as pbar:
+            for file_path in pbar:
+                metadata = self.extract_metadata(file_path)
+                self.metadata[str(file_path)] = metadata
+                pbar.set_postfix(file=file_path.name[:30] + "..." if len(file_path.name) > 30 else file_path.name)
+        
+        # Group files with progress tracking
+        with tqdm(files, desc="Grouping files", unit="file", disable=not show_progress) as pbar:
+            for file_path in pbar:
+                metadata = self.metadata[str(file_path)]
+                # Create group key based on specified fields (case insensitive)
+                group_key_parts = []
+                for field in group_by:
+                    value = metadata.get(field, 'Unknown')
+                    if isinstance(value, list):
+                        value = ', '.join(str(v) for v in value)
+                    # Convert to lowercase for case insensitive grouping
+                    value_str = str(value).lower() if value != 'Unknown' else 'Unknown'
+                    group_key_parts.append(f"{field}:{value_str}")
+                
+                group_key = ' | '.join(group_key_parts)
+                self.groups[group_key].append(metadata)
+                pbar.set_postfix(groups=len(self.groups))
 
         # Get group metadata after all files are processed
-        for group_key, group_files in self.groups.items():
-            group_metadata = self._get_group_metadata(group_files, group_by)
-            if group_metadata:
-                self.group_metadata[group_key] = group_metadata
+        with tqdm(self.groups.items(), desc="Processing group metadata", unit="group", disable=not show_progress) as pbar:
+            for group_key, group_files in pbar:
+                group_metadata = self._get_group_metadata(group_files, group_by)
+                if group_metadata:
+                    self.group_metadata[group_key] = group_metadata
+                pbar.set_postfix(group=group_key[:40] + "..." if len(group_key) > 40 else group_key)
         
         return dict(self.groups)
     
