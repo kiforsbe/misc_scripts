@@ -14,7 +14,8 @@ class IMDbDataProvider(BaseMetadataProvider):
         "title.episode": "https://datasets.imdbws.com/title.episode.tsv.gz",
         "title.ratings": "https://datasets.imdbws.com/title.ratings.tsv.gz",
         "title.akas": "https://datasets.imdbws.com/title.akas.tsv.gz",
-    }    # Define columns we actually need from each dataset - minimal set only
+    }
+    # Define columns we actually need from each dataset - minimal set only
     # Removed columns for space efficiency:
     #   title.basics: (none removed - all columns included for completeness)
     #   title.episode: (none removed - all are essential)
@@ -88,7 +89,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                 
                 # Create tables with optimized schema - compressed storage
                 conn.executescript(
-                    """                    CREATE TABLE IF NOT EXISTS title_basics (
+                    """ 
+                    CREATE TABLE IF NOT EXISTS title_basics (
                         id INTEGER PRIMARY KEY,  -- Use integer ID for space efficiency
                         title TEXT NOT NULL,
                         original_title TEXT,
@@ -106,17 +108,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                         rating INTEGER,  -- Store as integer (rating * 10)
                         votes INTEGER
                     ) WITHOUT ROWID;
-                    
+
                     CREATE TABLE IF NOT EXISTS title_episodes (
                         id INTEGER PRIMARY KEY,
                         parent_id INTEGER NOT NULL,
                         season INTEGER,
                         episode INTEGER
-                    ) WITHOUT ROWID;
-                    
-                    CREATE TABLE IF NOT EXISTS tconst_mapping (
-                        tconst TEXT PRIMARY KEY,
-                        id INTEGER UNIQUE
                     ) WITHOUT ROWID;
                     
                     CREATE TABLE IF NOT EXISTS data_version (
@@ -132,6 +129,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                         b.title_lower,
                         b.type,
                         b.year,
+                        b.end_year,
                         b.genres,
                         CASE WHEN r.rating IS NULL THEN NULL ELSE r.rating / 10.0 END as rating,
                         r.votes
@@ -172,16 +170,58 @@ class IMDbDataProvider(BaseMetadataProvider):
         except Exception:
             return False
 
+    def _verify_data_integrity(self) -> None:
+        """Verify that all datasets are properly linked"""
+        logging.info("Verifying data integrity...")
+        
+        with sqlite3.connect(self._db_path) as conn:
+            # Check basic counts
+            cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
+            basics_count = cursor.fetchone()[0]
+            
+            cursor = conn.execute("SELECT COUNT(*) FROM title_ratings")
+            ratings_count = cursor.fetchone()[0]
+
+            cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+            episodes_count = cursor.fetchone()[0]
+            
+            logging.info(f"Data integrity check:")
+            logging.info(f"  title_basics: {basics_count}")
+            logging.info(f"  title_ratings: {ratings_count}")
+            logging.info(f"  title_episodes: {episodes_count}")
+            
+            # Check for orphaned ratings
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM title_ratings r 
+                WHERE NOT EXISTS (SELECT 1 FROM title_basics b WHERE b.id = r.id)
+            """)
+            orphaned_ratings = cursor.fetchone()[0]
+            
+            # Check for orphaned episodes
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM title_episodes e 
+                WHERE NOT EXISTS (SELECT 1 FROM title_basics b WHERE b.id = e.parent_id)
+            """)
+            orphaned_episodes = cursor.fetchone()[0]
+            
+            logging.info(f"  Orphaned ratings: {orphaned_ratings}")
+            logging.info(f"  Orphaned episodes: {orphaned_episodes}")
+
     def _ensure_data_loaded(self) -> None:
         """Ensure database contains current IMDb data"""
         if self._is_data_current():
             logging.info("Database contains current IMDb data")
             return
 
-        logging.info("Loading IMDb datasets into database...")        # Load datasets in order of dependency
+        logging.info("Loading IMDb datasets into database...")
+        
+        # Load datasets in order of dependency
         self._load_dataset_to_db("title.basics")
         self._load_dataset_to_db("title.ratings")
         self._load_dataset_to_db("title.episode")
+        
+        # Verify data integrity
+        self._verify_data_integrity()
         
         # Optimize database for read operations
         self._optimize_database_for_reads()
@@ -216,26 +256,33 @@ class IMDbDataProvider(BaseMetadataProvider):
                 if attempt < self.MAX_RETRIES - 1:
                     logging.info("Retrying...")
                     continue
-                raise        # Parse and insert into database with aggressive filtering
+                raise
+        
+        # Parse and insert into database with aggressive filtering
         try:
             with sqlite3.connect(self._db_path, timeout=60.0) as conn:
                 # Optimize for bulk inserts - simpler approach
                 conn.execute("PRAGMA synchronous=OFF")
                 conn.execute("PRAGMA temp_store=MEMORY")
                 conn.execute("PRAGMA cache_size=100000")
-                
+
                 # Clear existing data
                 if dataset_name == "title.basics":
                     conn.execute("DELETE FROM title_basics")
-                    conn.execute("DELETE FROM tconst_mapping")
                 elif dataset_name == "title.ratings":
                     conn.execute("DELETE FROM title_ratings")
                 elif dataset_name == "title.episode":
                     conn.execute("DELETE FROM title_episodes")
                 
-                # Track ID mapping for space efficiency
-                id_counter = 1
-                tconst_to_id = {}
+                # Track processed tconst integers for cross-dataset linking
+                processed_tconst_ints = set()
+                
+                # Load existing tconst integers if this isn't the first dataset
+                if dataset_name != "title.basics":
+                    cursor = conn.execute("SELECT id FROM title_basics")
+                    for row in cursor.fetchall():
+                        processed_tconst_ints.add(row[0])
+                    logging.info(f"Loaded {len(processed_tconst_ints)} existing tconst integers for {dataset_name}")
                 
                 # Read and process data in chunks with aggressive filtering
                 chunk_size = 100000
@@ -249,9 +296,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     col_indices = [
                         header.index(col) for col in required_cols if col in header
                     ]
-
+                    
                     batch = []
-                    mapping_batch = []
                     pbar = tqdm(desc=f"Processing {dataset_name}", unit="rows")
 
                     for line in f:
@@ -294,28 +340,19 @@ class IMDbDataProvider(BaseMetadataProvider):
                             continue
 
                         kept_rows += 1
-
                         # Convert to compressed format
-                        compressed_row = self._compress_row(dataset_name, row_data, required_cols, tconst_to_id, id_counter)
+                        compressed_row = self._compress_row(dataset_name, row_data, required_cols, processed_tconst_ints)
                         if compressed_row:
                             batch.append(compressed_row['row'])
-                            if compressed_row.get('mapping'):
-                                mapping_batch.append(compressed_row['mapping'])
-                                id_counter += 1
-
-                        if len(batch) >= chunk_size:
-                            self._insert_compressed_batch(conn, dataset_name, batch)
-                            if mapping_batch:
-                                self._insert_mapping_batch(conn, mapping_batch)
-                            batch = []
-                            mapping_batch = []
-                            pbar.update(chunk_size)
+                            # No more mapping batch needed since IDs are direct tconst integers
+                            if len(batch) >= chunk_size:
+                                self._insert_compressed_batch(conn, dataset_name, batch)
+                                batch = []
+                                pbar.update(chunk_size)
 
                     # Insert remaining batches
                     if batch:
                         self._insert_compressed_batch(conn, dataset_name, batch)
-                        if mapping_batch:
-                            self._insert_mapping_batch(conn, mapping_batch)
                         pbar.update(len(batch))
 
                     pbar.close()
@@ -329,9 +366,23 @@ class IMDbDataProvider(BaseMetadataProvider):
                 """,
                     (dataset_name, int(time.time())),
                 )
-
+                
                 conn.commit()
                 logging.info(f"Loaded {kept_rows}/{processed_rows} rows from {dataset_name} (filtered {processed_rows - kept_rows})")
+                
+                # Additional debugging for episodes and ratings
+                if dataset_name == "title.ratings":
+                    cursor = conn.execute("SELECT COUNT(*) FROM title_ratings")
+                    count = cursor.fetchone()[0]
+                    logging.info(f"Total ratings in database: {count}")
+                elif dataset_name == "title.episode":
+                    cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+                    count = cursor.fetchone()[0]
+                    logging.info(f"Total episodes in database: {count}")
+                elif dataset_name == "title.basics":
+                    cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
+                    count = cursor.fetchone()[0]
+                    logging.info(f"Total titles in database: {count}")
 
         except Exception as e:
             logging.error(f"Error processing {dataset_name}: {str(e)}")
@@ -375,61 +426,88 @@ class IMDbDataProvider(BaseMetadataProvider):
                 if votes and votes < self.MIN_VOTES_THRESHOLD:
                     return False
         
-        return True
-    
+        return True    
     def _compress_row(self, dataset_name: str, row_data: List, required_cols: List[str], 
-                      tconst_to_id: Dict[str, int], id_counter: int) -> Optional[Dict]:
-        """Convert row data to compressed format"""
+                      processed_tconst_ints: set) -> Optional[Dict]:
+        """Convert row data to compressed format using tconst integers as IDs"""
         data_dict = dict(zip(required_cols, row_data))
         
         if dataset_name == "title.basics":
             tconst = data_dict['tconst']
-            if tconst not in tconst_to_id:
-                tconst_to_id[tconst] = id_counter
-                
-                # Map title type to integer
-                type_map = {'movie': 1, 'tvSeries': 2, 'tvMiniSeries': 3}
-                type_int = type_map.get(data_dict['titleType'], 1)
-                
-                # Compress genres - only keep first 3, joined with commas
-                genres = data_dict.get('genres', '')
-                if genres:
-                    genre_list = genres.split(',')[:3]  # Only keep first 3 genres
-                    genres = ','.join(genre_list)                
-                title = data_dict['primaryTitle'] or ''
-                original_title = data_dict['originalTitle'] or ''
-                
-                return {
-                    'row': (id_counter, title, original_title, title.lower(), type_int, 
-                           data_dict['isAdult'], data_dict['startYear'], data_dict['endYear'], 
-                           data_dict['runtimeMinutes'], genres),
-                    'mapping': (tconst, id_counter)
-                }
-        
+            
+            # Extract integer from tconst (e.g., "tt0123456" -> 123456)
+            try:
+                tconst_int = int(tconst[2:]) if tconst.startswith('tt') else None
+            except (ValueError, TypeError):
+                tconst_int = None
+            
+            if tconst_int is None:
+                return None
+            
+            # Map title type to integer
+            type_map = {'movie': 1, 'tvSeries': 2, 'tvMiniSeries': 3}
+            type_int = type_map.get(data_dict['titleType'], 1)
+            
+            # Compress genres - only keep first 3, joined with commas
+            genres = data_dict.get('genres', '')
+            if genres:
+                genre_list = genres.split(',')[:3]  # Only keep first 3 genres
+                genres = ','.join(genre_list)
+            
+            title = data_dict['primaryTitle'] or ''
+            original_title = data_dict['originalTitle'] or ''
+            
+            processed_tconst_ints.add(tconst_int)
+            
+            return {
+                'row': (tconst_int, title, original_title, title.lower(), type_int, 
+                       data_dict['isAdult'], data_dict['startYear'], data_dict['endYear'], 
+                       data_dict['runtimeMinutes'], genres)
+            }
+            
         elif dataset_name == "title.ratings":
             tconst = data_dict['tconst']
-            if tconst in tconst_to_id:
+            
+            # Extract integer from tconst
+            try:
+                tconst_int = int(tconst[2:]) if tconst.startswith('tt') else None
+            except (ValueError, TypeError):
+                tconst_int = None
+            
+            if tconst_int and tconst_int in processed_tconst_ints:
                 # Store rating as integer (rating * 10) to save space
                 rating = data_dict.get('averageRating')
                 rating_int = int(rating * 10) if rating else None
                 
                 return {
-                    'row': (tconst_to_id[tconst], rating_int, data_dict.get('numVotes'))
+                    'row': (tconst_int, rating_int, data_dict.get('numVotes'))
                 }
-        
+            else:
+                # Skip this rating - no corresponding title in basics
+                return None
+                
         elif dataset_name == "title.episode":
             tconst = data_dict['tconst']
             parent_tconst = data_dict['parentTconst']
             
-            if parent_tconst in tconst_to_id:
-                if tconst not in tconst_to_id:
-                    tconst_to_id[tconst] = id_counter
-                    
+            # Extract integers from both tconsts
+            try:
+                tconst_int = int(tconst[2:]) if tconst.startswith('tt') else None
+                parent_tconst_int = int(parent_tconst[2:]) if parent_tconst.startswith('tt') else None
+            except (ValueError, TypeError):
+                tconst_int = None
+                parent_tconst_int = None
+            
+            if parent_tconst_int and parent_tconst_int in processed_tconst_ints and tconst_int:
+                processed_tconst_ints.add(tconst_int)
+                
                 return {
-                    'row': (tconst_to_id[tconst], tconst_to_id[parent_tconst],
-                           data_dict.get('seasonNumber'), data_dict.get('episodeNumber')),
-                    'mapping': (tconst, tconst_to_id[tconst])
+                    'row': (tconst_int, parent_tconst_int,
+                           data_dict.get('seasonNumber'), data_dict.get('episodeNumber'))
                 }
+            else:
+                # Skip this episode - no corresponding parent series in basics
+                return None
         
         return None
     
@@ -449,15 +527,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             conn.executemany(
                 "INSERT OR REPLACE INTO title_episodes (id, parent_id, season, episode) VALUES (?, ?, ?, ?)",
                 batch
-            )
-    
-    def _insert_mapping_batch(self, conn: sqlite3.Connection, mapping_batch: List[Tuple]) -> None:
-        """Insert tconst to ID mapping batch"""
-        conn.executemany(
-            "INSERT OR REPLACE INTO tconst_mapping (tconst, id) VALUES (?, ?)",
-            mapping_batch
-        )
-
+            )    
     def _optimize_database_for_reads(self) -> None:
         """Optimize database for read-only operations after data loading"""
         logging.info("Optimizing database for read operations...")
@@ -485,10 +555,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                 -- Indexes for episodes
                 CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episodes(parent_id);
                 CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episodes(parent_id, season, episode);
-                
-                -- Index for tconst mapping
-                CREATE INDEX IF NOT EXISTS idx_mapping_tconst ON tconst_mapping(tconst);
-                CREATE INDEX IF NOT EXISTS idx_mapping_id ON tconst_mapping(id);
                 """
             )
             
@@ -535,8 +601,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     """
                     SELECT *, 
                            CASE 
-                               WHEN year = ? THEN 120
-                               WHEN ABS(year - ?) <= 1 THEN 110
+                               WHEN year = ? THEN 200
+                               WHEN ABS(year - ?) <= 1 THEN 150
                                ELSE 100
                            END + COALESCE(votes / 10000.0, 0) as computed_score
                     FROM search_view 
@@ -636,7 +702,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             # Year-based search with larger window
             cursor = conn.execute(
                 """
-                SELECT id, title, type, year, genres, rating, votes 
+                SELECT id, title, type, year, end_year, genres, rating, votes 
                 FROM search_view 
                 WHERE (year BETWEEN ? AND ? OR year IS NULL)
                 AND votes > 50  -- Only popular titles for fuzzy search
@@ -650,7 +716,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             first_char = title_lower[0] if title_lower else 'a'
             cursor = conn.execute(
                 """
-                SELECT id, title, type, year, genres, rating, votes 
+                SELECT id, title, type, year, end_year, genres, rating, votes 
                 FROM search_view 
                 WHERE title_lower LIKE ? 
                 AND votes > 100  -- Higher threshold without year
@@ -686,63 +752,14 @@ class IMDbDataProvider(BaseMetadataProvider):
                 total_episodes = result[0] if result[0] > 0 else None
                 total_seasons = result[1]
 
-        genres = row["genres"].split(",") if row["genres"] else []
-
-        # Get tconst using existing connection (much faster)
-        tconst = None
-        cursor = conn.execute("SELECT tconst FROM tconst_mapping WHERE id = ?", (row["id"],))
-        result = cursor.fetchone()
-        if result:
-            tconst = result[0]
-
-        return TitleInfo(
-            id=tconst or str(row["id"]),
-            title=row["title"],
-            type=media_type,
-            year=row["year"],
-            start_year=row["year"],
-            end_year=row["end_year"] if "end_year" in row.keys() else None,  # Now available from database
-            rating=float(row["rating"]) if row["rating"] else None,
-            votes=row["votes"],
-            genres=genres,
-            total_episodes=total_episodes,
-            total_seasons=total_seasons,
-        )
-
-    def _create_title_info_from_row(self, row: sqlite3.Row) -> TitleInfo:
-        """Create TitleInfo object from database row"""
-        # Map type integer back to string
-        type_map = {1: 'movie', 2: 'tvSeries', 3: 'tvMiniSeries'}
-        title_type = type_map.get(row["type"], 'movie')
-        media_type = "movie" if title_type == "movie" else "tv"
-
-        # Get episode count for TV shows using ID mapping
-        total_episodes = None
-        total_seasons = None
+        genres = row["genres"].split(",") if row["genres"] else []        # Reconstruct tconst from ID (ID is the tconst integer)
+        tconst = f"tt{row['id']:07d}"# Derive status for TV series based on end_year
+        status = None
         if media_type == "tv":
-            with sqlite3.connect(self._db_path) as conn:
-                cursor = conn.execute(
-                    """
-                    SELECT COUNT(*) as episode_count, MAX(season) as max_season
-                    FROM title_episodes 
-                    WHERE parent_id = ?
-                """,
-                    (row["id"],),
-                )
-                result = cursor.fetchone()
-                if result:
-                    total_episodes = result[0] if result[0] > 0 else None
-                    total_seasons = result[1]
-
-        genres = row["genres"].split(",") if row["genres"] else []
-
-        # Get tconst for ID compatibility
-        tconst = None
-        with sqlite3.connect(self._db_path) as conn:
-            cursor = conn.execute("SELECT tconst FROM tconst_mapping WHERE id = ?", (row["id"],))
-            result = cursor.fetchone()
-            if result:
-                tconst = result[0]
+            if "end_year" in row.keys() and row["end_year"]:
+                status = "Ended"
+            else:
+                status = "Continuing"  # or "Unknown" - could be either continuing or just no end year data
 
         return TitleInfo(
             id=tconst or str(row["id"]),
@@ -750,12 +767,16 @@ class IMDbDataProvider(BaseMetadataProvider):
             type=media_type,
             year=row["year"],
             start_year=row["year"],
-            end_year=row["end_year"] if "end_year" in row.keys() else None,  # Now available from database
+            end_year=row["end_year"] if "end_year" in row.keys() else None,
             rating=float(row["rating"]) if row["rating"] else None,
             votes=row["votes"],
             genres=genres,
+            tags=[],  # IMDb doesn't provide tags in basic dataset
+            status=status,
             total_episodes=total_episodes,
             total_seasons=total_seasons,
+            sources=["imdb"],  # Always IMDb as source
+            plot=None,  # Plot not available in basic dataset
         )
 
     def get_episode_info(
@@ -770,14 +791,14 @@ class IMDbDataProvider(BaseMetadataProvider):
             return self._search_cache[episode_key]
 
         conn = self._get_connection()
-        try:
-            # Convert parent_id to internal ID if it's a tconst
+        try:            # Convert parent_id to internal ID if it's a tconst
             internal_parent_id = None
             if parent_id.startswith('tt'):
-                cursor = conn.execute("SELECT id FROM tconst_mapping WHERE tconst = ?", (parent_id,))
-                result = cursor.fetchone()
-                if result:
-                    internal_parent_id = result[0]
+                # Extract integer from tconst (e.g., "tt0123456" -> 123456)
+                try:
+                    internal_parent_id = int(parent_id[2:])
+                except (ValueError, TypeError):
+                    pass
             else:
                 try:
                     internal_parent_id = int(parent_id)
@@ -785,16 +806,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                     pass
 
             if not internal_parent_id:
-                return None
-
-            # Find episode using optimized query with new schema
+                return None            # Find episode using optimized query
             cursor = conn.execute(
                 """
-                SELECT e.id, b.title, b.year, r.rating, r.votes, m.tconst
+                SELECT e.id, b.title, b.year, r.rating, r.votes
                 FROM title_episodes e
                 LEFT JOIN title_basics b ON e.id = b.id
                 LEFT JOIN title_ratings r ON e.id = r.id
-                LEFT JOIN tconst_mapping m ON e.id = m.id
                 WHERE e.parent_id = ? AND e.season = ? AND e.episode = ?
                 LIMIT 1
             """,
