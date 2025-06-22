@@ -368,19 +368,77 @@ def cmd_list(args):
         print("No groups found in the data.")
         return 0
     
+    # Add original indices to groups for preservation
+    indexed_groups = [(i + 1, group_key, details) for i, (group_key, details) in enumerate(groups)]
+    
+    # Filter by status if requested
+    if hasattr(args, 'status_filter') and args.status_filter:
+        all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
+                       'unknown_total_episodes', 'not_series', 'no_metadata', 'no_metadata_manager', 'unknown'}
+        
+        # Parse include/exclude patterns
+        status_filters = args.status_filter.split()
+        include_statuses = set()
+        exclude_statuses = set()
+        plain_statuses = set()
+        
+        for filter_item in status_filters:
+            if filter_item.startswith('+'):
+                status = filter_item[1:]
+                if status in all_statuses:
+                    include_statuses.add(status)
+            elif filter_item.startswith('-'):
+                status = filter_item[1:]
+                if status in all_statuses:
+                    exclude_statuses.add(status)
+            elif filter_item in all_statuses:
+                plain_statuses.add(filter_item)
+        
+        # Determine final filter set
+        if plain_statuses:
+            final_statuses = plain_statuses
+        elif include_statuses:
+            final_statuses = include_statuses - exclude_statuses
+        elif exclude_statuses:
+            final_statuses = all_statuses - exclude_statuses
+        else:
+            final_statuses = all_statuses
+        
+        # Apply filtering while preserving original indices
+        filtered_indexed_groups = []
+        for original_index, group_key, details in indexed_groups:
+            if details['status'] in final_statuses:
+                filtered_indexed_groups.append((original_index, group_key, details))
+        indexed_groups = filtered_indexed_groups
+    
+    if not indexed_groups:
+        print("No groups found matching the filter criteria.")
+        return 0
+    
     print("Available series groups:")
     if args.verbose == 0:
         print("=" * 50)
     else:
         print("=" * 100)
     
-    for i, (group_key, details) in enumerate(groups, 1):
-        status_indicator = "✓" if details['status'] == 'complete' else "⚠" if details['status'] == 'incomplete' else "?"
+    for original_index, group_key, details in indexed_groups:
+        # Status emoji from series_completeness_checker.py
+        status_emoji = {
+            'complete': '✅',
+            'incomplete': '❌', 
+            'complete_with_extras': '⚠️',
+            'no_episode_numbers': '❓',
+            'unknown_total_episodes': '❓',
+            'not_series': 'ℹ️',
+            'no_metadata': '❓',
+            'no_metadata_manager': '❓',
+            'unknown': '❓'
+        }.get(details['status'], '❓')
         
         if args.verbose == 0:
-            print(f"{i:2d}. {status_indicator} {details['title']} ({details['episodes_found']}/{details['episodes_expected']})")
+            print(f"{original_index:2d}. {status_emoji} {details['title']} ({details['episodes_found']}/{details['episodes_expected']})")
         else:
-            print(f"{i:2d}. {status_indicator} {details['title']}")
+            print(f"{original_index:2d}. {status_emoji} {details['title']}")
             print(f"    Episodes: {details['episodes_found']}/{details['episodes_expected']} ({details['status']})")
             if 'folder_name' in details:
                 print(f"    Output folder: {details['folder_name']}")
@@ -485,6 +543,12 @@ def main():
     list_parser = subparsers.add_parser('list', aliases=['ls'], 
                                        help='List available series groups')
     list_parser.add_argument('input_json', help='JSON file from series_completeness_checker.py')
+    list_parser.add_argument('--status-filter', metavar='FILTERS',
+                            help='Filter results by status. Use +status to include only specific statuses, '
+                                 '-status to exclude specific statuses, or plain status names for exact match. '
+                                 'Available statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
+                                 'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
+                                 'Examples: "complete incomplete", "+complete +incomplete", "-unknown -no_metadata"')
     
     # Archive command
     archive_parser = subparsers.add_parser('archive', 
