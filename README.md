@@ -13,11 +13,11 @@ Defaults to model `WhisperX` and language `English` (`"en"`) for transcription.
 The model should automatically download and install when the script is run.
 
 ### Requires
-- SubsAI (https://github.com/abdeladim-s/subsai)
+- SubsAI (<https://github.com/abdeladim-s/subsai>)
   - Model: m-bain/whisperX
 
 ### Recommended
-Torch with CUDA support is highly recommended if you have a CUDA capable machine. For SubsAI with `torch-2.0.1` requirement, install `torch-2.0.1+cu118` per instruction https://pytorch.org/get-started/previous-versions/#v201 instead of default one in SubsAI "`requirements.txt`" file.
+Torch with CUDA support is highly recommended if you have a CUDA capable machine. For SubsAI with `torch-2.0.1` requirement, install `torch-2.0.1+cu118` per instruction <https://pytorch.org/get-started/previous-versions/#v201> instead of default one in SubsAI "`requirements.txt`" file.
 
 ## insanely-fast-whisper.py
 Minimalistic script to generate transcription using Whisper.
@@ -165,7 +165,7 @@ Downloads the specified `.mp3` file and adds the provided metadata to it.
 #### Optional Dependencies
 - music_style_classifier.py
   - librosa
-  - tensorflow 
+  - tensorflow
   - numpy
   - transformers
 
@@ -182,6 +182,15 @@ It is made specifically for transcoding for example tv-shows from your legacy me
 It now also supports lookup of meta data from common anime databases and imdb. It will automatically download the metadata and add it to the video.
 
 Check out branch mediaoptimizer_v1 for the old version.
+
+### metadata_provider.py
+Base metadata provider class that defines the interface for metadata retrieval services. This abstract class provides a common structure for implementing different metadata sources, handling search functionality, and managing metadata formatting for video files.
+
+### anime_provider.py
+Implements metadata retrieval from anime databases such as AniList and MyAnimeList. Provides specialized handling for anime series metadata including episode information, season data, air dates, and anime-specific details like studio information and Japanese titles.
+
+### imdb_provider.py
+Implements metadata retrieval from the Internet Movie Database (IMDb). Handles both movies and TV series metadata including cast information, directors, release dates, ratings, and plot summaries. Integrates with IMDb's API or web scraping for comprehensive movie and TV show information.
 
 ### Requires
 Use the video-optimizer-v2/requirements.txt file to install the requirements.
@@ -274,7 +283,7 @@ python youtube-video-downloader-flask-ws.py
 
 # Send a POST request to download a video
 curl -X POST -H "Content-Type: application/json" -d '{"url": "VIDEO_URL", "format": "mp4", "resolution": "720p", "audio_bitrate": "192k", "output_dir": "./downloads"}' http://localhost:5000/download
-``` 
+```
 
 #### Features
 - Accepts video URLs via POST requests.
@@ -471,14 +480,81 @@ To enable the full AI analysis capabilities:
 
 The script will automatically detect Ollama availability and enable advanced features when the server and model are accessible.
 
-# Experimental
+## file_grouper.py
+A script that organizes files in a directory by grouping them based on their filenames using intelligent pattern matching. It identifies files that belong together (such as episodes of a TV series, parts of a multi-part archive, or related documents) and creates subdirectories to organize them logically.
 
-## lyrics-timing-generator.py
+The script uses advanced string matching algorithms to detect patterns in filenames, handle various naming conventions, and group related files while preserving the original file structure. It's particularly useful for organizing large collections of media files, software downloads, or document archives.
+
+### Features
+- Intelligent filename pattern detection and grouping
+- Support for various naming conventions (TV shows, movies, archives, documents)
+- Configurable grouping sensitivity and pattern matching
+- Recursive directory processing with configurable depth
+- Detailed logging and progress reporting
+
+### Usage (Examples)
+```bash
+# Group files in current directory (dry run)
+python file_grouper.py
+
+# Actually perform the grouping operation
+python file_grouper.py --execute
+
+# Group files recursively with custom pattern sensitivity
+python file_grouper.py /path/to/media --recursive --sensitivity 0.8 --execute
+
+# Preview grouping for specific directory
+python file_grouper.py /path/to/files --dry-run
+```
+
+### Requires
+- rapidfuzz
+- pathlib
+
+## series_completeness_checker.py
+A script that analyzes TV series collections to identify missing episodes, gaps in seasons, and incomplete series. It scans directory structures and filenames to build a comprehensive view of your media library, highlighting what episodes or seasons might be missing from your collection.
+
+The script supports various TV series naming conventions and provides detailed reports on series completeness, making it easy to identify and fill gaps in your media collection. It can also suggest potential naming inconsistencies and provide recommendations for organizing your series.
+
+### Features
+- Comprehensive TV series analysis and gap detection
+- Support for multiple naming conventions and formats
+- Season and episode numbering validation
+- Missing episode identification with detailed reporting
+- Series metadata integration for enhanced accuracy
+- Export results to various formats (CSV, JSON, HTML reports)
+- Integration with metadata providers for series validation
+- Batch processing of multiple series directories
+
+### Usage (Examples)
+```bash
+# Check completeness of series in current directory
+python series_completeness_checker.py
+
+# Analyze specific series directory with detailed report
+python series_completeness_checker.py /path/to/series --detailed --export-html
+
+# Check multiple series with metadata validation
+python series_completeness_checker.py /path/to/library --recursive --validate-metadata
+
+# Generate CSV report of missing episodes
+python series_completeness_checker.py /path/to/series --export-csv missing_episodes.csv
+```
+
+### Requires
+- rapidfuzz
+- requests
+- pandas
+- pathlib
+
+## Experimental
+
+### lyrics-timing-generator.py
 Intended to generate timed lyrics for audio files (.lrc). Uses whisper library to generate timed lyrics, and ollama and an llm to structure them.
 
 But it is not good. Really not good. It's a start, but not quite there yet. Need to restart from a known base to generate the timed subtitles which is a known working thing, and then convert that to lyrics, using an llm to format them.
 
-### Requires
+#### Requires
 - pydub
 - mutagen
 - numpy
@@ -490,12 +566,12 @@ But it is not good. Really not good. It's a start, but not quite there yet. Need
 - tqdm
 - dataclasses
 
-## mini-dlna-server.py
+### mini-dlna-server.py
 A script that runs a local dlna server instance on the computer, taking as input a command line argument pointing out the folder to serve to clients.
 
 It is intended if I get time to do it, to stabilize it to properly handle conenctions, work better with Windows 11, and transcode media to the client using ffmpeg.
 
 **Note!** Currently it is extremely unstable and mostly doesn't work. If anyone wants to refactor it and fix some of the remaining issues that would be cool. :)
 
-### Requires
+#### Requires
 - mutagen
