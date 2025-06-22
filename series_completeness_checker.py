@@ -251,7 +251,35 @@ class SeriesCompletenessChecker:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
     
-    def print_summary(self, results: Dict[str, Any], verbosity: int = 1) -> None:
+    def _format_metadata_value(self, value: Any, max_length: int = 20) -> str:
+        """Format a metadata value for display with smart truncation."""
+        if value is None:
+            return "N/A"
+        
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return "N/A"
+            # Join list items with commas, truncate if needed
+            formatted = ", ".join(str(item) for item in value)
+        elif isinstance(value, dict):
+            # For dict, show key count or first few keys
+            if not value:
+                return "N/A"
+            formatted = f"{{{len(value)} keys}}"
+        elif isinstance(value, bool):
+            formatted = "Yes" if value else "No"
+        elif isinstance(value, (int, float)):
+            formatted = str(value)
+        else:
+            formatted = str(value)
+        
+        # Truncate if too long
+        if len(formatted) > max_length:
+            formatted = formatted[:max_length - 3] + "..."
+        
+        return formatted
+    
+    def print_summary(self, results: Dict[str, Any], verbosity: int = 1, show_metadata_fields: List[str] | None = None) -> None:
         """Print completeness summary."""
         summary = results['completeness_summary']
 
@@ -271,9 +299,9 @@ class SeriesCompletenessChecker:
         if verbosity >= 1:
             print(f"\n=== Series ===")
             for group_key, analysis in sorted(results['groups'].items()):
-                self._print_one_line_summary(analysis)
+                self._print_one_line_summary(analysis, show_metadata_fields)
     
-    def _print_one_line_summary(self, analysis: Dict[str, Any]) -> None:
+    def _print_one_line_summary(self, analysis: Dict[str, Any], show_metadata_fields: List[str] | None = None) -> None:
         """Print a concise one-line summary for a series."""
         status = analysis['status']
         title = analysis['title']
@@ -299,8 +327,16 @@ class SeriesCompletenessChecker:
         if season:
             title_str += f" S{season:02d}"
 
-        # Limit title length for display
-        title_length = 40
+        # Adjust title length based on whether metadata will be shown
+        base_title_length = 50
+        metadata_space = 0
+        
+        if show_metadata_fields:
+            # Reserve space for metadata (estimate ~15 chars per field)
+            metadata_space = len(show_metadata_fields) * 15
+            title_length = max(20, base_title_length - metadata_space // 2)
+        else:
+            title_length = base_title_length
 
         # Truncate title to maximum title_length characters with ellipsis
         if len(title_str) > title_length:
@@ -316,9 +352,30 @@ class SeriesCompletenessChecker:
             extra_range = self._format_episode_ranges(analysis['extra_episodes'])
             extra_info.append(f"Extra: {extra_range}")
         
-        # Build the complete line as one formatted string with all parts as parameters
-        extra_info_str = f" | {' | '.join(extra_info)}" if extra_info else ""
+        # Add metadata fields if requested
+        metadata_info = []
+        if show_metadata_fields and analysis.get('files'):
+            # Get metadata from the first file's title metadata
+            first_file = analysis['files'][0]
+            title_metadata_key = first_file.get('title_metadata_key')
+            
+            if title_metadata_key and hasattr(self, 'file_grouper'):
+                title_metadata = getattr(self.file_grouper, 'title_metadata', {})
+                if title_metadata_key in title_metadata:
+                    metadata = title_metadata[title_metadata_key]['metadata']
+                    
+                    for field in show_metadata_fields:
+                        value = metadata.get(field)
+                        formatted_value = self._format_metadata_value(value, max_length=12)
+                        metadata_info.append(f"{field.capitalize()}: {formatted_value}")
+        
+        # Build the complete line
         episodes_expected_str = str(episodes_expected) if episodes_expected else '?'
+        
+        # Combine all info parts
+        all_info = metadata_info + extra_info # join lists
+        extra_info_str = f" | {', '.join(all_info)}" if all_info else ""
+        
         line = f"{status_emoji} {title_str:<{title_length}} {episodes_found:>4}/{episodes_expected_str:<4}{extra_info_str}"
         
         print(line)
@@ -334,9 +391,13 @@ Examples:
   %(prog)s /path/to/series --exclude-paths /path/to/series/trash
   %(prog)s /path/to/series --include-patterns "*.mkv" "*.mp4" --recursive
   %(prog)s /path/to/series --export series_completeness.json -v 3
-        """
+  %(prog)s /path/to/series --status-filter "incomplete no_episode_numbers"
+  %(prog)s /path/to/series --status-filter "+complete +complete_with_extras"
+  %(prog)s /path/to/series --status-filter "-unknown -no_metadata"
+  %(prog)s /path/to/series --status-filter "+incomplete -complete_with_extras"
+  %(prog)s /path/to/series --show-metadata year rating
+  %(prog)s /path/to/series --show-metadata genres director --status-filter "complete"        """
     )
-    
     parser.add_argument('input_paths', nargs='+',
                        help='Input paths to search for series files')
     parser.add_argument('--exclude-paths', nargs='*', default=[],
@@ -353,10 +414,16 @@ Examples:
                        help='Verbosity level: 0=silent, 1=summary, 2=detailed, 3=very detailed (default: 1)')
     parser.add_argument('--quiet', '-q', action='store_true',
                        help='Same as --verbose 0')
-    parser.add_argument('--incomplete-only', action='store_true',
-                       help='Only show incomplete series series')
-    parser.add_argument('--complete-only', action='store_true',
-                       help='Only show complete series series')
+    parser.add_argument('--status-filter', metavar='FILTERS',
+                       help='Filter results by status. Use +status to include only specific statuses, '
+                            '-status to exclude specific statuses, or plain status names for exact match. '
+                            'Available statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
+                            'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
+                            'Examples: "complete incomplete", "+complete +incomplete", "-unknown -no_metadata"')
+    parser.add_argument('--show-metadata', nargs='*', metavar='FIELD',
+                       help='Show metadata fields in summary lines. Available fields depend on metadata source. '
+                            'Common fields: year, rating, genres, director, actors, plot, runtime, imdb_id. '
+                            'Example: --show-metadata year rating genres')
     
     args = parser.parse_args()
     
@@ -402,15 +469,52 @@ Examples:
     
     # Analyze collection
     results = checker.analyze_series_collection(files)
-
+    
     # Filter results if requested
-    if args.incomplete_only or args.complete_only:
+    status_filters = None
+    if args.status_filter:
+        # Split the string into individual filter items
+        status_filters = args.status_filter.split()
+    
+    if status_filters:
+        all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
+                       'unknown_total_episodes', 'not_series', 'no_metadata', 'no_metadata_manager', 'unknown'}
+        
+        # Parse include/exclude patterns
+        include_statuses = set()
+        exclude_statuses = set()
+        plain_statuses = set()
+        
+        for filter_item in status_filters:
+            if filter_item.startswith('+'):
+                status = filter_item[1:]
+                if status in all_statuses:
+                    include_statuses.add(status)
+            elif filter_item.startswith('-'):
+                status = filter_item[1:]
+                if status in all_statuses:
+                    exclude_statuses.add(status)
+            elif filter_item in all_statuses:
+                plain_statuses.add(filter_item)
+        
+        # Determine final filter set
+        if plain_statuses:
+            # Plain statuses take precedence (exact match mode)
+            final_statuses = plain_statuses
+        elif include_statuses:
+            # Include mode: start with empty set, add includes, remove excludes
+            final_statuses = include_statuses - exclude_statuses
+        elif exclude_statuses:
+            # Exclude mode: start with all, remove excludes
+            final_statuses = all_statuses - exclude_statuses
+        else:
+            # No valid filters, show all
+            final_statuses = all_statuses
+        
+        # Apply filtering
         filtered_groups = {}
         for group_key, analysis in results['groups'].items():
-            status = analysis['status']
-            if args.incomplete_only and status in ['incomplete', 'no_episode_numbers']:
-                filtered_groups[group_key] = analysis
-            elif args.complete_only and status in ['complete', 'complete_with_extras']:
+            if analysis['status'] in final_statuses:
                 filtered_groups[group_key] = analysis
         results['groups'] = filtered_groups
         
@@ -419,17 +523,21 @@ Examples:
         complete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['complete', 'complete_with_extras'])
         incomplete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['incomplete', 'no_episode_numbers'])
         unknown_series = total_series - complete_series - incomplete_series
+        total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
+        total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
 
         results['completeness_summary'].update({
             'total_series': total_series,
             'complete_series': complete_series,
             'incomplete_series': incomplete_series,
-            'unknown_series': unknown_series
+            'unknown_series': unknown_series,
+            'total_episodes_found': total_episodes_found,
+            'total_episodes_expected': total_episodes_expected
         })
     
     # Display results
     if verbosity >= 1:
-        checker.print_summary(results, verbosity)
+        checker.print_summary(results, verbosity, args.show_metadata)
     
     # Export if requested
     if args.export:
