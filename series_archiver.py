@@ -4,7 +4,105 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Protocol
+
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+
+
+class ProgressReporter(Protocol):
+    """Protocol for progress reporting callbacks."""
+    
+    def on_start(self, total_files: int, action_desc: str) -> None:
+        """Called when archiving starts."""
+        ...
+    
+    def on_group_start(self, group_name: str, file_count: int) -> None:
+        """Called when processing a group starts."""
+        ...
+    
+    def on_file_processed(self, filename: str, success: bool, error_msg: Optional[str] = None) -> None:
+        """Called when a file is processed."""
+        ...
+    
+    def on_group_complete(self, group_name: str, success_count: int, error_count: int) -> None:
+        """Called when a group is completed."""
+        ...
+    
+    def on_complete(self, total_groups: int) -> None:
+        """Called when all archiving is complete."""
+        ...
+
+
+class CLIProgressReporter:
+    """CLI-based progress reporter using tqdm if available."""
+    
+    def __init__(self, verbose: int = 0, use_progress_bars: bool = True):
+        self.verbose = verbose
+        self.use_progress_bars = use_progress_bars and TQDM_AVAILABLE
+        self.overall_pbar = None
+        self.group_pbar = None
+        
+    def on_start(self, total_files: int, action_desc: str) -> None:
+        """Called when archiving starts."""
+        if self.use_progress_bars and self.verbose >= 0:
+            self.overall_pbar = tqdm(
+                total=total_files,
+                desc=f"{action_desc} files",
+                unit="file",
+                disable=self.verbose == 0
+            )
+    
+    def on_group_start(self, group_name: str, file_count: int) -> None:
+        """Called when processing a group starts."""
+        if self.use_progress_bars and self.verbose >= 1:
+            group_desc = f"{group_name[:30]}..." if len(group_name) > 30 else group_name
+            self.group_pbar = tqdm(
+                total=file_count,
+                desc=group_desc,
+                unit="file",
+                leave=False,
+                disable=False
+            )
+    
+    def on_file_processed(self, filename: str, success: bool, error_msg: Optional[str] = None) -> None:
+        """Called when a file is processed."""
+        if self.use_progress_bars:
+            # Update group progress bar
+            if self.group_pbar and self.verbose >= 1:
+                display_name = filename[:40] + "..." if len(filename) > 40 else filename
+                self.group_pbar.set_postfix_str(display_name)
+                self.group_pbar.update(1)
+            
+            # Update overall progress bar
+            if self.overall_pbar:
+                self.overall_pbar.update(1)
+            
+            # Handle errors
+            if not success and error_msg:
+                if self.use_progress_bars:
+                    tqdm.write(f"  Error processing {filename}: {error_msg}")
+                else:
+                    print(f"  Error processing {filename}: {error_msg}")
+    
+    def on_group_complete(self, group_name: str, success_count: int, error_count: int) -> None:
+        """Called when a group is completed."""
+        if self.group_pbar:
+            self.group_pbar.close()
+            self.group_pbar = None
+        
+        print(f"  Processed {success_count} files successfully")
+        if error_count > 0:
+            print(f"  {error_count} files had errors")
+    
+    def on_complete(self, total_groups: int) -> None:
+        """Called when all archiving is complete."""
+        if self.overall_pbar:
+            self.overall_pbar.close()
+            self.overall_pbar = None
 
 
 class SeriesArchiver:
@@ -14,10 +112,11 @@ class SeriesArchiver:
     [release_group] show_name (start_ep-last_ep) (resolution)
     """
     
-    def __init__(self, verbose: int = 0):
+    def __init__(self, verbose: int = 0, progress_reporter: Optional[ProgressReporter] = None):
         self.data: Optional[Dict] = None
         self.groups: Dict = {}
         self.verbose = verbose
+        self.progress_reporter = progress_reporter
         
     def _log(self, message: str, level: int = 1):
         """Log message if verbosity level is sufficient."""
@@ -128,6 +227,26 @@ class SeriesArchiver:
                 os.makedirs(destination_root, exist_ok=True)
             self._log(f"{'Would create' if dry_run else 'Created'} destination root: {destination_root}")
         
+        # Calculate total files for progress reporting
+        total_files = 0
+        for group_key in selected_groups:
+            group_data = self.groups.get(group_key)
+            if group_data:
+                files = group_data.get('files', [])
+                # Count only files that exist
+                for file_info in files:
+                    source_path = file_info.get('filepath')
+                    if source_path and os.path.exists(source_path):
+                        total_files += 1
+        
+        # Notify progress reporter of start
+        action_desc = "Copying" if copy_files else "Moving"
+        if dry_run:
+            action_desc = f"Simulating {action_desc.lower()}"
+        
+        if self.progress_reporter:
+            self.progress_reporter.on_start(total_files, action_desc)
+        
         for group_key in selected_groups:
             group_data = self.groups.get(group_key)
             if not group_data:
@@ -141,7 +260,8 @@ class SeriesArchiver:
                 os.makedirs(dest_folder, exist_ok=True)
             
             action_word = "Would process" if dry_run else "Processing"
-            print(f"\n{action_word} group: {group_data.get('title')}")
+            group_title = group_data.get('title', 'Unknown')
+            print(f"\n{action_word} group: {group_title}")
             self._log(f"Destination folder: {dest_folder}")
             
             # Process files
@@ -149,20 +269,33 @@ class SeriesArchiver:
             success_count = 0
             error_count = 0
             
+            # Filter valid files for this group
+            valid_files = []
             for file_info in files:
                 source_path = file_info.get('filepath')
-                if not source_path or not os.path.exists(source_path):
-                    self._log(f"  Warning: Source file not found: {source_path}")
-                    error_count += 1
-                    continue
-                
+                if source_path and os.path.exists(source_path):
+                    valid_files.append(file_info)
+            
+            # Notify progress reporter of group start
+            if self.progress_reporter:
+                self.progress_reporter.on_group_start(group_title, len(valid_files))
+            
+            for file_info in valid_files:
+                source_path = file_info.get('filepath')
                 filename = file_info.get('filename', os.path.basename(source_path))
                 dest_path = os.path.join(dest_folder, filename)
+                
+                success = False
+                error_msg = None
                 
                 try:
                     if dry_run:
                         action = "copy" if copy_files else "move"
                         self._log(f"  Would {action}: {filename}", 2)
+                        # Simulate some work for dry run
+                        if TQDM_AVAILABLE:
+                            import time
+                            time.sleep(0.01)  # Small delay to make progress visible
                     else:
                         if copy_files:
                             shutil.copy2(source_path, dest_path)
@@ -170,18 +303,32 @@ class SeriesArchiver:
                         else:
                             shutil.move(source_path, dest_path)
                             self._log(f"  Moved: {filename}", 2)
+                    success = True
                     success_count += 1
                     
                 except Exception as e:
-                    print(f"  Error processing {filename}: {e}")
+                    error_msg = str(e)
                     error_count += 1
+                
+                # Notify progress reporter of file completion
+                if self.progress_reporter:
+                    self.progress_reporter.on_file_processed(filename, success, error_msg)
             
-            status_word = "Would process" if dry_run else "Processed"
-            print(f"  {status_word} {success_count} files successfully")
-            if error_count > 0:
-                print(f"  {error_count} files had errors")
+            # Notify progress reporter of group completion
+            if self.progress_reporter:
+                self.progress_reporter.on_group_complete(group_title, success_count, error_count)
+            else:
+                # Fallback output if no progress reporter
+                status_word = "Would process" if dry_run else "Processed"
+                print(f"  {status_word} {success_count} files successfully")
+                if error_count > 0:
+                    print(f"  {error_count} files had errors")
             
             results[group_key] = dest_folder
+        
+        # Notify progress reporter of completion
+        if self.progress_reporter:
+            self.progress_reporter.on_complete(len(selected_groups))
         
         return results
     
@@ -246,7 +393,19 @@ def cmd_list(args):
 
 def cmd_archive(args):
     """Handle the archive command."""
-    archiver = SeriesArchiver(verbose=args.verbose)
+    # Create progress reporter if needed
+    progress_reporter = None
+    if hasattr(args, 'no_progress') and args.no_progress:
+        # No progress reporting requested
+        pass
+    else:
+        # Use CLI progress reporter by default, but disable progress bars during dry-run
+        progress_reporter = CLIProgressReporter(
+            verbose=args.verbose,
+            use_progress_bars=TQDM_AVAILABLE and not args.dry_run
+        )
+    
+    archiver = SeriesArchiver(verbose=args.verbose, progress_reporter=progress_reporter)
     
     if not archiver.load_data(args.input_json):
         return 1
@@ -314,7 +473,7 @@ def main():
     """Main entry point for command-line interface."""
     parser = argparse.ArgumentParser(
         description="Archive anime series files based on series completeness checker output",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     parser.add_argument('-v', '--verbose', action='count', default=0,
@@ -339,6 +498,8 @@ def main():
                                help='Copy files instead of moving them')
     archive_parser.add_argument('--dry-run', action='store_true',
                                help='Show what would be done without actually doing it')
+    archive_parser.add_argument('--no-progress', action='store_true',
+                               help='Disable progress bars and use simple text output')
     
     args = parser.parse_args()
     
