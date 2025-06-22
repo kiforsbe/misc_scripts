@@ -547,6 +547,83 @@ python series_completeness_checker.py /path/to/series --export-csv missing_episo
 - pandas
 - pathlib
 
+## series_archiver.py
+A script that archives anime series files based on series completeness checker output. It organizes files into structured folders with standardized naming patterns and provides both command-line interface and programmatic access for integration with other tools.
+
+The script processes JSON output from series_completeness_checker.py and allows users to select specific series groups for archiving. It creates organized folder structures following the pattern `[release_group] show_name (start_ep-last_ep) (resolution)` and can either copy or move files to the destination.
+
+### Features
+- **Dual Interface**: Command-line tool and importable Python class for programmatic use
+- **Intelligent Organization**: Creates standardized folder names based on series metadata
+- **Flexible Selection**: Archive specific series or all series with simple selection syntax
+- **Safe Operations**: Dry-run mode to preview changes before execution
+- **Comprehensive Logging**: Multiple verbosity levels for detailed operation tracking
+- **File Operations**: Support for both copying and moving files with progress feedback
+- **Error Handling**: Robust error reporting and validation of source files and destinations
+
+### Usage (Examples)
+```bash
+# Get help for specific commands
+python series_archiver.py list --help
+python series_archiver.py archive --help
+
+# List available series (basic)
+python series_archiver.py list files.json
+
+# List series with detailed information
+python series_archiver.py -v list files.json
+python series_archiver.py -vv list files.json
+
+# Archive specific series (move files)
+python series_archiver.py archive files.json /dest/path --select "1,3,5"
+
+# Archive all series (copy instead of move)
+python series_archiver.py archive files.json /dest/path --select "all" --copy
+
+# Preview what would happen (dry run)
+python series_archiver.py archive files.json /dest/path --select "1,2" --dry-run
+
+# Verbose archiving with copy and dry run
+python series_archiver.py -vv archive files.json /dest/path --select "all" --copy --dry-run
+```
+
+### Programmatic Usage
+```python
+from series_archiver import SeriesArchiver
+
+# Initialize archiver with verbosity
+archiver = SeriesArchiver(verbose=1)
+
+# Load series data
+archiver.load_data('files.json')
+
+# List available groups
+groups = archiver.list_groups(show_details=True)
+
+# Archive selected groups
+results = archiver.archive_groups(
+    selected_groups=['group1', 'group2'], 
+    destination_root='/dest/path',
+    copy_files=True,
+    dry_run=True
+)
+```
+
+### Commands
+- **list/ls**: Display available series groups with episode counts and completion status
+- **archive**: Archive selected series groups to organized destination folders
+
+### Options
+- **-v, --verbose**: Increase verbosity level (use -v, -vv, or -vvv for different detail levels)
+- **--select**: Specify which series to archive using comma-separated numbers or "all"
+- **--copy**: Copy files instead of moving them (preserves originals)
+- **--dry-run**: Show what would be done without actually performing file operations
+
+### Requires
+- pathlib
+- shutil
+- json
+
 ## Experimental
 
 ### lyrics-timing-generator.py
