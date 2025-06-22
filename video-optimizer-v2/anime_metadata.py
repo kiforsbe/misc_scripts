@@ -284,12 +284,158 @@ class AnimeDataProvider(BaseMetadataProvider):
                     ('anime_offline_database', int(time.time())),
                 )
                 
+                # Clean up duplicates before creating indexes
+                self._cleanup_duplicates(conn)
+                
                 conn.commit()
                 logging.info(f"Loaded {len(anime_batch)} anime entries and {len(synonyms_batch)} synonyms")
                 
         except Exception as e:
             logging.error(f"Error loading anime JSON to database: {str(e)}")
             raise
+
+    def _cleanup_duplicates(self, conn: sqlite3.Connection) -> None:
+        """Clean up duplicate entries by merging data according to priority rules"""
+        logging.info("Cleaning up duplicate entries...")
+        
+        # Set row_factory to None temporarily for the duplicate detection query
+        original_row_factory = conn.row_factory
+        conn.row_factory = None
+        
+        try:
+            # Find all duplicate groups (same title_lower and season_year)
+            cursor = conn.execute("""
+                SELECT title_lower, season_year, COUNT(*) as count
+                FROM anime_basics 
+                WHERE title_lower IS NOT NULL AND season_year IS NOT NULL
+                GROUP BY title_lower, season_year 
+                HAVING COUNT(*) > 1
+            """)
+            
+            duplicate_groups = cursor.fetchall()
+            logging.debug(f"Found duplicate groups query returned: {len(duplicate_groups)} groups")
+            
+            if not duplicate_groups:
+                logging.info("No duplicates found")
+                return
+            
+            logging.info(f"Found {len(duplicate_groups)} duplicate groups to clean up")
+            
+            status_priority = {
+                'FINISHED': 4,
+                'ONGOING': 3, 
+                'UPCOMING': 2,
+                'UNDEFINED': 1,
+                None: 0
+            }
+            
+            cleaned_count = 0
+            
+            # Restore row_factory for subsequent queries
+            conn.row_factory = sqlite3.Row
+            
+            for i, group in enumerate(duplicate_groups):
+                title_lower, season_year = group[0], group[1]  # Access by index since row_factory was None
+                logging.debug(f"Processing duplicate group {i+1}/{len(duplicate_groups)}: title='{title_lower}', year={season_year}")
+                
+                # Get all duplicates in this group
+                cursor = conn.execute("""
+                    SELECT * FROM anime_basics 
+                    WHERE title_lower = ? AND season_year = ?
+                """, (title_lower, season_year))
+                
+                duplicates = cursor.fetchall()
+                logging.debug(f"Found {len(duplicates)} duplicates for '{title_lower}' ({season_year})")
+                
+                if len(duplicates) < 2:
+                    logging.debug(f"Skipping group with only {len(duplicates)} entries")
+                    continue
+                
+                # Log the duplicate entries for debugging
+                for j, dup in enumerate(duplicates):
+                    logging.debug(f"  Duplicate {j+1}: id='{dup['id']}', episodes={dup['episodes']}, status='{dup['status']}', sources='{dup['sources'][:50]}...'")
+                
+                # Merge data according to priority rules
+                try:
+                    merged_data = self._merge_duplicate_data(duplicates, status_priority)
+                    logging.debug(f"Merged data: episodes={merged_data['episodes']}, status='{merged_data['status']}', sources_count={len(merged_data['sources'].split(',')) if merged_data['sources'] else 0}")
+                    
+                    # Update all records in the group with merged data
+                    for duplicate in duplicates:
+                        logging.debug(f"Updating record id='{duplicate['id']}'")
+                        conn.execute("""
+                            UPDATE anime_basics 
+                            SET episodes = ?, status = ?, sources = ?
+                            WHERE id = ?
+                        """, (
+                            merged_data['episodes'],
+                            merged_data['status'], 
+                            merged_data['sources'],
+                            duplicate['id']
+                        ))
+                    
+                    cleaned_count += len(duplicates)
+                    logging.debug(f"Successfully updated {len(duplicates)} records in group")
+                    
+                except Exception as e:
+                    logging.error(f"Error processing duplicate group '{title_lower}' ({season_year}): {str(e)}")
+                    continue
+            
+            logging.info(f"Cleaned up {cleaned_count} duplicate records in {len(duplicate_groups)} groups")
+            
+        finally:
+            # Always restore original row_factory
+            conn.row_factory = original_row_factory
+
+    def _merge_duplicate_data(self, duplicates: List[sqlite3.Row], status_priority: Dict[str, int]) -> Dict:
+        """Merge data from duplicate records according to priority rules"""
+        logging.debug(f"Merging data from {len(duplicates)} duplicate records")
+        
+        # Keep the largest episodes count
+        max_episodes = None
+        for i, dup in enumerate(duplicates):
+            episodes = dup['episodes']
+            logging.debug(f"  Record {i+1} episodes: {episodes}")
+            if episodes is not None:
+                if max_episodes is None or episodes > max_episodes:
+                    max_episodes = episodes
+        
+        logging.debug(f"Selected max episodes: {max_episodes}")
+        
+        # Prioritize status by defined priority order
+        best_status = None
+        best_priority = -1
+        for i, dup in enumerate(duplicates):
+            status = dup['status']
+            priority = status_priority.get(status, 0)
+            logging.debug(f"  Record {i+1} status: '{status}' (priority: {priority})")
+            
+            if priority > best_priority:
+                best_priority = priority
+                best_status = status
+        
+        logging.debug(f"Selected best status: '{best_status}' (priority: {best_priority})")
+        
+        # Merge sources from all duplicates
+        all_sources = set()
+        for i, dup in enumerate(duplicates):
+            sources_str = dup['sources']
+            logging.debug(f"  Record {i+1} sources: '{sources_str[:100] if sources_str else None}...'")
+            if sources_str:
+                sources = [s.strip() for s in sources_str.split(',') if s.strip()]
+                all_sources.update(sources)
+        
+        merged_sources = ','.join(sorted(all_sources)) if all_sources else ''
+        logging.debug(f"Merged sources count: {len(all_sources)}")
+        
+        result = {
+            'episodes': max_episodes,
+            'status': best_status,
+            'sources': merged_sources
+        }
+        
+        logging.debug(f"Final merged data: {result}")
+        return result
 
     def _optimize_database_for_reads(self) -> None:
         """Optimize database for read-only operations after data loading"""
