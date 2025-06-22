@@ -28,7 +28,6 @@ class TitleInfo:
     total_seasons: Optional[int] = None
     sources: List[str] = []
     plot: Optional[str] = None
-    last_watched: Optional[datetime] = None
 
 @dataclass
 class EpisodeInfo:
@@ -41,7 +40,6 @@ class EpisodeInfo:
     votes: Optional[int] = None
     plot: Optional[str] = None
     air_date: Optional[str] = None
-    last_watched: Optional[datetime] = None
     
     def __post_init__(self):
         if not self.title:
