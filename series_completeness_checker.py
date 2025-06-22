@@ -285,10 +285,10 @@ class SeriesCompletenessChecker:
         status_emoji = {
             'complete': '✅',
             'incomplete': '❌', 
-            'complete_with_extras': '⚠️ ',
+            'complete_with_extras': '⚠️',
             'no_episode_numbers': '❓',
             'unknown_total_episodes': '❓',
-            'not_series': 'ℹ️ ',
+            'not_series': 'ℹ️',
             'no_metadata': '❓',
             'no_metadata_manager': '❓',
             'unknown': '❓'

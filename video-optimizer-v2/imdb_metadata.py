@@ -120,7 +120,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                         dataset TEXT PRIMARY KEY,
                         updated INTEGER  -- Use integer timestamp
                     ) WITHOUT ROWID;
-                    
+
                     -- Compressed view for search operations
                     CREATE VIEW IF NOT EXISTS search_view AS
                     SELECT 
@@ -135,6 +135,15 @@ class IMDbDataProvider(BaseMetadataProvider):
                         r.votes
                     FROM title_basics b
                     LEFT JOIN title_ratings r ON b.id = r.id;
+                    
+                    -- FTS5 virtual table for fast title searching
+                    CREATE VIRTUAL TABLE IF NOT EXISTS title_fts USING fts5(
+                        title, 
+                        title_normalized,
+                        content='title_basics',
+                        content_rowid='id',
+                        tokenize='porter unicode61'
+                    );
                 """
                 )                
                 # Only create essential indexes initially - others will be added after data load
@@ -518,6 +527,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                 "INSERT OR REPLACE INTO title_basics (id, title, original_title, title_lower, type, is_adult, year, end_year, runtime_minutes, genres) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 batch
             )
+            # Also populate FTS table for better searching
+            fts_batch = [(row[0], row[1], self._normalize_title(row[1])) for row in batch]
+            conn.executemany(
+                "INSERT OR REPLACE INTO title_fts (rowid, title, title_normalized) VALUES (?, ?, ?)",
+                fts_batch
+            )
         elif dataset_name == "title.ratings":
             conn.executemany(
                 "INSERT OR REPLACE INTO title_ratings (id, rating, votes) VALUES (?, ?, ?)",
@@ -551,7 +566,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 -- Indexes for title_ratings
                 CREATE INDEX IF NOT EXISTS idx_ratings_votes ON title_ratings(votes DESC);
                 CREATE INDEX IF NOT EXISTS idx_ratings_covering ON title_ratings(id, rating, votes);
-                
+
                 -- Indexes for episodes
                 CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episodes(parent_id);
                 CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episodes(parent_id, season, episode);
@@ -595,85 +610,49 @@ class IMDbDataProvider(BaseMetadataProvider):
             # First try exact match with optimized single query
             title_lower = title.lower()
             
-            # Single optimized query with UNION for better performance
-            if year:
-                cursor = conn.execute(
-                    """
-                    SELECT *, 
-                           CASE 
-                               WHEN year = ? THEN 200
-                               WHEN ABS(year - ?) <= 1 THEN 150
-                               ELSE 100
-                           END + COALESCE(votes / 10000.0, 0) as computed_score
-                    FROM search_view 
-                    WHERE title_lower = ? 
-                    AND (year = ? OR year IS NULL OR ABS(year - ?) <= 1)
-                    ORDER BY computed_score DESC, votes DESC NULLS LAST
-                    LIMIT 5
-                """,
-                    (year, year, title_lower, year, year),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT *, 100 + COALESCE(votes / 10000.0, 0) as computed_score
-                    FROM search_view 
-                    WHERE title_lower = ?
-                    ORDER BY computed_score DESC, votes DESC NULLS LAST
-                    LIMIT 5
-                """,
-                    (title_lower,),
+            # Just use fuzzy candidates for simplicity
+            candidates = self._get_fuzzy_candidates(conn, title_lower, year)
+
+            # Change the candidates to a list of dictionaries for easier processing
+            candidates = [dict(row) for row in candidates]
+
+            for row in candidates:
+                # Build search dict for fuzzy matching
+                search_dict = {row["id"]: row["title"] for row in candidates}
+
+                # Perform fuzzy search with limited candidates
+                title_matches = process.extract(
+                    title, search_dict, scorer=fuzz.ratio, limit=200  # Reduced from 20
                 )
 
-            exact_matches = cursor.fetchall()
-            
-            # Process exact matches
-            for row in exact_matches:
-                score = row["computed_score"]
-                if score > best_score:
-                    best_score = score
-                    best_match = self._create_title_info_from_row_fast(row, conn)
+                for matched_title, fuzzy_score, row_id in title_matches:
+                    # Find the full row data
+                    row = next((r for r in candidates if r["id"] == row_id), None)
+                    if not row:
+                        continue
 
-            # If no good exact match, try fuzzy matching with optimized approach
-            if best_match is None or best_score < 110:
-                # Use more targeted fuzzy search
-                candidates = self._get_fuzzy_candidates(conn, title_lower, year)
-                
-                if candidates:
-                    # Build search dict for fuzzy matching
-                    search_dict = {row["id"]: row["title"] for row in candidates}
+                    total_score = fuzzy_score
 
-                    # Perform fuzzy search with limited candidates
-                    title_matches = process.extract(
-                        title, search_dict, scorer=fuzz.ratio, limit=10  # Reduced from 20
-                    )
+                    # Add year match bonus
+                    if year and row["year"]:
+                        if row["year"] == year:
+                            total_score += 200
+                        elif abs(row["year"] - year) <= 1:
+                            total_score += 100
 
-                    for matched_title, fuzzy_score, row_id in title_matches:
-                        if fuzzy_score < 85:
-                            continue
+                    # Add popularity bonus
+                    if row["votes"]:
+                        vote_bonus = min(50, (row["votes"] / 250))
+                        total_score += vote_bonus
 
-                        # Find the full row data
-                        row = next((r for r in candidates if r["id"] == row_id), None)
-                        if not row:
-                            continue
+                    row["score"] = total_score
 
-                        total_score = fuzzy_score
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_match = self._create_title_info_from_row_fast(row, conn)
 
-                        # Add year match bonus
-                        if year and row["year"]:
-                            if row["year"] == year:
-                                total_score += 20
-                            elif abs(row["year"] - year) <= 1:
-                                total_score += 10
-
-                        # Add popularity bonus
-                        if row["votes"]:
-                            vote_bonus = min(15, (row["votes"] / 10000))
-                            total_score += vote_bonus
-
-                        if total_score > best_score:
-                            best_score = total_score
-                            best_match = self._create_title_info_from_row_fast(row, conn)
+            # Sort the candidates by field "score" into the array matches, descending order
+            #matches = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
 
         finally:
             self._return_connection(conn)
@@ -696,39 +675,51 @@ class IMDbDataProvider(BaseMetadataProvider):
         return None
 
     def _get_fuzzy_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[sqlite3.Row]:
-        """Get optimized candidate list for fuzzy matching"""
-        # Use more targeted search based on string characteristics
-        if year:
-            # Year-based search with larger window
-            cursor = conn.execute(
-                """
-                SELECT id, title, type, year, end_year, genres, rating, votes 
-                FROM search_view 
-                WHERE (year BETWEEN ? AND ? OR year IS NULL)
-                AND votes > 50  -- Only popular titles for fuzzy search
-                ORDER BY votes DESC NULLS LAST
-                LIMIT 500  -- Reduced from 1000 for speed
-            """,
-                (year - 3, year + 3),
-            )
-        else:
-            # Title-based heuristic search
-            first_char = title_lower[0] if title_lower else 'a'
-            cursor = conn.execute(
-                """
-                SELECT id, title, type, year, end_year, genres, rating, votes 
-                FROM search_view 
-                WHERE title_lower LIKE ? 
-                AND votes > 100  -- Higher threshold without year
-                ORDER BY votes DESC NULLS LAST
-                LIMIT 800  -- Reduced from 2000
-            """,
-                (f"{first_char}%",),
-            )
+        """Get optimized candidate list using FTS5 + fallback strategies"""
+        candidates = []
         
-        return cursor.fetchall()
+        # Strategy 1: FTS5 full-text search (fastest and most accurate)
+        try:
+            fts_query = self._build_fts_query(title_lower)
+            if year:
+                cursor = conn.execute(
+                    """
+                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                           fts.rank
+                    FROM title_fts fts
+                    JOIN search_view s ON fts.rowid = s.id
+                    WHERE title_fts MATCH ?
+                    AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
+                    ORDER BY fts.rank, s.votes DESC NULLS LAST
+                    LIMIT 200
+                """,
+                    (fts_query, year - 2, year + 2),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                           fts.rank
+                    FROM title_fts fts
+                    JOIN search_view s ON fts.rowid = s.id
+                    WHERE title_fts MATCH ?
+                    AND s.votes > 50
+                    ORDER BY fts.rank, s.votes DESC NULLS LAST
+                    LIMIT 300
+                """,
+                    (fts_query,),
+                )
+            
+            fts_results = cursor.fetchall()
+            traditional_results = [dict(row) for row in fts_results]
+            candidates.extend(traditional_results)
+            
+        except Exception as e:
+            logging.debug(f"FTS search failed: {e}")
+        
+        return candidates[:1000]  # Limit total candidates
 
-    def _create_title_info_from_row_fast(self, row: sqlite3.Row, conn: sqlite3.Connection) -> TitleInfo:
+    def _create_title_info_from_row_fast(self, row: sqlite3.Row | dict, conn: sqlite3.Connection) -> TitleInfo:
         """Fast version of _create_title_info_from_row using existing connection"""
         # Map type integer back to string
         type_map = {1: 'movie', 2: 'tvSeries', 3: 'tvMiniSeries'}
@@ -841,3 +832,42 @@ class IMDbDataProvider(BaseMetadataProvider):
             self._return_connection(conn)
 
         return None
+    
+    def _normalize_title(self, title: str) -> str:
+        """Normalize title for better searching"""
+        import re
+        
+        # Convert to lowercase
+        normalized = title.lower()
+        
+        # # Remove common articles and prepositions
+        # articles = ['the ', 'a ', 'an ', 'le ', 'la ', 'les ', 'el ', 'la ', 'los ', 'las ', 'der ', 'die ', 'das ']
+        # for article in articles:
+        #     if normalized.startswith(article):
+        #         normalized = normalized[len(article):]
+        #         break
+        
+        # Remove punctuation and special characters
+        normalized = re.sub(r'[^\w\s]', ' ', normalized)
+        
+        # Remove extra spaces
+        normalized = ' '.join(normalized.split())
+        
+        return normalized
+    
+    def _build_fts_query(self, title: str) -> str:
+        """Build FTS5 query from title"""
+        # Normalize and tokenize
+        words = self._normalize_title(title).split()
+        
+        # Create FTS5 query with different strategies
+        if len(words) == 1:
+            # Single word - use prefix matching
+            return f'"{words[0]}"*'
+        elif len(words) <= 3:
+            # Few words - require all words (AND)
+            return ' AND '.join([f'"{word}"*' for word in words])
+        else:
+            # Many words - use phrase search for first few words
+            main_phrase = ' '.join(words[:3])
+            return f'"{main_phrase}"'
