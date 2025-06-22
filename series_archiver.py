@@ -223,6 +223,50 @@ class SeriesArchiver:
                 crc = binascii.crc32(chunk, crc)
         return f"{crc & 0xffffffff:08X}"
     
+    def _format_episode_ranges(self, episodes: List[int]) -> str:
+        """Format episode list as smart ranges (e.g., [1,2,3,5,6,8] -> '1-3, 5-6, 8')."""
+        if not episodes:
+            return ""
+        
+        sorted_episodes = sorted(episodes)
+        ranges = []
+        start = sorted_episodes[0]
+        end = start
+        
+        for i in range(1, len(sorted_episodes)):
+            if sorted_episodes[i] == end + 1:
+                end = sorted_episodes[i]
+            else:
+                if start == end:
+                    ranges.append(str(start))
+                else:
+                    ranges.append(f"{start}-{end}")
+                start = end = sorted_episodes[i]
+        
+        # Add the last range
+        if start == end:
+            ranges.append(str(start))
+        else:
+            ranges.append(f"{start}-{end}")
+        
+        return f"{', '.join(ranges)}"
+    
+    def _get_watched_episodes(self, group_data: Dict) -> List[int]:
+        """Extract watched episode numbers from group data."""
+        watched_episodes = []
+        files = group_data.get('files', [])
+        
+        for file_info in files:
+            plex_status = file_info.get('plex_watch_status')
+            if plex_status and plex_status.get('watched'):
+                episode = file_info.get('episode')
+                if isinstance(episode, list):
+                    watched_episodes.extend(episode)
+                elif episode is not None:
+                    watched_episodes.append(episode)
+        
+        return sorted(set(watched_episodes)) if watched_episodes else []
+    
     def _verify_file_crc(self, filepath: str, expected_crc: Optional[str] = None) -> Tuple[bool, str, str]:
         """
         Verify CRC32 of a file against expected CRC from filename or provided CRC.
@@ -537,13 +581,30 @@ class SeriesArchiver:
             return {}
         
         completeness = self.data.get('completeness_summary', {})
-        return {
+        
+        # Calculate watch status summary
+        total_watched = 0
+        total_episodes = 0
+        total_partially_watched = 0
+        
+        for group_data in self.groups.values():
+            watch_status = group_data.get('watch_status', {})
+            total_watched += watch_status.get('watched_episodes', 0)
+            total_episodes += group_data.get('episodes_found', 0)
+            total_partially_watched += watch_status.get('partially_watched_episodes', 0)
+        
+        summary = {
             'total_series': completeness.get('total_series', 0),
             'complete_series': completeness.get('complete_series', 0),
             'incomplete_series': completeness.get('incomplete_series', 0),
             'total_episodes_found': completeness.get('total_episodes_found', 0),
-            'total_episodes_expected': completeness.get('total_episodes_expected', 0)
+            'total_episodes_expected': completeness.get('total_episodes_expected', 0),
+            'total_watched': total_watched,
+            'total_episodes': total_episodes,
+            'total_partially_watched': total_partially_watched
         }
+        
+        return summary
 
 
 def cmd_list(args):
@@ -559,6 +620,17 @@ def cmd_list(args):
         print(f"Summary: {summary.get('total_series', 0)} series, "
               f"{summary.get('complete_series', 0)} complete, "
               f"{summary.get('incomplete_series', 0)} incomplete")
+        
+        # Add watch status summary if available
+        total_watched = summary.get('total_watched', 0)
+        total_episodes = summary.get('total_episodes', 0)
+        total_partially_watched = summary.get('total_partially_watched', 0)
+        
+        if total_watched > 0 or total_partially_watched > 0:
+            print(f"Watch Status: {total_watched}/{total_episodes} watched ({total_watched/total_episodes*100:.1f}%)")
+            if total_partially_watched > 0:
+                print(f"Partially watched: {total_partially_watched}")
+        
         print()
     
     # List groups
@@ -615,10 +687,7 @@ def cmd_list(args):
         return 0
     
     print("Available series groups:")
-    if args.verbose == 0:
-        print("=" * 50)
-    else:
-        print("=" * 100)
+    print("=" * 80)  # Consistent width
     
     for original_index, group_key, details in indexed_groups:
         # Status emoji from series_completeness_checker.py
@@ -634,11 +703,53 @@ def cmd_list(args):
             'unknown': '❓'
         }.get(details['status'], '❓')
         
+        # Get watch info and other episode info
+        group_data = details.get('data', {})
+        watched_episodes = archiver._get_watched_episodes(group_data)
+        missing_episodes = group_data.get('missing_episodes', [])
+        extra_episodes = group_data.get('extra_episodes', [])
+        
+        # Build episode info list
+        episode_info = []
+        if watched_episodes:
+            watched_range = archiver._format_episode_ranges(watched_episodes)
+            episode_info.append(f"Watched: {watched_range}/{details['episodes_expected']}")
+        
+        if missing_episodes:
+            missing_range = archiver._format_episode_ranges(missing_episodes)
+            episode_info.append(f"Missing: {missing_range}")
+        
+        if extra_episodes:
+            extra_range = archiver._format_episode_ranges(extra_episodes)
+            episode_info.append(f"Extra: {extra_range}")
+
+        episode_info_str = ", ".join(episode_info) if episode_info else ""
+        
+        # Format title with proper truncation
+        title_length = 45
+        title_str = details['title']
+        if len(title_str) > title_length:
+            title_str = title_str[:title_length - 3] + "..."
+        
         if args.verbose == 0:
-            print(f"{original_index:2d}. {status_emoji} {details['title']} ({details['episodes_found']}/{details['episodes_expected']})")
+            title_length = 35  # Reduced to make room for watch info
+            title_str = details['title']
+            if len(title_str) > title_length:
+                title_str = title_str[:title_length - 3] + "..."
+            
+            print(f"{original_index:4d}. {status_emoji} {title_str:<{title_length}} {details['episodes_found']:>3}/{details['episodes_expected']:<3} | {episode_info_str}")
         else:
-            print(f"{original_index:2d}. {status_emoji} {details['title']}")
+            print(f"{original_index:4d}. {status_emoji} {details['title']}")
             print(f"    Episodes: {details['episodes_found']}/{details['episodes_expected']} ({details['status']})")
+            if watched_episodes:
+                watched_range = archiver._format_episode_ranges(watched_episodes)
+                print(f"    Watched: {watched_range}")
+            if missing_episodes:
+                missing_range = archiver._format_episode_ranges(missing_episodes)
+                print(f"    Missing: {missing_range}")
+            if extra_episodes:
+                extra_range = archiver._format_episode_ranges(extra_episodes)
+                print(f"    Extra: {extra_range}")
             if 'folder_name' in details:
                 print(f"    Output folder: {details['folder_name']}")
             if args.verbose > 1:

@@ -54,11 +54,15 @@ from file_grouper import FileGrouper, CustomJSONEncoder
 
 # Try to get metadata manager - it may not be available if dependencies aren't installed
 try:
-    from file_grouper import get_metadata_manager
+    from file_grouper import get_metadata_manager, get_plex_provider
     metadata_manager_available = True
+    plex_provider_available = True
 except ImportError:
     metadata_manager_available = False
+    plex_provider_available = False
     def get_metadata_manager():
+        return None
+    def get_plex_provider():
         return None
 
 # MetadataManager class may not be available as a direct import
@@ -67,9 +71,10 @@ MetadataManager = None
 class SeriesCompletenessChecker:
     """Checks series collection completeness using FileGrouper and metadata providers."""
     
-    def __init__(self, metadata_manager=None):
-        self.file_grouper = FileGrouper(metadata_manager)
+    def __init__(self, metadata_manager=None, plex_provider=None):
+        self.file_grouper = FileGrouper(metadata_manager, plex_provider)
         self.metadata_manager = metadata_manager
+        self.plex_provider = plex_provider
         self.completeness_results = {}
     
     def analyze_series_collection(self, files: List[Path], show_progress: bool = True) -> Dict[str, Any]:
@@ -144,6 +149,20 @@ class SeriesCompletenessChecker:
         
         episode_numbers = sorted(set(episode_numbers)) if episode_numbers else []
         
+        # Calculate watch status for the group
+        watched_count = 0
+        partially_watched_count = 0
+        total_watch_count = 0
+        
+        for file_info in group_files:
+            plex_status = file_info.get('plex_watch_status')
+            if plex_status:
+                if plex_status.get('watched'):
+                    watched_count += 1
+                elif plex_status.get('view_offset', 0) > 0:
+                    partially_watched_count += 1
+                total_watch_count += plex_status.get('watch_count', 0)
+        
         result = {
             'title': title,
             'season': season,
@@ -154,6 +173,13 @@ class SeriesCompletenessChecker:
             'missing_episodes': [],
             'extra_episodes': [],
             'files': group_files,
+            'watch_status': {
+                'watched_episodes': watched_count,
+                'partially_watched_episodes': partially_watched_count,
+                'unwatched_episodes': episodes_found - watched_count - partially_watched_count,
+                'total_watch_count': total_watch_count,
+                'completion_percent': (watched_count / episodes_found * 100) if episodes_found > 0 else 0
+            }
         }
 
         # Check metadata for expected episode count
@@ -295,6 +321,17 @@ class SeriesCompletenessChecker:
             completion_rate = (summary['total_episodes_found'] / summary['total_episodes_expected']) * 100
             print(f"Collection completion rate: {completion_rate:.1f}%")
         
+        # Add watch status summary if Plex data is available
+        total_watched = sum(analysis['watch_status']['watched_episodes'] for analysis in results['groups'].values())
+        total_episodes = sum(analysis['episodes_found'] for analysis in results['groups'].values())
+        total_partially_watched = sum(analysis['watch_status']['partially_watched_episodes'] for analysis in results['groups'].values())
+        
+        if total_watched > 0 or total_partially_watched > 0:
+            print(f"\n=== Watch Status Summary ===")
+            print(f"Watched episodes: {total_watched}/{total_episodes} ({total_watched/total_episodes*100:.1f}%)")
+            print(f"Partially watched: {total_partially_watched}")
+            print(f"Unwatched episodes: {total_episodes - total_watched - total_partially_watched}")
+        
         # One-line summary for each series
         if verbosity >= 1:
             print(f"\n=== Series ===")
@@ -308,6 +345,7 @@ class SeriesCompletenessChecker:
         season = analysis.get('season')
         episodes_found = analysis['episodes_found']
         episodes_expected = analysis.get('episodes_expected', 0)
+        watch_status = analysis.get('watch_status', {})
         
         # Status emoji
         status_emoji = {
@@ -328,7 +366,7 @@ class SeriesCompletenessChecker:
             title_str += f" S{season:02d}"
 
         # Adjust title length based on whether metadata will be shown
-        base_title_length = 50
+        base_title_length = 45  # Reduced to make room for watch status
         metadata_space = 0
         
         if show_metadata_fields:
@@ -342,8 +380,25 @@ class SeriesCompletenessChecker:
         if len(title_str) > title_length:
             title_str = title_str[:title_length - 3] + "..."
         
-        # Add missing/extra episode info
+        # Add episode info (watched, missing, extra)
         extra_info = []
+        
+        # Add watched episodes info as ranges
+        watched_episodes = []
+        if analysis.get('files'):
+            for file_info in analysis['files']:
+                plex_status = file_info.get('plex_watch_status')
+                if plex_status and plex_status.get('watched'):
+                    episode = file_info.get('episode')
+                    if isinstance(episode, list):
+                        watched_episodes.extend(episode)
+                    elif episode is not None:
+                        watched_episodes.append(episode)
+        
+        if watched_episodes:
+            watched_range = self._format_episode_ranges(sorted(set(watched_episodes)))
+            extra_info.append(f"Watched: {watched_range}")
+
         if analysis.get('missing_episodes'):
             missing_range = self._format_episode_ranges(analysis['missing_episodes'])
             extra_info.append(f"Missing: {missing_range}")
@@ -433,7 +488,7 @@ Examples:
     else:
         verbosity = args.verbose
 
-    # Get metadata manager
+    # Get metadata manager and plex provider
     try:
         metadata_manager = get_metadata_manager()
         if not metadata_manager and verbosity >= 1:
@@ -443,8 +498,15 @@ Examples:
             print(f"Warning: Could not initialize metadata manager: {e}")
         metadata_manager = None
     
+    try:
+        plex_provider = get_plex_provider()
+    except Exception as e:
+        if verbosity >= 2:
+            print(f"Warning: Could not initialize Plex provider: {e}")
+        plex_provider = None
+    
     # Create checker instance
-    checker = SeriesCompletenessChecker(metadata_manager)
+    checker = SeriesCompletenessChecker(metadata_manager, plex_provider)
 
     # Discover files
     if verbosity >= 1:

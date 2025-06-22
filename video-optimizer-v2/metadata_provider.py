@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple, BinaryIO
 from datetime import datetime, timedelta
 import os
@@ -21,12 +21,12 @@ class TitleInfo:
     end_year: Optional[int] = None
     rating: Optional[float] = None
     votes: Optional[int] = None
-    genres: List[str] = []
-    tags: List[str] = []
+    genres: List[str] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
     status: Optional[str] = None
     total_episodes: Optional[int] = None
     total_seasons: Optional[int] = None
-    sources: List[str] = []
+    sources: List[str] = field(default_factory=list)
     plot: Optional[str] = None
 
 @dataclass

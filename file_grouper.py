@@ -87,9 +87,11 @@ try:
     from metadata_provider import MetadataManager, BaseMetadataProvider, TitleInfo
     from anime_metadata import AnimeDataProvider
     from imdb_metadata import IMDbDataProvider
+    from plex_metadata import PlexMetadataProvider, PlexWatchStatus
     
     # Initialize metadata manager as a global variable
     METADATA_MANAGER = None
+    PLEX_PROVIDER = None
 
     def get_metadata_manager():
         """Get or initialize the metadata manager"""
@@ -98,24 +100,34 @@ try:
             # Initialize providers
             anime_provider = AnimeDataProvider()
             imdb_provider = IMDbDataProvider()
-            METADATA_MANAGER = MetadataManager([anime_provider, imdb_provider]) #imdb_provider
+            METADATA_MANAGER = MetadataManager([anime_provider, imdb_provider])
         return METADATA_MANAGER
+    
+    def get_plex_provider():
+        """Get or initialize the Plex provider"""
+        global PLEX_PROVIDER
+        if PLEX_PROVIDER is None:
+            PLEX_PROVIDER = PlexMetadataProvider()
+        return PLEX_PROVIDER
 except ImportError:
     print("Warning: metadata_provider not found. Enhanced metadata features will be disabled.")
     MetadataManager = None
     BaseMetadataProvider = None
     TitleInfo = None
+    PlexMetadataProvider = None
+    PlexWatchStatus = None
 
 class FileGrouper:
     """Groups files based on filename metadata extracted using guessit."""
     
-    def __init__(self, metadata_manager = None):
+    def __init__(self, metadata_manager = None, plex_provider = None):
         self.groups = defaultdict(list)
         self.metadata = {}
         self.enhanced_metadata = {}  # Store metadata from providers
         self.group_metadata = {}     # Store metadata for groups
         self.title_metadata = {}     # Store unique title metadata
         self.metadata_manager = metadata_manager
+        self.plex_provider = plex_provider
     
     @staticmethod
     def _escape_pattern_for_fnmatch(pattern: str) -> str:
@@ -254,7 +266,8 @@ class FileGrouper:
                                 if enhanced_info_dict.get('type') in ['tv', 'anime_series']:
                                     season = result.get('season')
                                     episode = result.get('episode')
-                                    if season and episode and provider:                                        # Store episode info directly in file metadata since it's file-specific
+                                    if season and episode and provider:
+                                        # Store episode info directly in file metadata since it's file-specific
                                         enhanced_info, _ = self.metadata_manager.find_title(title, year)
                                         if enhanced_info:                                            
                                             episode_info = self.metadata_manager.get_episode_info(
@@ -265,6 +278,16 @@ class FileGrouper:
                                                 result['episode_info'] = self._serialize_episode_info(episode_info)
                     except Exception as metadata_error:
                         print(f"Warning: Enhanced metadata lookup failed for {file_path.name}: {metadata_error}")
+            
+            # Add Plex watch status if available
+            if self.plex_provider and PlexMetadataProvider:
+                try:
+                    watch_status = self.plex_provider.get_watch_status(str(file_path))
+                    if watch_status:
+                        result['plex_watch_status'] = self._serialize_plex_watch_status(watch_status)
+                except Exception as plex_error:
+                    # Silently continue if Plex lookup fails (database might be locked, etc.)
+                    pass
             
             return result
         except Exception as e:
@@ -326,12 +349,38 @@ class FileGrouper:
             for files in self.groups.values()
         )
         
-        return {
+        # Calculate watch status summary
+        watched_files = 0
+        total_watch_count = 0
+        files_with_progress = 0
+        
+        for files in self.groups.values():
+            for file_info in files:
+                plex_status = file_info.get('plex_watch_status')
+                if plex_status:
+                    if plex_status.get('watched'):
+                        watched_files += 1
+                    total_watch_count += plex_status.get('watch_count', 0)
+                    if plex_status.get('view_offset', 0) > 0:
+                        files_with_progress += 1
+        
+        summary = {
             'total_files': total_files,
             'total_groups': len(self.groups),
             'total_size_bytes': total_size,
             'total_size_mb': round(total_size / (1024 * 1024), 2)
         }
+        
+        # Add watch status summary if any files have Plex data
+        if watched_files > 0 or total_watch_count > 0 or files_with_progress > 0:
+            summary['plex_summary'] = {
+                'watched_files': watched_files,
+                'unwatched_files': total_files - watched_files,
+                'total_watch_count': total_watch_count,
+                'files_with_progress': files_with_progress
+            }
+        
+        return summary
     
     def export_to_json(self, output_path: str, include_summary: bool = True) -> None:
         """Export grouped data to JSON file."""
@@ -348,6 +397,34 @@ class FileGrouper:
         
         if include_summary:
             export_data['summary'] = self.get_summary()
+            
+            # Add group-level watch status summary
+            group_summaries = {}
+            for group_name, group_files in self.groups.items():
+                group_watched = 0
+                group_total_watches = 0
+                group_with_progress = 0
+                
+                for file_info in group_files:
+                    plex_status = file_info.get('plex_watch_status')
+                    if plex_status:
+                        if plex_status.get('watched'):
+                            group_watched += 1
+                        group_total_watches += plex_status.get('watch_count', 0)
+                        if plex_status.get('view_offset', 0) > 0:
+                            group_with_progress += 1
+                
+                if group_watched > 0 or group_total_watches > 0 or group_with_progress > 0:
+                    group_summaries[group_name] = {
+                        'total_files': len(group_files),
+                        'watched_files': group_watched,
+                        'unwatched_files': len(group_files) - group_watched,
+                        'total_watch_count': group_total_watches,
+                        'files_with_progress': group_with_progress
+                    }
+            
+            if group_summaries:
+                export_data['group_watch_summaries'] = group_summaries
         
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
@@ -388,6 +465,22 @@ class FileGrouper:
             'votes': episode_info.votes,
             'plot': episode_info.plot,
             'air_date': episode_info.air_date
+        }
+    
+    def _serialize_plex_watch_status(self, watch_status: PlexWatchStatus) -> Dict[str, Any]:
+        """Convert PlexWatchStatus object to serializable dict"""
+        if not watch_status:
+            return {}
+        return {
+            'watched': watch_status.watched,
+            'watch_count': watch_status.watch_count,
+            'last_watched': watch_status.last_watched.isoformat() if watch_status.last_watched else None,
+            'view_offset': watch_status.view_offset,
+            'duration': watch_status.duration,
+            'progress_percent': round(watch_status.progress_percent, 1),
+            'plex_title': watch_status.plex_title,
+            'plex_year': watch_status.plex_year,
+            'library_section': watch_status.library_section
         }
     
     def _get_group_metadata(self, group_files: List[Dict], group_by: List[str]) -> Dict[str, Any]:
@@ -447,7 +540,10 @@ Examples:
         verbosity = args.verbose
     
     # Create file grouper instance
-    grouper = FileGrouper(get_metadata_manager() if MetadataManager else None)
+    grouper = FileGrouper(
+        get_metadata_manager() if MetadataManager else None,
+        get_plex_provider() if PlexMetadataProvider else None
+    )
     
     # Discover files
     if verbosity >= 1:
@@ -481,12 +577,43 @@ Examples:
         print(f"Total groups: {summary['total_groups']}")
         print(f"Total size: {summary['total_size_mb']} MB")
         
+        # Display Plex watch status summary if available
+        if 'plex_summary' in summary:
+            plex_sum = summary['plex_summary']
+            print(f"Watch Status: {plex_sum['watched_files']} watched, {plex_sum['unwatched_files']} unwatched")
+            print(f"Total watches: {plex_sum['total_watch_count']}, Files with progress: {plex_sum['files_with_progress']}")
+        
         print(f"\nGroups:")
         for group_name, group_files in groups.items():
-            print(f"\n{group_name} ({len(group_files)} files):")
+            # Calculate group watch status
+            group_watched = sum(1 for f in group_files if f.get('plex_watch_status', {}).get('watched', False))
+            group_total_watches = sum(f.get('plex_watch_status', {}).get('watch_count', 0) for f in group_files)
+            
+            watch_info = ""
+            if group_watched > 0 or group_total_watches > 0:
+                watch_info = f" [Watch: {group_watched}/{len(group_files)} watched, {group_total_watches} total views]"
+            
+            print(f"\n{group_name} ({len(group_files)} files){watch_info}:")
             for file_info in group_files:
                 size_mb = file_info.get('file_size', 0) / (1024 * 1024)
-                print(f"  - {file_info['filename']} ({size_mb:.1f} MB)")
+                
+                # Add watch status to file display
+                watch_display = ""
+                plex_status = file_info.get('plex_watch_status')
+                if plex_status:
+                    if plex_status.get('watched'):
+                        watch_display = f" [✓ Watched {plex_status.get('watch_count', 1)}x"
+                        if plex_status.get('last_watched'):
+                            last_watched = plex_status['last_watched'][:10]  # Just the date part
+                            watch_display += f" on {last_watched}"
+                        watch_display += "]"
+                    elif plex_status.get('view_offset', 0) > 0:
+                        progress = plex_status.get('progress_percent', 0)
+                        watch_display = f" [⏸ {progress:.1f}% watched]"
+                    else:
+                        watch_display = " [○ Unwatched]"
+                
+                print(f"  - {file_info['filename']} ({size_mb:.1f} MB){watch_display}")
                 
                 # Level 2 verbosity: show metadata as compact JSON
                 if verbosity >= 2:
