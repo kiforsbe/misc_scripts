@@ -3,6 +3,8 @@ import json
 import os
 import shutil
 import sys
+import re
+import binascii
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Protocol
 
@@ -206,8 +208,149 @@ class SeriesArchiver:
             filename = filename.replace(char, '')
         return filename.strip()
     
+    def _extract_crc_from_filename(self, filename: str) -> Optional[str]:
+        """Extract CRC32 hash from filename if present. Pattern: [FFFFFFFF] where F is hex."""
+        # Pattern matches [8 hex digits] at the end before file extension
+        pattern = r'\[([A-Fa-f0-9]{8})\]'
+        match = re.search(pattern, filename)
+        return match.group(1).upper() if match else None
+    
+    def _calculate_file_crc32(self, filepath: str) -> str:
+        """Calculate CRC32 hash of a file."""
+        crc = 0
+        with open(filepath, 'rb') as f:
+            while chunk := f.read(8192):
+                crc = binascii.crc32(chunk, crc)
+        return f"{crc & 0xffffffff:08X}"
+    
+    def _verify_file_crc(self, filepath: str, expected_crc: Optional[str] = None) -> Tuple[bool, str, str]:
+        """
+        Verify CRC32 of a file against expected CRC from filename or provided CRC.
+        
+        Returns:
+            Tuple of (is_valid, expected_crc, actual_crc)
+        """
+        filename = os.path.basename(filepath)
+        
+        if expected_crc is None:
+            expected_crc = self._extract_crc_from_filename(filename)
+        
+        if expected_crc is None:
+            return False, "N/A", "N/A"
+        
+        try:
+            actual_crc = self._calculate_file_crc32(filepath)
+            return expected_crc.upper() == actual_crc.upper(), expected_crc.upper(), actual_crc.upper()
+        except Exception as e:
+            self._log(f"Error calculating CRC for {filename}: {e}", 1)
+            return False, expected_crc.upper(), "ERROR"
+    
+    def check_files_crc(self, files_or_groups, is_groups: bool = False) -> Dict[str, Dict]:
+        """
+        Check CRC32 of files.
+        
+        Args:
+            files_or_groups: List of file paths or dict of group data
+            is_groups: If True, treats input as groups data from JSON
+            
+        Returns:
+            Dict with CRC check results
+        """
+        results = {}
+        files_to_check = []
+        
+        if is_groups:
+            # Extract files from groups data - handle both dict and list inputs
+            if isinstance(files_or_groups, dict):
+                groups_dict = files_or_groups
+            else:
+                # Assume it's a list of (key, group_data) tuples
+                groups_dict = dict(files_or_groups)
+                
+            for group_key, group_data in groups_dict.items():
+                for file_info in group_data.get('files', []):
+                    filepath = file_info.get('filepath')
+                    if filepath and os.path.exists(filepath):
+                        files_to_check.append({
+                            'filepath': filepath,
+                            'filename': file_info.get('filename', os.path.basename(filepath)),
+                            'group': group_data.get('title', 'Unknown'),
+                            'group_key': group_key
+                        })
+        else:
+            # Direct file list
+            for filepath in files_or_groups:
+                if os.path.isfile(filepath):
+                    files_to_check.append({
+                        'filepath': filepath,
+                        'filename': os.path.basename(filepath),
+                        'group': 'Standalone',
+                        'group_key': 'standalone'
+                    })
+        
+        if not files_to_check:
+            return results
+        
+        valid_count = 0
+        invalid_count = 0
+        no_crc_count = 0
+        
+        # Check CRC with progress
+        desc = "Checking file CRC32"
+        with tqdm(files_to_check, desc=desc, unit="file", disable=self.verbose == 0) as pbar:
+            for file_info in pbar:
+                filepath = file_info['filepath']
+                filename = file_info['filename']
+                
+                if self.verbose >= 1:
+                    pbar.set_postfix_str(filename[:40] + "..." if len(filename) > 40 else filename)
+                
+                is_valid, expected_crc, actual_crc = self._verify_file_crc(filepath)
+                
+                # Determine status
+                if expected_crc == "N/A":
+                    status = "no_crc"
+                    no_crc_count += 1
+                elif is_valid:
+                    status = "valid"
+                    valid_count += 1
+                else:
+                    status = "invalid"
+                    invalid_count += 1
+                
+                results[filepath] = {
+                    'filename': filename,
+                    'group': file_info['group'],
+                    'group_key': file_info['group_key'],
+                    'status': status,
+                    'expected_crc': expected_crc,
+                    'actual_crc': actual_crc,
+                    'is_valid': is_valid
+                }
+                
+                # Log issues
+                if status == "invalid":
+                    self._log(f"CRC MISMATCH: {filename} (Expected: {expected_crc}, Actual: {actual_crc})", 1)
+                elif status == "no_crc" and self.verbose >= 2:
+                    self._log(f"No CRC in filename: {filename}", 2)
+        
+        # Print summary
+        total_files = len(files_to_check)
+        print(f"\nCRC Check Summary:")
+        print(f"  Total files: {total_files}")
+        print(f"  Valid CRC: {valid_count}")
+        print(f"  Invalid CRC: {invalid_count}")
+        print(f"  No CRC in filename: {no_crc_count}")
+        
+        if invalid_count > 0:
+            print(f"\n⚠️  {invalid_count} files failed CRC validation!")
+        elif valid_count > 0:
+            print(f"✅ All {valid_count} files with CRC passed validation!")
+        
+        return results
+    
     def archive_groups(self, selected_groups: List[str], destination_root: str, 
-                      copy_files: bool = False, dry_run: bool = False) -> Dict[str, str]:
+                      copy_files: bool = False, dry_run: bool = False, verify_crc: bool = False) -> Dict[str, str]:
         """
         Archive selected groups to destination folders.
         
@@ -216,6 +359,7 @@ class SeriesArchiver:
             destination_root: Root directory for output folders
             copy_files: If True, copy files instead of moving them
             dry_run: If True, show what would be done without actually doing it
+            verify_crc: If True, verify CRC32 after file operations
             
         Returns:
             Dict mapping group keys to their destination folders
@@ -246,6 +390,8 @@ class SeriesArchiver:
         
         if self.progress_reporter:
             self.progress_reporter.on_start(total_files, action_desc)
+        
+        processed_files = []  # Track processed files for CRC verification
         
         for group_key in selected_groups:
             group_data = self.groups.get(group_key)
@@ -303,6 +449,16 @@ class SeriesArchiver:
                         else:
                             shutil.move(source_path, dest_path)
                             self._log(f"  Moved: {filename}", 2)
+                        
+                        # Track processed file for CRC verification
+                        if verify_crc:
+                            processed_files.append({
+                                'source_path': source_path,
+                                'dest_path': dest_path,
+                                'filename': filename,
+                                'group_title': group_title
+                            })
+                    
                     success = True
                     success_count += 1
                     
@@ -329,6 +485,49 @@ class SeriesArchiver:
         # Notify progress reporter of completion
         if self.progress_reporter:
             self.progress_reporter.on_complete(len(selected_groups))
+        
+        # Verify CRC after operations if requested
+        if verify_crc and processed_files and not dry_run:
+            print(f"\n=== CRC VERIFICATION ===")
+            crc_results = {}
+            
+            with tqdm(processed_files, desc="Verifying file integrity", unit="file", disable=self.verbose == 0) as pbar:
+                for file_info in pbar:
+                    dest_path = file_info['dest_path']
+                    filename = file_info['filename']
+                    
+                    if self.verbose >= 1:
+                        pbar.set_postfix_str(filename[:40] + "..." if len(filename) > 40 else filename)
+                    
+                    is_valid, expected_crc, actual_crc = self._verify_file_crc(dest_path)
+                    
+                    if expected_crc != "N/A":
+                        crc_results[dest_path] = {
+                            'filename': filename,
+                            'group': file_info['group_title'],
+                            'is_valid': is_valid,
+                            'expected_crc': expected_crc,
+                            'actual_crc': actual_crc
+                        }
+                        
+                        if not is_valid:
+                            print(f"⚠️  CRC MISMATCH: {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
+            
+            # CRC summary
+            if crc_results:
+                total_checked = len(crc_results)
+                valid_count = sum(1 for r in crc_results.values() if r['is_valid'])
+                invalid_count = total_checked - valid_count
+                
+                print(f"\nCRC Verification Summary:")
+                print(f"  Files checked: {total_checked}")
+                print(f"  Valid: {valid_count}")
+                print(f"  Invalid: {invalid_count}")
+                
+                if invalid_count == 0:
+                    print("✅ All files passed CRC verification!")
+                else:
+                    print(f"❌ {invalid_count} files failed CRC verification!")
         
         return results
     
@@ -513,7 +712,8 @@ def cmd_archive(args):
         selected_groups=selected_groups,
         destination_root=args.destination,
         copy_files=args.copy,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        verify_crc=getattr(args, 'verify_crc', False)
     )
     
     if results:
@@ -523,6 +723,60 @@ def cmd_archive(args):
             print("Use without --dry-run to actually perform the operation.")
     else:
         print("No series were processed.")
+    
+    return 0
+
+
+def cmd_check_crc(args):
+    """Handle the check-crc command."""
+    archiver = SeriesArchiver(verbose=args.verbose)
+    
+    if args.input_json:
+        # Check CRC for files in JSON groups
+        if not archiver.load_data(args.input_json):
+            return 1
+        
+        # Filter groups if requested
+        groups_to_check = archiver.groups
+        if hasattr(args, 'select') and args.select:
+            if args.select.lower() == 'all':
+                pass  # Use all groups
+            else:
+                try:
+                    all_groups = list(archiver.groups.items())
+                    indices = [int(x.strip()) for x in args.select.split(',') if x.strip()]
+                    selected_group_keys = []
+                    for idx in indices:
+                        if 1 <= idx <= len(all_groups):
+                            selected_group_keys.append(all_groups[idx - 1][0])
+                        else:
+                            print(f"Warning: Invalid selection {idx}, skipping.")
+                    
+                    groups_to_check = {k: v for k, v in archiver.groups.items() if k in selected_group_keys}
+                except ValueError:
+                    print("Error: Invalid selection format. Use comma-separated numbers or 'all'.")
+                    return 1
+        
+        if not groups_to_check:
+            print("No groups selected for CRC checking.")
+            return 1
+        
+        print(f"Checking CRC for {len(groups_to_check)} groups...")
+        archiver.check_files_crc(groups_to_check, is_groups=True)
+    
+    elif args.files:
+        # Check CRC for individual files
+        valid_files = [f for f in args.files if os.path.isfile(f)]
+        if not valid_files:
+            print("No valid files provided for CRC checking.")
+            return 1
+        
+        print(f"Checking CRC for {len(valid_files)} files...")
+        archiver.check_files_crc(valid_files, is_groups=False)
+    
+    else:
+        print("Error: Must provide either --input-json or files for CRC checking.")
+        return 1
     
     return 0
 
@@ -564,11 +818,24 @@ def main():
                                help='Show what would be done without actually doing it')
     archive_parser.add_argument('--no-progress', action='store_true',
                                help='Disable progress bars and use simple text output')
+    archive_parser.add_argument('--verify-crc', action='store_true',
+                               help='Verify CRC32 of files after archiving (if CRC is present in filename)')
+    
+    # Check CRC command
+    crc_parser = subparsers.add_parser('check-crc', aliases=['crc'],
+                                      help='Check CRC32 of files')
+    crc_group = crc_parser.add_mutually_exclusive_group(required=True)
+    crc_group.add_argument('--input-json', metavar='FILE',
+                          help='JSON file from series_completeness_checker.py')
+    crc_group.add_argument('--files', nargs='+', metavar='FILE',
+                          help='Individual files to check')
+    crc_parser.add_argument('--select', type=str,
+                           help='For JSON input: comma-separated list of group numbers or "all" (e.g., "1,3,5" or "all")')
     
     args = parser.parse_args()
     
-    # Validate input file
-    if not Path(args.input_json).exists():
+    # Validate input file for commands that need it
+    if hasattr(args, 'input_json') and args.input_json and not Path(args.input_json).exists():
         print(f"Error: Input file '{args.input_json}' not found.")
         return 1
     
@@ -577,6 +844,8 @@ def main():
         return cmd_list(args)
     elif args.command == 'archive':
         return cmd_archive(args)
+    elif args.command in ['check-crc', 'crc']:
+        return cmd_check_crc(args)
     else:
         parser.print_help()
         return 1
