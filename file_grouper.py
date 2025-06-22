@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Set, Any, Optional
 import fnmatch
+import re
 
 try:
     from tqdm import tqdm
@@ -114,7 +115,40 @@ class FileGrouper:
         self.enhanced_metadata = {}  # Store metadata from providers
         self.group_metadata = {}     # Store metadata for groups
         self.title_metadata = {}     # Store unique title metadata
-        self.metadata_manager = metadata_manager        
+        self.metadata_manager = metadata_manager
+    
+    @staticmethod
+    def _escape_pattern_for_fnmatch(pattern: str) -> str:
+        """Escape square brackets in patterns to match them literally."""
+        # Replace literal square brackets with escaped versions for fnmatch
+        # fnmatch uses [] for character classes, but we want to match literal brackets
+        escaped = pattern.replace('[', r'\[').replace(']', r'\]')
+        return escaped
+    
+    @staticmethod
+    def _matches_pattern(filename: str, pattern: str) -> bool:
+        """Check if filename matches pattern, handling literal square brackets."""
+        # If pattern contains square brackets, we need special handling
+        if '[' in pattern or ']' in pattern:
+            # For patterns with brackets, use a different approach
+            # Convert pattern to a simple string match with wildcards
+            
+            # Escape regex special characters except * and ?
+            escaped_pattern = re.escape(pattern)
+            # Restore * and ? as wildcards
+            escaped_pattern = escaped_pattern.replace(r'\*', '.*').replace(r'\?', '.')
+            # Add anchors for full match
+            regex_pattern = f'^{escaped_pattern}$'
+            
+            try:
+                return bool(re.match(regex_pattern, filename, re.IGNORECASE))
+            except re.error:
+                # Fallback to simple string matching if regex fails
+                return pattern.replace('*', '') in filename
+        else:
+            # Use standard fnmatch for patterns without brackets
+            return fnmatch.fnmatch(filename, pattern)
+        
     def discover_files(self, input_paths: List[str], excluded_paths: List[str] | None = None,
                       include_patterns: List[str] | None = None, exclude_patterns: List[str] | None = None,
                       recursive: bool = False, show_progress: bool = True) -> List[Path]:
@@ -160,12 +194,12 @@ class FileGrouper:
             for file_path in pbar:
                 filename = file_path.name
                 
-                # Check include patterns
-                if not any(fnmatch.fnmatch(filename, pattern) for pattern in include_patterns):
+                # Check include patterns using improved matching
+                if not any(self._matches_pattern(filename, pattern) for pattern in include_patterns):
                     continue
 
-                # Check exclude patterns
-                if any(fnmatch.fnmatch(filename, pattern) for pattern in exclude_patterns):
+                # Check exclude patterns using improved matching
+                if any(self._matches_pattern(filename, pattern) for pattern in exclude_patterns):
                     continue
                     
                 filtered_files.append(file_path)
