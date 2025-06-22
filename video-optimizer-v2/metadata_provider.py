@@ -21,18 +21,14 @@ class TitleInfo:
     end_year: Optional[int] = None
     rating: Optional[float] = None
     votes: Optional[int] = None
-    genres: List[str] = None
-    tags: List[str] = None
+    genres: List[str] = []
+    tags: List[str] = []
     status: Optional[str] = None
     total_episodes: Optional[int] = None
     total_seasons: Optional[int] = None
-    sources: List[str] = None
+    sources: List[str] = []
     plot: Optional[str] = None
-    
-    def __post_init__(self):
-        self.genres = self.genres or []
-        self.tags = self.tags or []
-        self.sources = self.sources or []
+    last_watched: Optional[datetime] = None
 
 @dataclass
 class EpisodeInfo:
@@ -45,6 +41,7 @@ class EpisodeInfo:
     votes: Optional[int] = None
     plot: Optional[str] = None
     air_date: Optional[str] = None
+    last_watched: Optional[datetime] = None
     
     def __post_init__(self):
         if not self.title:
@@ -147,63 +144,6 @@ class BaseMetadataProvider(ABC):
             logging.error(f"Error downloading {url}: {str(e)}")
             # Keep partial download for future resume
             return False
-    
-    def _verify_file_integrity(self, filepath: str, expected_hash: Optional[str] = None) -> bool:
-        """
-        Verify file integrity by checking if it's valid and complete.
-        If expected_hash is provided, also verify the file hash.
-        """
-        try:
-            # Basic file checks
-            if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
-                return False
-            
-            # Try to open and read the file
-            with open(filepath, 'rb') as f:
-                if expected_hash:
-                    file_hash = hashlib.sha256(f.read()).hexdigest()
-                    return file_hash == expected_hash
-                    
-                # If no hash provided, try reading the entire file
-                f.seek(0, os.SEEK_END)
-                return True
-                
-        except Exception as e:
-            logging.error(f"Error verifying file integrity for {filepath}: {str(e)}")
-            return False
-    
-    def _safe_write(self, filepath: str, write_func) -> bool:
-        """
-        Safely write data to a file using a temporary file and atomic rename.
-        
-        Args:
-            filepath: The target filepath
-            write_func: A function that takes a file object and writes data to it
-            
-        Returns:
-            bool: True if write was successful, False otherwise
-        """
-        temp_file = None
-        try:
-            # Create a temporary file in the same directory
-            temp_fd, temp_file = tempfile.mkstemp(dir=os.path.dirname(filepath))
-            with os.fdopen(temp_fd, 'wb') as f:
-                write_func(f)
-            
-            # Atomic rename
-            os.replace(temp_file, filepath)
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error writing to {filepath}: {str(e)}")
-            return False
-            
-        finally:
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except:
-                    pass
 
     @staticmethod
     def safe_int(value: Any) -> Optional[int]:
