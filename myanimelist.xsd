@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+  
+  <!-- This schema defines the structure of the MyAnimeList XML data -->
+  <xs:annotation>
+    <xs:documentation>
+      This schema defines the structure of the MyAnimeList XML data format.
+      It includes user information and anime entries with various attributes.
+      It is fully generated and verified as far as possible against the MyAnimeList XML data format.
+      But no guarantee is made that it is 100% correct.
+    </xs:documentation>
+  </xs:annotation>
+
+  <!-- Root element -->
+  <xs:element name="myanimelist" type="MyAnimeListType"/>
+  
+  <!-- Main container type -->
+  <xs:complexType name="MyAnimeListType">
+    <xs:sequence>
+      <xs:element name="myinfo" type="MyInfoType"/>
+      <xs:element name="anime" type="AnimeType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+  
+  <!-- User information type -->
+  <xs:complexType name="MyInfoType">
+    <xs:sequence>
+      <xs:element name="user_id" type="xs:positiveInteger"/>
+      <xs:element name="user_name" type="xs:string"/>
+      <xs:element name="user_export_type" type="xs:positiveInteger"/>
+      <xs:element name="user_total_anime" type="xs:nonNegativeInteger"/>
+      <xs:element name="user_total_watching" type="xs:nonNegativeInteger"/>
+      <xs:element name="user_total_completed" type="xs:nonNegativeInteger"/>
+      <xs:element name="user_total_onhold" type="xs:nonNegativeInteger"/>
+      <xs:element name="user_total_dropped" type="xs:nonNegativeInteger"/>
+      <xs:element name="user_total_plantowatch" type="xs:nonNegativeInteger"/>
+    </xs:sequence>
+  </xs:complexType>
+  
+  <!-- Anime entry type -->
+  <xs:complexType name="AnimeType">
+    <xs:sequence>
+      <xs:element name="series_animedb_id" type="xs:positiveInteger"/>
+      <xs:element name="series_title" type="xs:string"/>
+      <xs:element name="series_type" type="SeriesTypeEnum"/>
+      <xs:element name="series_episodes" type="xs:nonNegativeInteger"/>
+      <xs:element name="my_id" type="xs:nonNegativeInteger"/>
+      <xs:element name="my_watched_episodes" type="xs:nonNegativeInteger"/>
+      <xs:element name="my_start_date" type="DateOrEmpty"/>
+      <xs:element name="my_finish_date" type="DateOrEmpty"/>
+      <xs:element name="my_rated" type="xs:string" minOccurs="0"/>
+      <xs:element name="my_score" type="ScoreType"/>
+      <xs:element name="my_storage" type="xs:string" minOccurs="0"/>
+      <xs:element name="my_storage_value" type="xs:decimal"/>
+      <xs:element name="my_status" type="StatusEnum"/>
+      <xs:element name="my_comments" type="xs:string"/>
+      <xs:element name="my_times_watched" type="xs:nonNegativeInteger"/>
+      <xs:element name="my_rewatch_value" type="RewatchValueEnum" minOccurs="0"/>
+      <xs:element name="my_priority" type="PriorityEnum"/>
+      <xs:element name="my_tags" type="xs:string"/>
+      <xs:element name="my_rewatching" type="BooleanNumeric"/>
+      <xs:element name="my_rewatching_ep" type="xs:nonNegativeInteger"/>
+      <xs:element name="my_discuss" type="BooleanNumeric"/>
+      <xs:element name="my_sns" type="xs:string"/>
+      <xs:element name="update_on_import" type="BooleanNumeric"/>
+    </xs:sequence>
+  </xs:complexType>
+  
+  <!-- Custom types and restrictions -->
+  <xs:simpleType name="DateOrEmpty">
+    <xs:union memberTypes="xs:date EmptyDate"/>
+  </xs:simpleType>
+  
+  <xs:simpleType name="EmptyDate">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="0000-00-00"/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="ScoreType">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="0"/>
+      <xs:maxInclusive value="10"/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="BooleanNumeric">
+    <xs:restriction base="xs:integer">
+      <xs:enumeration value="0"/>
+      <xs:enumeration value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <!-- Enumerations based on MAL data -->
+  <xs:simpleType name="SeriesTypeEnum">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="TV"/>
+      <xs:enumeration value="TV Special"/>
+      <xs:enumeration value="Movie"/>
+      <xs:enumeration value="OVA"/>
+      <xs:enumeration value="ONA"/>
+      <xs:enumeration value="Special"/>
+      <xs:enumeration value="Music"/>
+      <xs:enumeration value="CM"/>
+      <xs:enumeration value="Unknown"/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="StatusEnum">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="Watching"/>
+      <xs:enumeration value="Completed"/>
+      <xs:enumeration value="On-Hold"/>
+      <xs:enumeration value="Dropped"/>
+      <xs:enumeration value="Plan to Watch"/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="PriorityEnum">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="LOW"/>
+      <xs:enumeration value="MEDIUM"/>
+      <xs:enumeration value="HIGH"/>
+      <xs:enumeration value=""/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+  <xs:simpleType name="RewatchValueEnum">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="Very Low"/>
+      <xs:enumeration value="Low"/>
+      <xs:enumeration value="Medium"/>
+      <xs:enumeration value="High"/>
+      <xs:enumeration value="Very High"/>
+      <xs:enumeration value=""/>
+    </xs:restriction>
+  </xs:simpleType>
+  
+</xs:schema>
