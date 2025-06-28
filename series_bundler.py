@@ -105,6 +105,31 @@ class SeriesBundler:
             # Import re at function level for episode title processing
             import re
             
+            # Handle episode field that might contain misclassified years or title numbers
+            if 'episode' in result:
+                episode = result['episode']
+                
+                # If episode is a list, assume first number is part of title, smaller number is episode
+                if isinstance(episode, list) and len(episode) >= 2:
+                    # Sort to find the smallest number (likely the actual episode)
+                    sorted_episodes = sorted(episode)
+                    smallest_episode = sorted_episodes[0]
+                    
+                    # The other numbers are likely part of the title
+                    title_numbers = [ep for ep in episode if ep != smallest_episode]
+                    
+                    # Add title numbers to the title
+                    current_title = result.get('title', '')
+                    for title_num in title_numbers:
+                        if current_title and str(title_num) not in current_title:
+                            current_title = f"{current_title} {title_num}"
+                    result['title'] = current_title
+                    
+                    # Keep only the smallest number as the episode
+                    result['episode'] = smallest_episode
+                    
+                    self._log(f"Moved title number(s) {title_numbers} from episode to title, kept episode {smallest_episode}", 2)
+            
             # Normalize episode information and title
             # Handle cases where episode_title contains series subtitle/season name vs episode number
             if 'episode_title' in result:
