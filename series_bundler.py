@@ -124,7 +124,18 @@ class SeriesBundler:
                         result['episode'] = int(numbers[0])
                         del result['episode_title']
                 
-                # Case 3: episode_title looks like a series subtitle (contains non-numeric content)
+                # Case 3: Decimal episode number (e.g., "12.5" becomes episode=12, episode_title="5")
+                elif ('episode' in result and isinstance(episode_title, str) and 
+                      episode_title.isdigit() and len(episode_title) <= 2):
+                    # This looks like the decimal part of an episode number
+                    main_episode = result['episode']
+                    decimal_part = episode_title
+                    # Reconstruct as decimal episode number
+                    result['episode'] = float(f"{main_episode}.{decimal_part}")
+                    # Remove episode_title since we've incorporated it into the episode number
+                    del result['episode_title']
+                
+                # Case 4: episode_title looks like a series subtitle (contains non-numeric content)
                 # and we already have an episode number
                 elif ('episode' in result and isinstance(episode_title, str) and 
                       not episode_title.isdigit() and 
@@ -136,6 +147,17 @@ class SeriesBundler:
                         result['title'] = f"{original_title} - {episode_title}"
                         # Remove episode_title since we've incorporated it into the main title
                         del result['episode_title']
+            
+            # Handle alternative_title field - often contains series subtitle
+            if 'alternative_title' in result:
+                alternative_title = result['alternative_title']
+                original_title = result.get('title', '')
+                
+                if original_title and alternative_title:
+                    # Combine title with alternative_title
+                    result['title'] = f"{original_title} - {alternative_title}"
+                    # Remove alternative_title since we've incorporated it into the main title
+                    del result['alternative_title']
             
             self._log(f"Extracted metadata for {file_path.name}: {result.get('title', 'Unknown')}", 2)
             return result
@@ -177,25 +199,47 @@ class SeriesBundler:
         
         return " | ".join(key_parts)
     
-    def _format_episode_range(self, episodes: List[int]) -> str:
+    def _format_episode_range(self, episodes: List) -> str:
         """
         Format episode numbers as a range string.
         
         Args:
-            episodes: List of episode numbers
+            episodes: List of episode numbers (can be int or float)
             
         Returns:
-            Formatted range string (e.g., "01-03" or "05")
+            Formatted range string (e.g., "01-03", "05", "12_5", or "12-13+")
         """
         if not episodes:
             return "00"
         
+        # Sort episodes, handling both int and float
         sorted_episodes = sorted(set(episodes))
         
         if len(sorted_episodes) == 1:
-            return f"{sorted_episodes[0]:02d}"
+            episode = sorted_episodes[0]
+            if isinstance(episode, float):
+                # Format decimal episodes like "12.5" -> "12_5"
+                return f"{episode:04.1f}".replace('.', '_')
+            else:
+                return f"{episode:02d}"
         else:
-            return f"{sorted_episodes[0]:02d}-{sorted_episodes[-1]:02d}"
+            # For ranges, check if we have decimal episodes
+            has_decimals = any(isinstance(ep, float) for ep in sorted_episodes)
+            start_ep = sorted_episodes[0]
+            end_ep = sorted_episodes[-1]
+            
+            if has_decimals:
+                # If we have decimal episodes, show range with "+" to indicate there are episodes in between
+                start_str = f"{start_ep:04.1f}".replace('.', '_') if isinstance(start_ep, float) else f"{start_ep:02d}"
+                end_str = f"{end_ep:04.1f}".replace('.', '_') if isinstance(end_ep, float) else f"{end_ep:02d}"
+                
+                # Check if there are episodes between start and end
+                if len(sorted_episodes) > 2 or any(isinstance(ep, float) for ep in sorted_episodes[1:-1]):
+                    return f"{start_str}-{end_str}+"
+                else:
+                    return f"{start_str}-{end_str}"
+            else:
+                return f"{start_ep:02d}-{end_ep:02d}"
     
     def generate_folder_name(self, metadata_list: List[Dict]) -> str:
         """
@@ -225,7 +269,7 @@ class SeriesBundler:
         if season and season > 1:
             series_title = f"{title} S{season}"
         
-        # Collect all episode numbers
+        # Collect all episode numbers (can be int or float)
         episodes = []
         for metadata in metadata_list:
             episode = metadata.get('episode')
@@ -449,7 +493,7 @@ class SeriesBundler:
             release_group = first_file.get('release_group', 'Unknown')
             screen_size = first_file.get('screen_size', 'Unknown')
             
-            # Get episode range
+            # Get episode range (can include decimal episodes)
             episodes = []
             for metadata in group_metadata:
                 episode = metadata.get('episode')
