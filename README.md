@@ -522,7 +522,7 @@ The script supports various TV series naming conventions and provides detailed r
 - Season and episode numbering validation
 - Missing episode identification with detailed reporting
 - Series metadata integration for enhanced accuracy
-- Export results to various formats (CSV, JSON, HTML reports)
+- Export results to various formats (JSON, HTML reports)
 - Integration with metadata providers for series validation
 - Batch processing of multiple series directories
 
@@ -537,8 +537,11 @@ python series_completeness_checker.py /path/to/series --detailed --export-html
 # Check multiple series with metadata validation
 python series_completeness_checker.py /path/to/library --recursive --validate-metadata
 
-# Generate CSV report of missing episodes
-python series_completeness_checker.py /path/to/series --export-csv missing_episodes.csv
+# Generate JSON report
+python series_completeness_checker.py /path/to/series --export series.json
+
+# Generate HTML webapp
+python series_completeness_checker.py /path/to/series --webapp-export series.html
 ```
 
 ### Requires
