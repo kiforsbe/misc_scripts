@@ -1,0 +1,464 @@
+// Series Completeness Webapp JavaScript
+
+class SeriesCompletenessApp {
+    constructor() {
+        this.data = SERIES_DATA;
+        this.filteredSeries = [];
+        this.selectedSeries = null;
+        this.searchTerm = '';
+        this.statusFilter = 'all';
+        
+        this.init();
+    }
+    
+    init() {
+        this.setupEventListeners();
+        this.updateHeaderStats();
+        this.filterAndDisplaySeries();
+    }
+    
+    setupEventListeners() {
+        // Search functionality
+        const searchInput = document.getElementById('search-input');
+        searchInput.addEventListener('input', (e) => {
+            this.searchTerm = e.target.value.toLowerCase();
+            this.filterAndDisplaySeries();
+        });
+        
+        // Status filter
+        const statusFilter = document.getElementById('status-filter');
+        statusFilter.addEventListener('change', (e) => {
+            this.statusFilter = e.target.value;
+            this.filterAndDisplaySeries();
+        });
+        
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                this.navigateList(e.key === 'ArrowDown' ? 1 : -1);
+            } else if (e.key === 'Enter') {
+                const selected = document.querySelector('.series-item.selected');
+                if (selected) {
+                    this.selectSeries(selected.dataset.seriesKey);
+                }
+            }
+        });
+    }
+    
+    updateHeaderStats() {
+        const summary = this.data.completeness_summary;
+        
+        document.getElementById('total-series').textContent = summary.total_series;
+        document.getElementById('complete-series').textContent = summary.complete_series;
+        document.getElementById('incomplete-series').textContent = summary.incomplete_series;
+        
+        const completionRate = summary.total_episodes_expected > 0 
+            ? ((summary.total_episodes_found / summary.total_episodes_expected) * 100).toFixed(1)
+            : '0';
+        document.getElementById('completion-rate').textContent = `${completionRate}%`;
+    }
+    
+    filterAndDisplaySeries() {
+        const groups = this.data.groups;
+        this.filteredSeries = [];
+        
+        for (const [key, series] of Object.entries(groups)) {
+            // Apply search filter
+            const matchesSearch = !this.searchTerm || 
+                series.title.toLowerCase().includes(this.searchTerm) ||
+                (series.season && series.season.toString().includes(this.searchTerm));
+            
+            // Apply status filter
+            const matchesStatus = this.statusFilter === 'all' || series.status === this.statusFilter;
+            
+            if (matchesSearch && matchesStatus) {
+                this.filteredSeries.push({ key, ...series });
+            }
+        }
+        
+        // Sort by title
+        this.filteredSeries.sort((a, b) => {
+            const titleA = a.title + (a.season ? ` S${a.season.toString().padStart(2, '0')}` : '');
+            const titleB = b.title + (b.season ? ` S${b.season.toString().padStart(2, '0')}` : '');
+            return titleA.localeCompare(titleB);
+        });
+        
+        this.renderSeriesList();
+    }
+    
+    renderSeriesList() {
+        const container = document.getElementById('series-list');
+        
+        if (this.filteredSeries.length === 0) {
+            container.innerHTML = `
+                <div class="text-center p-4 text-muted">
+                    <i class="bi bi-search display-4"></i>
+                    <p class="mt-2">No series found matching your criteria</p>
+                </div>
+            `;
+            return;
+        }
+        
+        container.innerHTML = this.filteredSeries.map(series => {
+            const titleWithSeason = series.title + (series.season ? ` S${series.season.toString().padStart(2, '0')}` : '');
+            const statusClass = `status-${series.status}`;
+            const statusIcon = this.getStatusIcon(series.status);
+            
+            return `
+                <div class="series-item" data-series-key="${series.key}" onclick="app.selectSeries('${series.key}')">
+                    <div class="series-title">${this.escapeHtml(titleWithSeason)}</div>
+                    <div class="series-meta">
+                        <span class="series-status ${statusClass}">
+                            ${statusIcon} ${this.formatStatus(series.status)}
+                        </span>
+                        <span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+    
+    selectSeries(seriesKey) {
+        // Update visual selection
+        document.querySelectorAll('.series-item').forEach(item => {
+            item.classList.remove('selected');
+        });
+        
+        const selectedItem = document.querySelector(`[data-series-key="${seriesKey}"]`);
+        if (selectedItem) {
+            selectedItem.classList.add('selected');
+        }
+        
+        // Store selection and render details
+        this.selectedSeries = this.data.groups[seriesKey];
+        this.renderSeriesDetails();
+    }
+    
+    renderSeriesDetails() {
+        if (!this.selectedSeries) return;
+        
+        const series = this.selectedSeries;
+        const titleWithSeason = series.title + (series.season ? ` Season ${series.season}` : '');
+        const statusClass = `status-${series.status}`;
+        const statusIcon = this.getStatusIcon(series.status);
+        
+        // Calculate watch progress
+        const watchStatus = series.watch_status || {};
+        const watchedPercent = watchStatus.completion_percent || 0;
+        
+        const container = document.getElementById('series-details');
+        container.innerHTML = `
+            <div class="details-header">
+                <h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2>
+                <div class="details-subtitle">
+                    ${series.episodes_found} episodes found${series.episodes_expected ? ` of ${series.episodes_expected} expected` : ''}
+                </div>
+                <div class="status-badge ${statusClass}">
+                    ${statusIcon} ${this.formatStatus(series.status)}
+                </div>
+            </div>
+            
+            <div class="details-grid">
+                <div class="details-card">
+                    <h4 class="card-title">
+                        <i class="bi bi-pie-chart"></i>
+                        Completion Status
+                    </h4>
+                    ${this.renderCompletionInfo(series)}
+                </div>
+                
+                <div class="details-card">
+                    <h4 class="card-title">
+                        <i class="bi bi-eye"></i>
+                        Watch Progress
+                    </h4>
+                    ${this.renderWatchProgress(series)}
+                </div>
+            </div>
+            
+            ${this.renderEpisodeGrid(series)}
+            
+            <div class="details-card">
+                <h4 class="card-title">
+                    <i class="bi bi-file-earmark-play"></i>
+                    Files (${series.files.length})
+                </h4>
+                ${this.renderFilesList(series)}
+            </div>
+        `;
+    }
+    
+    renderCompletionInfo(series) {
+        const missing = series.missing_episodes || [];
+        const extra = series.extra_episodes || [];
+        
+        let content = `
+            <div class="mb-3">
+                <strong>Episodes Found:</strong> ${series.episodes_found}<br>
+                <strong>Episodes Expected:</strong> ${series.episodes_expected || 'Unknown'}
+            </div>
+        `;
+        
+        if (missing.length > 0) {
+            content += `
+                <div class="mb-2">
+                    <strong class="text-danger">Missing Episodes:</strong><br>
+                    <span class="text-danger">${this.formatEpisodeRanges(missing)}</span>
+                </div>
+            `;
+        }
+        
+        if (extra.length > 0) {
+            content += `
+                <div class="mb-2">
+                    <strong class="text-warning">Extra Episodes:</strong><br>
+                    <span class="text-warning">${this.formatEpisodeRanges(extra)}</span>
+                </div>
+            `;
+        }
+        
+        return content;
+    }
+    
+    renderWatchProgress(series) {
+        const watchStatus = series.watch_status || {};
+        const watched = watchStatus.watched_episodes || 0;
+        const partially = watchStatus.partially_watched_episodes || 0;
+        const unwatched = watchStatus.unwatched_episodes || series.episodes_found;
+        const percent = watchStatus.completion_percent || 0;
+        
+        return `
+            <div class="progress-container">
+                <div class="progress-label">
+                    <span>Watched: ${watched}/${series.episodes_found}</span>
+                    <span>${percent.toFixed(1)}%</span>
+                </div>
+                <div class="progress">
+                    <div class="progress-bar bg-success" style="width: ${percent}%"></div>
+                </div>
+            </div>
+            <div class="row text-center mt-3">
+                <div class="col">
+                    <small class="text-success">
+                        <i class="bi bi-check-circle"></i> ${watched} Watched
+                    </small>
+                </div>
+                ${partially > 0 ? `
+                <div class="col">
+                    <small class="text-warning">
+                        <i class="bi bi-clock"></i> ${partially} Partial
+                    </small>
+                </div>
+                ` : ''}
+                <div class="col">
+                    <small class="text-muted">
+                        <i class="bi bi-circle"></i> ${unwatched} Unwatched
+                    </small>
+                </div>
+            </div>
+        `;
+    }
+    
+    renderEpisodeGrid(series) {
+        if (!series.episode_numbers || series.episode_numbers.length === 0) {
+            return '';
+        }
+        
+        const found = new Set(series.episode_numbers);
+        const missing = new Set(series.missing_episodes || []);
+        const extra = new Set(series.extra_episodes || []);
+        const watched = new Set();
+        
+        // Get watched episodes
+        series.files.forEach(file => {
+            const plexStatus = file.plex_watch_status;
+            if (plexStatus && plexStatus.watched) {
+                const episode = file.episode;
+                if (Array.isArray(episode)) {
+                    episode.forEach(ep => watched.add(ep));
+                } else if (episode !== null) {
+                    watched.add(episode);
+                }
+            }
+        });
+        
+        const maxEpisode = Math.max(
+            ...series.episode_numbers,
+            ...(series.episodes_expected ? [series.episodes_expected] : [])
+        );
+        
+        let grid = '<div class="details-card"><h4 class="card-title"><i class="bi bi-grid-3x3"></i>Episode Grid</h4><div class="episode-grid">';
+        
+        for (let i = 1; i <= maxEpisode; i++) {
+            let className = 'episode-number ';
+            let title = `Episode ${i}`;
+            
+            if (watched.has(i)) {
+                className += 'episode-watched';
+                title += ' (Watched)';
+            } else if (found.has(i)) {
+                className += 'episode-found';
+                title += ' (Available)';
+            } else if (extra.has(i)) {
+                className += 'episode-extra';
+                title += ' (Extra)';
+            } else {
+                className += 'episode-missing';
+                title += ' (Missing)';
+            }
+            
+            grid += `<div class="${className}" title="${title}">${i}</div>`;
+        }
+        
+        grid += '</div></div>';
+        return grid;
+    }
+    
+    renderFilesList(series) {
+        if (!series.files || series.files.length === 0) {
+            return '<p class="text-muted">No files found</p>';
+        }
+        
+        return `
+            <div class="files-list">
+                ${series.files.map(file => {
+                    const plexStatus = file.plex_watch_status || {};
+                    const watchIndicator = plexStatus.watched ? 'watched' : 
+                        (plexStatus.view_offset > 0 ? 'partially-watched' : 'unwatched');
+                    
+                    return `
+                        <div class="file-item">
+                            <div class="file-name" title="${this.escapeHtml(file.filename || file.path)}">
+                                ${this.escapeHtml(this.getFileName(file.filename || file.path))}
+                            </div>
+                            <div class="file-meta">
+                                <span>
+                                    <span class="watch-indicator ${watchIndicator}"></span>
+                                    ${plexStatus.watched ? 'Watched' : 
+                                      (plexStatus.view_offset > 0 ? 'Partially Watched' : 'Unwatched')}
+                                </span>
+                                ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}
+                                ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
+                                ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+    }
+    
+    navigateList(direction) {
+        const items = document.querySelectorAll('.series-item');
+        const currentSelected = document.querySelector('.series-item.selected');
+        
+        if (items.length === 0) return;
+        
+        let newIndex = 0;
+        if (currentSelected) {
+            const currentIndex = Array.from(items).indexOf(currentSelected);
+            newIndex = Math.max(0, Math.min(items.length - 1, currentIndex + direction));
+        }
+        
+        const newSelected = items[newIndex];
+        if (newSelected) {
+            const seriesKey = newSelected.dataset.seriesKey;
+            this.selectSeries(seriesKey);
+            newSelected.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }
+    
+    // Utility functions
+    getStatusIcon(status) {
+        const icons = {
+            'complete': '✅',
+            'incomplete': '❌',
+            'complete_with_extras': '⚠️',
+            'no_episode_numbers': '❓',
+            'unknown_total_episodes': '❓',
+            'not_series': 'ℹ️',
+            'no_metadata': '❓',
+            'no_metadata_manager': '❓',
+            'unknown': '❓'
+        };
+        return icons[status] || '❓';
+    }
+    
+    formatStatus(status) {
+        const statusMap = {
+            'complete': 'Complete',
+            'incomplete': 'Incomplete',
+            'complete_with_extras': 'Complete (with extras)',
+            'no_episode_numbers': 'No episode numbers',
+            'unknown_total_episodes': 'Unknown total episodes',
+            'not_series': 'Not a series',
+            'no_metadata': 'No metadata',
+            'no_metadata_manager': 'No metadata manager',
+            'unknown': 'Unknown'
+        };
+        return statusMap[status] || 'Unknown';
+    }
+    
+    formatEpisodeRanges(episodes) {
+        if (!episodes || episodes.length === 0) return '';
+        
+        const sorted = [...episodes].sort((a, b) => a - b);
+        const ranges = [];
+        let start = sorted[0];
+        let end = start;
+        
+        for (let i = 1; i < sorted.length; i++) {
+            if (sorted[i] === end + 1) {
+                end = sorted[i];
+            } else {
+                ranges.push(start === end ? start.toString() : `${start}-${end}`);
+                start = end = sorted[i];
+            }
+        }
+        ranges.push(start === end ? start.toString() : `${start}-${end}`);
+        
+        return ranges.join(', ');
+    }
+    
+    getFileName(path) {
+        return path.split(/[/\\]/).pop() || path;
+    }
+    
+    formatFileSize(bytes) {
+        if (!bytes) return '';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let size = bytes;
+        let unitIndex = 0;
+        
+        while (size >= 1024 && unitIndex < units.length - 1) {
+            size /= 1024;
+            unitIndex++;
+        }
+        
+        return `${size.toFixed(1)} ${units[unitIndex]}`;
+    }
+    
+    formatDuration(seconds) {
+        if (!seconds) return '';
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        
+        if (hours > 0) {
+            return `${hours}h ${minutes}m`;
+        } else {
+            return `${minutes}m`;
+        }
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+}
+
+// Initialize the app when DOM is loaded
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new SeriesCompletenessApp();
+});

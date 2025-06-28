@@ -277,6 +277,44 @@ class SeriesCompletenessChecker:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
     
+    def export_webapp(self, results: Dict[str, Any], output_path: str) -> None:
+        """Export analysis results as a standalone HTML webapp."""
+        import os
+        from pathlib import Path
+        
+        # Get the directory of this script to find template files
+        script_dir = Path(__file__).parent
+        
+        # Read template files
+        html_template_path = script_dir / 'series_completeness_webapp_template.html'
+        css_template_path = script_dir / 'series_completeness_webapp_template.css'
+        js_template_path = script_dir / 'series_completeness_webapp_template.js'
+        
+        try:
+            with open(html_template_path, 'r', encoding='utf-8') as f:
+                html_template = f.read()
+            with open(css_template_path, 'r', encoding='utf-8') as f:
+                css_content = f.read()
+            with open(js_template_path, 'r', encoding='utf-8') as f:
+                js_content = f.read()
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Template file not found: {e}. Make sure all template files are in the same directory as this script.")
+        
+        # Prepare data for embedding (minify JSON)
+        json_data = json.dumps(results, separators=(',', ':'), cls=CustomJSONEncoder)
+        
+        # Replace placeholders in HTML template
+        html_content = html_template.replace('[[embedded_css]]', css_content)
+        html_content = html_content.replace('[[embedded_js]]', js_content)
+        html_content = html_content.replace('[[embedded_json]]', json_data)
+        
+        # Write the final HTML file
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+    
     def _format_metadata_value(self, value: Any, max_length: int = 20) -> str:
         """Format a metadata value for display with smart truncation."""
         if value is None:
@@ -463,6 +501,8 @@ Examples:
                        help='Wildcard patterns for files to exclude')
     parser.add_argument('--export', metavar='FILE',
                        help='Export results to JSON file')
+    parser.add_argument('--webapp-export', metavar='FILE',
+                       help='Export results as a standalone HTML webapp')
     parser.add_argument('--recursive', '-r', action='store_true',
                        help='Recursively search subdirectories (default: False)')
     parser.add_argument('--verbose', '-v', type=int, choices=[0, 1, 2, 3], default=1,
@@ -606,6 +646,10 @@ Examples:
         checker.export_results(results, args.export)
         if verbosity >= 1:
             print(f"\nExported results to: {args.export}")
+    if args.webapp_export:
+        checker.export_webapp(results, args.webapp_export)
+        if verbosity >= 1:
+            print(f"\nExported webapp to: {args.webapp_export}")
 
 if __name__ == '__main__':
     main()
