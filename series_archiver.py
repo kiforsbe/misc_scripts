@@ -682,6 +682,10 @@ def cmd_list(args):
                 filtered_indexed_groups.append((original_index, group_key, details))
         indexed_groups = filtered_indexed_groups
     
+    # Sort alphabetically if requested while preserving original indices
+    if hasattr(args, 'sort') and args.sort:
+        indexed_groups.sort(key=lambda x: x[2]['title'].lower())  # Sort by title (case-insensitive)
+    
     if not indexed_groups:
         print("No groups found matching the filter criteria.")
         return 0
@@ -914,6 +918,8 @@ def main():
                                  'Available statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
                                  'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
                                  'Examples: "complete incomplete", "+complete +incomplete", "-unknown -no_metadata"')
+    list_parser.add_argument('--sort', action='store_true',
+                            help='Sort series alphabetically by title')
     
     # Archive command
     archive_parser = subparsers.add_parser('archive', 
