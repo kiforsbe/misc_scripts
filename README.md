@@ -624,6 +624,49 @@ results = archiver.archive_groups(
 - shutil
 - json
 
+## series_bundler.py
+A script that groups series files and creates organized folder structures for archiving. It analyzes video files using guessit to extract metadata, groups them by series, release group, and resolution, then creates standardized folder names following the pattern `[Release Group] Series Name (YYYY) (xx-yy) (Resolution)`.
+
+The script is designed to bundle anime/TV series episodes into organized folders suitable for long-term archiving. It handles various filename patterns, supports both drag-and-drop and command-line usage, and can process decimal episode numbers (like episode 12.5) and series with years in the title.
+
+### Features
+- **Intelligent Metadata Extraction**: Uses guessit to parse filenames and extract series information
+- **Flexible Episode Handling**: Supports regular episodes, decimal episodes (12.5), and handles year misclassification
+- **Dual Interface**: Interactive drag-and-drop mode and full command-line interface
+- **Smart Grouping**: Groups files by series, release group, resolution, and season
+- **Standardized Naming**: Creates consistent folder names for archival organization
+- **Preview Mode**: Dry-run functionality to preview changes before execution
+- **Progress Tracking**: Visual progress bars and detailed logging options
+- **File Operations**: Support for both copying and moving files with error handling
+
+### Usage (Examples)
+```bash
+# Drag-and-drop mode (interactive) - just drag files onto the script
+python series_bundler.py file1.mkv file2.mkv file3.mkv
+
+# Analyze files in current directory (preview only)
+python series_bundler.py . --summary-only
+
+# Bundle files to destination (dry run preview)
+python series_bundler.py /path/to/series -d /path/to/archive --dry-run
+
+# Actually move files to organized folders
+python series_bundler.py /path/to/series -d /path/to/archive
+
+# Copy files instead of moving them
+python series_bundler.py /path/to/series -d /path/to/archive --copy
+
+# Process files recursively with verbose output
+python series_bundler.py /path/to/library -d /path/to/archive --recursive -vv
+
+# Disable interactive mode for scripting
+python series_bundler.py *.mkv -d /dest --no-interactive
+```
+
+### Requires
+- guessit
+- tqdm
+
 ## Experimental
 
 ### lyrics-timing-generator.py
