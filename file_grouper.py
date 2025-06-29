@@ -76,9 +76,9 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 try:
-    from guessit import guessit
+    from guessit_wrapper import guessit_wrapper
 except ImportError:
-    print("Error: guessit library not found. Install with: pip install guessit")
+    print("Error: guessit_wrapper library not found. Install with: pip install guessit_wrapper")
     sys.exit(1)
 
 try:
@@ -230,7 +230,7 @@ class FileGrouper:
     def extract_metadata(self, file_path: Path) -> Dict[str, Any]:
         """Extract metadata from filename using guessit."""
         try:
-            metadata = guessit(file_path.name)
+            metadata = guessit_wrapper(file_path.name)
             # Convert guessit result to regular dict and add file info
             result = dict(metadata)
             result['filepath'] = str(file_path)

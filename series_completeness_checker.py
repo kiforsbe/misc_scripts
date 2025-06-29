@@ -404,7 +404,7 @@ class SeriesCompletenessChecker:
             title_str += f" S{season:02d}"
 
         # Adjust title length based on whether metadata will be shown
-        base_title_length = 45  # Reduced to make room for watch status
+        base_title_length = 60  # Reduced to make room for watch status
         metadata_space = 0
         
         if show_metadata_fields:

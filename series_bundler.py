@@ -37,11 +37,7 @@ except ImportError:
             # Simple implementation for fallback
             pass
 
-try:
-    from guessit import guessit
-except ImportError:
-    print("Error: guessit library not found. Install with: pip install guessit")
-    sys.exit(1)
+from guessit_wrapper import guessit_wrapper
 
 
 class SeriesBundler:
@@ -96,7 +92,7 @@ class SeriesBundler:
             Dictionary containing extracted metadata
         """
         try:
-            metadata = guessit(file_path.name)
+            metadata = guessit_wrapper(file_path.name)
             result = dict(metadata)
             result['filepath'] = str(file_path)
             result['filename'] = file_path.name
