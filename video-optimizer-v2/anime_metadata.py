@@ -3,13 +3,15 @@ import json
 import logging
 import requests
 import sqlite3
-from typing import Optional, Dict, List, Tuple
+import zipfile
+import time
+from typing import Optional, Dict, List
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
 
 class AnimeDataProvider(BaseMetadataProvider):
-    ANIME_DB_URL = "https://raw.githubusercontent.com/manami-project/anime-offline-database/master/anime-offline-database.json"
+    ANIME_DB_URL = "https://github.com/manami-project/anime-offline-database/archive/refs/tags/latest.zip"
     MAX_RETRIES = 3
     
     # Define relevance scores for different title types
@@ -154,47 +156,77 @@ class AnimeDataProvider(BaseMetadataProvider):
             return
 
         logging.info("Loading anime database...")
-        
-        temp_json = os.path.join(self.cache_dir, "temp_anime.json")
-        
-        # Download and process with retries
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                logging.info(f"Downloading anime database (attempt {attempt + 1}/{self.MAX_RETRIES})...")
-                
-                # Download JSON
-                response = requests.get(self.ANIME_DB_URL, stream=True)
-                total_size = int(response.headers.get('content-length', 0))
-                
-                with tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
-                    with open(temp_json, 'wb') as f:
+
+        zip_path = os.path.join(self.cache_dir, "anime-offline-database-latest.zip")
+        zip_expiry_days = 7
+
+        try:
+            # Check if cached zip exists and is fresh
+            need_download = True
+            if os.path.exists(zip_path):
+                mtime = os.path.getmtime(zip_path)
+                age_days = (time.time() - mtime) / 86400
+                if age_days < zip_expiry_days:
+                    need_download = False
+
+            if need_download:
+                logging.info("Downloading anime database zip file from remote server...")
+                try:
+                    response = requests.get(self.ANIME_DB_URL, stream=True)
+                    response.raise_for_status()
+                    total_size = int(response.headers.get('content-length', 0))
+                    with open(zip_path, "wb") as f, tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
                                 pbar.update(len(chunk))
-                
-                # Parse and insert into database
-                self._load_json_to_db(temp_json)
-                
-                # Optimize database for read operations
-                self._optimize_database_for_reads()
-                
-                # Clean up temp file
-                try:
-                    os.remove(temp_json)
-                except:
-                    pass
-                
-                return
-                
+                except Exception as e:
+                    logging.error(f"Failed to download anime database zip: {e}")
+                    raise
+
+            # Extract anime-offline-database.json from the zip in memory
+            try:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    json_filename = None
+                    for name in zf.namelist():
+                        if name.endswith("anime-offline-database.json"):
+                            json_filename = name
+                            break
+                    if not json_filename:
+                        raise RuntimeError("anime-offline-database.json not found in zip file")
+                    with zf.open(json_filename) as json_file:
+                        json_bytes = json_file.read()
+                        json_str = json_bytes.decode("utf-8")
             except Exception as e:
-                logging.error(f"Error processing anime database (attempt {attempt + 1}): {str(e)}")
-                if attempt < self.MAX_RETRIES - 1:
-                    logging.info("Retrying...")
-                    continue
+                logging.error(f"Failed to extract anime-offline-database.json from zip: {e}")
                 raise
-        
-        raise RuntimeError("Failed to load anime database after multiple attempts")
+
+            # Write the JSON string to a temporary file for compatibility with _load_json_to_db
+            temp_json = os.path.join(self.cache_dir, "temp_anime.json")
+            try:
+                with open(temp_json, "w", encoding="utf-8") as f:
+                    f.write(json_str)
+            except Exception as e:
+                logging.error(f"Failed to write temp JSON file: {e}")
+                raise
+
+            # Parse and insert into database
+            self._load_json_to_db(temp_json)
+
+            # Optimize database for read operations
+            self._optimize_database_for_reads()
+
+            # Clean up temp file, but keep the zip
+            try:
+                os.remove(temp_json)
+            except Exception:
+                pass
+
+        except Exception as e:
+            logging.error(f"Error processing anime database: {e}")
+            raise
+
+        return
 
     def _load_json_to_db(self, json_file: str) -> None:
         """Load JSON data into SQLite database"""
