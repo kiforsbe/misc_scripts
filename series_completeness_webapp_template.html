@@ -56,6 +56,15 @@
                             <option value="unknown">Unknown</option>
                         </select>
                     </div>
+                    <!-- New: Watch status filter checkboxes -->
+                    <div class="filter-container">
+                        <label class="form-check-label d-block mb-1"><input type="checkbox" class="form-check-input me-1"
+                                id="filter-not-watched" checked> Not Watched</label>
+                        <label class="form-check-label d-block mb-1"><input type="checkbox" class="form-check-input me-1"
+                                id="filter-partially-watched" checked> Partially Watched</label>
+                        <label class="form-check-label d-block mb-1"><input type="checkbox" class="form-check-input me-1"
+                                id="filter-fully-watched" checked> Fully Watched</label>
+                    </div>
                 </div>
                 <div class="series-list" id="series-list">
                     <!-- Series items will be populated here -->
@@ -68,7 +77,8 @@
                     <div class="welcome-message">
                         <i class="bi bi-tv display-1 text-muted"></i>
                         <h3 class="text-muted">Select a series to view details</h3>
-                        <p class="text-muted">Choose a series from the list on the left to see detailed information about its completeness status, episodes, and metadata.</p>
+                        <p class="text-muted">Choose a series from the list on the left to see detailed information about its
+                            completeness status, episodes, and metadata.</p>
                     </div>
                 </div>
             </div>

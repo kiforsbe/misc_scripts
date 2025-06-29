@@ -7,6 +7,12 @@ class SeriesCompletenessApp {
         this.selectedSeries = null;
         this.searchTerm = '';
         this.statusFilter = 'all';
+        // New: Watch status filter states
+        this.watchFilters = {
+            notWatched: true,
+            partiallyWatched: true,
+            fullyWatched: true
+        };
         
         this.init();
     }
@@ -29,6 +35,20 @@ class SeriesCompletenessApp {
         const statusFilter = document.getElementById('status-filter');
         statusFilter.addEventListener('change', (e) => {
             this.statusFilter = e.target.value;
+            this.filterAndDisplaySeries();
+        });
+        
+        // Watch status filters
+        document.getElementById('filter-not-watched').addEventListener('change', (e) => {
+            this.watchFilters.notWatched = e.target.checked;
+            this.filterAndDisplaySeries();
+        });
+        document.getElementById('filter-partially-watched').addEventListener('change', (e) => {
+            this.watchFilters.partiallyWatched = e.target.checked;
+            this.filterAndDisplaySeries();
+        });
+        document.getElementById('filter-fully-watched').addEventListener('change', (e) => {
+            this.watchFilters.fullyWatched = e.target.checked;
             this.filterAndDisplaySeries();
         });
         
@@ -71,8 +91,21 @@ class SeriesCompletenessApp {
             
             // Apply status filter
             const matchesStatus = this.statusFilter === 'all' || series.status === this.statusFilter;
-            
-            if (matchesSearch && matchesStatus) {
+
+            // --- New: Watch status filter ---
+            // Determine watch status for the group
+            const ws = series.watch_status || {};
+            let watchCategory = 'notWatched';
+            if ((ws.watched_episodes || 0) === (series.episodes_found || 0) && (series.episodes_found || 0) > 0) {
+                watchCategory = 'fullyWatched';
+            } else if ((ws.partially_watched_episodes || 0) > 0 || (ws.watched_episodes || 0) > 0) {
+                watchCategory = 'partiallyWatched';
+            }
+            // Only include if the corresponding filter is checked
+            const matchesWatch = this.watchFilters[watchCategory];
+            // --- End new ---
+
+            if (matchesSearch && matchesStatus && matchesWatch) {
                 this.filteredSeries.push({ key, ...series });
             }
         }
