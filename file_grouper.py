@@ -241,6 +241,9 @@ class FileGrouper:
             if self.metadata_manager and MetadataManager:
                 title = result.get('title')
                 year = result.get('year')
+                season = result.get('season')
+                if season:
+                    title = f"{title} Season {season}"
                 if title:
                     try:
                         # Create a unique key for this title+year combination (case insensitive)
@@ -268,6 +271,8 @@ class FileGrouper:
                                     episode = result.get('episode')
                                     if season and episode and provider:
                                         # Store episode info directly in file metadata since it's file-specific
+                                        if season:
+                                            title = f"{title} Season {season}"
                                         enhanced_info, _ = self.metadata_manager.find_title(title, year)
                                         if enhanced_info:                                            
                                             episode_info = self.metadata_manager.get_episode_info(

@@ -1,14 +1,47 @@
 import os
+import re
 import json
 import logging
 import requests
 import sqlite3
 import zipfile
 import time
-from typing import Optional, Dict, List
-from rapidfuzz import fuzz, process
+from typing import Optional
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
+import enum
+
+class AnimeType(enum.IntEnum):
+    TV = 1
+    MOVIE = 2
+    OVA = 3
+    ONA = 4
+    SPECIAL = 5
+    UNKNOWN = 0
+
+ANIME_TYPE_TEXT_TO_ID = {
+    "TV": AnimeType.TV,
+    "MOVIE": AnimeType.MOVIE,
+    "OVA": AnimeType.OVA,
+    "ONA": AnimeType.ONA,
+    "SPECIAL": AnimeType.SPECIAL,
+}
+ANIME_TYPE_ID_TO_TEXT = {v: k for k, v in ANIME_TYPE_TEXT_TO_ID.items()}
+ANIME_TYPE_ID_TO_TEXT[AnimeType.UNKNOWN] = "UNKNOWN"
+
+class AnimeStatus(enum.IntEnum):
+    FINISHED = 1
+    ONGOING = 2
+    UPCOMING = 3
+    UNKNOWN = 0
+
+ANIME_STATUS_TEXT_TO_ID = {
+    "FINISHED": AnimeStatus.FINISHED,
+    "ONGOING": AnimeStatus.ONGOING,
+    "UPCOMING": AnimeStatus.UPCOMING,
+}
+ANIME_STATUS_ID_TO_TEXT = {v: k for k, v in ANIME_STATUS_TEXT_TO_ID.items()}
+ANIME_STATUS_ID_TO_TEXT[AnimeStatus.UNKNOWN] = "UNKNOWN"
 
 class AnimeDataProvider(BaseMetadataProvider):
     ANIME_DB_URL = "https://github.com/manami-project/anime-offline-database/archive/refs/tags/latest.zip"
@@ -54,79 +87,147 @@ class AnimeDataProvider(BaseMetadataProvider):
         """Initialize SQLite database with optimized schema"""
         try:
             with sqlite3.connect(self._db_path, timeout=30.0) as conn:
-                conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout
+                conn.execute("PRAGMA busy_timeout=30000")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA cache_size=10000")
                 conn.execute("PRAGMA temp_store=MEMORY")
-                conn.execute("PRAGMA page_size=32768")  # Larger pages for better compression
-                conn.execute("PRAGMA auto_vacuum=INCREMENTAL")  # Reclaim space when data is deleted
+                conn.execute("PRAGMA page_size=32768")
+                conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
                 
-                # Create tables with optimized schema - compressed storage
-                conn.executescript(
-                    """ 
-                    CREATE TABLE IF NOT EXISTS anime_basics (
-                        id TEXT PRIMARY KEY,
+                # Table for main anime entries
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS anime_title (
+                        id INTEGER PRIMARY KEY,
                         title TEXT NOT NULL,
-                        title_lower TEXT NOT NULL,
-                        type INTEGER NOT NULL,  -- 1=movie, 2=tvSeries
+                        type INTEGER,                    -- maps to anime_type.id
                         episodes INTEGER,
-                        status TEXT,
-                        season_year INTEGER,
-                        season_name TEXT,
-                        sources TEXT,
+                        status INTEGER,                  -- maps to anime_status.id
+                        year INTEGER,
+                        duration INTEGER,
                         tags TEXT
-                    ) WITHOUT ROWID;
-                    
-                    CREATE TABLE IF NOT EXISTS anime_synonyms (
-                        anime_id TEXT NOT NULL,
+                    )
+                """)
+                
+                # Table for mapping type codes to text (text is unique, id reused)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS anime_type (
+                        id INTEGER PRIMARY KEY,
+                        text TEXT NOT NULL UNIQUE
+                    )
+                """)
+                
+                # Table for mapping status codes to text (text is unique, id reused)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS anime_status (
+                        id INTEGER PRIMARY KEY,
+                        text TEXT NOT NULL UNIQUE
+                    )
+                """)
+
+                # Table for sources (MAL id to URL)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sources (
+                        id INTEGER NOT NULL,
+                        url TEXT NOT NULL,
+                        FOREIGN KEY(id) REFERENCES anime_title(id)
+                    )
+                """)
+                
+                # Table for synonyms (including main title for FTS)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS synonyms (
+                        id INTEGER NOT NULL,
                         title TEXT NOT NULL,
-                        title_lower TEXT NOT NULL,
-                        relevance REAL NOT NULL,
-                        FOREIGN KEY (anime_id) REFERENCES anime_basics(id)
-                    );
-                    
+                        FOREIGN KEY(id) REFERENCES anime_title(id)
+                    )
+                """)
+                
+                # Table for related anime (MAL id to MAL id)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS related (
+                        id INTEGER NOT NULL,
+                        related_id INTEGER NOT NULL,
+                        FOREIGN KEY(id) REFERENCES anime_title(id),
+                        FOREIGN KEY(related_id) REFERENCES anime_title(id)
+                    )
+                """)
+                
+                # Table for tracking data version
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS data_version (
                         dataset TEXT PRIMARY KEY,
-                        updated INTEGER  -- Use integer timestamp
-                    ) WITHOUT ROWID;
-
-                    -- View for search operations
-                    CREATE VIEW IF NOT EXISTS search_view AS
-                    SELECT 
-                        id,
-                        title,
-                        title_lower,
-                        type,
-                        episodes,
-                        status,
-                        season_year,
-                        season_name,
-                        sources,
-                        tags
-                    FROM anime_basics;
-                    
-                    -- FTS5 virtual table for fast title searching
+                        updated INTEGER
+                    )
+                """)
+                
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_synonyms_id ON synonyms(id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_id ON sources(id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_related_src_id ON related(id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_related_dst_id ON related(related_id)")
+                
+                # View for searching anime by synonym title, joining type and status text
+                conn.execute("""
+                    CREATE VIEW IF NOT EXISTS anime_synonym_view AS
+                    SELECT
+                        a.id,
+                        a.title,
+                        s.title AS synonym,
+                        ty.text AS type,
+                        a.episodes,
+                        st.text AS status,
+                        a.year,
+                        a.duration,
+                        a.tags
+                    FROM synonyms s
+                    JOIN anime_title a ON s.id = a.id
+                    LEFT JOIN anime_type ty ON a.type = ty.id
+                    LEFT JOIN anime_status st ON a.status = st.id
+                """)
+                
+                # FTS5 virtual table for fast title/synonym search
+                conn.execute("""
                     CREATE VIRTUAL TABLE IF NOT EXISTS anime_fts USING fts5(
-                        title, 
-                        title_normalized,
-                        content='anime_basics',
+                        id UNINDEXED,
+                        title,
+                        content='synonyms',
                         content_rowid='rowid',
                         tokenize='porter unicode61'
-                    );
-                """
-                )
-                
-                # Essential indexes for data loading
-                conn.executescript(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_synonyms_anime_id ON anime_synonyms(anime_id);
-                    CREATE INDEX IF NOT EXISTS idx_synonyms_title_lower ON anime_synonyms(title_lower);
-                """
-                )
+                    )
+                """)
                 conn.commit()
         except Exception as e:
             logging.error(f"Failed to initialize anime database: {str(e)}")
             raise
+
+    def _get_type_id(self, type_str: str) -> int:
+        """Map type string to AnimeType enum value"""
+        if not type_str:
+            return AnimeType.UNKNOWN
+        type_str = type_str.strip().upper()
+        return int(ANIME_TYPE_TEXT_TO_ID.get(type_str, AnimeType.UNKNOWN))
+
+    def _get_type_text(self, type_id: int) -> str:
+        """Map type id to string"""
+        try:
+            anime_type = AnimeType(type_id)
+            return ANIME_TYPE_ID_TO_TEXT.get(anime_type, "UNKNOWN")
+        except ValueError:
+            return "UNKNOWN"
+
+    def _get_status_id(self, status_str: str) -> int:
+        """Map status string to AnimeStatus enum value"""
+        if not status_str:
+            return AnimeStatus.UNKNOWN
+        status_str = status_str.strip().upper()
+        return int(ANIME_STATUS_TEXT_TO_ID.get(status_str, AnimeStatus.UNKNOWN))
+
+    def _get_status_text(self, status_id: int) -> str:
+        """Map status id to string"""
+        try:
+            anime_status = AnimeStatus(status_id)
+            return ANIME_STATUS_ID_TO_TEXT.get(anime_status, "UNKNOWN")
+        except ValueError:
+            return "UNKNOWN"
 
     def _is_data_current(self) -> bool:
         """Check if the database contains current data"""
@@ -137,12 +238,12 @@ class AnimeDataProvider(BaseMetadataProvider):
                     SELECT COUNT(*) FROM data_version 
                     WHERE dataset = 'anime_offline_database'
                     AND updated > strftime('%s', 'now', '-7 days')
-                """
+                    """
                 )
                 count = cursor.fetchone()[0]
 
-                # Also check if we have data in anime_basics
-                cursor = conn.execute("SELECT COUNT(*) FROM anime_basics LIMIT 1")
+                # Also check if we have data in anime_title
+                cursor = conn.execute("SELECT COUNT(*) FROM anime_title LIMIT 1")
                 has_data = cursor.fetchone()[0] > 0
 
                 return count >= 1 and has_data
@@ -213,9 +314,6 @@ class AnimeDataProvider(BaseMetadataProvider):
             # Parse and insert into database
             self._load_json_to_db(temp_json)
 
-            # Optimize database for read operations
-            self._optimize_database_for_reads()
-
             # Clean up temp file, but keep the zip
             try:
                 os.remove(temp_json)
@@ -232,471 +330,213 @@ class AnimeDataProvider(BaseMetadataProvider):
         """Load JSON data into SQLite database"""
         try:
             with sqlite3.connect(self._db_path, timeout=60.0) as conn:
-                # Optimize for bulk inserts
                 conn.execute("PRAGMA synchronous=OFF")
                 conn.execute("PRAGMA temp_store=MEMORY")
                 conn.execute("PRAGMA cache_size=100000")
 
                 # Clear existing data
-                conn.execute("DELETE FROM anime_basics")
-                conn.execute("DELETE FROM anime_synonyms")
-                
-                # Parse JSON and convert to database records
+                conn.execute("DELETE FROM anime_title")
+                conn.execute("DELETE FROM anime_type")
+                conn.execute("DELETE FROM anime_status")
+                conn.execute("DELETE FROM synonyms")
+                conn.execute("DELETE FROM sources")
+                conn.execute("DELETE FROM related")
+
+                # Prepare enums for type/status
+                for type_id, type_text in ANIME_TYPE_ID_TO_TEXT.items():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO anime_type (id, text) VALUES (?, ?)",
+                        (int(type_id), type_text)
+                    )
+                for status_id, status_text in ANIME_STATUS_ID_TO_TEXT.items():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO anime_status (id, text) VALUES (?, ?)",
+                        (int(status_id), status_text)
+                    )
+
                 with tqdm(desc="Processing anime database", unit='entries') as pbar:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        
+
                         anime_batch = []
                         synonyms_batch = []
-                        fts_batch = []
-                        
+                        sources_batch = []
+                        related_batch = []
+
                         for entry in data['data']:
-                            # Extract main entry data
-                            anime_id = entry.get('sources', [''])[0] or f"anime_{len(anime_batch)}"
+                            # Get MAL id from sources
+                            mal_id = None
+                            for src in entry.get('sources', []):
+                                if "myanimelist.net/anime/" in src:
+                                    try:
+                                        mal_id = int(src.rstrip('/').split('/')[-1])
+                                        break
+                                    except Exception:
+                                        continue
+                            if not mal_id:
+                                print(f"Skipping entry without valid MAL id: {entry.get('title', 'Unknown')}")
+                                continue
+
                             title = entry['title']
-                            
-                            # Map type to integer
-                            type_int = 1 if entry.get('type') == 'MOVIE' else 2
-                            
-                            record = (
-                                anime_id,
-                                title,
-                                title.lower(),
-                                type_int,
-                                self.safe_int(entry.get('episodes')),
-                                entry.get('status'),
-                                self.safe_int(entry.get('animeSeason', {}).get('year')),
-                                entry.get('animeSeason', {}).get('season'),
-                                ','.join(entry.get('sources', [])),
-                                ','.join(entry.get('tags', []))
+                            type_id = self._get_type_id(entry.get('type'))
+                            episodes = self.safe_int(entry.get('episodes'))
+                            status_id = self._get_status_id(entry.get('status'))
+                            year = self.safe_int(entry.get('animeSeason', {}).get('year'))
+                            duration = self.safe_int(entry.get('duration'))
+                            tags = ','.join(entry.get('tags', []))
+
+                            anime_batch.append(
+                                (mal_id, title, type_id, episodes, status_id, year, duration, tags)
                             )
-                            anime_batch.append(record)
-                            
-                            # Add to FTS
-                            fts_batch.append((len(anime_batch), title, self._normalize_title(title)))
-                            
-                            # Extract synonyms
+
+                            # Main title as synonym
+                            synonyms_batch.append((mal_id, title))
+                            # Do NOT insert into fts_batch here
+
+                            # Synonyms
                             for synonym in entry.get('synonyms', []):
                                 if synonym and synonym != title:
-                                    synonyms_batch.append((
-                                        anime_id,
-                                        synonym,
-                                        synonym.lower(),
-                                        self.TITLE_WEIGHTS['synonym']
-                                    ))
-                            
+                                    synonyms_batch.append((mal_id, synonym))
+                                    # Do NOT insert into fts_batch here
+
+                            # Other sources
+                            for src in entry.get('sources', []):
+                                if "myanimelist.net/anime/" not in src:
+                                    sources_batch.append((mal_id, src))
+
+                            # Related anime
+                            for rel in entry.get('relatedAnime', []):
+                                rel_id = None
+                                if "myanimelist.net/anime/" in rel:
+                                    try:
+                                        rel_id = int(rel.rstrip('/').split('/')[-1])
+                                        related_batch.append((mal_id, rel_id))
+                                        break
+                                    except Exception:
+                                        print(f"Skipping related anime without valid MAL id: {rel}")
+                                        continue
+
                             pbar.update(1)
-                        
-                        # Bulk insert anime data
+
+                        # Bulk insert
                         conn.executemany(
-                            """INSERT OR REPLACE INTO anime_basics 
-                               (id, title, title_lower, type, episodes, status, season_year, season_name, sources, tags) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            """INSERT OR REPLACE INTO anime_title 
+                               (id, title, type, episodes, status, year, duration, tags)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                             anime_batch
                         )
-                        
-                        # Bulk insert synonyms
                         conn.executemany(
-                            """INSERT OR REPLACE INTO anime_synonyms 
-                               (anime_id, title, title_lower, relevance) 
-                               VALUES (?, ?, ?, ?)""",
+                            "INSERT INTO synonyms (id, title) VALUES (?, ?)",
                             synonyms_batch
                         )
-                        
-                        # Bulk insert FTS data
+                        # REMOVE: conn.executemany("INSERT INTO anime_fts (rowid, title, id) VALUES (?, ?, ?)", fts_batch)
                         conn.executemany(
-                            "INSERT OR REPLACE INTO anime_fts (rowid, title, title_normalized) VALUES (?, ?, ?)",
-                            fts_batch
+                            "INSERT INTO sources (id, url) VALUES (?, ?)",
+                            sources_batch
                         )
-                
+                        conn.executemany(
+                            "INSERT INTO related (id, related_id) VALUES (?, ?)",
+                            related_batch
+                        )
+
                 # Update version info
-                import time
                 conn.execute(
                     """INSERT OR REPLACE INTO data_version (dataset, updated) VALUES (?, ?)""",
                     ('anime_offline_database', int(time.time())),
                 )
-                
-                # Clean up duplicates before creating indexes
-                self._cleanup_duplicates(conn)
-                
                 conn.commit()
                 logging.info(f"Loaded {len(anime_batch)} anime entries and {len(synonyms_batch)} synonyms")
-                
+
+                # After inserting all data, rebuild the FTS table from the content table
+                conn.execute("INSERT INTO anime_fts(anime_fts) VALUES('rebuild')")
+
         except Exception as e:
             logging.error(f"Error loading anime JSON to database: {str(e)}")
             raise
 
-    def _cleanup_duplicates(self, conn: sqlite3.Connection) -> None:
-        """Clean up duplicate entries by merging data according to priority rules"""
-        logging.info("Cleaning up duplicate entries...")
-        
-        # Set row_factory to None temporarily for the duplicate detection query
-        original_row_factory = conn.row_factory
-        conn.row_factory = None
-        
-        try:
-            # Find all duplicate groups (same title_lower and season_year)
-            cursor = conn.execute("""
-                SELECT title_lower, season_year, COUNT(*) as count
-                FROM anime_basics 
-                WHERE title_lower IS NOT NULL AND season_year IS NOT NULL
-                GROUP BY title_lower, season_year 
-                HAVING COUNT(*) > 1
-            """)
-            
-            duplicate_groups = cursor.fetchall()
-            logging.debug(f"Found duplicate groups query returned: {len(duplicate_groups)} groups")
-            
-            if not duplicate_groups:
-                logging.info("No duplicates found")
-                return
-            
-            logging.info(f"Found {len(duplicate_groups)} duplicate groups to clean up")
-            
-            status_priority = {
-                'FINISHED': 4,
-                'ONGOING': 3, 
-                'UPCOMING': 2,
-                'UNDEFINED': 1,
-                None: 0
-            }
-            
-            cleaned_count = 0
-            
-            # Restore row_factory for subsequent queries
-            conn.row_factory = sqlite3.Row
-            
-            for i, group in enumerate(duplicate_groups):
-                title_lower, season_year = group[0], group[1]  # Access by index since row_factory was None
-                logging.debug(f"Processing duplicate group {i+1}/{len(duplicate_groups)}: title='{title_lower}', year={season_year}")
-                
-                # Get all duplicates in this group
-                cursor = conn.execute("""
-                    SELECT * FROM anime_basics 
-                    WHERE title_lower = ? AND season_year = ?
-                """, (title_lower, season_year))
-                
-                duplicates = cursor.fetchall()
-                logging.debug(f"Found {len(duplicates)} duplicates for '{title_lower}' ({season_year})")
-                
-                if len(duplicates) < 2:
-                    logging.debug(f"Skipping group with only {len(duplicates)} entries")
-                    continue
-                
-                # Log the duplicate entries for debugging
-                for j, dup in enumerate(duplicates):
-                    logging.debug(f"  Duplicate {j+1}: id='{dup['id']}', episodes={dup['episodes']}, status='{dup['status']}', sources='{dup['sources'][:50]}...'")
-                
-                # Merge data according to priority rules
-                try:
-                    merged_data = self._merge_duplicate_data(duplicates, status_priority)
-                    logging.debug(f"Merged data: episodes={merged_data['episodes']}, status='{merged_data['status']}', sources_count={len(merged_data['sources'].split(',')) if merged_data['sources'] else 0}")
-                    
-                    # Update all records in the group with merged data
-                    for duplicate in duplicates:
-                        logging.debug(f"Updating record id='{duplicate['id']}'")
-                        conn.execute("""
-                            UPDATE anime_basics 
-                            SET episodes = ?, status = ?, sources = ?
-                            WHERE id = ?
-                        """, (
-                            merged_data['episodes'],
-                            merged_data['status'], 
-                            merged_data['sources'],
-                            duplicate['id']
-                        ))
-                    
-                    cleaned_count += len(duplicates)
-                    logging.debug(f"Successfully updated {len(duplicates)} records in group")
-                    
-                except Exception as e:
-                    logging.error(f"Error processing duplicate group '{title_lower}' ({season_year}): {str(e)}")
-                    continue
-            
-            logging.info(f"Cleaned up {cleaned_count} duplicate records in {len(duplicate_groups)} groups")
-            
-        finally:
-            # Always restore original row_factory
-            conn.row_factory = original_row_factory
-
-    def _merge_duplicate_data(self, duplicates: List[sqlite3.Row], status_priority: Dict[str, int]) -> Dict:
-        """Merge data from duplicate records according to priority rules"""
-        logging.debug(f"Merging data from {len(duplicates)} duplicate records")
-        
-        # Keep the largest episodes count
-        max_episodes = None
-        for i, dup in enumerate(duplicates):
-            episodes = dup['episodes']
-            logging.debug(f"  Record {i+1} episodes: {episodes}")
-            if episodes is not None:
-                if max_episodes is None or episodes > max_episodes:
-                    max_episodes = episodes
-        
-        logging.debug(f"Selected max episodes: {max_episodes}")
-        
-        # Prioritize status by defined priority order
-        best_status = None
-        best_priority = -1
-        for i, dup in enumerate(duplicates):
-            status = dup['status']
-            priority = status_priority.get(status, 0)
-            logging.debug(f"  Record {i+1} status: '{status}' (priority: {priority})")
-            
-            if priority > best_priority:
-                best_priority = priority
-                best_status = status
-        
-        logging.debug(f"Selected best status: '{best_status}' (priority: {best_priority})")
-        
-        # Merge sources from all duplicates
-        all_sources = set()
-        for i, dup in enumerate(duplicates):
-            sources_str = dup['sources']
-            logging.debug(f"  Record {i+1} sources: '{sources_str[:100] if sources_str else None}...'")
-            if sources_str:
-                sources = [s.strip() for s in sources_str.split(',') if s.strip()]
-                all_sources.update(sources)
-        
-        merged_sources = ','.join(sorted(all_sources)) if all_sources else ''
-        logging.debug(f"Merged sources count: {len(all_sources)}")
-        
-        result = {
-            'episodes': max_episodes,
-            'status': best_status,
-            'sources': merged_sources
-        }
-        
-        logging.debug(f"Final merged data: {result}")
-        return result
-
-    def _optimize_database_for_reads(self) -> None:
-        """Optimize database for read-only operations after data loading"""
-        logging.info("Optimizing anime database for read operations...")
-        
-        with sqlite3.connect(self._db_path, timeout=60.0) as conn:
-            # Create indexes for fast queries
-            conn.executescript(
-                """
-                -- Primary indexes for anime_basics
-                CREATE INDEX IF NOT EXISTS idx_anime_title_lower ON anime_basics(title_lower);
-                CREATE INDEX IF NOT EXISTS idx_anime_type ON anime_basics(type);
-                CREATE INDEX IF NOT EXISTS idx_anime_year ON anime_basics(season_year);
-                CREATE INDEX IF NOT EXISTS idx_anime_type_year ON anime_basics(type, season_year);
-                
-                -- Covering index for exact title matches
-                CREATE INDEX IF NOT EXISTS idx_anime_covering ON anime_basics(title_lower, season_year, type, title, episodes);
-                """
-            )
-            
-            # Optimize for read-only operations
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA wal_autocheckpoint=1000")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA cache_size=50000")
-            conn.execute("PRAGMA mmap_size=268435456")
-            
-            # Optimize database file
-            conn.execute("PRAGMA optimize")
-            conn.execute("PRAGMA incremental_vacuum")
-            
-            # Analyze tables for better query planning
-            conn.execute("ANALYZE")
-            
-            conn.commit()
-            logging.info("Anime database optimization complete")
-
     def find_title(self, title: str, year: Optional[int] = None) -> Optional[MatchResult]:
         """Find title information using database queries"""
         self.load_database()
-
-        # Check cache first
-        cache_key = f"{title.lower()}_{year}"
+        cache_key = f"{title.lower()}_{year if year else ''}"
         if cache_key in self._search_cache:
             return self._search_cache[cache_key]
-
-        best_match = None
-        best_score = 0
-
+        best_score = 200
         conn = self._get_connection()
         try:
-            # First try exact match in main titles
-            title_lower = title.lower()
-            
+            candidates = []
+            # 0. Try exact match first
             cursor = conn.execute(
-                """
-                SELECT * FROM search_view 
-                WHERE title_lower = ?
-                ORDER BY season_year DESC NULLS LAST
-                LIMIT 1
-                """,
-                (title_lower,)
+                "SELECT * FROM anime_synonym_view WHERE synonym = ?",
+                (title,)
             )
-            
-            exact_match = cursor.fetchone()
-            if exact_match:
-                score = 100 * self.TITLE_WEIGHTS['main']
-                
-                # Add year match bonus
-                if year and exact_match['season_year']:
-                    if exact_match['season_year'] == year:
-                        score += 20
-                    elif abs(exact_match['season_year'] - year) <= 1:
-                        score += 10
-                
-                # Add bonus for having episodes count
-                if exact_match['episodes']:
-                    score += 10
-                
-                if score > best_score:
-                    best_score = score
-                    best_match = exact_match
-
-            # Try exact match in synonyms
-            if not best_match:
+            candidates = cursor.fetchmany(1)
+            if candidates is None or len(candidates) == 0:
+                # 1. Build FTS5 query string for the title
+                fts_query = self._build_fts_query(title)
+                # 2. Query FTS5 table for candidate synonyms
                 cursor = conn.execute(
                     """
-                    SELECT a.*, s.relevance FROM anime_synonyms s
-                    JOIN search_view a ON s.anime_id = a.id
-                    WHERE s.title_lower = ?
-                    ORDER BY s.relevance DESC, a.season_year DESC NULLS LAST
-                    LIMIT 1
+                    SELECT s.id, s.title, bm25(anime_fts, 10.0) AS score
+                    FROM anime_fts f
+                    JOIN synonyms s ON f.rowid = s.rowid
+                    WHERE anime_fts MATCH ?
+                    ORDER BY score
                     """,
-                    (title_lower,)
+                    (fts_query,)
                 )
-                
-                synonym_match = cursor.fetchone()
-                if synonym_match:
-                    score = 100 * synonym_match['relevance']
-                    
-                    # Add year match bonus
-                    if year and synonym_match['season_year']:
-                        if synonym_match['season_year'] == year:
-                            score += 20
-                        elif abs(synonym_match['season_year'] - year) <= 1:
-                            score += 10
-                    
-                    if synonym_match['episodes']:
-                        score += 10
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_match = synonym_match
-
-            # If no exact match, try fuzzy matching using FTS5
-            if not best_match:
-                candidates = self._get_fuzzy_candidates(conn, title_lower, year)
-                
-                # Convert to search dict for fuzzy matching
-                search_dict = {row['id']: row['title'] for row in candidates}
-                
-                if search_dict:
-                    title_matches = process.extract(
-                        title, search_dict, scorer=fuzz.ratio, limit=10
-                    )
-
-                    for matched_title, fuzzy_score, row_id in title_matches:
-                        if fuzzy_score < 80:
-                            continue
-                        
-                        # Find the full row data
-                        row = next((r for r in candidates if r['id'] == row_id), None)
-                        if not row:
-                            continue
-
-                        total_score = fuzzy_score * self.TITLE_WEIGHTS['main']
-
-                        # Add year match bonus
-                        if year and row['season_year']:
-                            if row['season_year'] == year:
-                                total_score += 20
-                            elif abs(row['season_year'] - year) <= 1:
-                                total_score += 10
-
-                        # Add bonus for having episodes count
-                        if row['episodes']:
-                            total_score += 10
-
-                        if total_score > best_score:
-                            best_score = total_score
-                            best_match = row
-
+                candidates = cursor.fetchmany(50)
+            # 3. The first candidate is the top scorer, much better results than fuzzer
+            if candidates and len(candidates) > 0:
+                top_candidate = candidates[0]
+                anime_data = conn.execute(
+                    "SELECT * FROM anime_synonym_view WHERE id = ?", (top_candidate['id'],)
+                ).fetchone()
         finally:
             self._return_connection(conn)
-
-        if best_match:
-            title_info = self._create_title_info_from_row(best_match)
+        if anime_data:
+            title_info = self._create_title_info_from_row(anime_data)
             result = MatchResult(
                 info=title_info, score=best_score, provider_weight=self.provider_weight
             )
-
-            # Cache result with size management
             self._search_cache[cache_key] = result
             if len(self._search_cache) > 1000:
-                # Remove oldest entries
                 oldest_keys = list(self._search_cache.keys())[:500]
                 for key in oldest_keys:
                     del self._search_cache[key]
-
             return result
-
         return None
-
-    def _get_fuzzy_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[Dict]:
-        """Get optimized candidate list using FTS5"""
-        candidates = []
-        
-        # Strategy 1: FTS5 full-text search
-        try:
-            fts_query = self._build_fts_query(title_lower)
-            if year:
-                cursor = conn.execute(
-                    """
-                    SELECT s.*, fts.rank
-                    FROM anime_fts fts
-                    JOIN search_view s ON fts.rowid = s.rowid
-                    WHERE anime_fts MATCH ?
-                    AND (s.season_year BETWEEN ? AND ? OR s.season_year IS NULL)
-                    ORDER BY fts.rank
-                    LIMIT 100
-                """,
-                    (fts_query, year - 2, year + 2),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT s.*, fts.rank
-                    FROM anime_fts fts
-                    JOIN search_view s ON fts.rowid = s.rowid
-                    WHERE anime_fts MATCH ?
-                    ORDER BY fts.rank
-                    LIMIT 150
-                """,
-                    (fts_query,),
-                )
-            
-            fts_results = cursor.fetchall()
-            candidates.extend([dict(row) for row in fts_results])
-            
-        except Exception as e:
-            logging.debug(f"FTS search failed: {e}")
-        
-        return candidates[:200]  # Limit total candidates
 
     def _create_title_info_from_row(self, row) -> TitleInfo:
         """Create TitleInfo object from database row"""
-        # Map type integer back to string
-        type_map = {1: 'movie', 2: 'tvSeries'}
-        media_type = type_map.get(row['type'], 'tvSeries')
-        
+        # Use the already joined type and status text from the view if present
+        type_text = row['type'] if 'type' in row.keys() else "UNKNOWN"
+        # Look up the AnimeType enum
+        type_enum = AnimeType.__members__.get(type_text.upper(), AnimeType.UNKNOWN)
+        # Map the enum to the "anime_series" or "anime_movie"
+        if type_enum == AnimeType.MOVIE:
+            type_text = "anime_movie"
+        else:
+            type_text = "anime_series"
+
+        status_text = row['status'] if 'status' in row.keys() else "UNKNOWN"
         tags = row['tags'].split(',') if row['tags'] else []
-        sources = row['sources'].split(',') if row['sources'] else []
-        
+        # Get sources
+        try:
+            conn = self._get_connection()
+            cursor = conn.execute("SELECT url FROM sources WHERE id = ?", (row['id'],))
+            urls = cursor.fetchall()
+            sources = [r['url'] for r in urls]
+            # Prepend the myanimelist source to sources, construct it from the row['id']
+            if row['id']:
+                sources.insert(0, f"https://myanimelist.net/anime/{row['id']}")
+        finally:
+            self._return_connection(conn)
         return TitleInfo(
             id=row['id'],
             title=row['title'],
-            type=media_type,
-            year=row['season_year'],
-            status=row['status'],
+            type=type_text,
+            year=row['year'],
+            status=status_text,
             total_episodes=row['episodes'],
             tags=tags,
             sources=sources
@@ -705,77 +545,50 @@ class AnimeDataProvider(BaseMetadataProvider):
     def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode information if the title is a TV show"""
         self.load_database()
-
-        # Check cache for episode info
         episode_key = f"{parent_id}_{season}_{episode}"
         if episode_key in self._search_cache:
             return self._search_cache[episode_key]
-
         conn = self._get_connection()
         try:
-            # Find the anime by ID or in sources
             cursor = conn.execute(
-                """
-                SELECT * FROM search_view 
-                WHERE id = ? OR sources LIKE ?
-                LIMIT 1
-                """,
-                (parent_id, f'%{parent_id}%')
+                "SELECT * FROM anime_title WHERE id = ?",
+                (parent_id,)
             )
-
             row = cursor.fetchone()
             if row:
                 episode_info = EpisodeInfo(
-                    title=f"Episode {episode}",  # Anime databases typically don't have episode titles
+                    title=f"Episode {episode}",
                     season=season,
                     episode=episode,
                     parent_id=parent_id,
-                    year=row['season_year']
+                    year=row['year']
                 )
-                
-                # Cache the result
+                # Check if the title is a TV show
+                if episode is None:
+                    return None
                 self._search_cache[episode_key] = episode_info
                 return episode_info
-
         finally:
             self._return_connection(conn)
-
         return None
 
-    def _normalize_title(self, title: str) -> str:
-        """Normalize title for better searching"""
-        import re
-        
-        # Convert to lowercase
+    def _build_fts_query(self, title: str) -> str:
+        """Build FTS5 query from title for fuzzy search"""
+        # Normalize and tokenize
         normalized = title.lower()
-        
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+
         # Remove punctuation and special characters
         normalized = re.sub(r'[^\w\s]', ' ', normalized)
-        
-        # Remove extra spaces
-        normalized = ' '.join(normalized.split())
-        
+
+        # Remove words like "the", "a", "an" and other common stop words
+        normalized = re.sub(r'\b(the|a|an|and|of|in|to|for|with)\b', '', normalized)
+
+        # Remove common japanese stop words in romaji
+        normalized = re.sub(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
+
+        # Split into words and build FTS5 query
+        words = normalized.split()
+        normalized = ' OR '.join([f'{word}*' for word in words])
+
         return normalized
-    
-    def _build_fts_query(self, title: str) -> str:
-        """Build FTS5 query from title"""
-        # Normalize and tokenize
-        words = self._normalize_title(title).split()
-        
-        # Create FTS5 query with different strategies
-        if len(words) == 1:
-            # Single word - use prefix matching
-            return f'"{words[0]}"*'
-        elif len(words) <= 3:
-            # Few words - require all words (AND)
-            return ' AND '.join([f'"{word}"*' for word in words])
-        else:
-            # Many words - use phrase search for first few words
-            main_phrase = ' '.join(words[:3])
-            return f'"{main_phrase}"'
-    
-    def __del__(self):
-        """Clean up connection pool on destruction"""
-        while self._connection_pool:
-            conn = self._connection_pool.pop()
-            conn.close()

@@ -188,7 +188,7 @@ class SeriesCompletenessChecker:
             if title_metadata_key and title_metadata_key in self.file_grouper.title_metadata:
                 metadata = self.file_grouper.title_metadata[title_metadata_key]['metadata']
 
-                if 'series' in metadata.get('type', '').lower():
+                if 'series' or 'tv' in metadata.get('type', '').lower():
                     # For series series, check total episodes
                     total_episodes = metadata.get('total_episodes')
                     if total_episodes:
