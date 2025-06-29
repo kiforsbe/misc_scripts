@@ -233,12 +233,12 @@ class PlexMetadataProvider:
         try:
             # Normalize path for comparison
             normalized_path = Path(file_path).resolve().as_posix()
+            filename = os.path.basename(normalized_path)
             
             conn = self.connection_pool.get_connection()
             cursor = conn.cursor()
             
-            # Updated query to use correct Plex database schema
-            # First get the basic media information
+            # Updated query to match by filename as well as full path
             media_query = """
             SELECT 
                 md.id as metadata_item_id,
@@ -256,7 +256,7 @@ class PlexMetadataProvider:
                OR mp.file = ?
             """
             
-            cursor.execute(media_query, (f"%{normalized_path}%", file_path))
+            cursor.execute(media_query, (f"%{filename}%", file_path))
             media_result = cursor.fetchone()
             
             if media_result:
