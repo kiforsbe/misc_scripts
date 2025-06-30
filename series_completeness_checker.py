@@ -1,6 +1,11 @@
 import argparse
 import json
+import hashlib
+import subprocess
+import shlex
+import os
 import sys
+
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
@@ -284,12 +289,12 @@ class SeriesCompletenessChecker:
         
         # Get the directory of this script to find template files
         script_dir = Path(__file__).parent
-        
+
         # Read template files
         html_template_path = script_dir / 'series_completeness_webapp_template.html'
         css_template_path = script_dir / 'series_completeness_webapp_template.css'
         js_template_path = script_dir / 'series_completeness_webapp_template.js'
-        
+
         try:
             with open(html_template_path, 'r', encoding='utf-8') as f:
                 html_template = f.read()
@@ -299,7 +304,23 @@ class SeriesCompletenessChecker:
                 js_content = f.read()
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Template file not found: {e}. Make sure all template files are in the same directory as this script.")
-        
+
+        # --- Merge thumbnail index into results ---
+        # Try to find the thumbnail index JSON in the thumbnail dir (default or from config)
+        thumbnail_dir = results.get('thumbnail_dir') or os.path.expanduser('~/.video_thumbnail_cache')
+        thumbnail_index_path = os.path.join(thumbnail_dir, 'thumbnail_index.json')
+        thumbnail_index = []
+        if os.path.exists(thumbnail_index_path):
+            try:
+                with open(thumbnail_index_path, 'r', encoding='utf-8') as tf:
+                    loaded = json.load(tf)
+                    if isinstance(loaded, list):
+                        thumbnail_index = loaded
+            except Exception as e:
+                thumbnail_index = []
+                # Optionally print warning
+                # print(f"Warning: Could not load thumbnail index: {e}")
+        results['thumbnails'] = thumbnail_index
         # Prepare data for embedding (minify JSON)
         json_data = json.dumps(results, separators=(',', ':'), cls=CustomJSONEncoder)
         
@@ -473,6 +494,128 @@ class SeriesCompletenessChecker:
         
         print(line)
     
+def generate_video_thumbnails(
+    video_files: list,
+    thumbnail_dir: Optional[str] = None,
+    max_height: int = 576,
+    verbose: int = 1,
+    index_json: Optional[str] = None
+):
+    """
+    Generate static and animated webp thumbnails for each video file.
+    - static: 20% into the video
+    - animated: 10 frames, 1 per 10% of duration, 1 fps
+    Store in thumbnail_dir, filenames as hash of full path + suffix.
+    Write an index JSON with video path and thumbnail paths.
+    Only generate thumbnails if missing.
+    """
+    from pathlib import Path
+    import tempfile
+
+    if thumbnail_dir is None:
+        thumbnail_dir = os.path.expanduser("~/.video_thumbnail_cache")
+    else:
+        thumbnail_dir = os.path.expanduser(thumbnail_dir)
+    os.makedirs(thumbnail_dir, exist_ok=True)
+
+    index = []
+    for video_path in tqdm(video_files, desc="Generating thumbnails", unit="file", disable=verbose < 1):
+        video_path_str = str(video_path)
+        # Hash the full path for filename
+        h = hashlib.sha256(video_path_str.encode("utf-8")).hexdigest()
+        static_thumb = os.path.join(thumbnail_dir, f"{h}_static.webp")
+        video_thumb = os.path.join(thumbnail_dir, f"{h}_video.webp")
+
+        # Check if both thumbnails already exist
+        static_exists = os.path.exists(static_thumb)
+        video_exists = os.path.exists(video_thumb)
+        if static_exists and video_exists:
+            # Both thumbnails exist, just add to index
+            index.append({
+                "video": video_path_str,
+                "static_thumbnail": static_thumb,
+                "animated_thumbnail": video_thumb
+            })
+            continue
+
+        # Get video duration (in seconds)
+        try:
+            cmd = [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path_str
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            duration = float(result.stdout.strip())
+        except Exception as e:
+            if verbose:
+                print(f"Could not get duration for {video_path_str}: {e}")
+            continue
+        if duration <= 0:
+            if verbose:
+                print(f"Invalid duration for {video_path_str}")
+            continue
+
+        # Generate static thumbnail (20% in) if missing
+        if not static_exists:
+            static_time = duration * 0.2
+            static_cmd = [
+                "ffmpeg", "-y", "-ss", str(static_time), "-i", video_path_str,
+                "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", static_thumb
+            ]
+            try:
+                proc = subprocess.run(static_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                if verbose:
+                    print(f"Failed to generate static thumbnail for {video_path_str}: {e}\nffmpeg stderr:\n{e.stderr.decode(errors='ignore')}")
+                static_thumb = None
+        # Generate animated thumbnail (10 frames, 1 per 10% interval) if missing
+        if not video_exists:
+            frame_times = [duration * (i / 10) for i in range(10)]
+            with tempfile.TemporaryDirectory() as tmpdir:
+                frame_files = []
+                for idx, t in enumerate(frame_times):
+                    frame_file = os.path.join(tmpdir, f"frame_{idx:02d}.webp")
+                    frame_cmd = [
+                        "ffmpeg", "-y", "-ss", str(t), "-i", video_path_str,
+                        "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", frame_file
+                    ]
+                    try:
+                        subprocess.run(frame_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        frame_files.append(frame_file)
+                    except subprocess.CalledProcessError as e:
+                        if verbose:
+                            print(f"Failed to extract frame {idx} for {video_path_str}: {e}\nffmpeg stderr:\n{e.stderr.decode(errors='ignore')}")
+                # Combine frames into animated webp (1 fps, 10 frames)
+                if frame_files:
+                    anim_cmd = [
+                        "ffmpeg", "-y", "-framerate", "1", "-i", os.path.join(tmpdir, "frame_%02d.webp"),
+                        "-vf", f"scale=-2:{max_height}", "-loop", "0", "-f", "webp", video_thumb
+                    ]
+                    try:
+                        subprocess.run(anim_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    except subprocess.CalledProcessError as e:
+                        if verbose:
+                            print(f"Failed to generate animated thumbnail for {video_path_str}: {e}\nffmpeg stderr:\n{e.stderr.decode(errors='ignore')}")
+                        video_thumb = None
+                else:
+                    video_thumb = None
+
+        # Check again if files exist after attempted generation
+        static_thumb_final = static_thumb if static_thumb and os.path.exists(static_thumb) else None
+        video_thumb_final = video_thumb if video_thumb and os.path.exists(video_thumb) else None
+        index.append({
+            "video": video_path_str,
+            "static_thumbnail": static_thumb_final,
+            "animated_thumbnail": video_thumb_final
+        })
+
+    # Write index JSON
+    if index_json is None:
+        index_json = os.path.join(thumbnail_dir, "thumbnail_index.json")
+    with open(index_json, "w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2, ensure_ascii=False)
+    if verbose:
+        print(f"Thumbnail index written to {index_json}")
+
 def main():
     """Command-line interface for series completeness checker."""
     parser = argparse.ArgumentParser(
@@ -489,7 +632,9 @@ Examples:
   %(prog)s /path/to/series --status-filter "-unknown -no_metadata"
   %(prog)s /path/to/series --status-filter "+incomplete -complete_with_extras"
   %(prog)s /path/to/series --show-metadata year rating
-  %(prog)s /path/to/series --show-metadata genres director --status-filter "complete"        """
+  %(prog)s /path/to/series --show-metadata genres director --status-filter "complete"
+  %(prog)s /path/to/series --generate-thumbnails --thumbnail-dir ~/.video_thumbnail_cache
+        """
     )
     parser.add_argument('input_paths', nargs='+',
                        help='Input paths to search for series files')
@@ -519,6 +664,10 @@ Examples:
                        help='Show metadata fields in summary lines. Available fields depend on metadata source. '
                             'Common fields: year, rating, genres, director, actors, plot, runtime, imdb_id. '
                             'Example: --show-metadata year rating genres')
+    parser.add_argument('--generate-thumbnails', action='store_true',
+                       help='Generate static and animated webp thumbnails for each video file and store in thumbnail dir')
+    parser.add_argument('--thumbnail-dir', default='~/.video_thumbnail_cache',
+                       help='Directory to store video thumbnails (default: ~/.video_thumbnail_cache)')
     
     args = parser.parse_args()
     
@@ -551,7 +700,6 @@ Examples:
     # Discover files
     if verbosity >= 1:
         print("Discovering series files...")
-    
     files = checker.file_grouper.discover_files(
         args.input_paths,
         args.exclude_paths,
@@ -559,19 +707,25 @@ Examples:
         args.exclude_patterns,
         args.recursive
     )
-    
     if not files:
         if verbosity >= 1:
             print("No series files found matching criteria.")
         return
-    
+
+    if args.generate_thumbnails:
+        generate_video_thumbnails(
+            video_files=files,
+            thumbnail_dir=args.thumbnail_dir,
+            max_height=576,
+            verbose=verbosity,
+            index_json=None
+        )
+        # Do not return here; continue to analysis and export
     if verbosity >= 1:
         print(f"Found {len(files)} files")
         print("Analyzing series collection for completeness...")
-    
     # Analyze collection
     results = checker.analyze_series_collection(files)
-    
     # Filter results if requested
     status_filters = None
     if args.status_filter:

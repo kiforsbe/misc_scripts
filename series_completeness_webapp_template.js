@@ -13,10 +13,38 @@ class SeriesCompletenessApp {
             partiallyWatched: true,
             fullyWatched: true
         };
-        
+        // --- Thumbnails index ---
+        this.thumbnails = SERIES_DATA.thumbnails || [];
+        this.thumbnailMap = this.buildThumbnailMap(this.thumbnails);
         this.init();
     }
-    
+
+    buildThumbnailMap(thumbnails) {
+        // Map by absolute path for fast lookup
+        const map = {};
+        for (const entry of thumbnails) {
+            if (entry && entry.video) {
+                map[entry.video] = entry;
+            }
+        }
+        return map;
+    }
+
+    getFileThumbnail(file) {
+        // Try to match by file.path or file.filename
+        if (!file) return null;
+        let key = file.path || file.filename;
+        if (!key) return null;
+        // Try exact match
+        if (this.thumbnailMap[key]) return this.thumbnailMap[key];
+        // Try basename match (fallback)
+        const base = key.split(/[/\\]/).pop();
+        for (const k in this.thumbnailMap) {
+            if (k.split(/[/\\]/).pop() === base) return this.thumbnailMap[k];
+        }
+        return null;
+    }
+
     init() {
         this.setupEventListeners();
         this.updateHeaderStats();
@@ -308,12 +336,10 @@ class SeriesCompletenessApp {
         if (!series.episode_numbers || series.episode_numbers.length === 0) {
             return '';
         }
-        
         const found = new Set(series.episode_numbers);
         const missing = new Set(series.missing_episodes || []);
         const extra = new Set(series.extra_episodes || []);
         const watched = new Set();
-        
         // Get watched episodes
         series.files.forEach(file => {
             const plexStatus = file.plex_watch_status;
@@ -326,18 +352,24 @@ class SeriesCompletenessApp {
                 }
             }
         });
-        
+        // Map episode number to file (for thumbnail lookup)
+        const episodeToFile = {};
+        series.files.forEach(file => {
+            let eps = file.episode;
+            if (Array.isArray(eps)) {
+                eps.forEach(ep => { if (!episodeToFile[ep]) episodeToFile[ep] = file; });
+            } else if (eps != null) {
+                if (!episodeToFile[eps]) episodeToFile[eps] = file;
+            }
+        });
         const maxEpisode = Math.max(
             ...series.episode_numbers,
             ...(series.episodes_expected ? [series.episodes_expected] : [])
         );
-        
         let grid = '<div class="details-card"><h4 class="card-title"><i class="bi bi-grid-3x3"></i>Episode Grid</h4><div class="episode-grid">';
-        
         for (let i = 1; i <= maxEpisode; i++) {
             let className = 'episode-number ';
             let title = `Episode ${i}`;
-            
             if (watched.has(i)) {
                 className += 'episode-watched';
                 title += ' (Watched)';
@@ -351,10 +383,16 @@ class SeriesCompletenessApp {
                 className += 'episode-missing';
                 title += ' (Missing)';
             }
-            
-            grid += `<div class="${className}" title="${title}">${i}</div>`;
+            // --- Make the box itself the thumbnail background ---
+            let thumbBg = '';
+            const file = episodeToFile[i];
+            const thumb = this.getFileThumbnail(file);
+            const thumbUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
+            if (thumbUrl) {
+                thumbBg = `<img class=\"episode-thumb-bg\" src=\"${thumbUrl}\" alt=\"thumb\" loading=\"lazy\">`;
+            }
+            grid += `<div class="${className}" title="${title}">${thumbBg}<span class="ep-num">${i}</span></div>`;
         }
-        
         grid += '</div></div>';
         return grid;
     }
@@ -363,28 +401,33 @@ class SeriesCompletenessApp {
         if (!series.files || series.files.length === 0) {
             return '<p class="text-muted">No files found</p>';
         }
-        
         return `
             <div class="files-list">
                 ${series.files.map(file => {
                     const plexStatus = file.plex_watch_status || {};
                     const watchIndicator = plexStatus.watched ? 'watched' : 
                         (plexStatus.view_offset > 0 ? 'partially-watched' : 'unwatched');
-                    
+                    const thumb = this.getFileThumbnail(file);
+                    const thumbUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
                     return `
-                        <div class="file-item">
-                            <div class="file-name" title="${this.escapeHtml(file.filename || file.path)}">
-                                ${this.escapeHtml(this.getFileName(file.filename || file.path))}
+                        <div class="file-item file-item-with-thumb">
+                            <div class="file-thumb">
+                                ${thumbUrl ? `<img src="${thumbUrl}" alt="thumbnail" loading="lazy">` : '<div class="file-thumb-placeholder"></div>'}
                             </div>
-                            <div class="file-meta">
-                                <span>
-                                    <span class="watch-indicator ${watchIndicator}"></span>
-                                    ${plexStatus.watched ? 'Watched' : 
-                                      (plexStatus.view_offset > 0 ? 'Partially Watched' : 'Unwatched')}
-                                </span>
-                                ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}
-                                ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
-                                ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
+                            <div class="file-info">
+                                <div class="file-name" title="${this.escapeHtml(file.filename || file.path)}">
+                                    ${this.escapeHtml(this.getFileName(file.filename || file.path))}
+                                </div>
+                                <div class="file-meta">
+                                    <span>
+                                        <span class="watch-indicator ${watchIndicator}"></span>
+                                        ${plexStatus.watched ? 'Watched' : 
+                                          (plexStatus.view_offset > 0 ? 'Partially Watched' : 'Unwatched')}
+                                    </span>
+                                    ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}
+                                    ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
+                                    ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
+                                </div>
                             </div>
                         </div>
                     `;
@@ -501,6 +544,75 @@ class SeriesCompletenessApp {
         return div.innerHTML;
     }
 }
+
+/* Add to the bottom of the file for custom thumbnail scaling and overlays */
+// Ensure this runs after the DOM is loaded
+document.addEventListener('DOMContentLoaded', () => {
+    // Add/override CSS for thumbnail scaling
+    const style = document.createElement('style');
+    style.textContent = `
+    /* Files list thumbnail: increase by 20% (161px * 1.2 = 193.2px, round to 193px), right margin 6px */
+    .file-thumb img,
+    .file-thumb-placeholder {
+        width: 193px;
+        height: 108px; /* keep 16:9 aspect ratio */
+        object-fit: cover;
+        border-radius: 6px;
+        background: #222;
+        display: block;
+    }
+    .file-thumb {
+        min-width: 193px;
+        min-height: 108px;
+        max-width: 193px;
+        max-height: 108px;
+        margin-right: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .file-item-with-thumb {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.125rem;
+    }
+    /* Episode grid: make the box itself the thumbnail, overlay info */
+    .episode-number {
+        position: relative;
+        width: 64px;
+        height: 36px;
+        border-radius: 4px;
+        overflow: hidden;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        margin: 2px;
+        background: #222;
+        border: 2px solid #888;
+    }
+    .episode-number.episode-watched { border-color: #28a745; }
+    .episode-number.episode-found { border-color: #007bff; }
+    .episode-number.episode-extra { border-color: #ffc107; }
+    .episode-number.episode-missing { border-color: #dc3545; }
+    .episode-thumb-bg {
+        position: absolute;
+        top: 0; left: 0; width: 100%; height: 100%;
+        object-fit: cover;
+        z-index: 1;
+        filter: brightness(0.85) contrast(1.1);
+    }
+    .ep-num {
+        position: relative;
+        z-index: 2;
+        color: #fff;
+        font-weight: bold;
+        text-shadow: 0 1px 2px #000, 0 0 2px #000;
+        font-size: 1.1em;
+        margin-bottom: 2px;
+    }
+    `;
+    document.head.appendChild(style);
+});
 
 // Initialize the app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
