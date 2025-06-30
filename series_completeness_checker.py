@@ -504,13 +504,16 @@ def generate_video_thumbnails(
     """
     Generate static and animated webp thumbnails for each video file.
     - static: 20% into the video
-    - animated: 10 frames, 1 per 10% of duration, 1 fps
+    - animated: 19 frames, 1 per 5% of duration (from 5% to 95%), 2 fps
     Store in thumbnail_dir, filenames as hash of full path + suffix.
     Write an index JSON with video path and thumbnail paths.
     Only generate thumbnails if missing.
     """
     from pathlib import Path
     import tempfile
+
+    # Always use 480p for thumbnails
+    max_height = 480
 
     if thumbnail_dir is None:
         thumbnail_dir = os.path.expanduser("~/.video_thumbnail_cache")
@@ -559,7 +562,7 @@ def generate_video_thumbnails(
             static_time = duration * 0.2
             static_cmd = [
                 "ffmpeg", "-y", "-ss", str(static_time), "-i", video_path_str,
-                "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", static_thumb
+                "-vframes", "1", "-vf", f"scale=-2:480", "-f", "webp", static_thumb
             ]
             try:
                 proc = subprocess.run(static_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -567,16 +570,17 @@ def generate_video_thumbnails(
                 if verbose:
                     print(f"Failed to generate static thumbnail for {video_path_str}: {e}\nffmpeg stderr:\n{e.stderr.decode(errors='ignore')}")
                 static_thumb = None
-        # Generate animated thumbnail (10 frames, 1 per 10% interval) if missing
+        # Generate animated thumbnail (19 frames, 1 per 5% interval from 5% to 95%) if missing
         if not video_exists:
-            frame_times = [duration * (i / 10) for i in range(10)]
+            # 5% to 95% (inclusive), step 5%: 19 frames
+            frame_times = [duration * (i / 100) for i in range(5, 100, 5)]
             with tempfile.TemporaryDirectory() as tmpdir:
                 frame_files = []
                 for idx, t in enumerate(frame_times):
                     frame_file = os.path.join(tmpdir, f"frame_{idx:02d}.webp")
                     frame_cmd = [
                         "ffmpeg", "-y", "-ss", str(t), "-i", video_path_str,
-                        "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", frame_file
+                        "-vframes", "1", "-vf", f"scale=-2:480", "-f", "webp", frame_file
                     ]
                     try:
                         subprocess.run(frame_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -584,11 +588,11 @@ def generate_video_thumbnails(
                     except subprocess.CalledProcessError as e:
                         if verbose:
                             print(f"Failed to extract frame {idx} for {video_path_str}: {e}\nffmpeg stderr:\n{e.stderr.decode(errors='ignore')}")
-                # Combine frames into animated webp (1 fps, 10 frames)
+                # Combine frames into animated webp (2 fps, 19 frames)
                 if frame_files:
                     anim_cmd = [
-                        "ffmpeg", "-y", "-framerate", "1", "-i", os.path.join(tmpdir, "frame_%02d.webp"),
-                        "-vf", f"scale=-2:{max_height}", "-loop", "0", "-f", "webp", video_thumb
+                        "ffmpeg", "-y", "-framerate", "2", "-i", os.path.join(tmpdir, "frame_%02d.webp"),
+                        "-vf", f"scale=-2:480", "-loop", "0", "-f", "webp", video_thumb
                     ]
                     try:
                         subprocess.run(anim_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

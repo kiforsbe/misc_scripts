@@ -405,12 +405,22 @@ class SeriesCompletenessApp {
             let thumbBg = '';
             const file = episodeToFile[i];
             const thumb = this.getFileThumbnail(file);
-            const thumbUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
-            if (thumbUrl) {
-                thumbBg = `<img class=\"episode-thumb-bg\" src=\"${thumbUrl}\" alt=\"thumb\" loading=\"lazy\">`;
+            const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
+            const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
+            if (staticUrl) {
+                // Add mouse events for animated thumbnail
+                thumbBg = `
+                    <img class="episode-thumb-bg" src="${staticUrl}" alt="thumb" loading="lazy"
+                        ${animUrl ? `
+                            data-static="${staticUrl}" data-anim="${animUrl}"
+                            onmouseenter="app._swapToAnimThumb(this)" 
+                            onmouseleave="app._swapToStaticThumb(this)"
+                        ` : ''}
+                    >
+                `;
             }
             // Top-left: episode number, Top-right: status icon (SVG)
-            grid += `<div class="${className}" title="${title}">${thumbBg}<span class=\"ep-corner ep-num-corner\">${i}</span><span class=\"ep-corner ep-status-corner\">${icon}</span></div>`;
+            grid += `<div class="${className}" title="${title}">${thumbBg}<span class="ep-corner ep-num-corner">${i}</span><span class="ep-corner ep-status-corner">${icon}</span></div>`;
         }
         grid += '</div></div>';
         return grid;
@@ -422,16 +432,27 @@ class SeriesCompletenessApp {
         }
         return `
             <div class="files-list">
-                ${series.files.map(file => {
+                ${series.files.map((file, idx) => {
                     const plexStatus = file.plex_watch_status || {};
                     const watchIndicator = plexStatus.watched ? 'watched' : 
                         (plexStatus.view_offset > 0 ? 'partially-watched' : 'unwatched');
                     const thumb = this.getFileThumbnail(file);
-                    const thumbUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
+                    const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
+                    const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
+                    // Give the image a unique id for lookup
+                    const imgId = `file-thumb-img-${idx}`;
+                    // Attach mouse events to the file-item div
                     return `
-                        <div class="file-item file-item-with-thumb">
+                        <div class="file-item file-item-with-thumb"
+                            ${animUrl ? `
+                                onmouseenter="app._swapToAnimThumbById('${imgId}', '${animUrl}')"
+                                onmouseleave="app._swapToStaticThumbById('${imgId}', '${staticUrl}')"
+                            ` : ''}
+                        >
                             <div class="file-thumb">
-                                ${thumbUrl ? `<img src="${thumbUrl}" alt="thumbnail" loading="lazy">` : '<div class="file-thumb-placeholder"></div>'}
+                                ${staticUrl ? `
+                                    <img id="${imgId}" src="${staticUrl}" alt="thumbnail" loading="lazy">
+                                ` : '<div class="file-thumb-placeholder"></div>'}
                             </div>
                             <div class="file-info">
                                 <div class="file-name" title="${this.escapeHtml(file.filename || file.path)}">
@@ -453,6 +474,26 @@ class SeriesCompletenessApp {
                 }).join('')}
             </div>
         `;
+    }
+
+    // --- Animated thumbnail swap handlers ---
+    _swapToAnimThumb(img) {
+        if (img.dataset.anim) {
+            img.src = img.dataset.anim;
+        }
+    }
+    _swapToStaticThumb(img) {
+        if (img.dataset.static) {
+            img.src = img.dataset.static;
+        }
+    }
+    _swapToAnimThumbById(imgId, animUrl) {
+        const img = document.getElementById(imgId);
+        if (img && animUrl) img.src = animUrl;
+    }
+    _swapToStaticThumbById(imgId, staticUrl) {
+        const img = document.getElementById(imgId);
+        if (img && staticUrl) img.src = staticUrl;
     }
     
     navigateList(direction) {
