@@ -336,6 +336,11 @@ class SeriesCompletenessApp {
         if (!series.episode_numbers || series.episode_numbers.length === 0) {
             return '';
         }
+        // Determine the full range of episodes to show (from 1 to max expected or found)
+        const maxEpisode = Math.max(
+            ...series.episode_numbers,
+            ...(series.episodes_expected ? [series.episodes_expected] : [])
+        );
         const found = new Set(series.episode_numbers);
         const missing = new Set(series.missing_episodes || []);
         const extra = new Set(series.extra_episodes || []);
@@ -362,28 +367,41 @@ class SeriesCompletenessApp {
                 if (!episodeToFile[eps]) episodeToFile[eps] = file;
             }
         });
-        const maxEpisode = Math.max(
-            ...series.episode_numbers,
-            ...(series.episodes_expected ? [series.episodes_expected] : [])
-        );
+        // Status icons (SVG for high contrast)
+        const statusIcons = {
+            watched: '<svg width="24" height="24" viewBox="0 0 24 24" fill="#28a745" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="#28a745"/><polyline points="8 12.5 11 15.5 16 9.5" fill="none"/></svg>',
+            found:   '<svg width="24" height="24" viewBox="0 0 24 24" fill="#007bff" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2" fill="#007bff"/><polygon points="10,9 16,12 10,15" fill="#fff"/></svg>',
+            extra:   '<svg width="24" height="24" viewBox="0 0 24 24" fill="#ffc107" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="#ffc107"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>',
+            missing: '<svg width="24" height="24" viewBox="0 0 24 24" fill="#dc3545" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="#dc3545"/><line x1="8" y1="8" x2="16" y2="16"/><line x1="16" y1="8" x2="8" y2="16"/></svg>'
+        };
         let grid = '<div class="details-card"><h4 class="card-title"><i class="bi bi-grid-3x3"></i>Episode Grid</h4><div class="episode-grid">';
         for (let i = 1; i <= maxEpisode; i++) {
             let className = 'episode-number ';
             let title = `Episode ${i}`;
+            let status = '';
+            let icon = '';
             if (watched.has(i)) {
                 className += 'episode-watched';
                 title += ' (Watched)';
+                status = 'watched';
+                icon = statusIcons.watched;
             } else if (found.has(i)) {
                 className += 'episode-found';
                 title += ' (Available)';
+                status = 'found';
+                icon = statusIcons.found;
             } else if (extra.has(i)) {
                 className += 'episode-extra';
                 title += ' (Extra)';
+                status = 'extra';
+                icon = statusIcons.extra;
             } else {
                 className += 'episode-missing';
                 title += ' (Missing)';
+                status = 'missing';
+                icon = statusIcons.missing;
             }
-            // --- Make the box itself the thumbnail background ---
+            // Always render a box for every episode in the range
             let thumbBg = '';
             const file = episodeToFile[i];
             const thumb = this.getFileThumbnail(file);
@@ -391,7 +409,8 @@ class SeriesCompletenessApp {
             if (thumbUrl) {
                 thumbBg = `<img class=\"episode-thumb-bg\" src=\"${thumbUrl}\" alt=\"thumb\" loading=\"lazy\">`;
             }
-            grid += `<div class="${className}" title="${title}">${thumbBg}<span class="ep-num">${i}</span></div>`;
+            // Top-left: episode number, Top-right: status icon (SVG)
+            grid += `<div class="${className}" title="${title}">${thumbBg}<span class=\"ep-corner ep-num-corner\">${i}</span><span class=\"ep-corner ep-status-corner\">${icon}</span></div>`;
         }
         grid += '</div></div>';
         return grid;
@@ -544,75 +563,6 @@ class SeriesCompletenessApp {
         return div.innerHTML;
     }
 }
-
-/* Add to the bottom of the file for custom thumbnail scaling and overlays */
-// Ensure this runs after the DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-    // Add/override CSS for thumbnail scaling
-    const style = document.createElement('style');
-    style.textContent = `
-    /* Files list thumbnail: increase by 20% (161px * 1.2 = 193.2px, round to 193px), right margin 6px */
-    .file-thumb img,
-    .file-thumb-placeholder {
-        width: 193px;
-        height: 108px; /* keep 16:9 aspect ratio */
-        object-fit: cover;
-        border-radius: 6px;
-        background: #222;
-        display: block;
-    }
-    .file-thumb {
-        min-width: 193px;
-        min-height: 108px;
-        max-width: 193px;
-        max-height: 108px;
-        margin-right: 6px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    .file-item-with-thumb {
-        display: flex;
-        align-items: flex-start;
-        gap: 0.125rem;
-    }
-    /* Episode grid: make the box itself the thumbnail, overlay info */
-    .episode-number {
-        position: relative;
-        width: 64px;
-        height: 36px;
-        border-radius: 4px;
-        overflow: hidden;
-        display: flex;
-        align-items: flex-end;
-        justify-content: center;
-        margin: 2px;
-        background: #222;
-        border: 2px solid #888;
-    }
-    .episode-number.episode-watched { border-color: #28a745; }
-    .episode-number.episode-found { border-color: #007bff; }
-    .episode-number.episode-extra { border-color: #ffc107; }
-    .episode-number.episode-missing { border-color: #dc3545; }
-    .episode-thumb-bg {
-        position: absolute;
-        top: 0; left: 0; width: 100%; height: 100%;
-        object-fit: cover;
-        z-index: 1;
-        filter: brightness(0.85) contrast(1.1);
-    }
-    .ep-num {
-        position: relative;
-        z-index: 2;
-        color: #fff;
-        font-weight: bold;
-        text-shadow: 0 1px 2px #000, 0 0 2px #000;
-        font-size: 1.1em;
-        margin-bottom: 2px;
-    }
-    `;
-    document.head.appendChild(style);
-});
 
 // Initialize the app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
