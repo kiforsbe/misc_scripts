@@ -138,6 +138,10 @@ class SeriesCompletenessApp {
             const statusClass = `status-${series.status}`;
             const statusIcon = this.getStatusIcon(series.status);
             
+            // Calculate watch progress
+            const watchStatus = series.watch_status || {};
+            const watchedPercent = watchStatus.completion_percent || 0;
+            
             return `
                 <div class="series-item" data-series-key="${series.key}" onclick="app.selectSeries('${series.key}')">
                     <div class="series-title">${this.escapeHtml(titleWithSeason)}</div>
@@ -145,7 +149,10 @@ class SeriesCompletenessApp {
                         <span class="series-status ${statusClass}">
                             ${statusIcon} ${this.formatStatus(series.status)}
                         </span>
-                        <span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>
+                        <div>
+                          <span class="watch-count">${watchStatus.watched_episodes}</span>
+                          <span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>
+                        </div>
                     </div>
                 </div>
             `;
@@ -175,15 +182,19 @@ class SeriesCompletenessApp {
         const titleWithSeason = series.title + (series.season ? ` Season ${series.season}` : '');
         const statusClass = `status-${series.status}`;
         const statusIcon = this.getStatusIcon(series.status);
-        
-        // Calculate watch progress
-        const watchStatus = series.watch_status || {};
-        const watchedPercent = watchStatus.completion_percent || 0;
-        
+
+        const title_metadata_key = series.files[0].title_metadata_key || '';
+        const title_metadata = this.data.title_metadata[title_metadata_key] || {};
+
+        // Get MyAnimeList source if available. title_metadata.sources is an array of strings, that we then need to filder out the right source from
+        const myanimeList_source_url = title_metadata.sources ?
+            title_metadata.sources.find(source => source.toLowerCase().includes('myanimelist')) || null
+            : null;
+
         const container = document.getElementById('series-details');
         container.innerHTML = `
             <div class="details-header">
-                <h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2>
+                <a href="${myanimeList_source_url}"><h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2></a>
                 <div class="details-subtitle">
                     ${series.episodes_found} episodes found${series.episodes_expected ? ` of ${series.episodes_expected} expected` : ''}
                 </div>

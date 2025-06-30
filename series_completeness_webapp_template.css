@@ -199,6 +199,11 @@ body {
 
 .episode-count {
     font-weight: 600;
+    color: var(--success-color);
+}
+
+.watch-count {
+    font-weight: 600;
     color: var(--primary-color);
 }
 
