@@ -99,6 +99,14 @@ def guessit_wrapper(filename, options=None):
                 "episode_title": re.split(r"\s+\d+|(?=\s+(?:AMZN|WEB|BluRay|BD|HDTV|DDP|AAC|H\.?264|HEVC|x265|FLUX|-\w+|\[))", m.group('episode_title').strip(" .-"))[0].strip(" .-"),
             }
         ),
+        # [Group] Title - NCOP/NCED/Preview (specials, e.g. [Group] Title Preview [..])
+        (
+            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode_title>NCOP|NCED|Preview)(?= \[|$)"),
+            lambda m: {
+                "title": m.group('title').strip(),
+                "episode_title": m.group('episode_title').strip(),
+            }
+        ),
     ]
 
     # Movie title (apply first)
