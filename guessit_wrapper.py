@@ -69,6 +69,15 @@ def guessit_wrapper(filename, options=None):
                 "episode_title": None,
             }
         ),
+        # [Group] Title <epnum> [ ... ] (season 1, episode N, trailing episode in title is stripped)
+        (
+            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode>\d+)(?= \[)"),
+            lambda m: {
+                "title": m.group('title').strip(),
+                "season": 1,
+                "episode": int(m.group('episode')),
+            }
+        ),
         # [Group] Title - Part2 - Part3 (triple part, only if part3 is not all digits)
         (
             re.compile(group_prefix + r"(?P<part1>.+?) - (?P<part2>.+?) - (?P<part3>.+?)(?=\(|\[|\d|$)"),
