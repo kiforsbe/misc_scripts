@@ -497,7 +497,7 @@ class SeriesCompletenessChecker:
 def generate_video_thumbnails(
     video_files: list,
     thumbnail_dir: Optional[str] = None,
-    max_height: int = 576,
+    max_height: int = 480,
     verbose: int = 1,
     index_json: Optional[str] = None
 ):
@@ -508,12 +508,10 @@ def generate_video_thumbnails(
     Store in thumbnail_dir, filenames as hash of full path + suffix.
     Write an index JSON with video path and thumbnail paths.
     Only generate thumbnails if missing.
+    Handles OOM errors by skipping problematic frames.
     """
     from pathlib import Path
     import tempfile
-
-    # Always use 480p for thumbnails
-    max_height = 480
 
     if thumbnail_dir is None:
         thumbnail_dir = os.path.expanduser("~/.video_thumbnail_cache")
@@ -524,16 +522,13 @@ def generate_video_thumbnails(
     index = []
     for video_path in tqdm(video_files, desc="Generating thumbnails", unit="file", disable=verbose < 1):
         video_path_str = str(video_path)
-        # Hash the full path for filename
         h = hashlib.sha256(video_path_str.encode("utf-8")).hexdigest()
         static_thumb = os.path.join(thumbnail_dir, f"{h}_static.webp")
         video_thumb = os.path.join(thumbnail_dir, f"{h}_video.webp")
 
-        # Check if both thumbnails already exist
         static_exists = os.path.exists(static_thumb)
         video_exists = os.path.exists(video_thumb)
         if static_exists and video_exists:
-            # Both thumbnails exist, just add to index
             index.append({
                 "video": video_path_str,
                 "static_thumbnail": static_thumb,
@@ -557,38 +552,52 @@ def generate_video_thumbnails(
                 print(f"Invalid duration for {video_path_str}")
             continue
 
-        # Generate static thumbnail (20% in) if missing
+        # --- Static thumbnail (20% in) ---
         if not static_exists:
             static_time = duration * 0.2
             static_cmd = [
                 "ffmpeg", "-y", "-ss", str(static_time), "-i", video_path_str,
-                "-vframes", "1", "-vf", f"scale=-2:480", "-f", "webp", static_thumb
+                "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", static_thumb
             ]
             try:
-                proc = subprocess.run(static_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                subprocess.run(static_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             except subprocess.CalledProcessError as e:
                 if verbose:
                     print(f"Failed to generate static thumbnail for {video_path_str}: {e}\nffmpeg stderr:\n{e.stderr.decode(errors='ignore')}")
                 static_thumb = None
-        # Generate animated thumbnail (19 frames, 1 per 5% interval from 5% to 95%) if missing
+
+        # --- Animated thumbnail (extract frames, skip failed frames) ---
         if not video_exists:
-            # 5% to 95% (inclusive), step 5%: 19 frames
             frame_times = [duration * (i / 100) for i in range(5, 100, 5)]
             with tempfile.TemporaryDirectory() as tmpdir:
                 frame_files = []
                 for idx, t in enumerate(frame_times):
                     frame_file = os.path.join(tmpdir, f"frame_{idx:02d}.webp")
+                    # Use input seeking (before -i) for speed, also, use -noaccurate_seek to allow ffmpeg to pick the closest keyframe (faster, more robust)
                     frame_cmd = [
-                        "ffmpeg", "-y", "-ss", str(t), "-i", video_path_str,
-                        "-vframes", "1", "-vf", f"scale=-2:480", "-f", "webp", frame_file
+                        "ffmpeg", "-y", "-noaccurate_seek", "-ss", str(t), "-i", video_path_str,
+                        "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", frame_file
                     ]
                     try:
                         subprocess.run(frame_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        frame_files.append(frame_file)
+                        # Check if the frame file exists and is non-empty
+                        if os.path.exists(frame_file) and os.path.getsize(frame_file) > 0:
+                            frame_files.append(frame_file)
+                        else:
+                            if verbose:
+                                print(f"Frame {idx} at {t:.2f}s could not be extracted (empty file, skipping).")
                     except subprocess.CalledProcessError as e:
+                        # --- Explanation for problematic frames ---
+                        # Frames may be problematic if:
+                        # - The timestamp is beyond the actual video duration (common with rounding errors or broken files)
+                        # - The video stream is corrupted or missing at that point
+                        # - There is a keyframe gap and ffmpeg cannot seek accurately to that time
+                        # - System is out of memory or disk space
+                        # - ffmpeg/libwebp fails to encode the frame for any reason
                         if verbose:
                             print(f"Failed to extract frame {idx} for {video_path_str}: {e}\nffmpeg stderr:\n{e.stderr.decode(errors='ignore')}")
-                # Combine frames into animated webp (2 fps, 19 frames)
+                        # Skip this frame and continue
+                # Combine frames into animated webp (2 fps, only valid frames)
                 if frame_files:
                     anim_cmd = [
                         "ffmpeg", "-y", "-framerate", "2", "-i", os.path.join(tmpdir, "frame_%02d.webp"),
@@ -603,7 +612,6 @@ def generate_video_thumbnails(
                 else:
                     video_thumb = None
 
-        # Check again if files exist after attempted generation
         static_thumb_final = static_thumb if static_thumb and os.path.exists(static_thumb) else None
         video_thumb_final = video_thumb if video_thumb and os.path.exists(video_thumb) else None
         index.append({
@@ -720,7 +728,7 @@ Examples:
         generate_video_thumbnails(
             video_files=files,
             thumbnail_dir=args.thumbnail_dir,
-            max_height=576,
+            max_height=480,
             verbose=verbosity,
             index_json=None
         )
