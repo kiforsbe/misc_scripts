@@ -29,14 +29,15 @@ def guessit_wrapper(filename, options=None):
                 "episode_title": None,
             }
         ),
-        # [Group] Title - S03E06
+        # [Group] Title - S03E06 or [Group] Title - S01E13 - OVA (with optional episode_title)
         (
-            re.compile(group_prefix + r"(?P<title>.+?) - S(?P<season>\d{2})E(?P<episode>\d{2})(?=\.| |\[|$)"),
+            re.compile(group_prefix + r"(?P<title>.+?) - S(?P<season>\d{2})E(?P<episode>\d{2})(?: - (?P<episode_title>[^\[\(]+))?(?=\.| |\[|$)"),
             lambda m: {
                 "title": m.group('title').strip(),
                 "season": int(m.group('season')),
                 "episode": int(m.group('episode')),
-                "episode_title": None,
+                # Strip known extensions from episode_title if present
+                "episode_title": re.sub(r'\.(mkv|mp4|avi|mov|wmv|flv|ts)$', '', m.group('episode_title').strip(" .-")) if m.group('episode_title') else None,
             }
         ),
         # [Group] Title - Part - Episode (where Part is not all digits)
@@ -86,6 +87,18 @@ def guessit_wrapper(filename, options=None):
                 "alternative_title": None,
             }
         ),
+        # SxxEyy[-. ]episode_title (no group, allow punctuation in episode_title, stop at scene/tech info)
+        (
+            re.compile(
+                r"^(?P<title>.+?) S(?P<season>\d{2})E(?P<episode>\d{2})[-\. ]+(?P<episode_title>[^-\[\(\]0-9\.][^-\[\(\]]*)"
+            ),
+            lambda m: {
+                "title": m.group('title').strip(),
+                "season": int(m.group('season')),
+                "episode": int(m.group('episode')),
+                "episode_title": re.split(r"\s+\d+|(?=\s+(?:AMZN|WEB|BluRay|BD|HDTV|DDP|AAC|H\.?264|HEVC|x265|FLUX|-\w+|\[))", m.group('episode_title').strip(" .-"))[0].strip(" .-"),
+            }
+        ),
     ]
 
     # Movie title (apply first)
@@ -108,6 +121,28 @@ def guessit_wrapper(filename, options=None):
             return result
 
     # fallback to normal guessit, but forcibly split trailing episode from title if present
+    result = guessit.guessit(filename, options=options)
+    # If title ends with ' - <number>' and episode matches, split it
+    title = result.get('title', '')
+    episode = result.get('episode')
+    m = re.match(r'^(.*) - (\d+(?:\.\d+)?(?:v\d+)?)$', title)
+    if m and episode is not None:
+        ep_num = re.match(r"(\d+(?:\.\d+)?)(?:v\d+)?", m.group(2))
+        if ep_num and (str(episode) == ep_num.group(1) or float(episode) == float(ep_num.group(1))):
+            result['title'] = m.group(1)
+    return result
+
+    # fallback to normal guessit, but forcibly split trailing episode from title if present
+    result = guessit.guessit(filename, options=options)
+    # If title ends with ' - <number>' and episode matches, split it
+    title = result.get('title', '')
+    episode = result.get('episode')
+    m = re.match(r'^(.*) - (\d+(?:\.\d+)?(?:v\d+)?)$', title)
+    if m and episode is not None:
+        ep_num = re.match(r"(\d+(?:\.\d+)?)(?:v\d+)?", m.group(2))
+        if ep_num and (str(episode) == ep_num.group(1) or float(episode) == float(ep_num.group(1))):
+            result['title'] = m.group(1)
+    return result
     result = guessit.guessit(filename, options=options)
     # If title ends with ' - <number>' and episode matches, split it
     title = result.get('title', '')
