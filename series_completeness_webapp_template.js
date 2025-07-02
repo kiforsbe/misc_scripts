@@ -117,8 +117,25 @@ class SeriesCompletenessApp {
                 series.title.toLowerCase().includes(this.searchTerm) ||
                 (series.season && series.season.toString().includes(this.searchTerm));
             
-            // Apply status filter
-            const matchesStatus = this.statusFilter === 'all' || series.status === this.statusFilter;
+            // --- Movie status handling for filtering ---
+            // Derive isMovie from title_metadata.type or files[0].type
+            const files = series.files || [];
+            const firstFile = files[0] || {};
+            const title_metadata_key = firstFile.title_metadata_key || '';
+            const title_metadata = this.data.title_metadata && this.data.title_metadata[title_metadata_key] || {};
+            let isMovie = false;
+            if (title_metadata.type && typeof title_metadata.type === 'string' && title_metadata.type.toLowerCase().includes('movie')) {
+                isMovie = true;
+            }
+            if (!isMovie && firstFile.type && typeof firstFile.type === 'string' && firstFile.type.toLowerCase().includes('movie')) {
+                isMovie = true;
+            }
+            // --- End movie status handling ---
+
+            // Apply status filter, treating movies as "complete"
+            const matchesStatus = this.statusFilter === 'all' ||
+                (isMovie && this.statusFilter === 'complete') ||
+                (!isMovie && series.status === this.statusFilter);
 
             // --- New: Watch status filter ---
             // Determine watch status for the group
@@ -165,21 +182,49 @@ class SeriesCompletenessApp {
             const titleWithSeason = series.title + (series.season ? ` S${series.season.toString().padStart(2, '0')}` : '');
             const statusClass = `status-${series.status}`;
             const statusIcon = this.getStatusIcon(series.status);
-            
+
             // Calculate watch progress
             const watchStatus = series.watch_status || {};
             const watchedPercent = watchStatus.completion_percent || 0;
-            
+
+            // --- Movie status handling (updated) ---
+            // Derive isMovie from title_metadata.type or files[0].type
+            const files = series.files || [];
+            const firstFile = files[0] || {};
+            const title_metadata_key = firstFile.title_metadata_key || '';
+            const title_metadata = this.data.title_metadata && this.data.title_metadata[title_metadata_key] || {};
+            let isMovie = false;
+            // Check title_metadata.type
+            if (title_metadata.type && typeof title_metadata.type === 'string' && title_metadata.type.toLowerCase().includes('movie')) {
+                isMovie = true;
+            }
+            // Or check files[0].type
+            if (!isMovie && firstFile.type && typeof firstFile.type === 'string' && firstFile.type.toLowerCase().includes('movie')) {
+                isMovie = true;
+            }
+            // ---
+
+            let statusDisplay = '';
+            let episodeDisplay = '';
+            if (isMovie) {
+                statusDisplay = `<span class="series-status status-movie">🎬 Movie</span>`;
+                episodeDisplay = `<span class="episode-count">Movie</span>`;
+            } else {
+                statusDisplay = `<span class="series-status ${statusClass}">
+                    ${statusIcon} ${this.formatStatus(series.status)}
+                </span>`;
+                episodeDisplay = `<span class="watch-count">${watchStatus.watched_episodes}</span>
+                    <span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>`;
+            }
+            // ---
+
             return `
                 <div class="series-item" data-series-key="${series.key}" onclick="app.selectSeries('${series.key}')">
                     <div class="series-title">${this.escapeHtml(titleWithSeason)}</div>
                     <div class="series-meta">
-                        <span class="series-status ${statusClass}">
-                            ${statusIcon} ${this.formatStatus(series.status)}
-                        </span>
+                        ${statusDisplay}
                         <div>
-                          <span class="watch-count">${watchStatus.watched_episodes}</span>
-                          <span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>
+                          ${episodeDisplay}
                         </div>
                     </div>
                 </div>

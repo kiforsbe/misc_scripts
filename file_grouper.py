@@ -330,8 +330,8 @@ class FileGrouper:
                         value = ', '.join(str(v) for v in value)
                     # Convert to lowercase for case insensitive grouping
                     value_str = str(value).lower() if value != 'Unknown' else 'Unknown'
-                    group_key_parts.append(f"{field}:{value_str}")
-                
+                    group_key_parts.append(self._sanitize_group_key(f"{field}:{value_str}"))
+
                 group_key = ' | '.join(group_key_parts)
                 self.groups[group_key].append(metadata)
                 pbar.set_postfix(groups=len(self.groups))
@@ -501,6 +501,12 @@ class FileGrouper:
                 return self.title_metadata[title_metadata_key]['metadata']
         
         return {}
+
+    @staticmethod
+    def _sanitize_group_key(key: str) -> str:
+        """Remove problematic characters from group key for safe string handling."""
+        # Remove quotes, backslashes, and other problematic characters
+        return re.sub(r'[\'"\\\r\n\t\b\f]', '', key)
 
 def main():
     """Command-line interface."""

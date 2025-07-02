@@ -218,6 +218,23 @@ class SeriesCompletenessChecker:
             if title_metadata_key and title_metadata_key in self.file_grouper.title_metadata:
                 metadata = self.file_grouper.title_metadata[title_metadata_key]['metadata']
 
+                # --- Check for "movie" type in file or metadata ---
+                file_type = first_file.get('type', '')
+                metadata_type = metadata.get('type', '')
+                file_type_str = ''
+                if isinstance(file_type, list):
+                    file_type_str = ' '.join(str(t).lower() for t in file_type)
+                elif isinstance(file_type, str):
+                    file_type_str = file_type.lower()
+                metadata_type_str = str(metadata_type).lower()
+                if "movie" in file_type_str or "movie" in metadata_type_str:
+                    total_episodes = metadata.get('total_episodes')
+                    expected_episodes = total_episodes
+                    result['status'] = 'movie'
+                    result['episodes_expected'] = expected_episodes
+                    return result
+                # --- end movie check ---
+
                 if 'series' or 'tv' in metadata.get('type', '').lower():
                     # For series series, check total episodes
                     total_episodes = metadata.get('total_episodes')
@@ -439,6 +456,7 @@ class SeriesCompletenessChecker:
             'no_episode_numbers': '❓',
             'unknown_total_episodes': '❓',
             'not_series': 'ℹ️',
+            'movie': '🎬',
             'no_metadata': '❓',
             'no_metadata_manager': '❓',
             'unknown': '❓'
