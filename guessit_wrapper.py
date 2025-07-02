@@ -41,7 +41,6 @@ def guessit_wrapper(filename, options=None):
             ),
             lambda m: {
                 "title": m.group('title').strip(),
-                "season": 1,
                 "episode": int(m.group('episode')),
                 "episode_title": m.group('episode_title').strip(),
             }
@@ -91,7 +90,6 @@ def guessit_wrapper(filename, options=None):
             re.compile(group_prefix + r"(?P<title>.+?) - (?P<episode>\d+(?:\.\d+)?)(?:v\d+)?"+ ext_pattern + r"$"),
             lambda m: {
                 "title": re.sub(r'\s*-\s*\d+(?:\.\d+)?$', '', m.group('title').strip()),
-                "season": 1,
                 "episode": float(m.group('episode')) if '.' in m.group('episode') else int(m.group('episode')),
                 "episode_title": None,
             }
@@ -101,7 +99,6 @@ def guessit_wrapper(filename, options=None):
             re.compile(group_prefix + r"(?P<title>.+?) - (?P<episode>\d+(?:\.\d+)?)(?:v\d+)?(?= |\(|\[|\)|\]|$)" + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
-                "season": 1,
                 "episode": float(m.group('episode')) if '.' in m.group('episode') else int(m.group('episode')),
                 "episode_title": None,
             }
@@ -111,7 +108,6 @@ def guessit_wrapper(filename, options=None):
             re.compile(group_prefix + r"(?P<title>.+?) (?P<episode>\d+)(?= \[)" + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
-                "season": 1,
                 "episode": int(m.group('episode')),
             }
         ),
