@@ -141,11 +141,35 @@ class SeriesCompletenessChecker:
         first_file = group_files[0]
         title = first_file.get('title', 'Unknown')
         season = first_file.get('season')
-        episodes_found = len(group_files)
+
+        # Separate extras from episodes
+        episode_files = []
+        extra_files = []
+        for file_info in group_files:
+            file_type = file_info.get('type')
+            # guessit_wrapper may return type as a list or string
+            if isinstance(file_type, list):
+                if 'extra' in [t.lower() for t in file_type]:
+                    extra_files.append(file_info)
+                elif 'episode' in [t.lower() for t in file_type]:
+                    episode_files.append(file_info)
+                else:
+                    episode_files.append(file_info)  # fallback: treat as episode
+            elif isinstance(file_type, str):
+                if file_type.lower() == 'extra':
+                    extra_files.append(file_info)
+                elif file_type.lower() == 'episode':
+                    episode_files.append(file_info)
+                else:
+                    episode_files.append(file_info)  # fallback: treat as episode
+            else:
+                episode_files.append(file_info)  # fallback
+
+        episodes_found = len(episode_files)
         
         # Get episode numbers
         episode_numbers = []
-        for file_info in group_files:
+        for file_info in episode_files:
             episode = file_info.get('episode')
             if isinstance(episode, list):
                 episode_numbers.extend(episode)
@@ -159,7 +183,7 @@ class SeriesCompletenessChecker:
         partially_watched_count = 0
         total_watch_count = 0
         
-        for file_info in group_files:
+        for file_info in episode_files:
             plex_status = file_info.get('plex_watch_status')
             if plex_status:
                 if plex_status.get('watched'):
@@ -178,6 +202,7 @@ class SeriesCompletenessChecker:
             'missing_episodes': [],
             'extra_episodes': [],
             'files': group_files,
+            'extra_files': extra_files,
             'watch_status': {
                 'watched_episodes': watched_count,
                 'partially_watched_episodes': partially_watched_count,

@@ -4,14 +4,51 @@ import guessit
 def guessit_wrapper(filename, options=None):
     # Generalize to match any release group in brackets
     group_prefix = r"^\[(?P<group>[^\]]+)\] "
-    # Movie title (greedy parenthesis, applied first)
-    movie_title_pattern = re.compile(r"^(\[[^\]]+\] )?(?P<title>.+? - Movie \d+ \(.+?\))(?= |\[|$)")
+    # Common file extension pattern for media types
+    ext_pattern = r"(?:\.(?:mkv|mp4|avi|mov|wmv|flv|ts))?"
 
     # Combined patterns, ordered from most specific to most general
     patterns = [
+        # [Group] Title - Movie N (Title) [movie files] or [Group] Title - The Movie - Subtitle[.ext]
+        (
+            re.compile(
+                r"^(\[[^\]]+\] )?(?P<title>(?:.+? - Movie \d+ \([^)]+\))|(?:.+? - The Movie(?: - [^\[\]]+)?))"
+                r"(?: ?\[.*?\])*"
+                r"(?:\.(?:mkv|mp4|avi|mov|wmv|flv|ts))?$"
+            ),
+            lambda m: {
+                "title": re.sub(r'\.(mkv|mp4|avi|mov|wmv|flv|ts)$', '', m.group('title').strip()),
+                "type": "movie",
+            }
+        ),
+        # [Group] Title S01 NCOP/NCED - 01[.ext][ ...] (specials with season and episode, episode_title includes number)
+        (
+            re.compile(
+                group_prefix + r"(?P<title>.+?) S(?P<season>\d{2}) (?P<episode_title>(NCOP|NCED|Preview|Promo)) - (?P<episode>\d+)" + ext_pattern + r"(?: ?\[.*\])?$"
+            ),
+            lambda m: {
+                "title": m.group('title').strip(),
+                "season": int(m.group('season')),
+                "episode": int(m.group('episode')),
+                "episode_title": m.group('episode_title').strip(),
+                "type": "extra",
+            }
+        ),
+        # [Group] Title - 01 - EpisodeTitle[ ...][.ext] (with or without trailing brackets or extension)
+        (
+            re.compile(
+                group_prefix + r"(?P<title>.+?) - (?P<episode>\d+) - (?P<episode_title>[^\[\]]+?)(?: ?\[.*\])?" + ext_pattern + r"$"
+            ),
+            lambda m: {
+                "title": m.group('title').strip(),
+                "season": 1,
+                "episode": int(m.group('episode')),
+                "episode_title": m.group('episode_title').strip(),
+            }
+        ),
         # [Group] Title - 1x07 - EpisodeTitle [..]
         (
-            re.compile(group_prefix + r"(?P<title>.+?) - (?P<season>\d+)x(?P<episode>\d+)\s*-\s*(?P<episode_title>[^\[\(\]]+)"),
+            re.compile(group_prefix + r"(?P<title>.+?) - (?P<season>\d+)x(?P<episode>\d+)\s*-\s*(?P<episode_title>[^\[\(\]]+)" + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
                 "season": int(m.group('season')),
@@ -21,7 +58,7 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title S2 Part 2 - 10 (720p) [..]
         (
-            re.compile(group_prefix + r"(?P<title>.+?) S(?P<season>\d+)(?: Part (?P<part>\d+))? - (?P<episode>\d+(?:\.\d+)?)(?:[vV]\d+)? "),
+            re.compile(group_prefix + r"(?P<title>.+?) S(?P<season>\d+)(?: Part (?P<part>\d+))? - (?P<episode>\d+(?:\.\d+)?)(?:[vV]\d+)? " + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
                 "season": int(m.group('season')),
@@ -31,7 +68,7 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title - S03E06 or [Group] Title - S01E13 - OVA (with optional episode_title)
         (
-            re.compile(group_prefix + r"(?P<title>.+?) - S(?P<season>\d{2})E(?P<episode>\d{2})(?: - (?P<episode_title>[^\[\(]+))?(?=\.| |\[|$)"),
+            re.compile(group_prefix + r"(?P<title>.+?) - S(?P<season>\d{2})E(?P<episode>\d{2})(?: - (?P<episode_title>[^\[\(]+))?(?=\.| |\[|$)" + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
                 "season": int(m.group('season')),
@@ -42,7 +79,7 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title - Part - Episode (where Part is not all digits)
         (
-            re.compile(group_prefix + r"(?P<title>.+?) - (?P<part>(?!\d+$).+?) - (?P<episode>\d+(?:\.\d+)?)(?= |\(|\[|\)|\]|$)"),
+            re.compile(group_prefix + r"(?P<title>.+?) - (?P<part>(?!\d+$).+?) - (?P<episode>\d+(?:\.\d+)?)(?= |\(|\[|\)|\]|$)" + ext_pattern),
             lambda m: {
                 "title": f"{m.group('title').strip()} - {m.group('part').strip()}",
                 "episode": float(m.group('episode')) if '.' in m.group('episode') else int(m.group('episode')),
@@ -51,7 +88,7 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title - 09.<ext> (season 1, episode N, trailing episode in title is stripped)
         (
-            re.compile(group_prefix + r"(?P<title>.+?) - (?P<episode>\d+(?:\.\d+)?)(?:v\d+)?\.[a-zA-Z0-9]+$"),
+            re.compile(group_prefix + r"(?P<title>.+?) - (?P<episode>\d+(?:\.\d+)?)(?:v\d+)?"+ ext_pattern + r"$"),
             lambda m: {
                 "title": re.sub(r'\s*-\s*\d+(?:\.\d+)?$', '', m.group('title').strip()),
                 "season": 1,
@@ -61,7 +98,7 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title - 09[...] (season 1, episode N, no trailing episode in title)
         (
-            re.compile(group_prefix + r"(?P<title>.+?) - (?P<episode>\d+(?:\.\d+)?)(?:v\d+)?(?= |\(|\[|\)|\]|$)"),
+            re.compile(group_prefix + r"(?P<title>.+?) - (?P<episode>\d+(?:\.\d+)?)(?:v\d+)?(?= |\(|\[|\)|\]|$)" + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
                 "season": 1,
@@ -71,7 +108,7 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title <epnum> [ ... ] (season 1, episode N, trailing episode in title is stripped)
         (
-            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode>\d+)(?= \[)"),
+            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode>\d+)(?= \[)" + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
                 "season": 1,
@@ -80,26 +117,28 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title - Part2 - Part3 (triple part, only if part3 is not all digits)
         (
-            re.compile(group_prefix + r"(?P<part1>.+?) - (?P<part2>.+?) - (?P<part3>.+?)(?=\(|\[|\d|$)"),
+            re.compile(group_prefix + r"(?P<part1>.+?) - (?P<part2>.+?) - (?P<part3>.+?)(?=\(|\[|\d|$)" + ext_pattern),
             lambda m: {
                 "title": f"{m.group('part1').strip()} - {m.group('part2').strip()} - {m.group('part3').strip()}" if not m.group('part3').strip().isdigit() and m.group('part3').strip() != '0' else None,
                 "episode_title": None,
                 "alternative_title": None,
+                "type": "movie",
             }
         ),
         # [Group] Title - Part2 (two part, only if part2 is not all digits)
         (
-            re.compile(group_prefix + r"(?P<part1>.+?) - (?P<part2>.+?)(?=\(|\[|$)"),
+            re.compile(group_prefix + r"(?P<part1>.+?) - (?P<part2>.+?)(?=\(|\[|$)" + ext_pattern),
             lambda m: {
                 "title": f"{m.group('part1').strip()} - {m.group('part2').strip()}" if not m.group('part2').strip().isdigit() and m.group('part2').strip() != '0' else None,
                 "episode_title": None,
                 "alternative_title": None,
+                "type": "movie",
             }
         ),
         # SxxEyy[-. ]episode_title (no group, allow punctuation in episode_title, stop at scene/tech info)
         (
             re.compile(
-                r"^(?P<title>.+?) S(?P<season>\d{2})E(?P<episode>\d{2})[-\. ]+(?P<episode_title>[^-\[\(\]0-9\.][^-\[\(\]]*)"
+                r"^(?P<title>.+?) S(?P<season>\d{2})E(?P<episode>\d{2})[-\. ]+(?P<episode_title>[^-\[\(\]0-9\.][^-\[\(\]]*)" + ext_pattern
             ),
             lambda m: {
                 "title": m.group('title').strip(),
@@ -110,20 +149,24 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title - NCOP/NCED/Preview (specials, e.g. [Group] Title Preview [..])
         (
-            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode_title>NCOP|NCED|Preview|Movie|Promo)(?= \[|$)"),
+            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode_title>NCOP|NCED|Preview|Promo)(?= \[|$)" + ext_pattern),
             lambda m: {
                 "title": m.group('title').strip(),
                 "episode_title": m.group('episode_title').strip(),
+                "type": "extra",
+            }
+        ),
+        # [Group] Title (720p) [CRC].mkv or similar (treat as movie)
+        (
+            re.compile(
+                group_prefix + r"(?P<title>.+?) \((?P<screen_size>\d{3,4}p)\)(?: ?\[.*?\])?" + ext_pattern + r"$"
+            ),
+            lambda m: {
+                "title": m.group('title').strip(),
+                "type": "movie",
             }
         ),
     ]
-
-    # Movie title (apply first)
-    m = movie_title_pattern.match(filename)
-    if m:
-        result = guessit.guessit(filename, options=options)
-        result['title'] = m.group('title').strip()
-        return result
 
     # Try all patterns in order
     for pat, handler in patterns:

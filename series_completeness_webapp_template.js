@@ -441,6 +441,20 @@ class SeriesCompletenessApp {
                     const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
                     // Give the image a unique id for lookup
                     const imgId = `file-thumb-img-${idx}`;
+                    // --- Add episode type label if type:extra or type:movie ---
+                    let typeLabel = '';
+                    let fileType = file.type;
+                    const typeLabels = [];
+                    const typeArr = Array.isArray(fileType) ? fileType : (fileType ? [fileType] : []);
+                    typeArr.forEach(t => {
+                        const typeLower = (t || '').toLowerCase();
+                        if (typeLower === 'extra') {
+                            typeLabels.push('<span class="file-type-label file-type-extra">Extra</span>');
+                        } else if (typeLower === 'movie') {
+                            typeLabels.push('<span class="file-type-label file-type-movie">Movie</span>');
+                        }
+                    });
+                    typeLabel = typeLabels.join(' ');
                     // Attach mouse events to the file-item div
                     return `
                         <div class="file-item file-item-with-thumb"
@@ -464,6 +478,7 @@ class SeriesCompletenessApp {
                                         ${plexStatus.watched ? 'Watched' : 
                                           (plexStatus.view_offset > 0 ? 'Partially Watched' : 'Unwatched')}
                                     </span>
+                                    ${typeLabel}
                                     ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}
                                     ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
                                     ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
