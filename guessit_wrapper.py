@@ -110,7 +110,7 @@ def guessit_wrapper(filename, options=None):
         ),
         # [Group] Title - NCOP/NCED/Preview (specials, e.g. [Group] Title Preview [..])
         (
-            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode_title>NCOP|NCED|Preview)(?= \[|$)"),
+            re.compile(group_prefix + r"(?P<title>.+?) (?P<episode_title>NCOP|NCED|Preview|Movie|Promo)(?= \[|$)"),
             lambda m: {
                 "title": m.group('title').strip(),
                 "episode_title": m.group('episode_title').strip(),
@@ -147,27 +147,6 @@ def guessit_wrapper(filename, options=None):
         ep_num = re.match(r"(\d+(?:\.\d+)?)(?:v\d+)?", m.group(2))
         if ep_num and (str(episode) == ep_num.group(1) or float(episode) == float(ep_num.group(1))):
             result['title'] = m.group(1)
-    return result
 
-    # fallback to normal guessit, but forcibly split trailing episode from title if present
-    result = guessit.guessit(filename, options=options)
-    # If title ends with ' - <number>' and episode matches, split it
-    title = result.get('title', '')
-    episode = result.get('episode')
-    m = re.match(r'^(.*) - (\d+(?:\.\d+)?(?:v\d+)?)$', title)
-    if m and episode is not None:
-        ep_num = re.match(r"(\d+(?:\.\d+)?)(?:v\d+)?", m.group(2))
-        if ep_num and (str(episode) == ep_num.group(1) or float(episode) == float(ep_num.group(1))):
-            result['title'] = m.group(1)
-    return result
-    result = guessit.guessit(filename, options=options)
-    # If title ends with ' - <number>' and episode matches, split it
-    title = result.get('title', '')
-    episode = result.get('episode')
-    m = re.match(r'^(.*) - (\d+(?:\.\d+)?(?:v\d+)?)$', title)
-    if m and episode is not None:
-        ep_num = re.match(r"(\d+(?:\.\d+)?)(?:v\d+)?", m.group(2))
-        if ep_num and (str(episode) == ep_num.group(1) or float(episode) == float(ep_num.group(1))):
-            result['title'] = m.group(1)
     return result
 
