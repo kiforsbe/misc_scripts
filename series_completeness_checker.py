@@ -231,7 +231,7 @@ class SeriesCompletenessChecker:
                     total_episodes = metadata.get('total_episodes')
                     expected_episodes = total_episodes
                     result['status'] = 'movie'
-                    result['episodes_expected'] = expected_episodes
+                    result['episodes_expected'] = expected_episodes or 1
                     return result
                 # --- end movie check ---
 

@@ -150,7 +150,16 @@ class SeriesArchiver:
             episodes_found = group_data.get('episodes_found', 0)
             episodes_expected = group_data.get('episodes_expected', 0)
             status = group_data.get('status', 'unknown')
-            
+
+            # Check if the group is a movie
+            files = group_data.get('files', [])
+            first_file_type = ""
+            if files and isinstance(files, list) and files[0]:
+                first_file_type = str(files[0].get('type', '')).lower()
+            metadata_type = str(group_data.get('type', '')).lower()
+            if "movie" in first_file_type or "movie" in metadata_type:
+                status = "movie"
+
             details = {
                 'title': title,
                 'episodes_found': episodes_found,
@@ -184,14 +193,31 @@ class SeriesArchiver:
         release_group = files[0].get('release_group', 'Unknown')
         title = group_data.get('title', 'Unknown')
         
-        # Get episode range
-        episode_numbers = sorted(group_data.get('episode_numbers', []))
-        if episode_numbers:
-            start_ep = min(episode_numbers)
-            last_ep = max(episode_numbers)
-            episode_range = f"{start_ep:02d}-{last_ep:02d}" if start_ep != last_ep else f"{start_ep:02d}"
+        # Determine if this is a movie
+        is_movie = False
+        first_file_type = ""
+        if files and isinstance(files, list) and files[0]:
+            first_file_type = str(files[0].get('type', '')).lower()
+        metadata_type = str(group_data.get('type', '')).lower()
+        if "movie" in first_file_type or "movie" in metadata_type:
+            is_movie = True
+
+        # Get episode range or year/movie
+        if is_movie:
+            # Try to get year from group_data or files
+            year = group_data.get('year')
+            if not year:
+                # Try to get from files
+                year = files[0].get('year')
+            episode_range = str(year) if year else "Movie"
         else:
-            episode_range = "00"
+            episode_numbers = sorted(group_data.get('episode_numbers', []))
+            if episode_numbers:
+                start_ep = min(episode_numbers)
+                last_ep = max(episode_numbers)
+                episode_range = f"{start_ep:02d}-{last_ep:02d}" if start_ep != last_ep else f"{start_ep:02d}"
+            else:
+                episode_range = "00"
         
         # Get resolution
         screen_size = files[0].get('screen_size', 'Unknown')
@@ -702,6 +728,7 @@ def cmd_list(args):
             'no_episode_numbers': '❓',
             'unknown_total_episodes': '❓',
             'not_series': 'ℹ️',
+            'movie': '🎬',
             'no_metadata': '❓',
             'no_metadata_manager': '❓',
             'unknown': '❓'
