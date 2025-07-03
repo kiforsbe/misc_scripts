@@ -3,6 +3,8 @@ import gzip
 import logging
 import requests
 import sqlite3
+import time
+import re
 from typing import Optional, Dict, List, Tuple
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
@@ -35,7 +37,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "title", "region", "isOriginalTitle"],
+        "title.akas": ["titleId", "ordering", "title", "region", "language", "isOriginalTitle"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
@@ -115,7 +117,17 @@ class IMDbDataProvider(BaseMetadataProvider):
                         season INTEGER,
                         episode INTEGER
                     ) WITHOUT ROWID;
-                    
+
+                    CREATE TABLE IF NOT EXISTS title_akas (
+                        titleId INTEGER NOT NULL,
+                        ordering INTEGER NOT NULL,
+                        title TEXT NOT NULL,
+                        region TEXT NOT NULL,
+                        language TEXT NOT NULL,
+                        isOriginalTitle INTEGER NOT NULL,
+                        PRIMARY KEY (titleId, ordering)
+                    ) WITHOUT ROWID;
+
                     CREATE TABLE IF NOT EXISTS data_version (
                         dataset TEXT PRIMARY KEY,
                         updated INTEGER  -- Use integer timestamp
@@ -136,12 +148,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                     FROM title_basics b
                     LEFT JOIN title_ratings r ON b.id = r.id;
                     
-                    -- FTS5 virtual table for fast title searching
+                    -- FTS5 virtual table for fast title searching (now using title_akas as content)
                     CREATE VIRTUAL TABLE IF NOT EXISTS title_fts USING fts5(
-                        title, 
-                        title_normalized,
-                        content='title_basics',
-                        content_rowid='id',
+                        title,
+                        content='title_akas',
+                        content_rowid='titleId',
                         tokenize='porter unicode61'
                     );
                 """
@@ -151,7 +162,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                     """
                     -- Essential indexes for data loading
                     CREATE INDEX IF NOT EXISTS idx_episodes_parent_temp ON title_episodes(parent_id);
-                """
+                    -- Index for akas
+                    CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
+                    """
                 )
                 conn.commit()
         except Exception as e:
@@ -228,6 +241,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._load_dataset_to_db("title.basics")
         self._load_dataset_to_db("title.ratings")
         self._load_dataset_to_db("title.episode")
+        self._load_dataset_to_db("title.akas")
         
         # Verify data integrity
         self._verify_data_integrity()
@@ -240,32 +254,40 @@ class IMDbDataProvider(BaseMetadataProvider):
         url = self.DATASETS[dataset_name]
         gz_cache = os.path.join(self.cache_dir, f"{dataset_name}.tsv.gz")
 
-        # Download dataset
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                response = requests.get(url, stream=True)
-                total_size = int(response.headers.get("content-length", 0))
+        # Only download if file is missing or older than 7 days
+        need_download = True
+        if os.path.exists(gz_cache):
+            mtime = os.path.getmtime(gz_cache)
+            age_days = (time.time() - mtime) / 86400
+            if age_days < 7:
+                need_download = False
 
-                with tqdm(
-                    total=total_size,
-                    desc=f"Downloading {dataset_name}",
-                    unit="B",
-                    unit_scale=True,
-                ) as pbar:
-                    with open(gz_cache, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                pbar.update(len(chunk))
-                break
-            except Exception as e:
-                logging.error(
-                    f"Error downloading {dataset_name} (attempt {attempt + 1}): {str(e)}"
-                )
-                if attempt < self.MAX_RETRIES - 1:
-                    logging.info("Retrying...")
-                    continue
-                raise
+        if need_download:
+            for attempt in range(self.MAX_RETRIES):
+                try:
+                    response = requests.get(url, stream=True)
+                    total_size = int(response.headers.get("content-length", 0))
+
+                    with tqdm(
+                        total=total_size,
+                        desc=f"Downloading {dataset_name}",
+                        unit="B",
+                        unit_scale=True,
+                    ) as pbar:
+                        with open(gz_cache, "wb") as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    pbar.update(len(chunk))
+                    break
+                except Exception as e:
+                    logging.error(
+                        f"Error downloading {dataset_name} (attempt {attempt + 1}): {str(e)}"
+                    )
+                    if attempt < self.MAX_RETRIES - 1:
+                        logging.info("Retrying...")
+                        continue
+                    raise
         
         # Parse and insert into database with aggressive filtering
         try:
@@ -282,6 +304,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     conn.execute("DELETE FROM title_ratings")
                 elif dataset_name == "title.episode":
                     conn.execute("DELETE FROM title_episodes")
+                elif dataset_name == "title.akas":
+                    conn.execute("DELETE FROM title_akas")
                 
                 # Track processed tconst integers for cross-dataset linking
                 processed_tconst_ints = set()
@@ -323,13 +347,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                                 value = fields[col_idx]
                                 if value == "\\N" or value == "":
                                     value = None
-                                elif required_cols[i] in ["startYear", "endYear", "runtimeMinutes", "seasonNumber", "episodeNumber", "numVotes"]:
+                                elif required_cols[i] in ["startYear", "endYear", "runtimeMinutes", "seasonNumber", "episodeNumber", "numVotes", "ordering"]:
                                     try:
                                         value = int(value) if value else None
                                     except (ValueError, TypeError):
                                         value = None
                                 elif required_cols[i] == "isAdult":
-                                    # Convert boolean string to integer: "0"->0, "1"->1
                                     try:
                                         value = int(value) if value in ["0", "1"] else 0
                                     except (ValueError, TypeError):
@@ -339,6 +362,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                                         value = float(value) if value else None
                                     except (ValueError, TypeError):
                                         value = None
+                                elif required_cols[i] == "isOriginalTitle":
+                                    try:
+                                        value = int(value) if value in ["0", "1"] else 0
+                                    except (ValueError, TypeError):
+                                        value = 0
                             else:
                                 value = None
                             row_data.append(value)
@@ -353,7 +381,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                         compressed_row = self._compress_row(dataset_name, row_data, required_cols, processed_tconst_ints)
                         if compressed_row:
                             batch.append(compressed_row['row'])
-                            # No more mapping batch needed since IDs are direct tconst integers
                             if len(batch) >= chunk_size:
                                 self._insert_compressed_batch(conn, dataset_name, batch)
                                 batch = []
@@ -367,7 +394,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     pbar.close()
 
                 # Update version info
-                import time
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO data_version (dataset, updated)
@@ -375,6 +401,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                 """,
                     (dataset_name, int(time.time())),
                 )
+
+                # After all akas are inserted, rebuild the FTS table from the content table (like anime_metadata.py)
+                conn.execute("INSERT INTO title_fts(title_fts) VALUES('rebuild')")
                 
                 conn.commit()
                 logging.info(f"Loaded {kept_rows}/{processed_rows} rows from {dataset_name} (filtered {processed_rows - kept_rows})")
@@ -392,16 +421,14 @@ class IMDbDataProvider(BaseMetadataProvider):
                     cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
                     count = cursor.fetchone()[0]
                     logging.info(f"Total titles in database: {count}")
+                elif dataset_name == "title.akas":
+                    cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
+                    count = cursor.fetchone()[0]
+                    logging.info(f"Total AKAs in database: {count}")
 
         except Exception as e:
             logging.error(f"Error processing {dataset_name}: {str(e)}")
             raise
-        finally:
-            # Clean up download
-            try:
-                os.remove(gz_cache)
-            except:
-                pass
 
     def _should_keep_title(self, dataset_name: str, row_data: List, required_cols: List[str]) -> bool:
         """Apply configurable filtering to keep only relevant titles"""
@@ -517,6 +544,24 @@ class IMDbDataProvider(BaseMetadataProvider):
             else:
                 # Skip this episode - no corresponding parent series in basics
                 return None
+        elif dataset_name == "title.akas":
+            # Convert titleId to integer
+            titleId = data_dict['titleId']
+            try:
+                titleId_int = int(titleId[2:]) if isinstance(titleId, str) and titleId.startswith('tt') else int(titleId)
+            except (ValueError, TypeError):
+                return None
+            # Only keep akas for titles we have in basics
+            if titleId_int not in processed_tconst_ints:
+                return None
+            return {
+                'row': (titleId_int,
+                       data_dict.get('ordering', 1) or 1,
+                       data_dict.get('title', '') or '',
+                       data_dict.get('region', '') or '',
+                       data_dict.get('language', '') or '',
+                       data_dict.get('isOriginalTitle', 0) or 0)
+            }
         
         return None
     
@@ -527,12 +572,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                 "INSERT OR REPLACE INTO title_basics (id, title, original_title, title_lower, type, is_adult, year, end_year, runtime_minutes, genres) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 batch
             )
-            # Also populate FTS table for better searching
-            fts_batch = [(row[0], row[1], self._normalize_title(row[1])) for row in batch]
-            conn.executemany(
-                "INSERT OR REPLACE INTO title_fts (rowid, title, title_normalized) VALUES (?, ?, ?)",
-                fts_batch
-            )
         elif dataset_name == "title.ratings":
             conn.executemany(
                 "INSERT OR REPLACE INTO title_ratings (id, rating, votes) VALUES (?, ?, ?)",
@@ -542,7 +581,13 @@ class IMDbDataProvider(BaseMetadataProvider):
             conn.executemany(
                 "INSERT OR REPLACE INTO title_episodes (id, parent_id, season, episode) VALUES (?, ?, ?, ?)",
                 batch
-            )    
+            )
+        elif dataset_name == "title.akas":
+            conn.executemany(
+                "INSERT OR REPLACE INTO title_akas (titleId, ordering, title, region, language, isOriginalTitle) VALUES (?, ?, ?, ?, ?, ?)",
+                batch
+            )
+
     def _optimize_database_for_reads(self) -> None:
         """Optimize database for read-only operations after data loading"""
         logging.info("Optimizing database for read operations...")
@@ -556,13 +601,16 @@ class IMDbDataProvider(BaseMetadataProvider):
                 CREATE INDEX IF NOT EXISTS idx_title_type ON title_basics(type);
                 CREATE INDEX IF NOT EXISTS idx_start_year ON title_basics(year);
                 CREATE INDEX IF NOT EXISTS idx_title_type_year ON title_basics(type, year);
-                
+
+                -- Composite index for fast lookups by type, year, and title
+                CREATE INDEX IF NOT EXISTS idx_title_type_year_title ON title_basics(type, year, title_lower);
+
                 -- Covering index for exact title matches (includes all needed columns)
                 CREATE INDEX IF NOT EXISTS idx_title_covering ON title_basics(title_lower, year, type, title, genres);
-                
+
                 -- Prefix index for fuzzy search optimization
                 CREATE INDEX IF NOT EXISTS idx_title_prefix ON title_basics(substr(title_lower, 1, 2), votes);
-                
+
                 -- Indexes for title_ratings
                 CREATE INDEX IF NOT EXISTS idx_ratings_votes ON title_ratings(votes DESC);
                 CREATE INDEX IF NOT EXISTS idx_ratings_covering ON title_ratings(id, rating, votes);
@@ -570,6 +618,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                 -- Indexes for episodes
                 CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episodes(parent_id);
                 CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episodes(parent_id, season, episode);
+
+                -- Additional index for fast episode lookup by id
+                CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episodes(id);
+
+                -- Indexes for akas
+                CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
+                CREATE INDEX IF NOT EXISTS idx_akas_title ON title_akas(title);
                 """
             )
             
@@ -613,9 +668,16 @@ class IMDbDataProvider(BaseMetadataProvider):
             # Just use fuzzy candidates for simplicity
             candidates = self._get_fuzzy_candidates(conn, title_lower, year)
 
+            # # Create a best match from the first entry in the list, as this is the best match in terms of titles
+            # best_match = self._create_title_info_from_row_fast(candidates[0], conn) if candidates else None
+            # best_score = 1000 if best_match else 0
+
             # Change the candidates to a list of dictionaries for easier processing
             candidates = [dict(row) for row in candidates]
 
+            # This is very ineffective for now, as it ignores the scoring from the FTS5 search
+            # We will for now use fuzzy matching on the candidates instead along with additional scorign to get a better match
+            # TODO: Fix this junk and make the FTS5 query take all this stuff into consideration instead
             for row in candidates:
                 # Build search dict for fuzzy matching
                 search_dict = {row["id"]: row["title"] for row in candidates}
@@ -651,9 +713,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                         best_score = total_score
                         best_match = self._create_title_info_from_row_fast(row, conn)
 
-            # Sort the candidates by field "score" into the array matches, descending order
-            #matches = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
-
         finally:
             self._return_connection(conn)
 
@@ -675,48 +734,41 @@ class IMDbDataProvider(BaseMetadataProvider):
         return None
 
     def _get_fuzzy_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[sqlite3.Row]:
-        """Get optimized candidate list using FTS5 + fallback strategies"""
+        """Get optimized candidate list using FTS5, similar to anime_metadata.py"""
         candidates = []
-        
-        # Strategy 1: FTS5 full-text search (fastest and most accurate)
         try:
             fts_query = self._build_fts_query(title_lower)
             if year:
                 cursor = conn.execute(
                     """
                     SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           fts.rank
-                    FROM title_fts fts
-                    JOIN search_view s ON fts.rowid = s.id
+                           bm25(title_fts, 10.0) AS score
+                    FROM title_fts f
+                    JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
                     AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
-                    ORDER BY fts.rank, s.votes DESC NULLS LAST
+                    ORDER BY score
                     LIMIT 200
-                """,
+                    """,
                     (fts_query, year - 2, year + 2),
                 )
             else:
                 cursor = conn.execute(
                     """
                     SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           fts.rank
-                    FROM title_fts fts
-                    JOIN search_view s ON fts.rowid = s.id
+                           bm25(title_fts, 10.0) AS score
+                    FROM title_fts f
+                    JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
                     AND s.votes > 50
-                    ORDER BY fts.rank, s.votes DESC NULLS LAST
+                    ORDER BY score
                     LIMIT 300
-                """,
+                    """,
                     (fts_query,),
                 )
-            
-            fts_results = cursor.fetchall()
-            traditional_results = [dict(row) for row in fts_results]
-            candidates.extend(traditional_results)
-            
+            candidates = cursor.fetchall()
         except Exception as e:
             logging.debug(f"FTS search failed: {e}")
-        
         return candidates[:1000]  # Limit total candidates
 
     def _create_title_info_from_row_fast(self, row: sqlite3.Row | dict, conn: sqlite3.Connection) -> TitleInfo:
@@ -776,6 +828,10 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Get episode information from database"""
         self._ensure_data_loaded()
 
+        # Check param episode is it is not just a single int, but an list, if so, just use the first item in the list
+        if isinstance(episode, list):
+            episode = episode[0]
+
         # Check cache for episode info
         episode_key = f"{parent_id}_{season}_{episode}"
         if episode_key in self._search_cache:
@@ -833,41 +889,24 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         return None
     
-    def _normalize_title(self, title: str) -> str:
-        """Normalize title for better searching"""
-        import re
-        
-        # Convert to lowercase
+    def _build_fts_query(self, title: str) -> str:
+        """Build FTS5 query from title for fuzzy search"""
+        # Normalize and tokenize
         normalized = title.lower()
-        
-        # # Remove common articles and prepositions
-        # articles = ['the ', 'a ', 'an ', 'le ', 'la ', 'les ', 'el ', 'la ', 'los ', 'las ', 'der ', 'die ', 'das ']
-        # for article in articles:
-        #     if normalized.startswith(article):
-        #         normalized = normalized[len(article):]
-        #         break
-        
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+
         # Remove punctuation and special characters
         normalized = re.sub(r'[^\w\s]', ' ', normalized)
-        
-        # Remove extra spaces
-        normalized = ' '.join(normalized.split())
-        
+
+        # Remove words like "the", "a", "an" and other common stop words
+        normalized = re.sub(r'\b(the|a|an|and|of|in|to|for|with)\b', '', normalized)
+
+        # Remove common japanese stop words in romaji
+        normalized = re.sub(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
+
+        # Split into words and build FTS5 query
+        words = normalized.split()
+        normalized = ' OR '.join([f'{word}*' for word in words])
+
         return normalized
-    
-    def _build_fts_query(self, title: str) -> str:
-        """Build FTS5 query from title"""
-        # Normalize and tokenize
-        words = self._normalize_title(title).split()
-        
-        # Create FTS5 query with different strategies
-        if len(words) == 1:
-            # Single word - use prefix matching
-            return f'"{words[0]}"*'
-        elif len(words) <= 3:
-            # Few words - require all words (AND)
-            return ' AND '.join([f'"{word}"*' for word in words])
-        else:
-            # Many words - use phrase search for first few words
-            main_phrase = ' '.join(words[:3])
-            return f'"{main_phrase}"'
+
