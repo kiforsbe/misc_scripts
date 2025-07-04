@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO,
 TEMP_DIR = ".temp" # Temporary directory for downloaded files and generated streams
 DELETE_DELAY = 60  # 1 minute in seconds
 FILENAME_MAX_LENGTH = 96 # Maximum length of filenames in bytes
-OLLAMA_MODEL = "deepseek-r1:8b" # The Ollama model to use for summary generation
+OLLAMA_MODEL = "qwen3:8b" # The Ollama model to use for summary generation
 USE_OLLAMA = True # Use ollama to generate streams
 
 # Ensure the temporary directory exists
@@ -415,14 +415,15 @@ def convert_m3u8_to_mp4():
                             'role': 'user',
                             'content': f"Summarize this title, keep original details as much as possible, while staying within {FILENAME_MAX_LENGTH} characters or less, making sure it is all in English; return only the summary nothing else: {title}"
                         }
-                    ]
+                    ],
+                    think=False,
                 )
 
                 # Extract the response text
                 output_filename = f"{ollama_response['message']['content']}.mp4"
 
                 # If the output_filename contains multiple '.' then condense them down to max one in a row
-                output_filename = re.sub('\.+', '.', output_filename)
+                output_filename = re.sub(r'\.+', '.', output_filename)
         except ollama.ResponseError as e:
             logging.error(f"Ollama unexpected error: {e}")
 
