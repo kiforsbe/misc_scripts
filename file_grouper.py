@@ -88,6 +88,7 @@ try:
     from anime_metadata import AnimeDataProvider
     from imdb_metadata import IMDbDataProvider
     from plex_metadata import PlexMetadataProvider, PlexWatchStatus
+    from myanimelist_watch_status import MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
     
     # Initialize metadata manager as a global variable
     METADATA_MANAGER = None
@@ -116,11 +117,13 @@ except ImportError:
     TitleInfo = None
     PlexMetadataProvider = None
     PlexWatchStatus = None
+    MyAnimeListWatchStatusProvider = None
+    MyAnimeListWatchStatus = None
 
 class FileGrouper:
     """Groups files based on filename metadata extracted using guessit."""
     
-    def __init__(self, metadata_manager = None, plex_provider = None):
+    def __init__(self, metadata_manager = None, plex_provider = None, myanimelist_xml_path = None):
         self.groups = defaultdict(list)
         self.metadata = {}
         self.enhanced_metadata = {}  # Store metadata from providers
@@ -128,7 +131,9 @@ class FileGrouper:
         self.title_metadata = {}     # Store unique title metadata
         self.metadata_manager = metadata_manager
         self.plex_provider = plex_provider
-    
+        self.myanimelist_xml_path = myanimelist_xml_path
+        self._mal_provider = None
+
     @staticmethod
     def _escape_pattern_for_fnmatch(pattern: str) -> str:
         """Escape square brackets in patterns to match them literally."""
@@ -253,10 +258,28 @@ class FileGrouper:
                         if title_key not in self.title_metadata:
                             enhanced_info, provider = self.metadata_manager.find_title(title, year)
                             if enhanced_info:
-                                self.title_metadata[title_key] = {
+                                title_metadata = {
                                     'metadata': self._serialize_title_info(enhanced_info),
                                     'provider': provider.__class__.__name__ if provider else None
                                 }
+                                
+                                # Add MyAnimeList watch status at title level if available
+                                if self.myanimelist_xml_path and MyAnimeListWatchStatusProvider:
+                                    try:
+                                        sources = enhanced_info.sources or []
+                                        for source in sources:
+                                            if 'myanimelist' in source:
+                                                if self._mal_provider is None:
+                                                    self._mal_provider = MyAnimeListWatchStatusProvider(self.myanimelist_xml_path)
+                                                
+                                                mal_status = self._mal_provider.get_watch_status(source)
+                                                if mal_status:
+                                                    title_metadata['myanimelist_watch_status'] = self._serialize_mal_watch_status(mal_status)
+                                                break
+                                    except Exception:
+                                        pass
+                                
+                                self.title_metadata[title_key] = title_metadata
                         
                         # Add reference to title metadata
                         if title_key in self.title_metadata:
@@ -293,7 +316,36 @@ class FileGrouper:
                 except Exception as plex_error:
                     # Silently continue if Plex lookup fails (database might be locked, etc.)
                     pass
+
+            # Derive per-episode watch status from title-level MyAnimeList data
+            plex_watched = False
+            mal_episode_watched = False
             
+            if result.get('plex_watch_status'):
+                plex_status = result['plex_watch_status']
+                plex_watched = plex_status.get('watched', False) or plex_status.get('view_offset', 0) > 0
+            
+            # Check if this episode is watched according to MyAnimeList
+            title_metadata_key = result.get('title_metadata_key')
+            if title_metadata_key and title_metadata_key in self.title_metadata:
+                mal_status = self.title_metadata[title_metadata_key].get('myanimelist_watch_status')
+                if mal_status:
+                    episode_num = result.get('episode')
+                    mal_watched_episodes = mal_status.get('my_watched_episodes', 0)
+                    if episode_num and episode_num <= mal_watched_episodes:
+                        mal_episode_watched = True
+            
+            # Set combined episode watch status
+            if plex_watched or mal_episode_watched:
+                result['episode_watched'] = True
+                result['watch_source'] = []
+                if plex_watched:
+                    result['watch_source'].append('plex')
+                if mal_episode_watched:
+                    result['watch_source'].append('myanimelist')
+            else:
+                result['episode_watched'] = False
+
             return result
         except Exception as e:
             print(f"Warning: Could not extract metadata from {file_path.name}: {e}")
@@ -354,17 +406,24 @@ class FileGrouper:
             for files in self.groups.values()
         )
         
-        # Calculate watch status summary
+        # Calculate watch status summary (include both Plex and MAL data)
         watched_files = 0
         total_watch_count = 0
         files_with_progress = 0
+        mal_watched_files = 0
         
         for files in self.groups.values():
             for file_info in files:
+                # Use combined episode watch status
+                if file_info.get('episode_watched'):
+                    watched_files += 1
+                    watch_sources = file_info.get('watch_source', [])
+                    if 'myanimelist' in watch_sources:
+                        mal_watched_files += 1
+                
+                # Plex-specific stats
                 plex_status = file_info.get('plex_watch_status')
                 if plex_status:
-                    if plex_status.get('watched'):
-                        watched_files += 1
                     total_watch_count += plex_status.get('watch_count', 0)
                     if plex_status.get('view_offset', 0) > 0:
                         files_with_progress += 1
@@ -376,8 +435,16 @@ class FileGrouper:
             'total_size_mb': round(total_size / (1024 * 1024), 2)
         }
         
-        # Add watch status summary if any files have Plex data
-        if watched_files > 0 or total_watch_count > 0 or files_with_progress > 0:
+        # Add watch status summary if any files have watch data
+        if watched_files > 0 or total_watch_count > 0 or files_with_progress > 0 or mal_watched_files > 0:
+            summary['watch_summary'] = {
+                'watched_files': watched_files,
+                'unwatched_files': total_files - watched_files,
+                'total_watch_count': total_watch_count,
+                'files_with_progress': files_with_progress,
+                'mal_watched_files': mal_watched_files
+            }
+            # Keep plex_summary for backwards compatibility
             summary['plex_summary'] = {
                 'watched_files': watched_files,
                 'unwatched_files': total_files - watched_files,
@@ -389,11 +456,17 @@ class FileGrouper:
     
     def export_to_json(self, output_path: str, include_summary: bool = True) -> None:
         """Export grouped data to JSON file."""
-        # Create title_metadata dict with just the metadata (not the provider info)
+        # Create title_metadata dict with complete metadata including MyAnimeList watch status
         title_metadata_export = {}
         for key, value in self.title_metadata.items():
-            # Key is already lowercase, so we can use it as-is
-            title_metadata_export[key] = value['metadata']
+            # Export the complete metadata including MyAnimeList watch status
+            metadata_dict = value['metadata'].copy()
+            
+            # Add MyAnimeList watch status if it exists at title level
+            if 'myanimelist_watch_status' in value:
+                metadata_dict['myanimelist_watch_status'] = value['myanimelist_watch_status']
+            
+            title_metadata_export[key] = metadata_dict
         
         export_data = {
             'groups': dict(self.groups),
@@ -403,29 +476,29 @@ class FileGrouper:
         if include_summary:
             export_data['summary'] = self.get_summary()
             
-            # Add group-level watch status summary
+            # Add group-level watch status summary using combined watch status
             group_summaries = {}
             for group_name, group_files in self.groups.items():
-                group_watched = 0
+                group_watched = sum(1 for f in group_files if f.get('episode_watched', False))
                 group_total_watches = 0
                 group_with_progress = 0
+                group_mal_watched = sum(1 for f in group_files if 'myanimelist' in f.get('watch_source', []))
                 
                 for file_info in group_files:
                     plex_status = file_info.get('plex_watch_status')
                     if plex_status:
-                        if plex_status.get('watched'):
-                            group_watched += 1
                         group_total_watches += plex_status.get('watch_count', 0)
                         if plex_status.get('view_offset', 0) > 0:
                             group_with_progress += 1
                 
-                if group_watched > 0 or group_total_watches > 0 or group_with_progress > 0:
+                if group_watched > 0 or group_total_watches > 0 or group_with_progress > 0 or group_mal_watched > 0:
                     group_summaries[group_name] = {
                         'total_files': len(group_files),
                         'watched_files': group_watched,
                         'unwatched_files': len(group_files) - group_watched,
                         'total_watch_count': group_total_watches,
-                        'files_with_progress': group_with_progress
+                        'files_with_progress': group_with_progress,
+                        'mal_watched_files': group_mal_watched
                     }
             
             if group_summaries:
@@ -488,6 +561,24 @@ class FileGrouper:
             'library_section': watch_status.library_section
         }
     
+    def _serialize_mal_watch_status(self, watch_status: MyAnimeListWatchStatus) -> Dict[str, Any]:
+        """Convert MyAnimeListWatchStatus object to serializable dict"""
+        if not watch_status:
+            return {}
+        return {
+            'series_animedb_id': watch_status.series_animedb_id,
+            'series_title': watch_status.series_title,
+            'my_status': watch_status.my_status,
+            'my_watched_episodes': watch_status.my_watched_episodes,
+            'my_score': watch_status.my_score,
+            'my_start_date': watch_status.my_start_date,
+            'my_finish_date': watch_status.my_finish_date,
+            'my_times_watched': watch_status.my_times_watched,
+            'my_rewatching': watch_status.my_rewatching,
+            'series_episodes': watch_status.series_episodes,
+            'progress_percent': round(watch_status.progress_percent, 1)
+        }
+    
     def _get_group_metadata(self, group_files: List[Dict], group_by: List[str]) -> Dict[str, Any]:
         """Get metadata for a group based on the first file's metadata or title metadata if grouping by title"""
         if not group_files:
@@ -541,6 +632,8 @@ Examples:
                        help='Verbosity level: 0=silent, 1=normal, 2=detailed with metadata (default: 1)')
     parser.add_argument('--quiet', '-q', action='store_true',
                        help='Same as --verbose 0')
+    parser.add_argument('--myanimelist-xml', metavar='PATH_OR_URL',
+                       help='Path to MyAnimeList XML file or URL for watch status lookup')
     
     args = parser.parse_args()
     
@@ -553,7 +646,8 @@ Examples:
     # Create file grouper instance
     grouper = FileGrouper(
         get_metadata_manager() if MetadataManager else None,
-        get_plex_provider() if PlexMetadataProvider else None
+        get_plex_provider() if PlexMetadataProvider else None,
+        args.myanimelist_xml if hasattr(args, 'myanimelist_xml') else None
     )
     
     # Discover files
@@ -596,8 +690,8 @@ Examples:
         
         print(f"\nGroups:")
         for group_name, group_files in groups.items():
-            # Calculate group watch status
-            group_watched = sum(1 for f in group_files if f.get('plex_watch_status', {}).get('watched', False))
+            # Calculate group watch status using combined episode watch status
+            group_watched = sum(1 for f in group_files if f.get('episode_watched', False))
             group_total_watches = sum(f.get('plex_watch_status', {}).get('watch_count', 0) for f in group_files)
             
             watch_info = ""
@@ -608,21 +702,25 @@ Examples:
             for file_info in group_files:
                 size_mb = file_info.get('file_size', 0) / (1024 * 1024)
                 
-                # Add watch status to file display
+                # Add watch status to file display using combined status
                 watch_display = ""
-                plex_status = file_info.get('plex_watch_status')
-                if plex_status:
-                    if plex_status.get('watched'):
-                        watch_display = f" [✓ Watched {plex_status.get('watch_count', 1)}x"
-                        if plex_status.get('last_watched'):
-                            last_watched = plex_status['last_watched'][:10]  # Just the date part
-                            watch_display += f" on {last_watched}"
-                        watch_display += "]"
-                    elif plex_status.get('view_offset', 0) > 0:
-                        progress = plex_status.get('progress_percent', 0)
-                        watch_display = f" [⏸ {progress:.1f}% watched]"
-                    else:
-                        watch_display = " [○ Unwatched]"
+                if file_info.get('episode_watched'):
+                    watch_sources = file_info.get('watch_source', [])
+                    plex_status = file_info.get('plex_watch_status')
+                    watch_count = plex_status.get('watch_count', 1) if plex_status else 1
+                    
+                    watch_display = f" [✓ Watched {watch_count}x"
+                    if 'myanimelist' in watch_sources:
+                        watch_display += " (MAL)"
+                    if plex_status and plex_status.get('last_watched'):
+                        last_watched = plex_status['last_watched'][:10]
+                        watch_display += f" on {last_watched}"
+                    watch_display += "]"
+                elif file_info.get('plex_watch_status', {}).get('view_offset', 0) > 0:
+                    progress = file_info['plex_watch_status'].get('progress_percent', 0)
+                    watch_display = f" [⏸ {progress:.1f}% watched]"
+                else:
+                    watch_display = " [○ Unwatched]"
                 
                 print(f"  - {file_info['filename']} ({size_mb:.1f} MB){watch_display}")
                 

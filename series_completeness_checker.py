@@ -76,10 +76,11 @@ MetadataManager = None
 class SeriesCompletenessChecker:
     """Checks series collection completeness using FileGrouper and metadata providers."""
     
-    def __init__(self, metadata_manager=None, plex_provider=None):
-        self.file_grouper = FileGrouper(metadata_manager, plex_provider)
+    def __init__(self, metadata_manager=None, plex_provider=None, myanimelist_xml_path=None):
+        self.file_grouper = FileGrouper(metadata_manager, plex_provider, myanimelist_xml_path)
         self.metadata_manager = metadata_manager
         self.plex_provider = plex_provider
+        self.myanimelist_xml_path = myanimelist_xml_path
         self.completeness_results = {}
     
     def analyze_series_collection(self, files: List[Path], show_progress: bool = True) -> Dict[str, Any]:
@@ -87,10 +88,17 @@ class SeriesCompletenessChecker:
         # Group files by title and season with progress tracking
         groups = self.file_grouper.group_files(files, ['title', 'season'], show_progress)
 
-        # Export title metadata for completeness analysis
+        # Export title metadata for completeness analysis - include MyAnimeList watch status
         title_metadata_export = {}
         for key, value in self.file_grouper.title_metadata.items():
-            title_metadata_export[key] = value['metadata']
+            # Export the complete metadata including MyAnimeList watch status
+            metadata_dict = value['metadata'].copy()
+            
+            # Add MyAnimeList watch status if it exists at title level
+            if 'myanimelist_watch_status' in value:
+                metadata_dict['myanimelist_watch_status'] = value['myanimelist_watch_status']
+            
+            title_metadata_export[key] = metadata_dict
         
         # Analyze each group for completeness
         results = {
@@ -178,19 +186,26 @@ class SeriesCompletenessChecker:
         
         episode_numbers = sorted(set(episode_numbers)) if episode_numbers else []
         
-        # Calculate watch status for the group
-        watched_count = 0
+        # Calculate watch status for the group using combined episode watch status
+        watched_count = sum(1 for f in episode_files if f.get('episode_watched', False))
         partially_watched_count = 0
         total_watch_count = 0
+        mal_watch_status = None
         
+        # Get title-level MyAnimeList watch status
+        title_metadata_key = first_file.get('title_metadata_key')
+        if title_metadata_key and hasattr(self, 'file_grouper'):
+            title_metadata = getattr(self.file_grouper, 'title_metadata', {})
+            if title_metadata_key in title_metadata:
+                mal_watch_status = title_metadata[title_metadata_key].get('myanimelist_watch_status')
+        
+        # Count partially watched and total watch count from Plex
         for file_info in episode_files:
             plex_status = file_info.get('plex_watch_status')
             if plex_status:
-                if plex_status.get('watched'):
-                    watched_count += 1
-                elif plex_status.get('view_offset', 0) > 0:
-                    partially_watched_count += 1
                 total_watch_count += plex_status.get('watch_count', 0)
+                if not file_info.get('episode_watched', False) and plex_status.get('view_offset', 0) > 0:
+                    partially_watched_count += 1
         
         result = {
             'title': title,
@@ -209,7 +224,8 @@ class SeriesCompletenessChecker:
                 'unwatched_episodes': episodes_found - watched_count - partially_watched_count,
                 'total_watch_count': total_watch_count,
                 'completion_percent': (watched_count / episodes_found * 100) if episodes_found > 0 else 0
-            }
+            },
+            'myanimelist_watch_status': mal_watch_status
         }
 
         # Check metadata for expected episode count
@@ -402,7 +418,7 @@ class SeriesCompletenessChecker:
         
         # Truncate if too long
         if len(formatted) > max_length:
-            formatted = formatted[:max_length - 3] + "..."
+            formatted = formatted[:max_length - 3] + "...";
         
         return formatted
     
@@ -422,16 +438,27 @@ class SeriesCompletenessChecker:
             completion_rate = (summary['total_episodes_found'] / summary['total_episodes_expected']) * 100
             print(f"Collection completion rate: {completion_rate:.1f}%")
         
-        # Add watch status summary if Plex data is available
-        total_watched = sum(analysis['watch_status']['watched_episodes'] for analysis in results['groups'].values())
-        total_episodes = sum(analysis['episodes_found'] for analysis in results['groups'].values())
-        total_partially_watched = sum(analysis['watch_status']['partially_watched_episodes'] for analysis in results['groups'].values())
+        # Add combined watch status summary (Plex + MAL)
+        total_watched = 0
+        total_episodes = 0
+        total_partially_watched = 0
+        mal_series_count = 0
+        
+        for analysis in results['groups'].values():
+            watch_status = analysis.get('watch_status', {})
+            total_watched += watch_status.get('watched_episodes', 0)
+            total_episodes += analysis.get('episodes_found', 0)
+            total_partially_watched += watch_status.get('partially_watched_episodes', 0)
+            if analysis.get('myanimelist_watch_status'):
+                mal_series_count += 1
         
         if total_watched > 0 or total_partially_watched > 0:
             print(f"\n=== Watch Status Summary ===")
             print(f"Watched episodes: {total_watched}/{total_episodes} ({total_watched/total_episodes*100:.1f}%)")
             print(f"Partially watched: {total_partially_watched}")
             print(f"Unwatched episodes: {total_episodes - total_watched - total_partially_watched}")
+            if mal_series_count > 0:
+                print(f"Series with MyAnimeList data: {mal_series_count}")
         
         # One-line summary for each series
         if verbosity >= 1:
@@ -482,24 +509,31 @@ class SeriesCompletenessChecker:
         if len(title_str) > title_length:
             title_str = title_str[:title_length - 3] + "..."
         
-        # Add episode info (watched, missing, extra)
+        # Add episode info (watched, missing, extra) using combined watch status
         extra_info = []
         
-        # Add watched episodes info as ranges
-        watched_episodes = []
-        if analysis.get('files'):
-            for file_info in analysis['files']:
-                plex_status = file_info.get('plex_watch_status')
-                if plex_status and plex_status.get('watched'):
-                    episode = file_info.get('episode')
-                    if isinstance(episode, list):
-                        watched_episodes.extend(episode)
-                    elif episode is not None:
-                        watched_episodes.append(episode)
-        
-        if watched_episodes:
-            watched_range = self._format_episode_ranges(sorted(set(watched_episodes)))
-            extra_info.append(f"Watched: {watched_range}")
+        # Add watched episodes info - use the calculated watched count
+        watched_episodes = watch_status.get('watched_episodes', 0)
+        if watched_episodes > 0:
+            mal_status = analysis.get('myanimelist_watch_status')
+            if mal_status:
+                watched_range = f"1-{watched_episodes}" if watched_episodes > 1 else "1"
+                extra_info.append(f"Watched: [{watched_range}] (Combined)")
+            else:
+                # Fall back to individual file watch status display
+                watched_episode_nums = []
+                if analysis.get('files'):
+                    for file_info in analysis['files']:
+                        if file_info.get('episode_watched'):
+                            episode = file_info.get('episode')
+                            if isinstance(episode, list):
+                                watched_episode_nums.extend(episode)
+                            elif episode is not None:
+                                watched_episode_nums.append(episode)
+                
+                if watched_episode_nums:
+                    watched_range = self._format_episode_ranges(sorted(set(watched_episode_nums)))
+                    extra_info.append(f"Watched: {watched_range}")
 
         if analysis.get('missing_episodes'):
             missing_range = self._format_episode_ranges(analysis['missing_episodes'])
@@ -723,6 +757,8 @@ Examples:
                        help='Generate static and animated webp thumbnails for each video file and store in thumbnail dir')
     parser.add_argument('--thumbnail-dir', default='~/.video_thumbnail_cache',
                        help='Directory to store video thumbnails (default: ~/.video_thumbnail_cache)')
+    parser.add_argument('--myanimelist-xml', metavar='PATH_OR_URL',
+                       help='Path to MyAnimeList XML file (can be .gz) or URL for watch status lookup')
     
     args = parser.parse_args()
     
@@ -749,8 +785,12 @@ Examples:
             print(f"Warning: Could not initialize Plex provider: {e}")
         plex_provider = None
     
-    # Create checker instance
-    checker = SeriesCompletenessChecker(metadata_manager, plex_provider)
+    # Create checker instance with MyAnimeList support
+    checker = SeriesCompletenessChecker(
+        metadata_manager, 
+        plex_provider,
+        args.myanimelist_xml if hasattr(args, 'myanimelist_xml') else None
+    )
 
     # Discover files
     if verbosity >= 1:

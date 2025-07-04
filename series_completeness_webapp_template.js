@@ -392,8 +392,7 @@ class SeriesCompletenessApp {
         const watched = new Set();
         // Get watched episodes
         series.files.forEach(file => {
-            const plexStatus = file.plex_watch_status;
-            if (plexStatus && plexStatus.watched) {
+            if (file.episode_watched) {
                 const episode = file.episode;
                 if (Array.isArray(episode)) {
                     episode.forEach(ep => watched.add(ep));
@@ -478,9 +477,8 @@ class SeriesCompletenessApp {
         return `
             <div class="files-list">
                 ${series.files.map((file, idx) => {
-                    const plexStatus = file.plex_watch_status || {};
-                    const watchIndicator = plexStatus.watched ? 'watched' : 
-                        (plexStatus.view_offset > 0 ? 'partially-watched' : 'unwatched');
+                    //Use the basic watch-status, and if available, use the partial watch-status from Plex
+                    const watchIndicator = file.episode_watched ? 'watched' : (file.plex_watch_status?.view_offset > 0 ? 'partially-watched' : 'unwatched');
                     const thumb = this.getFileThumbnail(file);
                     const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
                     const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
@@ -520,8 +518,7 @@ class SeriesCompletenessApp {
                                 <div class="file-meta">
                                     <span>
                                         <span class="watch-indicator ${watchIndicator}"></span>
-                                        ${plexStatus.watched ? 'Watched' : 
-                                          (plexStatus.view_offset > 0 ? 'Partially Watched' : 'Unwatched')}
+                                        ${watchIndicator === 'watched' ? 'Watched' : (watchIndicator === 'partially-watched' ? 'Partially Watched' : 'Unwatched')}
                                     </span>
                                     ${typeLabel}
                                     ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}

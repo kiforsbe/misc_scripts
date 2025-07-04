@@ -485,27 +485,16 @@ A script that organizes files in a directory by grouping them based on their fil
 
 The script uses advanced string matching algorithms to detect patterns in filenames, handle various naming conventions, and group related files while preserving the original file structure. It's particularly useful for organizing large collections of media files, software downloads, or document archives.
 
+Now integrates with **MyAnimeList** as the primary source for anime information, providing enhanced metadata and series validation. Supports public MyAnimeList lists and exported lists for tracking watch status and completion data.
+
 ### Features
 - Intelligent filename pattern detection and grouping
 - Support for various naming conventions (TV shows, movies, archives, documents)
+- MyAnimeList integration for anime metadata and series validation
+- Watch status tracking via public or exported MyAnimeList lists
 - Configurable grouping sensitivity and pattern matching
 - Recursive directory processing with configurable depth
 - Detailed logging and progress reporting
-
-### Usage (Examples)
-```bash
-# Group files in current directory (dry run)
-python file_grouper.py
-
-# Actually perform the grouping operation
-python file_grouper.py --execute
-
-# Group files recursively with custom pattern sensitivity
-python file_grouper.py /path/to/media --recursive --sensitivity 0.8 --execute
-
-# Preview grouping for specific directory
-python file_grouper.py /path/to/files --dry-run
-```
 
 ### Requires
 - rapidfuzz
@@ -516,9 +505,13 @@ A script that analyzes TV series collections to identify missing episodes, gaps 
 
 The script supports various TV series naming conventions and provides detailed reports on series completeness, making it easy to identify and fill gaps in your media collection. It can also suggest potential naming inconsistencies and provide recommendations for organizing your series.
 
+Now features **MyAnimeList** as the primary source for anime information, providing accurate episode counts, season data, and series metadata. Supports integration with public MyAnimeList lists and exported lists to track watch status and completion progress.
+
 ### Features
 - Comprehensive TV series analysis and gap detection
 - Support for multiple naming conventions and formats
+- MyAnimeList integration for accurate anime metadata and episode validation
+- Watch status integration with public or exported MyAnimeList lists
 - Season and episode numbering validation
 - Missing episode identification with detailed reporting
 - Series metadata integration for enhanced accuracy
@@ -530,12 +523,6 @@ The script supports various TV series naming conventions and provides detailed r
 ```bash
 # Check completeness of series in current directory
 python series_completeness_checker.py
-
-# Analyze specific series directory with detailed report
-python series_completeness_checker.py /path/to/series --detailed --export-html
-
-# Check multiple series with metadata validation
-python series_completeness_checker.py /path/to/library --recursive --validate-metadata
 
 # Generate JSON report
 python series_completeness_checker.py /path/to/series --export series.json
@@ -555,14 +542,18 @@ A script that archives anime series files based on series completeness checker o
 
 The script processes JSON output from series_completeness_checker.py and allows users to select specific series groups for archiving. It creates organized folder structures following the pattern `[release_group] show_name (start_ep-last_ep) (resolution)` and can either copy or move files to the destination.
 
+Enhanced with **MyAnimeList** integration as the primary source for anime information, providing accurate series metadata, episode counts, and watch status data. Supports public MyAnimeList lists and exported lists for comprehensive watch status tracking during the archiving process.
+
 ### Features
-- **Dual Interface**: Command-line tool and importable Python class for programmatic use
-- **Intelligent Organization**: Creates standardized folder names based on series metadata
-- **Flexible Selection**: Archive specific series or all series with simple selection syntax
-- **Safe Operations**: Dry-run mode to preview changes before execution
-- **Comprehensive Logging**: Multiple verbosity levels for detailed operation tracking
-- **File Operations**: Support for both copying and moving files with progress feedback
-- **Error Handling**: Robust error reporting and validation of source files and destinations
+- Dual Interface: Command-line tool and importable Python class for programmatic use
+- MyAnimeList Integration: Primary source for anime metadata and series validation
+- Watch Status Support: Integration with public or exported MyAnimeList lists
+- Intelligent Organization: Creates standardized folder names based on series metadata
+- Flexible Selection: Archive specific series or all series with simple selection syntax
+- Safe Operations: Dry-run mode to preview changes before execution
+- Comprehensive Logging: Multiple verbosity levels for detailed operation tracking
+- File Operations: Support for both copying and moving files with progress feedback
+- Error Handling: Robust error reporting and validation of source files and destinations
 
 ### Usage (Examples)
 ```bash
@@ -672,7 +663,7 @@ python series_bundler.py *.mkv -d /dest --no-interactive
 
 ## simple_http_proxy.py
 A simple script that allows you to fetch a remote file or resource by appending the full remote URL to the end of your request to the app, e.g.:
-```
+``` bash
 http://<host-ip>:8080/<remote-url>
 ```
 This is **not** a real HTTP proxy, but a tool to fetch a specific file or similar resource via another URL, making it accessible to local computers on your network.

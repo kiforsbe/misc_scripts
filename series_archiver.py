@@ -283,13 +283,23 @@ class SeriesArchiver:
         files = group_data.get('files', [])
         
         for file_info in files:
-            plex_status = file_info.get('plex_watch_status')
-            if plex_status and plex_status.get('watched'):
+            # Check for new episode_watched field first
+            episode_watched = file_info.get('episode_watched', False)
+            if episode_watched:
                 episode = file_info.get('episode')
                 if isinstance(episode, list):
                     watched_episodes.extend(episode)
                 elif episode is not None:
                     watched_episodes.append(episode)
+            else:
+                # Fallback to plex_watch_status for backward compatibility
+                plex_status = file_info.get('plex_watch_status')
+                if plex_status and plex_status.get('watched'):
+                    episode = file_info.get('episode')
+                    if isinstance(episode, list):
+                        watched_episodes.extend(episode)
+                    elif episode is not None:
+                        watched_episodes.append(episode)
         
         return sorted(set(watched_episodes)) if watched_episodes else []
     
