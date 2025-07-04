@@ -673,12 +673,22 @@ python series_bundler.py *.mkv -d /dest --no-interactive
 ## simple_http_proxy.py
 A simple script that allows you to fetch a remote file or resource by appending the full remote URL to the end of your request to the app, e.g.:
 ```
-http://192.168.0.42/https://github.com/microsoft/PowerToys/releases/download/v0.92.0/PowerToysUserSetup-0.92.0-x64.exe
+http://<host-ip>:8080/<remote-url>
 ```
 This is **not** a real HTTP proxy, but a tool to fetch a specific file or similar resource via another URL, making it accessible to local computers on your network.
 
 ### Requires
 - No external dependencies required (uses only Python standard libraries)
+
+## Experimental
+
+### lyrics-timing-generator.py
+Intended to generate timed lyrics for audio files (.lrc). Uses whisper library to generate timed lyrics, and ollama and an llm to structure them.
+
+But it is not good. Really not good. It's a start, but not quite there yet. Need to restart from a known base to generate the timed subtitles which is a known working thing, and then convert that to lyrics, using an llm to format them.
+
+#### Requires
+- pydub
 - mutagen
 - numpy
 - librosa
