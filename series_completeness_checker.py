@@ -720,6 +720,9 @@ Examples:
   %(prog)s /path/to/series --status-filter "+complete +complete_with_extras"
   %(prog)s /path/to/series --status-filter "-unknown -no_metadata"
   %(prog)s /path/to/series --status-filter "+incomplete -complete_with_extras"
+  %(prog)s /path/to/series --mal-status-filter "watching completed"
+  %(prog)s /path/to/series --mal-status-filter "+completed +on-hold"
+  %(prog)s /path/to/series --mal-status-filter "-dropped -plan-to-watch"
   %(prog)s /path/to/series --show-metadata year rating
   %(prog)s /path/to/series --show-metadata genres director --status-filter "complete"
   %(prog)s /path/to/series --generate-thumbnails --thumbnail-dir ~/.video_thumbnail_cache
@@ -749,6 +752,11 @@ Examples:
                             'Available statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
                             'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
                             'Examples: "complete incomplete", "+complete +incomplete", "-unknown -no_metadata"')
+    parser.add_argument('--mal-status-filter', metavar='FILTERS',
+                       help='Filter results by MyAnimeList watch status. Use +status to include only specific statuses, '
+                            '-status to exclude specific statuses, or plain status names for exact match. '
+                            'Available MAL statuses: watching, completed, on-hold, dropped, plan-to-watch. '
+                            'Examples: "watching completed", "+completed +on-hold", "-dropped -plan-to-watch"')
     parser.add_argument('--show-metadata', nargs='*', metavar='FIELD',
                        help='Show metadata fields in summary lines. Available fields depend on metadata source. '
                             'Common fields: year, rating, genres, director, actors, plot, runtime, imdb_id. '
@@ -821,11 +829,17 @@ Examples:
         print("Analyzing series collection for completeness...")
     # Analyze collection
     results = checker.analyze_series_collection(files)
+    
     # Filter results if requested
     status_filters = None
     if args.status_filter:
         # Split the string into individual filter items
         status_filters = args.status_filter.split()
+    
+    # MyAnimeList status filter
+    mal_status_filters = None
+    if hasattr(args, 'mal_status_filter') and args.mal_status_filter:
+        mal_status_filters = args.mal_status_filter.split()
     
     if status_filters:
         all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
@@ -867,6 +881,80 @@ Examples:
         for group_key, analysis in results['groups'].items():
             if analysis['status'] in final_statuses:
                 filtered_groups[group_key] = analysis
+        results['groups'] = filtered_groups
+        
+        # Recalculate summary for filtered results
+        total_series = len(filtered_groups)
+        complete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['complete', 'complete_with_extras'])
+        incomplete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['incomplete', 'no_episode_numbers'])
+        unknown_series = total_series - complete_series - incomplete_series
+        total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
+        total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
+
+        results['completeness_summary'].update({
+            'total_series': total_series,
+            'complete_series': complete_series,
+            'incomplete_series': incomplete_series,
+            'unknown_series': unknown_series,
+            'total_episodes_found': total_episodes_found,
+            'total_episodes_expected': total_episodes_expected
+        })
+    
+    # Apply MyAnimeList status filtering
+    if mal_status_filters:
+        # Convert status names to normalized format (lowercase with dashes)
+        mal_status_map = {
+            'watching': 'Watching',
+            'completed': 'Completed', 
+            'on-hold': 'On-Hold',
+            'dropped': 'Dropped',
+            'plan-to-watch': 'Plan to Watch'
+        }
+        all_mal_statuses = set(mal_status_map.keys())
+        
+        # Parse include/exclude patterns
+        include_mal_statuses = set()
+        exclude_mal_statuses = set()
+        plain_mal_statuses = set()
+        
+        for filter_item in mal_status_filters:
+            if filter_item.startswith('+'):
+                status = filter_item[1:]
+                if status in all_mal_statuses:
+                    include_mal_statuses.add(status)
+            elif filter_item.startswith('-'):
+                status = filter_item[1:]
+                if status in all_mal_statuses:
+                    exclude_mal_statuses.add(status)
+            elif filter_item in all_mal_statuses:
+                plain_mal_statuses.add(filter_item)
+        
+        # Determine final filter set
+        if plain_mal_statuses:
+            final_mal_statuses = plain_mal_statuses
+        elif include_mal_statuses:
+            final_mal_statuses = include_mal_statuses - exclude_mal_statuses
+        elif exclude_mal_statuses:
+            final_mal_statuses = all_mal_statuses - exclude_mal_statuses
+        else:
+            final_mal_statuses = all_mal_statuses
+        
+        # Convert to actual MAL status values for filtering
+        final_mal_status_values = {mal_status_map[status] for status in final_mal_statuses}
+        
+        # Apply filtering
+        filtered_groups = {}
+        for group_key, analysis in results['groups'].items():
+            mal_status = analysis.get('myanimelist_watch_status')
+            if mal_status and hasattr(mal_status, 'my_status'):
+                # Series has MAL status, check if it matches filter
+                if mal_status.my_status in final_mal_status_values:
+                    filtered_groups[group_key] = analysis
+            elif not mal_status:
+                # Series has no MAL status - only include if no positive filters specified
+                if not plain_mal_statuses and not include_mal_statuses:
+                    filtered_groups[group_key] = analysis
+        
         results['groups'] = filtered_groups
         
         # Recalculate summary for filtered results

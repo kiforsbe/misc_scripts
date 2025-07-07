@@ -7,6 +7,7 @@ class SeriesCompletenessApp {
         this.selectedSeries = null;
         this.searchTerm = '';
         this.statusFilter = 'all';
+        this.malStatusFilter = 'all';
         // New: Watch status filter states
         this.watchFilters = {
             notWatched: true,
@@ -63,6 +64,13 @@ class SeriesCompletenessApp {
         const statusFilter = document.getElementById('status-filter');
         statusFilter.addEventListener('change', (e) => {
             this.statusFilter = e.target.value;
+            this.filterAndDisplaySeries();
+        });
+        
+        // MAL status filter
+        const malStatusFilter = document.getElementById('mal-status-filter');
+        malStatusFilter.addEventListener('change', (e) => {
+            this.malStatusFilter = e.target.value;
             this.filterAndDisplaySeries();
         });
         
@@ -150,7 +158,26 @@ class SeriesCompletenessApp {
             const matchesWatch = this.watchFilters[watchCategory];
             // --- End new ---
 
-            if (matchesSearch && matchesStatus && matchesWatch) {
+            // Apply MAL status filter
+            let matchesMalStatus = true;
+            if (this.malStatusFilter !== 'all') {
+                const malStatus = series.myanimelist_watch_status;
+                if (this.malStatusFilter === 'no-mal-data') {
+                    matchesMalStatus = !malStatus || !malStatus.my_status;
+                } else {
+                    const malStatusMap = {
+                        'watching': 'Watching',
+                        'completed': 'Completed',
+                        'on-hold': 'On-Hold',
+                        'dropped': 'Dropped',
+                        'plan-to-watch': 'Plan to Watch'
+                    };
+                    const expectedStatus = malStatusMap[this.malStatusFilter];
+                    matchesMalStatus = malStatus && malStatus.my_status === expectedStatus;
+                }
+            }
+
+            if (matchesSearch && matchesStatus && matchesWatch && matchesMalStatus) {
                 this.filteredSeries.push({ key, ...series });
             }
         }
@@ -216,13 +243,29 @@ class SeriesCompletenessApp {
                 episodeDisplay = `<span class="watch-count">${watchStatus.watched_episodes}</span>
                     <span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>`;
             }
-            // ---
+            // --- 
+
+            // MAL status display
+            const malStatus = series.myanimelist_watch_status;
+            let malStatusDisplay = '';
+            if (malStatus && malStatus.my_status) {
+                const statusIcons = {
+                    'Watching': '👁️',
+                    'Completed': '✅',
+                    'On-Hold': '⏸️',
+                    'Dropped': '❌',
+                    'Plan to Watch': '📋'
+                };
+                const icon = statusIcons[malStatus.my_status] || '❓';
+                malStatusDisplay = `<span class="mal-status" title="MyAnimeList: ${malStatus.my_status}">${icon} ${malStatus.my_status}</span>`;
+            }
 
             return `
                 <div class="series-item" data-series-key="${series.key}" onclick="app.selectSeries('${series.key}')">
                     <div class="series-title">${this.escapeHtml(titleWithSeason)}</div>
                     <div class="series-meta">
                         ${statusDisplay}
+                        ${malStatusDisplay}
                         <div>
                           ${episodeDisplay}
                         </div>
@@ -292,6 +335,8 @@ class SeriesCompletenessApp {
                     </h4>
                     ${this.renderWatchProgress(series)}
                 </div>
+                
+                ${this.renderMalInfo(series)}
             </div>
             
             ${this.renderEpisodeGrid(series)}
@@ -372,6 +417,58 @@ class SeriesCompletenessApp {
                     <small class="text-muted">
                         <i class="bi bi-circle"></i> ${unwatched} Unwatched
                     </small>
+                </div>
+            </div>
+        `;
+    }
+    
+    renderMalInfo(series) {
+        const malStatus = series.myanimelist_watch_status;
+        
+        if (!malStatus || !malStatus.my_status) {
+            return ''; // Don't show the card if no MAL data
+        }
+        
+        const statusIcons = {
+            'Watching': '👁️',
+            'Completed': '✅',
+            'On-Hold': '⏸️',
+            'Dropped': '❌',
+            'Plan to Watch': '📋'
+        };
+        
+        const statusColors = {
+            'Watching': 'text-primary',
+            'Completed': 'text-success', 
+            'On-Hold': 'text-warning',
+            'Dropped': 'text-danger',
+            'Plan to Watch': 'text-info'
+        };
+        
+        const icon = statusIcons[malStatus.my_status] || '❓';
+        const colorClass = statusColors[malStatus.my_status] || 'text-muted';
+        
+        return `
+            <div class="details-card">
+                <h4 class="card-title">
+                    <i class="bi bi-star"></i>
+                    MyAnimeList Status
+                </h4>
+                <div class="mal-info">
+                    <div class="mal-status-large ${colorClass}">
+                        <span class="mal-icon">${icon}</span>
+                        <span class="mal-status-text">${malStatus.my_status}</span>
+                    </div>
+                    ${malStatus.my_score > 0 ? `
+                    <div class="mal-score">
+                        <strong>Score:</strong> <span class="score-value">${malStatus.my_score}/10</span>
+                    </div>
+                    ` : ''}
+                    ${malStatus.my_watched_episodes !== undefined && malStatus.my_watched_episodes >= 0 ? `
+                    <div class="mal-episodes">
+                        <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes}
+                    </div>
+                    ` : ''}
                 </div>
             </div>
         `;

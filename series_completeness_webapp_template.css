@@ -232,6 +232,20 @@ body {
   color: #6c757d;
 }
 
+.mal-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  background: rgba(111, 66, 193, 0.1);
+  color: var(--primary-color);
+  border: 1px solid rgba(111, 66, 193, 0.2);
+  margin-left: 5px;
+}
+
 .episode-count {
   font-weight: 600;
   color: var(--success-color);
@@ -581,4 +595,41 @@ body {
 .ep-status-corner {
   right: 6px;
   top: 6px;
+}
+
+/* MyAnimeList Status Styling */
+.mal-info {
+  padding: 15px 0;
+}
+
+.mal-status-large {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.mal-icon {
+  font-size: 1.4rem;
+}
+
+.mal-status-text {
+  text-transform: capitalize;
+}
+
+.mal-score {
+  margin-bottom: 10px;
+  font-size: 0.95rem;
+}
+
+.score-value {
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
+.mal-episodes {
+  font-size: 0.95rem;
+  color: #666;
 }
