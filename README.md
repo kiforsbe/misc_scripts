@@ -671,6 +671,19 @@ This is **not** a real HTTP proxy, but a tool to fetch a specific file or simila
 ### Requires
 - No external dependencies required (uses only Python standard libraries)
 
+### plex-playlist-watch-status.user.js
+A Tampermonkey script that adds simple triangle indicators to Plex playlist items, showing their watch status (watched/unwatched) based on metadata from the Plex API.
+It fetches the watch status of each item in a Plex playlist and displays a triangle icon next to each item, indicating whether it has been watched or not. The script is designed to enhance the user experience by providing quick visual feedback on the watch status of playlist items.
+
+### Usage
+1. Install Tampermonkey or a similar userscript manager in your browser.
+2. Import the script into Tampermonkey.
+3. Make sure your local IP addresses are whitelisted in the script.
+4. Navigate to your Plex playlist page, open a playlist and see the watch status indicators appear next to each item thumbnail.
+
+### Requires
+- Tampermonkey or a similar userscript manager
+
 ## Experimental
 
 ### lyrics-timing-generator.py
