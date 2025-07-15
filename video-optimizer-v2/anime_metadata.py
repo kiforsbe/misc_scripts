@@ -4,7 +4,7 @@ import json
 import logging
 import requests
 import sqlite3
-import zipfile
+import zstandard as zstd
 import time
 from typing import Optional
 from tqdm import tqdm
@@ -44,7 +44,7 @@ ANIME_STATUS_ID_TO_TEXT = {v: k for k, v in ANIME_STATUS_TEXT_TO_ID.items()}
 ANIME_STATUS_ID_TO_TEXT[AnimeStatus.UNKNOWN] = "UNKNOWN"
 
 class AnimeDataProvider(BaseMetadataProvider):
-    ANIME_DB_URL = "https://github.com/manami-project/anime-offline-database/archive/refs/tags/latest.zip"
+    ANIME_DB_URL = "https://github.com/manami-project/anime-offline-database/releases/download/latest/anime-offline-database-minified.json.zst"
     MAX_RETRIES = 3
     
     # Define relevance scores for different title types
@@ -258,48 +258,53 @@ class AnimeDataProvider(BaseMetadataProvider):
 
         logging.info("Loading anime database...")
 
-        zip_path = os.path.join(self.cache_dir, "anime-offline-database-latest.zip")
-        zip_expiry_days = 7
+        zst_path = os.path.join(self.cache_dir, "anime-offline-database-minified.json.zst")
+        cache_expiry_days = 7
 
         try:
-            # Check if cached zip exists and is fresh
+            # Check if cached zst file exists and is fresh
             need_download = True
-            if os.path.exists(zip_path):
-                mtime = os.path.getmtime(zip_path)
+            if os.path.exists(zst_path):
+                mtime = os.path.getmtime(zst_path)
                 age_days = (time.time() - mtime) / 86400
-                if age_days < zip_expiry_days:
+                if age_days < cache_expiry_days:
                     need_download = False
 
             if need_download:
-                logging.info("Downloading anime database zip file from remote server...")
+                logging.info("Downloading anime database from remote server...")
                 try:
                     response = requests.get(self.ANIME_DB_URL, stream=True)
                     response.raise_for_status()
                     total_size = int(response.headers.get('content-length', 0))
-                    with open(zip_path, "wb") as f, tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
+                    with open(zst_path, "wb") as f, tqdm(total=total_size, desc="Downloading anime database", unit='B', unit_scale=True) as pbar:
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
                                 pbar.update(len(chunk))
                 except Exception as e:
-                    logging.error(f"Failed to download anime database zip: {e}")
+                    logging.error(f"Failed to download anime database: {e}")
                     raise
 
-            # Extract anime-offline-database.json from the zip in memory
+            # Decompress the zst file
             try:
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    json_filename = None
-                    for name in zf.namelist():
-                        if name.endswith("anime-offline-database.json"):
-                            json_filename = name
-                            break
-                    if not json_filename:
-                        raise RuntimeError("anime-offline-database.json not found in zip file")
-                    with zf.open(json_filename) as json_file:
-                        json_bytes = json_file.read()
-                        json_str = json_bytes.decode("utf-8")
+                with open(zst_path, "rb") as zst_file:
+                    dctx = zstd.ZstdDecompressor()
+                    try:
+                        # Try regular decompression first
+                        json_bytes = dctx.decompress(zst_file.read())
+                    except zstd.ZstdError as e:
+                        # If we get a "could not determine content size in frame header" error,
+                        # use streaming decompression instead
+                        if "could not determine content size in frame header" in str(e):
+                            logging.info("Using streaming decompression due to missing content size in zst header")
+                            zst_file.seek(0)  # Reset file position
+                            reader = dctx.stream_reader(zst_file)
+                            json_bytes = reader.read()
+                        else:
+                            raise
+                    json_str = json_bytes.decode("utf-8")
             except Exception as e:
-                logging.error(f"Failed to extract anime-offline-database.json from zip: {e}")
+                logging.error(f"Failed to decompress anime database: {e}")
                 raise
 
             # Write the JSON string to a temporary file for compatibility with _load_json_to_db
@@ -314,7 +319,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             # Parse and insert into database
             self._load_json_to_db(temp_json)
 
-            # Clean up temp file, but keep the zip
+            # Clean up temp file, but keep the zst file
             try:
                 os.remove(temp_json)
             except Exception:
