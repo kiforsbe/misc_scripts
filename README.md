@@ -671,6 +671,22 @@ This is **not** a real HTTP proxy, but a tool to fetch a specific file or simila
 ### Requires
 - No external dependencies required (uses only Python standard libraries)
 
+## radio_station_checker.py
+A multi-threaded Python script that checks the availability of radio stations from SII, PLS, and M3U playlist files. It provides a real-time terminal interface with virtualized rendering for performance, displaying station status, response times, and metadata in an organized table format.
+
+The script features intelligent performance optimizations, only updating the display when necessary, and includes full user interaction capabilities with keyboard navigation and graceful shutdown handling. It's designed to efficiently monitor large collections of radio stations while providing a smooth, responsive user experience.
+
+### Features
+- **Multi-format Support**: Handles Truck Simulator SII, PLS, and M3U playlist formats
+- **High-Performance Virtualized Rendering**: Smart display updates only when station status changes or user interactions occur
+- **Multi-threaded Station Checking**: Concurrent HTTP requests with configurable thread pool for optimal performance
+- **Interactive Terminal Interface**: Rich terminal UI with real-time status updates and progress tracking
+
+### Requires
+- rich
+- requests
+- concurrent.futures (standard library)
+
 ### plex-playlist-watch-status.user.js
 A Tampermonkey script that adds simple triangle indicators to Plex playlist items, showing their watch status (watched/unwatched) based on metadata from the Plex API.
 It fetches the watch status of each item in a Plex playlist and displays a triangle icon next to each item, indicating whether it has been watched or not. The script is designed to enhance the user experience by providing quick visual feedback on the watch status of playlist items.
