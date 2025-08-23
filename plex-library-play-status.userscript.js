@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Plex Unplayed Items Pip Indicator
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Show a pip indicator left of filename for unplayed items in Plex library table view (based on Playlist Play Status logic)
-// @author       You
+// @author       Kim Forsberg
 // @match        https://app.plex.tv/*
 // @match        http://localhost:32400/web/*
 // @match        http://127.0.0.1:32400/web/*
@@ -18,132 +18,184 @@
 
   // Configuration based on common Plex userscript patterns
   const CONFIG = {
-    // Selectors for different Plex view types
+    // Selectors for different Plex view types - scoped to library container
     selectors: {
-      // Table view rows
-      tableRows: '[data-testid="table-row"], [class*="MetadataTableRow"], [role="row"]:not([class*="header"])',
+      // Main library container
+      libraryContainer: '[class*="DirectoryListPageContent-listContainer"]',
+      
+      // Table view rows within library container
+      tableRows: '[class*="ListRow-row"], [class*="ListRow-alternateRow"]',
 
-      // Title cells in table view
-      titleCells: '[data-testid="metadataTitleLink"], [class*="titleCell"], .MetadataTableItemTitle, td:first-child > div, td:first-child > a',
+      // Title cells in table view - use the data-testid which is more stable
+      titleCells: '[data-testid="metadataTitleLink"]',
 
-      // Play status indicators that Plex uses
-      playedIndicators: '[class*="played"], [class*="watched"], [aria-label*="layed"], .PlayedIndicator, [data-qa-id*="played"]',
-      unplayedIndicators: '[class*="unplayed"], [class*="unwatched"], [aria-label*="nplayed"]',
-
-      // Progress indicators
-      progressBars: '[role="progressbar"], [class*="progress"], [class*="Progress"]',
+      // Table headers - scoped to library
+      tableHeaders: '[class*="DirectoryListTableHeader-tableHeader"]',
+      
+      // Header links within the table header
+      headerLinks: 'a[role="link"]',
+      
+      // Generic table cells
+      tableCells: '[class*="TableCell-tableCell"]',
     },
 
     // Pip styling
     pipStyle: {
-      width: "6px",
-      height: "6px",
-      backgroundColor: "#e5a00d", // Plex orange
-      borderRadius: "50%",
-      display: "inline-block",
-      marginRight: "6px",
-      verticalAlign: "middle",
-      flexShrink: "0",
-      position: "relative",
-      top: "-1px",
+      unplayed: {
+        width: "10px",
+        height: "10px",
+        backgroundColor: "#e5a00d", // Plex orange - solid
+        borderRadius: "50%",
+        display: "inline-block",
+        marginRight: "8px",
+        verticalAlign: "middle",
+        flexShrink: "0",
+        position: "relative",
+        top: "-1px",
+      },
+      played: {
+        width: "10px",
+        height: "10px",
+        backgroundColor: "transparent", // Hollow
+        border: "2px solid #4b4b4bff", // Light gray border
+        borderRadius: "50%",
+        display: "inline-block",
+        marginRight: "8px",
+        verticalAlign: "middle",
+        flexShrink: "0",
+        position: "relative",
+        top: "-1px",
+        boxSizing: "border-box",
+      },
     },
   };
+
+  // Cache for column index to avoid re-scanning headers
+  let dateViewedColumnIndex = -1;
+  let lastHeaderScan = 0;
 
   // Cache for tracking processed items to avoid duplicates
   const processedItems = new WeakSet();
 
   // Create pip element
-  function createPip() {
+  function createPip(playStatus) {
     const pip = document.createElement("span");
-    pip.className = "plex-unplayed-pip";
-    pip.setAttribute("title", "Unplayed");
-    pip.setAttribute("data-pip", "true");
+    pip.className = `plex-${playStatus}-pip`;
+    pip.setAttribute("title", playStatus === "unplayed" ? "Unplayed" : "Played");
+    pip.setAttribute("data-pip", playStatus);
 
-    Object.assign(pip.style, CONFIG.pipStyle);
+    Object.assign(pip.style, CONFIG.pipStyle[playStatus]);
 
     return pip;
   }
 
-  // Enhanced play status detection based on Plex's internal mechanisms
+  // Find the "Date Viewed" column index by scanning table headers within library container
+  function findDateViewedColumnIndex() {
+    const now = Date.now();
+    // Only rescan headers every 5 seconds to avoid excessive processing
+    if (dateViewedColumnIndex !== -1 && now - lastHeaderScan < 5000) {
+      return dateViewedColumnIndex;
+    }
+
+    // Reset the index
+    dateViewedColumnIndex = -1;
+    lastHeaderScan = now;
+
+    // Look for the library container first
+    const libraryContainer = document.querySelector(CONFIG.selectors.libraryContainer);
+    if (!libraryContainer) {
+      console.debug('No library container found');
+      return -1;
+    }
+
+    // Look for the table header container within the library
+    const headerContainer = libraryContainer.querySelector(CONFIG.selectors.tableHeaders);
+    if (!headerContainer) {
+      console.debug('No table header container found in library');
+      return -1;
+    }
+
+    // Find all header links that represent columns
+    const headerLinks = headerContainer.querySelectorAll(CONFIG.selectors.headerLinks);
+    
+    headerLinks.forEach((header, index) => {
+      // Look for the span with title="Date Viewed" within this header
+      const titleSpan = header.querySelector('span[title="Date Viewed"]');
+      if (titleSpan) {
+        dateViewedColumnIndex = index;
+        console.debug('Found Date Viewed column at index:', index);
+        return;
+      }
+      
+      // Alternative: check if the header text itself is "Date Viewed"
+      const headerText = header.textContent.trim().toLowerCase();
+      if (headerText === 'date viewed') {
+        dateViewedColumnIndex = index;
+        console.debug('Found Date Viewed column at index (text match):', index);
+        return;
+      }
+    });
+
+    return dateViewedColumnIndex;
+  }
+
+  // Generic method to get table cells from a row (excluding action cells)
+  function getTableCellsFromRow(row) {
+    // Get all table cells within this row
+    const allCells = row.querySelectorAll(CONFIG.selectors.tableCells);
+    
+    // Filter out non-content cells based on their position and content
+    return Array.from(allCells).filter(cell => {
+      // Skip cells that contain select buttons
+      if (cell.closest('[class*="selectButton"]') || 
+          cell.matches('[class*="selectButton"]')) return false;
+      
+      // Skip the play cell
+      if (cell.matches('[class*="playCell"]')) return false;
+      
+      // Skip the actions cell (has edit/more buttons)
+      if (cell.matches('[class*="actionsCell"]') || 
+          cell.querySelector('svg[id*="edit"]') || 
+          cell.querySelector('svg[id*="more"]')) return false;
+      
+      return true;
+    });
+  }
+
+  // Simplified play status detection using dynamic column detection
   function getPlayStatus(row) {
-    // Method 1: Check for explicit played/unplayed indicators
-    const playedElement = row.querySelector(CONFIG.selectors.playedIndicators);
-    if (playedElement) {
-      return "played";
-    }
-
-    const unplayedElement = row.querySelector(CONFIG.selectors.unplayedIndicators);
-    if (unplayedElement) {
-      return "unplayed";
-    }
-
-    // Method 2: Check progress bars (most reliable method)
-    const progressBars = row.querySelectorAll(CONFIG.selectors.progressBars);
-    for (const progressBar of progressBars) {
-      const ariaValueNow = progressBar.getAttribute("aria-valuenow");
-      const ariaValueMax = progressBar.getAttribute("aria-valuemax");
-
-      if (ariaValueNow !== null) {
-        const progress = parseFloat(ariaValueNow);
-        const max = parseFloat(ariaValueMax) || 100;
-
-        if (progress === 0) return "unplayed";
-        if (progress >= max * 0.9) return "played"; // 90%+ considered played
-        return "partial";
-      }
-
-      // Check for CSS-based progress
-      const progressFill = progressBar.querySelector('[class*="fill"], [class*="bar"]');
-      if (progressFill) {
-        const width = progressFill.style.width;
-        if (width === "0%" || width === "0px") return "unplayed";
-        if (parseFloat(width) >= 90) return "played";
-        return "partial";
+    // Find the Date Viewed column index from headers
+    const columnIndex = findDateViewedColumnIndex();
+    
+    // Get the content cells from this specific row (excluding action/select cells)
+    const contentCells = getTableCellsFromRow(row);
+    
+    if (columnIndex !== -1 && contentCells.length > columnIndex) {
+      // Get the cell at the Date Viewed column index
+      const dateViewedCell = contentCells[columnIndex];
+      const dateViewedText = dateViewedCell.textContent.trim().toLowerCase();
+      
+      console.debug('Checking row cell at index', columnIndex, ':', dateViewedText);
+      
+      if (dateViewedText === 'unplayed') {
+        return 'unplayed';
+      } else if (dateViewedText && dateViewedText !== 'unplayed') {
+        // Any other text (like dates, "23 minutes ago", etc.) means it's been played
+        return 'played';
       }
     }
 
-    // Method 3: Check data attributes commonly used by Plex
-    const dataAttrs = ["data-played", "data-watched", "data-viewcount", "data-view-count"];
-    for (const attr of dataAttrs) {
-      const value = row.getAttribute(attr);
-      if (value === "true" || (value && parseInt(value) > 0)) {
-        return "played";
-      }
-      if (value === "false" || value === "0") {
-        return "unplayed";
+    // Fallback: search all content cells in this row for "Unplayed" text
+    console.debug('Column index not found or invalid, searching all cells in row');
+    for (const cell of contentCells) {
+      const cellText = cell.textContent.trim().toLowerCase();
+      if (cellText === 'unplayed') {
+        return 'unplayed';
       }
     }
 
-    // Method 4: Check for Plex's viewCount in nested elements
-    const viewCountElements = row.querySelectorAll('[class*="viewCount"], [class*="ViewCount"]');
-    for (const element of viewCountElements) {
-      const text = element.textContent.trim();
-      const count = parseInt(text);
-      if (!isNaN(count)) {
-        return count > 0 ? "played" : "unplayed";
-      }
-    }
-
-    // Method 5: Look for specific Plex class patterns
-    const rowClasses = row.className || "";
-    if (rowClasses.includes("played") || rowClasses.includes("watched")) {
-      return "played";
-    }
-    if (rowClasses.includes("unplayed") || rowClasses.includes("unwatched")) {
-      return "unplayed";
-    }
-
-    // Method 6: Check aria-labels for accessibility indicators
-    const ariaLabel = row.getAttribute("aria-label") || "";
-    if (ariaLabel.toLowerCase().includes("played") || ariaLabel.toLowerCase().includes("watched")) {
-      return "played";
-    }
-    if (ariaLabel.toLowerCase().includes("unplayed") || ariaLabel.toLowerCase().includes("unwatched")) {
-      return "unplayed";
-    }
-
-    // Default: assume unplayed if no clear indicators found
-    return "unplayed";
+    // Default: assume played if no "Unplayed" indicator found
+    return 'played';
   }
 
   // Add or remove pip based on play status
@@ -156,38 +208,44 @@
     if (!titleCell) return;
 
     const playStatus = getPlayStatus(row);
-    const existingPip = titleCell.querySelector(".plex-unplayed-pip");
+    const existingUnplayedPip = titleCell.querySelector(".plex-unplayed-pip");
+    const existingPlayedPip = titleCell.querySelector(".plex-played-pip");
 
-    if (playStatus === "unplayed") {
-      if (!existingPip) {
-        const pip = createPip();
-        // Insert at the very beginning of the title cell
-        if (titleCell.firstChild) {
-          titleCell.insertBefore(pip, titleCell.firstChild);
-        } else {
-          titleCell.appendChild(pip);
-        }
-      }
-    } else {
-      // Remove pip for played/partial items
-      if (existingPip) {
-        existingPip.remove();
+    // Remove any existing pips first
+    if (existingUnplayedPip) {
+      existingUnplayedPip.remove();
+    }
+    if (existingPlayedPip) {
+      existingPlayedPip.remove();
+    }
+
+    // Add the appropriate pip based on play status
+    if (playStatus === "unplayed" || playStatus === "played") {
+      const pip = createPip(playStatus);
+      // Insert at the very beginning of the title cell
+      if (titleCell.firstChild) {
+        titleCell.insertBefore(pip, titleCell.firstChild);
+      } else {
+        titleCell.appendChild(pip);
       }
     }
 
     processedItems.add(row);
   }
 
-  // Process all visible table rows
+  // Process all visible table rows within the library container
   function processAllRows() {
-    const rows = document.querySelectorAll(CONFIG.selectors.tableRows);
+    // Find the library container first
+    const libraryContainer = document.querySelector(CONFIG.selectors.libraryContainer);
+    if (!libraryContainer) {
+      console.debug('No library container found');
+      return;
+    }
+
+    // Find rows only within the library container
+    const rows = libraryContainer.querySelectorAll(CONFIG.selectors.tableRows);
 
     rows.forEach((row) => {
-      // Skip header rows
-      if (row.getAttribute("role") === "columnheader" || row.querySelector("th") || row.matches('[class*="header"]')) {
-        return;
-      }
-
       try {
         updateRowPip(row);
       } catch (e) {
@@ -203,32 +261,43 @@
     processingTimeout = setTimeout(processAllRows, delay);
   }
 
-  // Enhanced mutation observer for Plex's dynamic content
+  // Enhanced mutation observer for Plex's dynamic content - scoped to library
   function createMutationObserver() {
     const observer = new MutationObserver((mutations) => {
       let shouldProcess = false;
 
       for (const mutation of mutations) {
         if (mutation.type === "childList") {
-          // Check for new table rows or table containers
+          // Check for new table rows or table-related elements
           for (const node of mutation.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
-              if (node.matches && (node.matches(CONFIG.selectors.tableRows) || node.matches('[class*="MetadataTable"]') || node.matches('[data-testid*="table"]') || node.matches('[class*="TableContainer"]'))) {
+              // Check if this is within the library container
+              const isInLibrary = node.closest(CONFIG.selectors.libraryContainer) || 
+                                node.matches(CONFIG.selectors.libraryContainer);
+              
+              if (!isInLibrary) continue;
+
+              // Look for elements that contain metadata links (table rows)
+              if (node.matches && node.querySelector && 
+                  node.querySelector(CONFIG.selectors.titleCells)) {
                 shouldProcess = true;
                 break;
               }
 
-              if (node.querySelector && (node.querySelector(CONFIG.selectors.tableRows) || node.querySelector('[class*="MetadataTable"]'))) {
+              // Check if the node itself is a table row
+              if (node.matches && node.matches(CONFIG.selectors.tableRows)) {
+                shouldProcess = true;
+                break;
+              }
+
+              // Check for table header changes (column reordering)
+              if (node.querySelector && node.querySelector(CONFIG.selectors.tableHeaders)) {
+                // Reset column index cache when headers change
+                dateViewedColumnIndex = -1;
                 shouldProcess = true;
                 break;
               }
             }
-          }
-        } else if (mutation.type === "attributes") {
-          // Watch for attribute changes that might indicate play status changes
-          const target = mutation.target;
-          if (target.matches && target.matches(CONFIG.selectors.tableRows)) {
-            shouldProcess = true;
           }
         }
       }
@@ -238,11 +307,13 @@
       }
     });
 
-    observer.observe(document.body, {
+    // Only observe the library container if it exists, otherwise observe body
+    const libraryContainer = document.querySelector(CONFIG.selectors.libraryContainer);
+    const observeTarget = libraryContainer || document.body;
+
+    observer.observe(observeTarget, {
       childList: true,
       subtree: true,
-      attributes: true,
-      attributeFilter: ["class", "data-played", "data-watched", "aria-valuenow"],
     });
 
     return observer;
