@@ -74,7 +74,7 @@ def index():
         </head>
         <body>
             <h1>M3U8 to MP4 Converter</h1>
-            <form action="/convert" method="post">
+            <form action="/get" method="post">
                 <input type="text" name="url" placeholder="Enter M3U8 URL" required /><br/>
                 <input type="text" name="filename" placeholder="Output filename (without .mp4)" /><br/>
                 <input type="submit" value="Convert">
@@ -85,7 +85,7 @@ def index():
 
 @app.route('/get', methods=['POST', 'GET'])
 def convert_m3u8_to_mp4():
-    if request.is_json:
+    if request.is_json and request.json is not None:
         m3u8_url = request.json.get('url')
         output_filename = request.json.get('filename')
     else:
@@ -98,11 +98,11 @@ def convert_m3u8_to_mp4():
     
     # Generate a unique filename if not provided
     if not output_filename:
-        output_filename = generate_uuid(m3u8_url)
+        output_filename = str(generate_uuid(m3u8_url))
     
     # Ensure filename ends with .mp4
-    if not output_filename.endswith('.mp4'):
-        output_filename += '.mp4'
+    if not str(output_filename).endswith('.mp4'):
+        output_filename = str(output_filename) + '.mp4'
     
     # Create temporary filename
     temp_filename = os.path.join(TEMP_DIR, f"temp_{uuid.uuid4()}.mp4")
