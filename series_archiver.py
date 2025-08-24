@@ -302,6 +302,41 @@ class SeriesArchiver:
                         watched_episodes.append(episode)
         
         return sorted(set(watched_episodes)) if watched_episodes else []
+
+    def _get_watch_status_classification(self, group_data: Dict) -> str:
+        """Determine watch status classification for a group."""
+        # Check if this is a movie based on type
+        files = group_data.get('files', [])
+        if files:
+            first_file_type = str(files[0].get('type', '')).lower()
+            metadata_type = str(group_data.get('type', '')).lower()
+            if "movie" in first_file_type or "movie" in metadata_type:
+                # For movies, check if any file has been watched
+                for file_info in files:
+                    episode_watched = file_info.get('episode_watched', False)
+                    if episode_watched:
+                        return "watched"
+                    # Fallback to plex_watch_status
+                    plex_status = file_info.get('plex_watch_status')
+                    if plex_status and plex_status.get('watched'):
+                        return "watched"
+                return "unwatched"
+        
+        # For series, use watch_status data if available
+        watch_status = group_data.get('watch_status', {})
+        watched_episodes = watch_status.get('watched_episodes', 0)
+        partially_watched_episodes = watch_status.get('partially_watched_episodes', 0)
+        episodes_found = group_data.get('episodes_found', 0)
+        
+        if episodes_found == 0:
+            return "unwatched"
+        
+        if watched_episodes == episodes_found:
+            return "watched"
+        elif watched_episodes > 0 or partially_watched_episodes > 0:
+            return "watched_partial"
+        else:
+            return "unwatched"
     
     def _verify_file_crc(self, filepath: str, expected_crc: Optional[str] = None) -> Tuple[bool, str, str]:
         """
@@ -682,26 +717,37 @@ def cmd_list(args):
     if hasattr(args, 'status_filter') and args.status_filter:
         all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
                        'unknown_total_episodes', 'not_series', 'no_metadata', 'no_metadata_manager', 'unknown'}
+        all_watch_statuses = {'watched', 'watched_partial', 'unwatched'}
         
         # Parse include/exclude patterns
         status_filters = args.status_filter.split()
         include_statuses = set()
         exclude_statuses = set()
         plain_statuses = set()
+        include_watch_statuses = set()
+        exclude_watch_statuses = set()
+        plain_watch_statuses = set()
         
         for filter_item in status_filters:
             if filter_item.startswith('+'):
                 status = filter_item[1:]
                 if status in all_statuses:
                     include_statuses.add(status)
+                elif status in all_watch_statuses:
+                    include_watch_statuses.add(status)
             elif filter_item.startswith('-'):
                 status = filter_item[1:]
                 if status in all_statuses:
                     exclude_statuses.add(status)
+                elif status in all_watch_statuses:
+                    exclude_watch_statuses.add(status)
             elif filter_item in all_statuses:
                 plain_statuses.add(filter_item)
+            elif filter_item in all_watch_statuses:
+                plain_watch_statuses.add(filter_item)
         
-        # Determine final filter set
+        # Determine final filter sets
+        # Completion status filter
         if plain_statuses:
             final_statuses = plain_statuses
         elif include_statuses:
@@ -711,10 +757,30 @@ def cmd_list(args):
         else:
             final_statuses = all_statuses
         
+        # Watch status filter
+        if plain_watch_statuses:
+            final_watch_statuses = plain_watch_statuses
+        elif include_watch_statuses:
+            final_watch_statuses = include_watch_statuses - exclude_watch_statuses
+        elif exclude_watch_statuses:
+            final_watch_statuses = all_watch_statuses - exclude_watch_statuses
+        else:
+            final_watch_statuses = all_watch_statuses
+        
         # Apply filtering while preserving original indices
         filtered_indexed_groups = []
         for original_index, group_key, details in indexed_groups:
-            if details['status'] in final_statuses:
+            group_data = details['data']
+            
+            # Check completion status
+            completion_status_match = details['status'] in final_statuses
+            
+            # Check watch status
+            watch_status = archiver._get_watch_status_classification(group_data)
+            watch_status_match = watch_status in final_watch_statuses
+            
+            # Include if both filters match
+            if completion_status_match and watch_status_match:
                 filtered_indexed_groups.append((original_index, group_key, details))
         indexed_groups = filtered_indexed_groups
     
@@ -950,11 +1016,12 @@ def main():
                                        help='List available series groups')
     list_parser.add_argument('input_json', help='JSON file from series_completeness_checker.py')
     list_parser.add_argument('--status-filter', metavar='FILTERS',
-                            help='Filter results by status. Use +status to include only specific statuses, '
+                            help='Filter results by completion status and/or watch status. Use +status to include only specific statuses, '
                                  '-status to exclude specific statuses, or plain status names for exact match. '
-                                 'Available statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
+                                 'Available completion statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
                                  'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
-                                 'Examples: "complete incomplete", "+complete +incomplete", "-unknown -no_metadata"')
+                                 'Available watch statuses: watched, watched_partial, unwatched. '
+                                 'Examples: "complete watched", "+complete +watched", "-unknown -unwatched", "watched -watched_partial"')
     list_parser.add_argument('--sort', action='store_true',
                             help='Sort series alphabetically by title')
     
