@@ -10,7 +10,7 @@
 // @match        http://*.plex.direct:32400/web/*
 // @match        https://*.plex.direct:32400/web/*
 // @grant        none
-// @run-at       document-end
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
@@ -39,6 +39,11 @@
       tableCells: '[class*="TableCell-tableCell"]',
     },
 
+    // Update intervals and timing
+    updateInterval: 2000, // Check for changes every 2 seconds
+    debounceDelay: 300,   // Debounce processing calls
+    headerCacheTime: 5000, // Cache header scan for 5 seconds
+
     // Pip styling
     pipStyle: {
       unplayed: {
@@ -57,7 +62,7 @@
         width: "10px",
         height: "10px",
         backgroundColor: "transparent", // Hollow
-        border: "2px solid #4b4b4bff", // Light gray border
+        border: "2px solid #999999", // Light gray border
         borderRadius: "50%",
         display: "inline-block",
         marginRight: "8px",
@@ -77,6 +82,11 @@
   // Cache for tracking processed items to avoid duplicates
   const processedItems = new WeakSet();
 
+  // Track current URL and page state
+  let currentURL = '';
+  let currentLibraryContainer = null;
+  let updateIntervalId = null;
+
   // Create pip element
   function createPip(playStatus) {
     const pip = document.createElement("span");
@@ -89,11 +99,86 @@
     return pip;
   }
 
+  // Check if current page is a library page that needs processing
+  function isLibraryPage() {
+    return window.location.hash.includes('library/sections/') && 
+           !window.location.hash.includes('/collections/') &&
+           !window.location.hash.includes('/playlists/');
+  }
+
+  // Detect if page content has changed
+  function hasPageChanged() {
+    if (currentURL !== window.location.href) {
+      currentURL = window.location.href;
+      return true;
+    }
+
+    // Check if library container has changed (new content loaded)
+    const libraryContainer = document.querySelector(CONFIG.selectors.libraryContainer);
+    if (libraryContainer !== currentLibraryContainer) {
+      currentLibraryContainer = libraryContainer;
+      return true;
+    }
+
+    return false;
+  }
+
+  // Main logic: check if current page needs processing and update indicators
+  function checkCurrentPage() {
+    if (!isLibraryPage()) {
+      // Not a library page, clear any existing interval
+      if (updateIntervalId) {
+        clearInterval(updateIntervalId);
+        updateIntervalId = null;
+      }
+      return;
+    }
+
+    // Check if page has changed
+    if (hasPageChanged()) {
+      // Reset caches when page changes
+      processedItems.clear();
+      dateViewedColumnIndex = -1;
+      lastHeaderScan = 0;
+      
+      // Process the new page content
+      debouncedProcess(500); // Longer delay for page changes
+    }
+
+    // Start regular checking if not already running
+    if (!updateIntervalId) {
+      updateIntervalId = setInterval(() => {
+        if (isLibraryPage()) {
+          processAllRows();
+        }
+      }, CONFIG.updateInterval);
+    }
+  }
+
+  // Debounced processing to avoid excessive calls
+  let processingTimeout;
+  function debouncedProcess(delay = CONFIG.debounceDelay) {
+    clearTimeout(processingTimeout);
+    processingTimeout = setTimeout(processAllRows, delay);
+  }
+
+  // Remove the complex mutation observer in favor of simpler interval checking
+  function startPageMonitoring() {
+    // Initial check
+    checkCurrentPage();
+    
+    // Listen for hash changes (navigation)
+    window.addEventListener('hashchange', checkCurrentPage);
+    
+    // Periodic check for page changes
+    setInterval(checkCurrentPage, CONFIG.updateInterval);
+  }
+
   // Find the "Date Viewed" column index by scanning table headers within library container
   function findDateViewedColumnIndex() {
     const now = Date.now();
-    // Only rescan headers every 5 seconds to avoid excessive processing
-    if (dateViewedColumnIndex !== -1 && now - lastHeaderScan < 5000) {
+    // Only rescan headers based on config time
+    if (dateViewedColumnIndex !== -1 && now - lastHeaderScan < CONFIG.headerCacheTime) {
       return dateViewedColumnIndex;
     }
 
@@ -104,14 +189,12 @@
     // Look for the library container first
     const libraryContainer = document.querySelector(CONFIG.selectors.libraryContainer);
     if (!libraryContainer) {
-      console.debug('No library container found');
       return -1;
     }
 
     // Look for the table header container within the library
     const headerContainer = libraryContainer.querySelector(CONFIG.selectors.tableHeaders);
     if (!headerContainer) {
-      console.debug('No table header container found in library');
       return -1;
     }
 
@@ -123,7 +206,6 @@
       const titleSpan = header.querySelector('span[title="Date Viewed"]');
       if (titleSpan) {
         dateViewedColumnIndex = index;
-        console.debug('Found Date Viewed column at index:', index);
         return;
       }
       
@@ -131,7 +213,6 @@
       const headerText = header.textContent.trim().toLowerCase();
       if (headerText === 'date viewed') {
         dateViewedColumnIndex = index;
-        console.debug('Found Date Viewed column at index (text match):', index);
         return;
       }
     });
@@ -238,7 +319,6 @@
     // Find the library container first
     const libraryContainer = document.querySelector(CONFIG.selectors.libraryContainer);
     if (!libraryContainer) {
-      console.debug('No library container found');
       return;
     }
 
@@ -254,121 +334,21 @@
     });
   }
 
-  // Debounced processing to avoid excessive calls
-  let processingTimeout;
-  function debouncedProcess(delay = 300) {
-    clearTimeout(processingTimeout);
-    processingTimeout = setTimeout(processAllRows, delay);
-  }
-
-  // Enhanced mutation observer for Plex's dynamic content - scoped to library
-  function createMutationObserver() {
-    const observer = new MutationObserver((mutations) => {
-      let shouldProcess = false;
-
-      for (const mutation of mutations) {
-        if (mutation.type === "childList") {
-          // Check for new table rows or table-related elements
-          for (const node of mutation.addedNodes) {
-            if (node.nodeType === Node.ELEMENT_NODE) {
-              // Check if this is within the library container
-              const isInLibrary = node.closest(CONFIG.selectors.libraryContainer) || 
-                                node.matches(CONFIG.selectors.libraryContainer);
-              
-              if (!isInLibrary) continue;
-
-              // Look for elements that contain metadata links (table rows)
-              if (node.matches && node.querySelector && 
-                  node.querySelector(CONFIG.selectors.titleCells)) {
-                shouldProcess = true;
-                break;
-              }
-
-              // Check if the node itself is a table row
-              if (node.matches && node.matches(CONFIG.selectors.tableRows)) {
-                shouldProcess = true;
-                break;
-              }
-
-              // Check for table header changes (column reordering)
-              if (node.querySelector && node.querySelector(CONFIG.selectors.tableHeaders)) {
-                // Reset column index cache when headers change
-                dateViewedColumnIndex = -1;
-                shouldProcess = true;
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (shouldProcess) {
-        debouncedProcess(200);
-      }
-    });
-
-    // Only observe the library container if it exists, otherwise observe body
-    const libraryContainer = document.querySelector(CONFIG.selectors.libraryContainer);
-    const observeTarget = libraryContainer || document.body;
-
-    observer.observe(observeTarget, {
-      childList: true,
-      subtree: true,
-    });
-
-    return observer;
-  }
-
-  // Handle Plex navigation changes (SPA)
-  function handleNavigationChange() {
-    let currentURL = location.href;
-
-    const checkNavigation = () => {
-      if (currentURL !== location.href) {
-        currentURL = location.href;
-        // Clear processed items cache on navigation
-        processedItems.clear();
-        debouncedProcess(1000); // Longer delay for navigation
-      }
-    };
-
-    setInterval(checkNavigation, 1000);
-
-    // Also listen for popstate events
-    window.addEventListener("popstate", () => {
-      processedItems.clear();
-      debouncedProcess(1000);
-    });
-  }
-
   // Initialize the script
   function initialize() {
     console.log("Plex Unplayed Pip Indicator: Initializing...");
 
-    // Initial processing with delay for Plex to render
-    debouncedProcess(1500);
-
-    // Set up mutation observer
-    createMutationObserver();
-
-    // Handle navigation
-    handleNavigationChange();
-
-    // Periodic refresh to catch any missed updates
-    setInterval(() => {
-      processedItems.clear(); // Clear cache periodically
-      debouncedProcess(100);
-    }, 30000); // Every 30 seconds
+    // Start monitoring for page changes
+    startPageMonitoring();
 
     console.log("Plex Unplayed Pip Indicator: Initialized successfully");
   }
 
-  // Start when DOM is ready
+  // Start when DOM is ready or immediately if already loaded
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initialize);
   } else {
-    // Page already loaded, wait for Plex to render
-    setTimeout(initialize, 1000);
+    initialize();
   }
 
   // Expose utilities for debugging
@@ -376,6 +356,8 @@
     config: CONFIG,
     processAllRows,
     getPlayStatus,
+    checkCurrentPage,
+    isLibraryPage,
     processedCount: () => processedItems.size,
   };
 })();
