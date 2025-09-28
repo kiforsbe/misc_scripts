@@ -31,8 +31,8 @@ logging.basicConfig(level=logging.INFO,
 # Setting up some hard coded configuration variables
 TEMP_DIR = ".temp" # Temporary directory for downloaded files and generated streams
 DELETE_DELAY = 60  # 1 minute in seconds
-FILENAME_MAX_LENGTH = 96 # Maximum length of filenames in bytes
-OLLAMA_MODEL = "qwen3:8b" # The Ollama model to use for summary generation
+FILENAME_MAX_LENGTH = 76 # Maximum length of filenames in bytes
+OLLAMA_MODEL = "qwen3:latest" # The Ollama model to use for summary generation
 USE_OLLAMA = True # Use ollama to generate streams
 
 # Ensure the temporary directory exists
