@@ -681,6 +681,7 @@ class SeriesArchiver:
 def cmd_list(args):
     """Handle the list command."""
     archiver = SeriesArchiver(verbose=args.verbose)
+    title_length = 70
     
     if not archiver.load_data(args.input_json):
         return 1
@@ -793,7 +794,7 @@ def cmd_list(args):
         return 0
     
     print("Available series groups:")
-    print("=" * 80)  # Consistent width
+    print("=" * (title_length+30))  # Consistent width
     
     for original_index, group_key, details in indexed_groups:
         # Status emoji from series_completeness_checker.py
@@ -833,13 +834,11 @@ def cmd_list(args):
         episode_info_str = ", ".join(episode_info) if episode_info else ""
         
         # Format title with proper truncation
-        title_length = 45
         title_str = details['title']
         if len(title_str) > title_length:
             title_str = title_str[:title_length - 3] + "..."
         
         if args.verbose == 0:
-            title_length = 35  # Reduced to make room for watch info
             title_str = details['title']
             if len(title_str) > title_length:
                 title_str = title_str[:title_length - 3] + "..."
