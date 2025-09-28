@@ -9,6 +9,7 @@ from typing import Optional, Callable, Dict, Any
 
 from flask import json
 import yt_dlp
+import yt_dlp.utils
 
 from .models import DownloadItem, FormatInfo
 from .utils import sanitize_filename, check_ffmpeg
@@ -16,14 +17,13 @@ from .ffmpeg_genre_pp import FFmpegGenrePP
 
 logger = logging.getLogger(__name__)
 
-# Register your custom postprocessor with yt-dlp's registry
-# The key should be the class name ('FFmpegGenrePP')
-yt_dlp.postprocessor.postprocessors.value['FFmpegGenrePP'] = FFmpegGenrePP
-logger.info("Registered custom postprocessor: FFmpegGenrePP")
+# TODO: Custom postprocessor registration needs to be fixed
+# For now, disable the custom genre postprocessor to avoid errors
+ENABLE_CUSTOM_GENRE_PP = False
 
 # Define callback types for clarity
-ProgressCallbackType = Callable  # Simplified for now
-StatusCallbackType = Callable  # Simplified for now
+ProgressCallbackType = Callable[[DownloadItem, Dict[str, Any]], None]  # Progress callback
+StatusCallbackType = Callable[[DownloadItem, str, Optional[str]], None]  # Status callback
 
 
 async def fetch_info(url: str) -> DownloadItem:
@@ -58,7 +58,7 @@ async def fetch_info(url: str) -> DownloadItem:
         }
 
         loop = asyncio.get_event_loop()
-        with yt_dlp.YoutubeDL(info_ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(info_ydl_opts) as ydl:  # type: ignore
             # Run synchronously in executor as yt-dlp info extraction can block
             info_dict = await loop.run_in_executor(
                 None, functools.partial(ydl.extract_info, url, download=False)
@@ -68,7 +68,7 @@ async def fetch_info(url: str) -> DownloadItem:
             raise yt_dlp.utils.DownloadError(f"No information extracted for {url}")
 
         logger.debug(f"Successfully fetched info for {url}")
-        item._raw_info = info_dict  # Store raw info
+        item._raw_info = dict(info_dict)  # Store raw info as dict
 
         # Populate DownloadItem fields
         item.title = info_dict.get("title", "Unknown Title")
@@ -117,7 +117,7 @@ async def fetch_info(url: str) -> DownloadItem:
 
             fmt = FormatInfo(
                 format_id=f_raw["format_id"],
-                ext=f_raw.get("ext"),
+                ext=f_raw.get("ext") or "unknown",
                 note=f_raw.get("format_note"),
                 vcodec=f_raw.get("vcodec"),
                 acodec=f_raw.get("acodec"),
@@ -353,6 +353,7 @@ async def download_item(
             }
             add_genremetadata_pp = {
                 "key": "FFmpegGenre",
+                "when": "post_process"
             }
             embed_thumbnail_pp = {
                 "key": "EmbedThumbnail",
@@ -420,18 +421,21 @@ async def download_item(
                         f"Could not determine source bitrate for format {item.selected_audio_format_id}. Falling back to {target_quality}k."
                     )
 
-                ydl_opts["postprocessors"].extend(
-                    [
-                        {
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": preferred_codec,
-                            "preferredquality": target_quality,
-                        },
-                        add_metadata_pp,  # Add metadata after conversion
-                        add_genremetadata_pp,  # Add genre metadata after conversion
-                        embed_thumbnail_pp,  # Embed thumbnail after conversion
-                    ]
-                )
+                postprocessors_to_add = [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": preferred_codec,
+                        "preferredquality": target_quality,
+                    },
+                    add_metadata_pp,  # Add metadata after conversion
+                    embed_thumbnail_pp,  # Embed thumbnail after conversion
+                ]
+                
+                # Add genre postprocessor only if enabled
+                if ENABLE_CUSTOM_GENRE_PP:
+                    postprocessors_to_add.insert(-1, add_genremetadata_pp)  # Add before thumbnail
+                    
+                ydl_opts["postprocessors"].extend(postprocessors_to_add)
                 logger.info(
                     f"Audio download: Configured transcoding to {preferred_codec.upper()} (target container: {final_extension}) at {target_quality}k."
                 )
@@ -459,11 +463,16 @@ async def download_item(
 
                 # Add metadata and thumbnail embedding
                 # These should be after the remuxer to ensure they apply to the final file
-                ydl_opts["postprocessors"].extend([
+                postprocessors_to_add = [
                     add_metadata_pp,
-                    add_genremetadata_pp,
                     embed_thumbnail_pp,
-                ])
+                ]
+                
+                # Add genre postprocessor only if enabled
+                if ENABLE_CUSTOM_GENRE_PP:
+                    postprocessors_to_add.insert(-1, add_genremetadata_pp)  # Add before thumbnail
+                    
+                ydl_opts["postprocessors"].extend(postprocessors_to_add)
                 logger.info(
                     f"Video download: Configured conversion to container '{target_format}'."
                 )
@@ -493,7 +502,7 @@ async def download_item(
             _update_status("Downloading")
             logger.debug(f"Starting yt-dlp download with options: {ydl_opts}")
             loop = asyncio.get_event_loop()
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore
                 # Run download in executor
                 await loop.run_in_executor(None, ydl.download, [item.url])
 

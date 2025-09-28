@@ -7,6 +7,7 @@ import pathlib
 import sys
 from flask import Flask, request, send_file, jsonify, render_template_string
 import yt_dlp  # For exceptions
+import yt_dlp.utils  # For exceptions
 
 # --- Add ytdl_helper to Python path ---
 # This assumes the script is run from the 'youtube-video-downloader' directory
@@ -385,6 +386,10 @@ def download():
         data = request.json if request.is_json else request.form
     else:  # GET
         data = request.args
+
+    if not data:
+        log.warning("Download request received with no parameters.")
+        return jsonify({"error": "No parameters provided"}), 400
 
     url = data.get("url")
     # Ensure None if empty string or missing, otherwise use the value
