@@ -247,17 +247,17 @@ class FileGrouper:
                 title = result.get('title')
                 year = result.get('year')
                 season = result.get('season')
-                if season:
-                    title = f"{title} Season {season}"
                 if title:
                     try:
-                        # Create a unique key for this title+year combination (case insensitive)
-                        title_key = f"{title.lower()}_{year}" if year else title.lower()
+                        # Search for metadata using the base title - let the provider handle season mapping
+                        enhanced_info, provider = self.metadata_manager.find_title(title, year)
                         
-                        # Only fetch metadata once per unique title
-                        if title_key not in self.title_metadata:
-                            enhanced_info, provider = self.metadata_manager.find_title(title, year)
-                            if enhanced_info:
+                        if enhanced_info:
+                            # Use the actual metadata ID as the key
+                            metadata_id = enhanced_info.id
+                            
+                            # Only store metadata once per unique ID
+                            if metadata_id not in self.title_metadata:
                                 title_metadata = {
                                     'metadata': self._serialize_title_info(enhanced_info),
                                     'provider': provider.__class__.__name__ if provider else None
@@ -279,24 +279,58 @@ class FileGrouper:
                                     except Exception:
                                         pass
                                 
-                                self.title_metadata[title_key] = title_metadata
+                                self.title_metadata[metadata_id] = title_metadata
                         
-                        # Add reference to title metadata
-                        if title_key in self.title_metadata:
-                            result['title_metadata_key'] = title_key
+                            # Add reference to title metadata by ID
+                            result['metadata_id'] = metadata_id
                             
                             # Add episode info if it's a TV show
-                            if title_key in self.title_metadata:
-                                enhanced_info_dict = self.title_metadata[title_key]['metadata']
-                                provider = self.title_metadata[title_key]['provider']
+                            if metadata_id in self.title_metadata:
+                                enhanced_info_dict = self.title_metadata[metadata_id]['metadata']
+                                provider = self.title_metadata[metadata_id]['provider']
                                 if enhanced_info_dict.get('type') in ['tv', 'anime_series']:
                                     season = result.get('season')
                                     episode = result.get('episode')
-                                    if season and episode and provider:
-                                        # Store episode info directly in file metadata since it's file-specific
-                                        if season:
-                                            title = f"{title} Season {season}"
-                                        enhanced_info, _ = self.metadata_manager.find_title(title, year)
+                                    
+                                    # For anime series, try to get episode info even without explicit season
+                                    if episode and provider and ('anime' in provider.lower() or enhanced_info_dict.get('type') == 'anime_series'):
+                                        try:
+                                            # Store original episode number from filename parsing
+                                            original_episode = result.get('episode')
+                                            original_season = result.get('season') 
+                                            
+                                            # Get anime provider for episode info lookup
+                                            anime_provider = next((p for p in self.metadata_manager.providers if p.__class__.__name__ == provider), None)
+                                            if anime_provider and hasattr(anime_provider, 'get_episode_info'):
+                                                # Find title in anime provider to get the anime ID
+                                                original_title = result.get('title')
+                                                title_result = anime_provider.find_title(original_title, year)
+                                                if title_result:
+                                                    # Use anime provider's episode lookup with anime ID, season, and episode
+                                                    episode_info = anime_provider.get_episode_info(title_result.info.id, original_season, original_episode)
+                                                    if episode_info:
+                                                        # Save original file-based episode number and season
+                                                        result['original_episode'] = original_episode
+                                                        if original_season:
+                                                            result['original_season'] = original_season
+                                                        
+                                                        # Update with season and episode number from anime metadata
+                                                        # Trust the metadata provider to correctly identify season/episode for each file
+                                                        if episode_info.season:
+                                                            result['season'] = episode_info.season
+                                                        if episode_info.episode:
+                                                            result['episode'] = episode_info.episode  # This is the in-season episode number
+                                                        
+                                                        # Store the enhanced episode info
+                                                        if episode_info:
+                                                            result['episode_info'] = self._serialize_episode_info(episode_info)
+                                        except Exception as anime_error:
+                                            # Fallback: if anime-specific parsing fails, continue without episode info
+                                            pass
+                                    elif season and episode and provider:
+                                        # Non-anime series with explicit season/episode
+                                        season_title = f"{title} Season {season}"
+                                        enhanced_info, _ = self.metadata_manager.find_title(season_title, year)
                                         if enhanced_info:                                            
                                             episode_info = self.metadata_manager.get_episode_info(
                                                 next(p for p in self.metadata_manager.providers if p.__class__.__name__ == provider),
@@ -326,9 +360,9 @@ class FileGrouper:
                 plex_watched = plex_status.get('watched', False) or plex_status.get('view_offset', 0) > 0
             
             # Check if this episode is watched according to MyAnimeList
-            title_metadata_key = result.get('title_metadata_key')
-            if title_metadata_key and title_metadata_key in self.title_metadata:
-                mal_status = self.title_metadata[title_metadata_key].get('myanimelist_watch_status')
+            metadata_id = result.get('metadata_id')
+            if metadata_id and metadata_id in self.title_metadata:
+                mal_status = self.title_metadata[metadata_id].get('myanimelist_watch_status')
                 if mal_status:
                     episode_num = result.get('episode')
                     mal_watched_episodes = mal_status.get('my_watched_episodes', 0)
@@ -457,8 +491,9 @@ class FileGrouper:
     def export_to_json(self, output_path: str, include_summary: bool = True) -> None:
         """Export grouped data to JSON file."""
         # Create title_metadata dict with complete metadata including MyAnimeList watch status
+        # Now using metadata IDs directly as keys
         title_metadata_export = {}
-        for key, value in self.title_metadata.items():
+        for metadata_id, value in self.title_metadata.items():
             # Export the complete metadata including MyAnimeList watch status
             metadata_dict = value['metadata'].copy()
             
@@ -466,7 +501,7 @@ class FileGrouper:
             if 'myanimelist_watch_status' in value:
                 metadata_dict['myanimelist_watch_status'] = value['myanimelist_watch_status']
             
-            title_metadata_export[key] = metadata_dict
+            title_metadata_export[str(metadata_id)] = metadata_dict
         
         export_data = {
             'groups': dict(self.groups),
@@ -587,9 +622,9 @@ class FileGrouper:
         # If grouping by title, add title metadata directly to the group
         if 'title' in group_by and self.metadata_manager:
             first_file = group_files[0]
-            title_metadata_key = first_file.get('title_metadata_key')
-            if title_metadata_key and title_metadata_key in self.title_metadata:
-                return self.title_metadata[title_metadata_key]['metadata']
+            metadata_id = first_file.get('metadata_id')
+            if metadata_id and metadata_id in self.title_metadata:
+                return self.title_metadata[metadata_id]['metadata']
         
         return {}
 
@@ -733,9 +768,9 @@ Examples:
                     
                     print(f"    {json.dumps(metadata_copy, separators=(',', ':'), ensure_ascii=False, cls=CustomJSONEncoder)}")
                     # Show enhanced metadata if available
-                    title_metadata_key = file_info.get('title_metadata_key')
-                    if title_metadata_key and title_metadata_key in grouper.title_metadata:
-                        enhanced_data = grouper.title_metadata[title_metadata_key]['metadata']
+                    metadata_id = file_info.get('metadata_id')
+                    if metadata_id and metadata_id in grouper.title_metadata:
+                        enhanced_data = grouper.title_metadata[metadata_id]['metadata']
                         print(f"    {json.dumps(enhanced_data, separators=(',', ':'), ensure_ascii=False, cls=CustomJSONEncoder)}")
     
     # Export if requested
