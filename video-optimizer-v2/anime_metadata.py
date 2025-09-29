@@ -54,6 +54,31 @@ class AnimeDataProvider(BaseMetadataProvider):
         'synonym': 0.8    # Synonyms get lower base weight
     }
     
+    # Season parsing regex patterns
+    SEASON_PATTERNS = [
+        r'\b(\d+)(?:st|nd|rd|th)\s+Season\b',     # "2nd Season", "3rd Season"
+        r'\bSeason\s+(\d+)\b',                    # "Season 3", "Season 2"
+        r'\bS(\d+)\b',                            # "S2", "S3"
+        r'\b(\d+)(?:st|nd|rd|th)\s+Series\b',     # "2nd Series"
+        r'\bSeries\s+(\d+)\b',                    # "Series 2"
+        r'\bPart\s+(\d+)\b',                      # "Part 2"
+        r'\b(\d+)(?:st|nd|rd|th)\s+Part\b',       # "2nd Part"
+        r'\bII\b',                                # Roman numeral II = 2
+        r'\bIII\b',                               # Roman numeral III = 3
+        r'\bIV\b',                                # Roman numeral IV = 4
+        r'\bV\b',                                 # Roman numeral V = 5
+        r'\bVI\b',                                # Roman numeral VI = 6
+        r'\bVII\b',                               # Roman numeral VII = 7
+        r'\bVIII\b',                              # Roman numeral VIII = 8
+        r'\bIX\b',                                # Roman numeral IX = 9
+        r'\bX\b',                                 # Roman numeral X = 10
+    ]
+    
+    # Roman numeral to number mapping
+    ROMAN_TO_NUMBER = {
+        'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10
+    }
+    
     def __init__(self):
         super().__init__('anime', provider_weight=1.0)
         self._search_cache = {}  # Cache recent search results
@@ -83,6 +108,210 @@ class AnimeDataProvider(BaseMetadataProvider):
         else:
             conn.close()
 
+    def _parse_season_from_title(self, title: str) -> tuple[Optional[int], str]:
+        """
+        Parse season number from title and return (season_number, base_title)
+        
+        Args:
+            title: The anime title to parse
+            
+        Returns:
+            Tuple of (season_number, base_title) where:
+            - season_number is None if no season found, or the detected season number
+            - base_title is the title with season indicators removed
+        """
+        if not title:
+            return None, title
+            
+        original_title = title
+        season_number = None
+        
+        # Try each pattern
+        for pattern in self.SEASON_PATTERNS:
+            match = re.search(pattern, title, re.IGNORECASE)
+            if match:
+                if pattern in [r'\bII\b', r'\bIII\b', r'\bIV\b', r'\bV\b', r'\bVI\b', r'\bVII\b', r'\bVIII\b', r'\bIX\b', r'\bX\b']:
+                    # Roman numeral
+                    roman = match.group(0).upper()
+                    season_number = self.ROMAN_TO_NUMBER.get(roman)
+                    if season_number:
+                        # Remove the roman numeral and surrounding spaces
+                        title = re.sub(r'\s*' + re.escape(roman) + r'\s*', ' ', title, flags=re.IGNORECASE).strip()
+                        break
+                else:
+                    # Regular pattern with captured group
+                    season_number = int(match.group(1))
+                    # Remove the entire matched pattern
+                    title = re.sub(pattern, '', title, flags=re.IGNORECASE).strip()
+                    # Clean up extra spaces
+                    title = re.sub(r'\s+', ' ', title).strip()
+                    break
+        
+        # If no season found, assume season 1
+        if season_number is None:
+            season_number = 1
+            
+        # Clean up the base title
+        base_title = title.strip()
+        # Remove leading/trailing dashes or colons that might be left over
+        base_title = re.sub(r'^[-:\s]+|[-:\s]+$', '', base_title).strip()
+        
+        return season_number, base_title
+
+    def _extract_base_title(self, title: str) -> str:
+        """
+        Extract the base title by removing common subtitles and season indicators
+        
+        Args:
+            title: The full anime title
+            
+        Returns:
+            The base title without season indicators or subtitles
+        """
+        # First remove season indicators
+        _, base_title = self._parse_season_from_title(title)
+        
+        # Remove common subtitle patterns (after colon, dash, or parentheses)
+        # But be careful not to remove essential parts of the title
+        patterns_to_remove = [
+            r'\s*-\s*[^-]*$',  # Remove everything after the last dash
+            r'\s*:\s*[^:]*$',  # Remove everything after the last colon
+            r'\s*\([^)]*\)$',  # Remove trailing parentheses content
+        ]
+        
+        for pattern in patterns_to_remove:
+            # Only remove if the remaining title is still substantial (> 3 chars)
+            potential_title = re.sub(pattern, '', base_title).strip()
+            if len(potential_title) > 3:
+                base_title = potential_title
+                break
+                
+        return base_title.strip()
+
+    def _group_anime_by_base_title(self, anime_entries: list) -> dict:
+        """
+        Group anime entries by their base title for season detection
+        
+        Args:
+            anime_entries: List of anime entry dictionaries
+            
+        Returns:
+            Dictionary mapping base_title -> list of entries sorted by year
+        """
+        groups = {}
+        
+        for entry in anime_entries:
+            # Skip movies and specials
+            type_id = self._get_type_id(entry.get('type'))
+            if type_id in [AnimeType.MOVIE, AnimeType.SPECIAL]:
+                continue
+                
+            title = entry.get('title', '')
+            base_title = self._extract_base_title(title)
+            
+            if base_title not in groups:
+                groups[base_title] = []
+            groups[base_title].append(entry)
+        
+        # Sort each group by year
+        for base_title, entries in groups.items():
+            entries.sort(key=lambda x: x.get('animeSeason', {}).get('year', 0) or 0)
+            
+        return groups
+
+    def _derive_seasons_from_years(self, grouped_entries: dict) -> dict:
+        """
+        Derive season numbers from publication years for entries that don't have explicit seasons
+        
+        Args:
+            grouped_entries: Dictionary mapping base_title -> list of entries sorted by year
+            
+        Returns:
+            Dictionary mapping anime_id -> season_number
+        """
+        season_assignments = {}
+        
+        for base_title, entries in grouped_entries.items():
+            if len(entries) <= 1:
+                # Single entry, assign season 1
+                for entry in entries:
+                    mal_id = self._get_mal_id_from_entry(entry)
+                    if mal_id:
+                        # Check if title already has explicit season
+                        explicit_season, _ = self._parse_season_from_title(entry.get('title', ''))
+                        if explicit_season and explicit_season > 1:
+                            season_assignments[mal_id] = explicit_season
+                        else:
+                            season_assignments[mal_id] = 1
+                continue
+            
+            # Multiple entries - derive seasons from years and titles
+            season_counter = 1
+            last_year = None
+            
+            for entry in entries:
+                mal_id = self._get_mal_id_from_entry(entry)
+                if not mal_id:
+                    continue
+                    
+                title = entry.get('title', '')
+                year = entry.get('animeSeason', {}).get('year')
+                
+                # First check for explicit season in title
+                explicit_season, _ = self._parse_season_from_title(title)
+                if explicit_season and explicit_season > 1:
+                    season_assignments[mal_id] = explicit_season
+                    season_counter = max(season_counter, explicit_season + 1)
+                    last_year = year
+                    continue
+                
+                # If no explicit season, derive from position in chronological order
+                if last_year is None:
+                    # First entry
+                    season_assignments[mal_id] = 1
+                    season_counter = 2
+                else:
+                    # Subsequent entries
+                    if year and year > last_year:
+                        # Published later, likely next season
+                        season_assignments[mal_id] = season_counter
+                        season_counter += 1
+                    else:
+                        # Same year or earlier, might be special/ova/sequel
+                        # Check if title suggests it's a continuation
+                        if self._title_suggests_continuation(title):
+                            season_assignments[mal_id] = season_counter
+                            season_counter += 1
+                        else:
+                            # Treat as same season or special
+                            season_assignments[mal_id] = 1
+                
+                last_year = year
+        
+        return season_assignments
+
+    def _get_mal_id_from_entry(self, entry: dict) -> Optional[int]:
+        """Extract MAL ID from anime entry sources"""
+        for src in entry.get('sources', []):
+            if "myanimelist.net/anime/" in src:
+                try:
+                    return int(src.rstrip('/').split('/')[-1])
+                except (ValueError, IndexError):
+                    continue
+        return None
+
+    def _title_suggests_continuation(self, title: str) -> bool:
+        """Check if title suggests it's a continuation/sequel"""
+        continuation_keywords = [
+            'final', 'last', 'end', 'conclusion', 'finale',
+            'next', 'continue', 'sequel', 'second', 'third',
+            'new', 'kai', 'shippuden', 'brotherhood',
+            'advance', 'evolution', 'revolution'
+        ]
+        
+        title_lower = title.lower()
+        return any(keyword in title_lower for keyword in continuation_keywords)
+
     def _init_database(self) -> None:
         """Initialize SQLite database with optimized schema"""
         try:
@@ -104,7 +333,9 @@ class AnimeDataProvider(BaseMetadataProvider):
                         status INTEGER,                  -- maps to anime_status.id
                         year INTEGER,
                         duration INTEGER,
-                        tags TEXT
+                        tags TEXT,
+                        season_number INTEGER DEFAULT 1, -- parsed season number
+                        base_title TEXT                  -- title without season indicators
                     )
                 """)
                 
@@ -177,7 +408,9 @@ class AnimeDataProvider(BaseMetadataProvider):
                         st.text AS status,
                         a.year,
                         a.duration,
-                        a.tags
+                        a.tags,
+                        a.season_number,
+                        a.base_title
                     FROM synonyms s
                     JOIN anime_title a ON s.id = a.id
                     LEFT JOIN anime_type ty ON a.type = ty.id
@@ -233,6 +466,13 @@ class AnimeDataProvider(BaseMetadataProvider):
         """Check if the database contains current data"""
         try:
             with sqlite3.connect(self._db_path) as conn:
+                # First check if the database has the new schema
+                cursor = conn.execute("PRAGMA table_info(anime_title)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'season_number' not in columns or 'base_title' not in columns:
+                    logging.info("Database schema is outdated, needs recreation")
+                    return False
+                
                 cursor = conn.execute(
                     """
                     SELECT COUNT(*) FROM data_version 
@@ -339,13 +579,31 @@ class AnimeDataProvider(BaseMetadataProvider):
                 conn.execute("PRAGMA temp_store=MEMORY")
                 conn.execute("PRAGMA cache_size=100000")
 
-                # Clear existing data
-                conn.execute("DELETE FROM anime_title")
-                conn.execute("DELETE FROM anime_type")
-                conn.execute("DELETE FROM anime_status")
-                conn.execute("DELETE FROM synonyms")
-                conn.execute("DELETE FROM sources")
-                conn.execute("DELETE FROM related")
+                # Check current schema and drop tables if outdated
+                cursor = conn.execute("PRAGMA table_info(anime_title)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'season_number' not in columns or 'base_title' not in columns:
+                    logging.info("Dropping outdated database schema to recreate with new columns")
+                    # Drop all tables to recreate with new schema
+                    conn.execute("DROP TABLE IF EXISTS anime_title")
+                    conn.execute("DROP TABLE IF EXISTS anime_type") 
+                    conn.execute("DROP TABLE IF EXISTS anime_status")
+                    conn.execute("DROP TABLE IF EXISTS synonyms")
+                    conn.execute("DROP TABLE IF EXISTS sources")
+                    conn.execute("DROP TABLE IF EXISTS related")
+                    conn.execute("DROP TABLE IF EXISTS data_version")
+                    conn.execute("DROP VIEW IF EXISTS anime_synonym_view")
+                    conn.execute("DROP TABLE IF EXISTS anime_fts")
+                    # Recreate schema 
+                    self._init_database()
+                else:
+                    # Clear existing data if schema is current
+                    conn.execute("DELETE FROM anime_title")
+                    conn.execute("DELETE FROM anime_type")
+                    conn.execute("DELETE FROM anime_status")
+                    conn.execute("DELETE FROM synonyms")
+                    conn.execute("DELETE FROM sources")
+                    conn.execute("DELETE FROM related")
 
                 # Prepare enums for type/status
                 for type_id, type_text in ANIME_TYPE_ID_TO_TEXT.items():
@@ -362,13 +620,22 @@ class AnimeDataProvider(BaseMetadataProvider):
                 with tqdm(desc="Processing anime database", unit='entries') as pbar:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
+                        
+                        # First pass: collect all entries for season analysis
+                        all_entries = data['data']
+                        
+                        # Group entries by base title for season detection
+                        grouped_entries = self._group_anime_by_base_title(all_entries)
+                        
+                        # Derive season numbers
+                        season_assignments = self._derive_seasons_from_years(grouped_entries)
 
                         anime_batch = []
                         synonyms_batch = []
                         sources_batch = []
                         related_batch = []
 
-                        for entry in data['data']:
+                        for entry in all_entries:
                             # Get MAL id from sources
                             mal_id = None
                             for src in entry.get('sources', []):
@@ -389,9 +656,15 @@ class AnimeDataProvider(BaseMetadataProvider):
                             year = self.safe_int(entry.get('animeSeason', {}).get('year'))
                             duration = self.safe_int(entry.get('duration'))
                             tags = ','.join(entry.get('tags', []))
+                            
+                            # Get season information
+                            season_number = season_assignments.get(mal_id, 1)
+                            _, base_title = self._parse_season_from_title(title)
+                            if not base_title:
+                                base_title = self._extract_base_title(title)
 
                             anime_batch.append(
-                                (mal_id, title, type_id, episodes, status_id, year, duration, tags)
+                                (mal_id, title, type_id, episodes, status_id, year, duration, tags, season_number, base_title)
                             )
 
                             # Main title as synonym
@@ -426,8 +699,8 @@ class AnimeDataProvider(BaseMetadataProvider):
                         # Bulk insert
                         conn.executemany(
                             """INSERT OR REPLACE INTO anime_title 
-                               (id, title, type, episodes, status, year, duration, tags)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                               (id, title, type, episodes, status, year, duration, tags, season_number, base_title)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             anime_batch
                         )
                         conn.executemany(
@@ -466,6 +739,7 @@ class AnimeDataProvider(BaseMetadataProvider):
         if cache_key in self._search_cache:
             return self._search_cache[cache_key]
         best_score = 200
+        anime_data = None  # Initialize to prevent UnboundLocalError
         conn = self._get_connection()
         try:
             candidates = []
@@ -525,6 +799,11 @@ class AnimeDataProvider(BaseMetadataProvider):
 
         status_text = row['status'] if 'status' in row.keys() else "UNKNOWN"
         tags = row['tags'].split(',') if row['tags'] else []
+        
+        # Get season information
+        season_number = row['season_number'] if 'season_number' in row.keys() else 1
+        base_title = row['base_title'] if 'base_title' in row.keys() else row['title']
+        
         # Get sources
         try:
             conn = self._get_connection()
@@ -536,19 +815,31 @@ class AnimeDataProvider(BaseMetadataProvider):
                 sources.insert(0, f"https://myanimelist.net/anime/{row['id']}")
         finally:
             self._return_connection(conn)
+            
+        # For anime series, if this is not season 1, append season info to title
+        display_title = row['title']
+        if type_text == "anime_series" and season_number > 1:
+            # Check if season is already in the title
+            if str(season_number) not in display_title and not any(
+                pattern in display_title.lower() 
+                for pattern in [f's{season_number}', f'season {season_number}', f'{season_number}nd', f'{season_number}rd', f'{season_number}th']
+            ):
+                display_title = f"{base_title} Season {season_number}"
+            
         return TitleInfo(
             id=row['id'],
-            title=row['title'],
+            title=display_title,
             type=type_text,
             year=row['year'],
             status=status_text,
             total_episodes=row['episodes'],
+            total_seasons=season_number if type_text == "anime_series" else None,
             tags=tags,
             sources=sources
         )
 
-    def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
-        """Get episode information if the title is a TV show"""
+    def get_episode_info(self, parent_id: int, season: Optional[int], episode: int) -> Optional[EpisodeInfo]:
+        """Get episode information with season/episode calculation"""
         self.load_database()
         episode_key = f"{parent_id}_{season}_{episode}"
         if episode_key in self._search_cache:
@@ -560,17 +851,62 @@ class AnimeDataProvider(BaseMetadataProvider):
                 (parent_id,)
             )
             row = cursor.fetchone()
-            if row:
+            if row and episode is not None:
+                # Get the base title to find all seasons
+                base_title = row['base_title'] if 'base_title' in row.keys() else row['title']
+                
+                # Find all seasons of this anime ordered by season number
+                cursor = conn.execute(
+                    """
+                    SELECT id, title, episodes, season_number, year
+                    FROM anime_title 
+                    WHERE base_title = ?
+                    ORDER BY season_number, year
+                    """,
+                    (base_title,)
+                )
+                all_seasons = cursor.fetchall()
+                
+                calculated_season = season
+                calculated_episode = episode
+                
+                # If no explicit season provided, calculate from absolute episode number
+                if season is None and all_seasons:
+                    episode_counter = 0
+                    found = False
+                    
+                    for season_row in all_seasons:
+                        season_episodes = season_row['episodes'] or 12  # Default to 12 if unknown
+                        season_num = season_row['season_number']
+                        
+                        if episode <= episode_counter + season_episodes:
+                            # Episode falls within this season
+                            calculated_season = season_num
+                            calculated_episode = episode - episode_counter
+                            found = True
+                            break
+                        
+                        episode_counter += season_episodes
+                    
+                    # If episode number is beyond all known seasons, create new season
+                    if not found:
+                        # Get the last season number
+                        last_season = max(s['season_number'] for s in all_seasons) if all_seasons else 0
+                        remaining_episodes = episode - episode_counter
+                        
+                        if remaining_episodes > 0:
+                            # Start a new season
+                            calculated_season = last_season + 1
+                            calculated_episode = remaining_episodes
+                
                 episode_info = EpisodeInfo(
-                    title=f"Episode {episode}",
-                    season=season,
-                    episode=episode,
-                    parent_id=parent_id,
+                    title=f"Episode {calculated_episode}",
+                    season=calculated_season if calculated_season is not None else 1,
+                    episode=calculated_episode,
+                    parent_id=str(parent_id),
                     year=row['year']
                 )
-                # Check if the title is a TV show
-                if episode is None:
-                    return None
+                
                 self._search_cache[episode_key] = episode_info
                 return episode_info
         finally:
