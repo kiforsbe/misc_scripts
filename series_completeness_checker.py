@@ -441,36 +441,61 @@ class SeriesCompletenessChecker:
         return result
     
     def _calculate_season_specific_mal_status(self, series_mal_status: Dict[str, Any], season: int, episode_files: List[Dict]) -> Optional[Dict[str, Any]]:
-        """Calculate season-specific MyAnimeList watch status based on which episodes in this season are watched."""
+        """Calculate season-specific MyAnimeList watch status based on which episodes in this season are watched.
+        Only fills in missing values - does not override existing MAL data."""
         if not series_mal_status:
             return None
         
         # Create a copy of the series MAL status to modify
         season_mal_status = series_mal_status.copy()
         
-        # Count how many episodes in this season are watched according to MAL
-        mal_watched_in_season = 0
+        # Only calculate and override values if they are missing or blank
+        # Preserve existing MAL data when it exists
+        existing_status = season_mal_status.get('my_status')
+        existing_watched = season_mal_status.get('my_watched_episodes')
+        existing_episodes = season_mal_status.get('series_episodes')
+        
+        # If we already have complete MAL data, don't override it
+        if existing_status and existing_watched is not None and existing_episodes:
+            # Just add metadata about it being season-specific if needed
+            if season and not season_mal_status.get('_season_specific'):
+                season_mal_status['_season_specific'] = True
+                season_mal_status['_original_series_status'] = existing_status
+                season_mal_status['_original_series_watched'] = existing_watched
+            return season_mal_status
+        
+        # Only calculate values that are missing
         total_episodes_in_season = len(episode_files)
         
+        # Count how many episodes in this season are watched according to MAL
+        mal_watched_in_season = 0
         for file_info in episode_files:
             if file_info.get('episode_watched', False):
                 watch_source = file_info.get('watch_source', [])
                 if 'myanimelist' in watch_source:
                     mal_watched_in_season += 1
         
-        # Calculate season-specific status
-        if mal_watched_in_season == 0:
-            season_status = 'Plan to Watch'
-        elif mal_watched_in_season == total_episodes_in_season:
-            season_status = 'Completed'
-        else:
-            season_status = 'Watching'
+        # Only fill in missing values
+        if not existing_status:
+            # Calculate season-specific status
+            if mal_watched_in_season == 0:
+                season_mal_status['my_status'] = 'Plan to Watch'
+            elif mal_watched_in_season == total_episodes_in_season:
+                season_mal_status['my_status'] = 'Completed'
+            else:
+                season_mal_status['my_status'] = 'Watching'
         
-        # Update the status for this season while preserving other data
-        season_mal_status['my_status'] = season_status
-        season_mal_status['my_watched_episodes'] = mal_watched_in_season
-        season_mal_status['series_episodes'] = total_episodes_in_season
-        season_mal_status['progress_percent'] = (mal_watched_in_season / total_episodes_in_season * 100) if total_episodes_in_season > 0 else 0
+        if existing_watched is None:
+            season_mal_status['my_watched_episodes'] = mal_watched_in_season
+        
+        if not existing_episodes:
+            season_mal_status['series_episodes'] = total_episodes_in_season
+        
+        # Calculate progress percentage if missing
+        if 'progress_percent' not in season_mal_status:
+            watched = season_mal_status.get('my_watched_episodes', 0)
+            total = season_mal_status.get('series_episodes', total_episodes_in_season)
+            season_mal_status['progress_percent'] = (watched / total * 100) if total > 0 else 0
         
         # Add a note indicating this is season-specific vs series-wide
         season_mal_status['_season_specific'] = True
