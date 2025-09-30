@@ -840,15 +840,17 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn = self._get_connection()
         try:            # Convert parent_id to internal ID if it's a tconst
             internal_parent_id = None
-            if parent_id.startswith('tt'):
+            # Ensure parent_id is a string before calling startswith
+            parent_id_str = str(parent_id)
+            if parent_id_str.startswith('tt'):
                 # Extract integer from tconst (e.g., "tt0123456" -> 123456)
                 try:
-                    internal_parent_id = int(parent_id[2:])
+                    internal_parent_id = int(parent_id_str[2:])
                 except (ValueError, TypeError):
                     pass
             else:
                 try:
-                    internal_parent_id = int(parent_id)
+                    internal_parent_id = int(parent_id_str)
                 except ValueError:
                     pass
 
