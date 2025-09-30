@@ -364,7 +364,8 @@ class FileGrouper:
             if metadata_id and metadata_id in self.title_metadata:
                 mal_status = self.title_metadata[metadata_id].get('myanimelist_watch_status')
                 if mal_status:
-                    episode_num = result.get('episode')
+                    # Use original (absolute) episode number for MyAnimeList comparison, not in-season episode number
+                    episode_num = result.get('original_episode') or result.get('episode')
                     mal_watched_episodes = mal_status.get('my_watched_episodes', 0)
                     if episode_num and episode_num <= mal_watched_episodes:
                         mal_episode_watched = True
