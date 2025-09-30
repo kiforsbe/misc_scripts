@@ -429,6 +429,35 @@ class SeriesCompletenessApp {
             return ''; // Don't show the card if no MAL data
         }
         
+        // Calculate season-specific MAL status based on actual watch progress
+        const watchStatus = series.watch_status || {};
+        const watchedEpisodes = watchStatus.watched_episodes || 0;
+        const totalEpisodes = series.episodes_found || 0;
+        
+        // Determine season-specific status
+        let seasonSpecificStatus = malStatus.my_status;
+        let seasonSpecificIcon = malStatus.my_status;
+        let seasonSpecificColor = malStatus.my_status;
+        
+        if (totalEpisodes > 0) {
+            if (watchedEpisodes === 0) {
+                // No episodes watched in this season - show as "Plan to Watch" regardless of series MAL status
+                seasonSpecificStatus = 'Plan to Watch';
+                seasonSpecificIcon = 'Plan to Watch';
+                seasonSpecificColor = 'Plan to Watch';
+            } else if (watchedEpisodes === totalEpisodes) {
+                // All episodes watched in this season - show as "Completed"
+                seasonSpecificStatus = 'Completed';
+                seasonSpecificIcon = 'Completed';
+                seasonSpecificColor = 'Completed';
+            } else {
+                // Partially watched - show as "Watching"
+                seasonSpecificStatus = 'Watching';
+                seasonSpecificIcon = 'Watching';
+                seasonSpecificColor = 'Watching';
+            }
+        }
+        
         const statusIcons = {
             'Watching': '👁️',
             'Completed': '✅',
@@ -445,8 +474,8 @@ class SeriesCompletenessApp {
             'Plan to Watch': 'text-info'
         };
         
-        const icon = statusIcons[malStatus.my_status] || '❓';
-        const colorClass = statusColors[malStatus.my_status] || 'text-muted';
+        const icon = statusIcons[seasonSpecificIcon] || '❓';
+        const colorClass = statusColors[seasonSpecificColor] || 'text-muted';
         
         return `
             <div class="details-card">
@@ -457,8 +486,13 @@ class SeriesCompletenessApp {
                 <div class="mal-info">
                     <div class="mal-status-large ${colorClass}">
                         <span class="mal-icon">${icon}</span>
-                        <span class="mal-status-text">${malStatus.my_status}</span>
+                        <span class="mal-status-text">${seasonSpecificStatus}</span>
                     </div>
+                    ${seasonSpecificStatus !== malStatus.my_status ? `
+                    <div class="mal-season-note">
+                        <small class="text-muted">Season-specific status (Series: ${malStatus.my_status})</small>
+                    </div>
+                    ` : ''}
                     ${malStatus.my_score > 0 ? `
                     <div class="mal-score">
                         <strong>Score:</strong> <span class="score-value">${malStatus.my_score}/10</span>
@@ -466,7 +500,7 @@ class SeriesCompletenessApp {
                     ` : ''}
                     ${malStatus.my_watched_episodes !== undefined && malStatus.my_watched_episodes >= 0 ? `
                     <div class="mal-episodes">
-                        <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes}
+                        <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes} (Series Total)
                     </div>
                     ` : ''}
                 </div>

@@ -89,7 +89,7 @@ class SeriesCompletenessChecker:
         groups = self.file_grouper.group_files(files, ['title', 'season'], show_progress)
 
         # Export title metadata for completeness analysis - include MyAnimeList watch status
-        # Now using metadata IDs as keys
+        # Now using metadata IDs as keys, but we'll add season-specific entries after analysis
         title_metadata_export = {}
         for metadata_id, value in self.file_grouper.title_metadata.items():
             # Export the complete metadata including MyAnimeList watch status
@@ -138,6 +138,63 @@ class SeriesCompletenessChecker:
                 if len(analysis.get('title', '')) > 30:
                     title += "..."
                 pbar.set_postfix(current=title)
+        
+        # Find proper season-specific metadata IDs from the database
+        for group_key, analysis in results['groups'].items():
+            mal_status = analysis.get('myanimelist_watch_status')
+            if mal_status and mal_status.get('_season_specific'):
+                title = analysis.get('title')
+                season = analysis.get('season')
+                
+                if title and season and self.metadata_manager:
+                    # Query the metadata manager to find the proper season-specific entry
+                    try:
+                        # For season > 1, try to find season-specific title
+                        if season > 1:
+                            season_title = f"{title} Season {season}"
+                            enhanced_info, provider = self.metadata_manager.find_title(season_title)
+                            if not enhanced_info:
+                                # Try alternative formats
+                                season_title = f"{title} {season}"
+                                enhanced_info, provider = self.metadata_manager.find_title(season_title)
+                        else:
+                            # For season 1, use the original title
+                            enhanced_info, provider = self.metadata_manager.find_title(title)
+                        
+                        if enhanced_info:
+                            # Use the proper metadata ID from the database
+                            season_metadata_id = enhanced_info.id
+                            
+                            # Create or update the metadata entry
+                            season_metadata = {
+                                'id': season_metadata_id,
+                                'title': enhanced_info.title,
+                                'type': getattr(enhanced_info, 'type', 'anime_series'),
+                                'year': getattr(enhanced_info, 'year', None),
+                                'myanimelist_watch_status': mal_status,
+                                '_season_number': season
+                            }
+                            
+                            # Add any additional metadata from enhanced_info
+                            for attr in ['genres', 'rating', 'plot', 'sources']:
+                                if hasattr(enhanced_info, attr):
+                                    season_metadata[attr] = getattr(enhanced_info, attr)
+                            
+                            # Add to title_metadata
+                            title_metadata_export[str(season_metadata_id)] = season_metadata
+                            
+                            # Update the group to reference the proper metadata ID
+                            analysis['title_id'] = season_metadata_id
+                            if 'myanimelist_watch_status' in analysis:
+                                analysis['myanimelist_watch_status']['series_animedb_id'] = season_metadata_id
+                        
+                    except Exception as e:
+                        print(f"Warning: Could not find season-specific metadata for {title} Season {season}: {e}")
+                        # Keep the original metadata_id as fallback
+                        pass
+        
+        # Update the results with the enhanced title_metadata
+        results['title_metadata'] = title_metadata_export
         
         return results
     
@@ -245,12 +302,19 @@ class SeriesCompletenessChecker:
         total_watch_count = 0
         mal_watch_status = None
         
-        # Get title-level MyAnimeList watch status
+        # Get title-level MyAnimeList watch status and calculate season-specific status
         metadata_id = first_file.get('metadata_id')
         if metadata_id and hasattr(self, 'file_grouper'):
             title_metadata = getattr(self.file_grouper, 'title_metadata', {})
             if metadata_id in title_metadata:
-                mal_watch_status = title_metadata[metadata_id].get('myanimelist_watch_status')
+                series_mal_status = title_metadata[metadata_id].get('myanimelist_watch_status')
+                if series_mal_status and season:
+                    # Calculate season-specific MyAnimeList watch status
+                    mal_watch_status = self._calculate_season_specific_mal_status(
+                        series_mal_status, season, episode_files
+                    )
+                else:
+                    mal_watch_status = series_mal_status
         
         # Count partially watched and total watch count from Plex
         for file_info in episode_files:
@@ -373,6 +437,44 @@ class SeriesCompletenessChecker:
         
         return result
     
+    def _calculate_season_specific_mal_status(self, series_mal_status: Dict[str, Any], season: int, episode_files: List[Dict]) -> Optional[Dict[str, Any]]:
+        """Calculate season-specific MyAnimeList watch status based on which episodes in this season are watched."""
+        if not series_mal_status:
+            return None
+        
+        # Create a copy of the series MAL status to modify
+        season_mal_status = series_mal_status.copy()
+        
+        # Count how many episodes in this season are watched according to MAL
+        mal_watched_in_season = 0
+        total_episodes_in_season = len(episode_files)
+        
+        for file_info in episode_files:
+            if file_info.get('episode_watched', False):
+                watch_source = file_info.get('watch_source', [])
+                if 'myanimelist' in watch_source:
+                    mal_watched_in_season += 1
+        
+        # Calculate season-specific status
+        if mal_watched_in_season == 0:
+            season_status = 'Plan to Watch'
+        elif mal_watched_in_season == total_episodes_in_season:
+            season_status = 'Completed'
+        else:
+            season_status = 'Watching'
+        
+        # Update the status for this season while preserving other data
+        season_mal_status['my_status'] = season_status
+        season_mal_status['my_watched_episodes'] = mal_watched_in_season
+        season_mal_status['series_episodes'] = total_episodes_in_season
+        season_mal_status['progress_percent'] = (mal_watched_in_season / total_episodes_in_season * 100) if total_episodes_in_season > 0 else 0
+        
+        # Add a note indicating this is season-specific vs series-wide
+        season_mal_status['_season_specific'] = True
+        season_mal_status['_original_series_status'] = series_mal_status.get('my_status')
+        season_mal_status['_original_series_watched'] = series_mal_status.get('my_watched_episodes')
+        
+        return season_mal_status
 
     
     def _format_episode_ranges(self, episodes: List[int]) -> str:
@@ -580,27 +682,26 @@ class SeriesCompletenessChecker:
         # Add episode info (watched, missing, extra) using combined watch status
         extra_info = []
         
-        # Add watched episodes info - use the calculated watched count
+        # Add watched episodes info - show actual watched episode numbers
         watched_episodes = watch_status.get('watched_episodes', 0)
         if watched_episodes > 0:
-            mal_status = analysis.get('myanimelist_watch_status')
-            if mal_status:
-                watched_range = f"1-{watched_episodes}" if watched_episodes > 1 else "1"
-                extra_info.append(f"Watched: [{watched_range}] (Combined)")
-            else:
-                # Fall back to individual file watch status display
-                watched_episode_nums = []
-                if analysis.get('files'):
-                    for file_info in analysis['files']:
-                        if file_info.get('episode_watched'):
-                            episode = file_info.get('episode')
-                            if isinstance(episode, list):
-                                watched_episode_nums.extend(episode)
-                            elif episode is not None:
-                                watched_episode_nums.append(episode)
-                
-                if watched_episode_nums:
-                    watched_range = self._format_episode_ranges(sorted(set(watched_episode_nums)))
+            # Always show the actual watched episode numbers, not just the count
+            watched_episode_nums = []
+            if analysis.get('files'):
+                for file_info in analysis['files']:
+                    if file_info.get('episode_watched'):
+                        episode = file_info.get('episode')
+                        if isinstance(episode, list):
+                            watched_episode_nums.extend(episode)
+                        elif episode is not None:
+                            watched_episode_nums.append(episode)
+            
+            if watched_episode_nums:
+                watched_range = self._format_episode_ranges(sorted(set(watched_episode_nums)))
+                mal_status = analysis.get('myanimelist_watch_status')
+                if mal_status:
+                    extra_info.append(f"Watched: {watched_range} (Combined)")
+                else:
                     extra_info.append(f"Watched: {watched_range}")
 
         if analysis.get('missing_episodes'):
