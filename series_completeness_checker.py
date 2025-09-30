@@ -394,8 +394,11 @@ class SeriesCompletenessChecker:
                                 # Check if the next episode exists and is in the same season
                                 next_episode_info = provider.get_episode_info(enhanced_info.id, None, next_episode_original)
                                 if next_episode_info and next_episode_info.season == season:
-                                    # Next episode is in same season, so we're missing it
-                                    expected_episodes = max_episode_in_season + 1
+                                    # Only add it as expected if it's within the total episode count for the series
+                                    series_total_episodes = enhanced_info.total_episodes if enhanced_info else None
+                                    if series_total_episodes and next_episode_original <= series_total_episodes:
+                                        # Next episode is in same season and within series bounds, so we're missing it
+                                        expected_episodes = max_episode_in_season + 1
                             
                             result['enhanced_metadata'] = {
                                 'title': enhanced_info.title,
