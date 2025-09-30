@@ -633,3 +633,89 @@ body {
   font-size: 0.95rem;
   color: #666;
 }
+
+/* Sources dropdown styling */
+.title-with-sources {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title-with-sources a {
+  text-decoration: none;
+  color: inherit;
+}
+
+.title-with-sources a:hover {
+  color: var(--primary-color);
+}
+
+.sources-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.sources-dropdown-btn {
+  background: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  font-size: 0.9rem;
+  min-width: 32px;
+  height: 32px;
+}
+
+.sources-dropdown-btn:hover {
+  background: #5a2d9c;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(111, 66, 193, 0.3);
+}
+
+.sources-dropdown-btn:active {
+  transform: translateY(0);
+}
+
+.sources-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  min-width: 150px;
+  padding: 8px 0;
+  margin-top: 4px;
+}
+
+.source-link {
+  display: block;
+  padding: 8px 16px;
+  color: #333;
+  text-decoration: none;
+  font-size: 0.9rem;
+  transition: background-color 0.2s ease;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+
+.source-link:hover {
+  background: #f8f9fa;
+  color: var(--primary-color);
+}
+
+.source-link:focus {
+  background: #f8f9fa;
+  color: var(--primary-color);
+  outline: 2px solid var(--primary-color);
+  outline-offset: -2px;
+}

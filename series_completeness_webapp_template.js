@@ -129,8 +129,9 @@ class SeriesCompletenessApp {
             // Derive isMovie from title_metadata.type or files[0].type
             const files = series.files || [];
             const firstFile = files[0] || {};
-            const title_metadata_key = firstFile.title_metadata_key || '';
-            const title_metadata = this.data.title_metadata && this.data.title_metadata[title_metadata_key] || {};
+            // Use series.title_id for season-specific metadata, fallback to first file's metadata_id
+            const metadata_id = series.title_id || firstFile.metadata_id || '';
+            const title_metadata = this.data.title_metadata && this.data.title_metadata[metadata_id] || {};
             let isMovie = false;
             if (title_metadata.type && typeof title_metadata.type === 'string' && title_metadata.type.toLowerCase().includes('movie')) {
                 isMovie = true;
@@ -218,8 +219,9 @@ class SeriesCompletenessApp {
             // Derive isMovie from title_metadata.type or files[0].type
             const files = series.files || [];
             const firstFile = files[0] || {};
-            const title_metadata_key = firstFile.title_metadata_key || '';
-            const title_metadata = this.data.title_metadata && this.data.title_metadata[title_metadata_key] || {};
+            // Use series.title_id for season-specific metadata, fallback to first file's metadata_id
+            const metadata_id = series.title_id || firstFile.metadata_id || '';
+            const title_metadata = this.data.title_metadata && this.data.title_metadata[metadata_id] || {};
             let isMovie = false;
             // Check title_metadata.type
             if (title_metadata.type && typeof title_metadata.type === 'string' && title_metadata.type.toLowerCase().includes('movie')) {
@@ -299,18 +301,53 @@ class SeriesCompletenessApp {
         const statusClass = `status-${series.status}`;
         const statusIcon = this.getStatusIcon(series.status);
 
-        const title_metadata_key = series.files[0].title_metadata_key || '';
-        const title_metadata = this.data.title_metadata[title_metadata_key] || {};
+        // Use series.title_id for season-specific metadata, fallback to first file's metadata_id
+        const metadata_id = series.title_id || series.files[0].metadata_id || '';
+        const title_metadata = this.data.title_metadata[metadata_id] || {};
 
-        // Get MyAnimeList source if available. title_metadata.sources is an array of strings, that we then need to filder out the right source from
-        const myanimeList_source_url = title_metadata.sources ?
-            title_metadata.sources.find(source => source.toLowerCase().includes('myanimelist')) || null
-            : null;
+        // Get all available sources
+        const sources = title_metadata.sources || [];
+        const hasMultipleSources = sources.length > 1;
+        const hasSources = sources.length > 0;
+        
+        // Get MyAnimeList source if available as default
+        const myanimeList_source_url = sources.find(source => 
+            source.toLowerCase().includes('myanimelist')
+        ) || null;
+        
+        // Determine what to display for the title
+        let titleHtml;
+        if (!hasSources) {
+            // No sources available - just show title without link
+            titleHtml = `<h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2>`;
+        } else if (!hasMultipleSources) {
+            // Single source - direct link
+            titleHtml = `<a href="${sources[0]}" target="_blank" rel="noopener noreferrer"><h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2></a>`;
+        } else {
+            // Multiple sources - show dropdown button with default link
+            const defaultUrl = myanimeList_source_url || sources[0];
+            titleHtml = `
+                <div class="title-with-sources">
+                    <a href="${defaultUrl}" target="_blank" rel="noopener noreferrer"><h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2></a>
+                    <div class="sources-dropdown">
+                        <button class="sources-dropdown-btn" onclick="app.toggleSourcesDropdown(event)" aria-label="Choose source">
+                            <i class="bi bi-chevron-down"></i>
+                        </button>
+                        <div class="sources-dropdown-menu" style="display: none;">
+                            ${sources.map(source => {
+                                const sourceName = this.getSourceName(source);
+                                return `<a href="${source}" target="_blank" rel="noopener noreferrer" class="source-link">${sourceName}</a>`;
+                            }).join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
 
         const container = document.getElementById('series-details');
         container.innerHTML = `
             <div class="details-header">
-                <a href="${myanimeList_source_url}"><h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2></a>
+                ${titleHtml}
                 <div class="details-subtitle">
                     ${series.episodes_found} episodes found${series.episodes_expected ? ` of ${series.episodes_expected} expected` : ''}
                 </div>
@@ -790,6 +827,51 @@ class SeriesCompletenessApp {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+    
+    getSourceName(url) {
+        if (url.includes('myanimelist.net')) return 'MyAnimeList';
+        if (url.includes('anilist.co')) return 'AniList';
+        if (url.includes('anisearch.com')) return 'AniSearch';
+        if (url.includes('kitsu.app')) return 'Kitsu';
+        if (url.includes('imdb.com')) return 'IMDb';
+        if (url.includes('tmdb.org')) return 'TMDB';
+        
+        // Fallback to domain name
+        try {
+            const domain = new URL(url).hostname;
+            return domain.replace('www.', '').split('.')[0];
+        } catch {
+            return 'External Link';
+        }
+    }
+    
+    toggleSourcesDropdown(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        const dropdown = event.target.closest('.sources-dropdown');
+        const menu = dropdown.querySelector('.sources-dropdown-menu');
+        const isVisible = menu.style.display !== 'none';
+        
+        // Close all other dropdowns first
+        document.querySelectorAll('.sources-dropdown-menu').forEach(m => {
+            if (m !== menu) m.style.display = 'none';
+        });
+        
+        // Toggle this dropdown
+        menu.style.display = isVisible ? 'none' : 'block';
+        
+        if (!isVisible) {
+            // Close dropdown when clicking outside
+            const closeDropdown = (e) => {
+                if (!dropdown.contains(e.target)) {
+                    menu.style.display = 'none';
+                    document.removeEventListener('click', closeDropdown);
+                }
+            };
+            setTimeout(() => document.addEventListener('click', closeDropdown), 0);
+        }
     }
 }
 
