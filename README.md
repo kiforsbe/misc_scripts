@@ -687,7 +687,7 @@ The script features intelligent performance optimizations, only updating the dis
 - requests
 - concurrent.futures (standard library)
 
-### plex-playlist-watch-status.user.js
+## plex-playlist-watch-status.user.js
 A Tampermonkey script that adds simple triangle indicators to Plex playlist items, showing their watch status (watched/unwatched) based on metadata from the Plex API.
 It fetches the watch status of each item in a Plex playlist and displays a triangle icon next to each item, indicating whether it has been watched or not. The script is designed to enhance the user experience by providing quick visual feedback on the watch status of playlist items.
 
@@ -699,6 +699,20 @@ It fetches the watch status of each item in a Plex playlist and displays a trian
 
 ### Requires
 - Tampermonkey or a similar userscript manager
+
+## latest_episodes_viewer.py
+A script that generates a simple HTML page listing the latest episodes from a collection of TV series. It scans a specified directory for video files, extracts metadata using guessit and some custom metadata providers, and creates an organized list of the most recent episodes based on their air dates. The generated HTML page includes links to the episodes, making it easy to access and view the latest content.
+
+### Features
+- Scans a specified directory for video files
+- Extracts metadata using guessit and custom metadata providers
+- Generates an organized HTML page listing the latest episodes
+- Includes links to the episodes for easy access
+
+### Requires
+- guessit
+- requests
+- tqdm
 
 ## Experimental
 
