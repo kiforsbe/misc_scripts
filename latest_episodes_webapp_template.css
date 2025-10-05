@@ -79,7 +79,7 @@ body {
 }
 
 .sidebar {
-  width: 400px;
+  width: 450px;
   background: var(--sidebar-bg);
   border-right: 1px solid #dee2e6;
   display: flex;
@@ -546,19 +546,31 @@ body {
   gap: 0.75rem;
 }
 
+.series-group-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
 .series-rating {
   font-size: 0.85rem;
   background: rgba(255, 255, 255, 0.15);
-  padding: 0.25rem 0.5rem;
+  padding: 0.375rem 0.75rem;
   border-radius: 1rem;
   font-weight: 500;
+  min-width: 3rem;
+  text-align: center;
 }
 
 .series-group-count {
+  font-size: 0.85rem;
   background: rgba(255, 255, 255, 0.2);
-  padding: 0.25rem 0.5rem;
+  padding: 0.375rem 0.75rem;
   border-radius: 1rem;
-  font-size: 0.8rem;
+  font-weight: 500;
+  min-width: 5rem;
+  text-align: center;
 }
 
 .group-by-controls {

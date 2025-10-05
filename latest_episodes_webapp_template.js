@@ -259,9 +259,11 @@ class LatestEpisodesApp {
                     <div class="series-group-header">
                         <div class="series-group-title">
                             <span>${this.escapeHtml(seriesTitle)}</span>
-                            ${seriesRating ? `<span class="series-rating">${seriesRating}</span>` : ''}
                         </div>
-                        <span class="series-group-count">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}</span>
+                        <div class="series-group-right">
+                            ${seriesRating ? `<span class="series-rating">${seriesRating}</span>` : ''}
+                            <span class="series-group-count">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}</span>
+                        </div>
                     </div>
             `;
             
