@@ -251,10 +251,16 @@ class LatestEpisodesApp {
         let html = '';
         sortedSeries.forEach(seriesTitle => {
             const episodes = groupedEpisodes[seriesTitle];
+            const firstEpisode = episodes[0].episode;
+            const seriesRating = this.getSeriesGroupRating(firstEpisode);
+            
             html += `
                 <div class="series-group">
                     <div class="series-group-header">
-                        <span>${this.escapeHtml(seriesTitle)}</span>
+                        <div class="series-group-title">
+                            <span>${this.escapeHtml(seriesTitle)}</span>
+                            ${seriesRating ? `<span class="series-rating">${seriesRating}</span>` : ''}
+                        </div>
                         <span class="series-group-count">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}</span>
                     </div>
             `;
@@ -301,6 +307,7 @@ class LatestEpisodesApp {
                         <span>Episode ${episode.metadata.episode}${episodeCount > 1 ? ` of ${episodeCount}` : ''}</span>
                         <span>${this.formatFileSize(episode.file_size)}</span>
                     </div>
+                    ${this.renderRatingInfo(episode, 'compact')}
                     <div class="episode-date">${downloadDate.toLocaleDateString()}</div>
                 </div>
             </div>
@@ -369,15 +376,16 @@ class LatestEpisodesApp {
         if (episode.episode_metadata) {
             const ep = episode.episode_metadata;
             if (ep.air_date) {
-                detailsHtml += `<p><strong>Air Date:</strong> ${ep.air_date}</p>`;
-            }
-            if (ep.rating) {
-                detailsHtml += `<p><strong>Rating:</strong> ${ep.rating}/10</p>`;
+                const airDate = new Date(ep.air_date);
+                detailsHtml += `<p><strong>Air Date:</strong> ${airDate.toLocaleDateString()}</p>`;
             }
             if (ep.plot) {
                 detailsHtml += `<p><strong>Plot:</strong> ${this.escapeHtml(ep.plot)}</p>`;
             }
         }
+        
+        // Add rating information
+        detailsHtml += this.renderRatingInfo(episode, 'detailed');
         
         detailsHtml += `</div>`;
         
@@ -422,7 +430,7 @@ class LatestEpisodesApp {
                     </h4>
                     <p><strong>Title:</strong> ${this.escapeHtml(series.title)}</p>
                     ${series.year ? `<p><strong>Year:</strong> ${series.year}</p>` : ''}
-                    ${series.rating ? `<p><strong>Rating:</strong> ${series.rating}/10</p>` : ''}
+                    ${this.renderSeriesRatingInfo(episode)}
                     ${series.total_episodes ? `<p><strong>Total Episodes:</strong> ${series.total_episodes}</p>` : ''}
                     ${series.genres && series.genres.length > 0 ? `<p><strong>Genres:</strong> ${series.genres.join(', ')}</p>` : ''}
                     ${series.plot ? `<p><strong>Plot:</strong> ${this.escapeHtml(series.plot)}</p>` : ''}
@@ -454,7 +462,7 @@ class LatestEpisodesApp {
                     </h4>
                     <span class="status-badge status-${mal.status.toLowerCase().replace(' ', '-').replace(' ', '_')}">${mal.status}</span>
                     <p><strong>Episodes Watched:</strong> ${mal.watched_episodes} / ${mal.total_episodes || '?'}</p>
-                    ${mal.score > 0 ? `<p><strong>Your Score:</strong> ${mal.score}/10</p>` : ''}
+                    ${mal.score > 0 ? `<p><strong>Your Score:</strong> ${parseFloat(mal.score).toFixed(1)}/10</p>` : ''}
                     ${mal.progress_percent > 0 ? `
                         <div class="progress-container">
                             <div class="progress">
@@ -590,6 +598,71 @@ class LatestEpisodesApp {
             });
     }
     
+    // Rating display functions
+    renderRatingInfo(episode, style = 'compact') {
+        let ratingHtml = '';
+        const hasEpisodeRating = episode.episode_metadata && episode.episode_metadata.rating && episode.episode_metadata.rating > 0;
+        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0;
+        
+        if (!hasEpisodeRating && !hasUserScore) return '';
+        
+        if (style === 'compact') {
+            const ratings = [];
+            if (hasEpisodeRating) {
+                const communityScore = parseFloat(episode.episode_metadata.rating).toFixed(1);
+                ratings.push(`⭐ ${communityScore}/10`);
+            }
+            if (hasUserScore) {
+                const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+                ratings.push(`👤 ${userScore}/10`);
+            }
+            if (ratings.length > 0) {
+                ratingHtml = `<div class="episode-ratings">${ratings.join(' • ')}</div>`;
+            }
+        } else if (style === 'detailed') {
+            if (hasEpisodeRating) {
+                const communityScore = parseFloat(episode.episode_metadata.rating).toFixed(1);
+                ratingHtml += `<p><strong>Rating:</strong> <span class="community-score">⭐ ${communityScore}/10</span></p>`;
+            }
+            if (hasUserScore) {
+                const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+                ratingHtml += `<p><strong>Your Score:</strong> <span class="user-score">👤 ${userScore}/10</span></p>`;
+            }
+        }
+        
+        return ratingHtml;
+    }
+    
+    renderSeriesRatingInfo(episode) {
+        let ratingHtml = '';
+        const hasCommunityRating = episode.series_metadata && episode.series_metadata.rating && episode.series_metadata.rating > 0;
+        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0;
+        
+        if (hasCommunityRating) {
+            const communityScore = parseFloat(episode.series_metadata.rating).toFixed(1);
+            ratingHtml += `<p><strong>Rating:</strong> <span class="community-score">⭐ ${communityScore}/10</span></p>`;
+        }
+        if (hasUserScore) {
+            const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+            ratingHtml += `<p><strong>Your Score:</strong> <span class="user-score">👤 ${userScore}/10</span></p>`;
+        }
+        
+        return ratingHtml;
+    }
+    
+    getSeriesGroupRating(episode) {
+        const ratings = [];
+        if (episode.series_metadata && episode.series_metadata.rating && episode.series_metadata.rating > 0) {
+            const communityScore = parseFloat(episode.series_metadata.rating).toFixed(1);
+            ratings.push(`⭐${communityScore}`);
+        }
+        if (episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0) {
+            const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+            ratings.push(`👤${userScore}`);
+        }
+        return ratings.length > 0 ? ratings.join(' ') : null;
+    }
+
     // Utility functions
     formatFileSize(bytes) {
         const units = ['B', 'KB', 'MB', 'GB', 'TB'];

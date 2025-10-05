@@ -334,6 +334,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                         year INTEGER,
                         duration INTEGER,
                         tags TEXT,
+                        score REAL,                      -- median score from anime database
                         season_number INTEGER DEFAULT 1, -- parsed season number
                         base_title TEXT                  -- title without season indicators
                     )
@@ -409,6 +410,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                         a.year,
                         a.duration,
                         a.tags,
+                        a.score,
                         a.season_number,
                         a.base_title
                     FROM synonyms s
@@ -582,7 +584,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                 # Check current schema and drop tables if outdated
                 cursor = conn.execute("PRAGMA table_info(anime_title)")
                 columns = [row[1] for row in cursor.fetchall()]
-                if 'season_number' not in columns or 'base_title' not in columns:
+                if 'season_number' not in columns or 'base_title' not in columns or 'score' not in columns:
                     logging.info("Dropping outdated database schema to recreate with new columns")
                     # Drop all tables to recreate with new schema
                     conn.execute("DROP TABLE IF EXISTS anime_title")
@@ -657,6 +659,14 @@ class AnimeDataProvider(BaseMetadataProvider):
                             duration = self.safe_int(entry.get('duration'))
                             tags = ','.join(entry.get('tags', []))
                             
+                            # Extract score from JSON data
+                            score = None
+                            if 'score' in entry and 'median' in entry['score']:
+                                try:
+                                    score = float(entry['score']['median'])
+                                except (ValueError, TypeError):
+                                    score = None
+                            
                             # Get season information
                             season_number = season_assignments.get(mal_id, 1)
                             _, base_title = self._parse_season_from_title(title)
@@ -664,7 +674,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                                 base_title = self._extract_base_title(title)
 
                             anime_batch.append(
-                                (mal_id, title, type_id, episodes, status_id, year, duration, tags, season_number, base_title)
+                                (mal_id, title, type_id, episodes, status_id, year, duration, tags, score, season_number, base_title)
                             )
 
                             # Main title as synonym
@@ -699,8 +709,8 @@ class AnimeDataProvider(BaseMetadataProvider):
                         # Bulk insert
                         conn.executemany(
                             """INSERT OR REPLACE INTO anime_title 
-                               (id, title, type, episodes, status, year, duration, tags, season_number, base_title)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               (id, title, type, episodes, status, year, duration, tags, score, season_number, base_title)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             anime_batch
                         )
                         conn.executemany(
@@ -832,6 +842,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             type=type_text,
             year=row['year'],
             status=status_text,
+            rating=row['score'] if 'score' in row.keys() else None,  # Use score from database as rating
             total_episodes=row['episodes'],
             total_seasons=season_number if type_text == "anime_series" else None,
             tags=tags,
