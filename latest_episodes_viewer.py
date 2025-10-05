@@ -7,9 +7,9 @@ import os
 import sys
 import argparse
 import logging
-import hashlib
-import subprocess
-import tempfile
+
+from video_thumbnail_generator import VideoThumbnailGenerator
+from file_grouper import FileGrouper, CustomJSONEncoder
 
 try:
     from tqdm import tqdm
@@ -30,13 +30,6 @@ except ImportError:
         
         def __exit__(self, *args):
             pass
-
-# Import the FileGrouper class and related components
-try:
-    from file_grouper import FileGrouper, CustomJSONEncoder
-except ImportError:
-    print("ERROR: file_grouper module not found. Please ensure file_grouper.py is in the same directory.")
-    sys.exit(1)
 
 # Try to get metadata manager - it may not be available if dependencies aren't installed
 try:
@@ -379,104 +372,11 @@ class LatestEpisodesViewer:
     def generate_thumbnails(self, episodes_data: List[Dict[str, Any]], thumbnail_dir: Optional[str] = None, 
                           max_height: int = 480, verbose: int = 1) -> List[Dict[str, Any]]:
         """Generate thumbnails for episodes and return thumbnail index."""
-        if thumbnail_dir is None:
-            thumbnail_dir = os.path.expanduser("~/.video_thumbnail_cache")
-        else:
-            thumbnail_dir = os.path.expanduser(thumbnail_dir)
-        os.makedirs(thumbnail_dir, exist_ok=True)
-
-        thumbnail_index = []
+        generator = VideoThumbnailGenerator(thumbnail_dir, max_height)
         video_files = [episode['file_path'] for episode in episodes_data]
-        
-        for video_path_str in tqdm(video_files, desc="Generating thumbnails", unit="file", disable=verbose < 1):
-            h = hashlib.sha256(video_path_str.encode("utf-8")).hexdigest()
-            static_thumb = os.path.join(thumbnail_dir, f"{h}_static.webp")
-            video_thumb = os.path.join(thumbnail_dir, f"{h}_video.webp")
-
-            static_exists = os.path.exists(static_thumb)
-            video_exists = os.path.exists(video_thumb)
-            if static_exists and video_exists:
-                thumbnail_index.append({
-                    "video": video_path_str,
-                    "static_thumbnail": static_thumb,
-                    "animated_thumbnail": video_thumb
-                })
-                continue
-
-            # Get video duration (in seconds)
-            try:
-                cmd = [
-                    "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path_str
-                ]
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                duration = float(result.stdout.strip())
-            except Exception as e:
-                if verbose >= 2:
-                    print(f"Could not get duration for {video_path_str}: {e}")
-                continue
-            if duration <= 0:
-                if verbose >= 2:
-                    print(f"Invalid duration for {video_path_str}")
-                continue
-
-            # --- Static thumbnail (20% in) ---
-            if not static_exists:
-                static_time = duration * 0.2
-                static_cmd = [
-                    "ffmpeg", "-y", "-ss", str(static_time), "-i", video_path_str,
-                    "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", static_thumb
-                ]
-                try:
-                    subprocess.run(static_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                except subprocess.CalledProcessError as e:
-                    if verbose >= 2:
-                        print(f"Failed to generate static thumbnail for {video_path_str}: {e}")
-                    static_thumb = None
-
-            # --- Animated thumbnail (extract frames, skip failed frames) ---
-            if not video_exists:
-                frame_times = [duration * (i / 100) for i in range(5, 100, 5)]
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    frame_files = []
-                    for idx, t in enumerate(frame_times):
-                        frame_file = os.path.join(tmpdir, f"frame_{idx:02d}.webp")
-                        frame_cmd = [
-                            "ffmpeg", "-y", "-noaccurate_seek", "-ss", str(t), "-i", video_path_str,
-                            "-vframes", "1", "-vf", f"scale=-2:{max_height}", "-f", "webp", frame_file
-                        ]
-                        try:
-                            subprocess.run(frame_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                            if os.path.exists(frame_file) and os.path.getsize(frame_file) > 0:
-                                frame_files.append(frame_file)
-                        except subprocess.CalledProcessError as e:
-                            if verbose >= 2:
-                                print(f"Failed to extract frame {idx} for {video_path_str}: {e}")
-                    
-                    # Combine frames into animated webp (2 fps, only valid frames)
-                    if frame_files:
-                        anim_cmd = [
-                            "ffmpeg", "-y", "-framerate", "2", "-i", os.path.join(tmpdir, "frame_%02d.webp"),
-                            "-vf", f"scale=-2:{max_height}", "-loop", "0", "-f", "webp", video_thumb
-                        ]
-                        try:
-                            subprocess.run(anim_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        except subprocess.CalledProcessError as e:
-                            if verbose >= 2:
-                                print(f"Failed to generate animated thumbnail for {video_path_str}: {e}")
-                            video_thumb = None
-
-            # Add to index if we have at least one thumbnail
-            static_valid = static_exists or (static_thumb and os.path.exists(static_thumb))
-            video_valid = video_exists or (video_thumb and os.path.exists(video_thumb))
-            
-            if static_valid or video_valid:
-                thumbnail_index.append({
-                    "video": video_path_str,
-                    "static_thumbnail": static_thumb if static_valid else None,
-                    "animated_thumbnail": video_thumb if video_valid else None
-                })
-
-        return thumbnail_index
+        return generator.generate_thumbnails_for_videos(
+            video_files, verbose, force_regenerate=False, show_progress=(verbose >= 1)
+        )
 
 
 def main():
