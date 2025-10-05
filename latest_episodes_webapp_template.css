@@ -139,32 +139,6 @@ body {
   padding: 0.5rem;
 }
 
-.episode-item {
-  padding: 0.75rem;
-  margin-bottom: 0.5rem;
-  background: white;
-  border-radius: 0.5rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 1px solid #e9ecef;
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  min-height: 110px;
-}
-
-.episode-item:hover {
-  background: #f8f9fa;
-  border-color: var(--primary-color);
-  transform: translateY(-1px);
-}
-
-.episode-item.selected {
-  background: var(--primary-color);
-  color: white;
-  border-color: var(--primary-color);
-}
-
 .episode-thumbnail {
   width: 140px;
   height: calc(100% - 8px);
@@ -208,10 +182,6 @@ body {
   margin-bottom: 0.25rem;
 }
 
-.episode-item.selected .episode-meta {
-  color: rgba(255, 255, 255, 0.8);
-}
-
 .episode-series {
   font-size: 1rem;
   color: var(--primary-color);
@@ -222,41 +192,64 @@ body {
   white-space: nowrap;
 }
 
-.episode-item.selected .episode-series {
-  color: rgba(255, 255, 255, 0.9);
+.episode-item {
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  background: white;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid #e9ecef;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 110px;
 }
 
-.episode-date {
-  font-size: 0.75rem;
-  color: #6c757d;
+.episode-item:hover {
+  background: #f8f9fa;
+  border-color: var(--primary-color);
+  transform: translateY(-1px);
+}
+
+.episode-item.selected {
+  background: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+}
+
+.episode-item.selected .episode-meta {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.episode-item.selected .episode-series {
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .episode-item.selected .episode-date {
   color: rgba(255, 255, 255, 0.8);
 }
 
-.watch-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-  margin-right: 0.5rem;
+/* Watch status shown as left border on episode card */
+.episode-item.watched {
+  box-shadow: inset 1.5rem 0 0 var(--success-color);
 }
 
-.watched {
-  background-color: var(--success-color);
+.episode-item.partially-watched {
+  box-shadow: inset 1.5rem 0 0 var(--warning-color);
 }
 
-.partially-watched {
-  background-color: var(--warning-color);
+.episode-item.not-watched {
+  box-shadow: inset 1.5rem 0 0 var(--danger-color);
 }
 
-.not-watched {
-  background-color: var(--danger-color);
+.episode-item.unknown {
+  box-shadow: inset 1.5rem 0 0 #6c757d;
 }
 
-.unknown {
-  background-color: #6c757d;
+.episode-date {
+  font-size: 0.75rem;
+  color: #6c757d;
 }
 
 .main-content {
@@ -531,7 +524,7 @@ body {
   background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
   color: white;
   padding: 0.75rem 1rem;
-  border-radius: 0.5rem;
+  border-radius: 0.5rem 0.5rem 0.25rem 0.25rem;
   margin-bottom: 0.5rem;
   font-weight: 600;
   font-size: 1.1rem;
@@ -561,6 +554,10 @@ body {
   font-weight: 500;
   min-width: 3rem;
   text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 8rem;
 }
 
 .series-group-count {
@@ -571,6 +568,8 @@ body {
   font-weight: 500;
   min-width: 5rem;
   text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .group-by-controls {

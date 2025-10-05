@@ -288,7 +288,7 @@ class LatestEpisodesApp {
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
         
         return `
-            <div class="episode-item" onclick="app.selectEpisode(${index})" data-index="${index}">
+            <div class="episode-item ${watchStatus}" onclick="app.selectEpisode(${index})" data-index="${index}">
                 <div class="episode-thumbnail">
                     ${staticUrl ? 
                         `<img src="file:///${staticUrl}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src='file:///${animUrl}'" onmouseleave="if(this.dataset.animUrl) this.src='file:///${staticUrl}'" data-anim-url="${animUrl || ''}">` : 
@@ -299,12 +299,11 @@ class LatestEpisodesApp {
                 </div>
                 <div class="episode-content">
                     <div class="episode-series">
-                        <span class="watch-indicator ${watchStatus}"></span>
                         ${this.groupBy === 'series' ? '' : this.escapeHtml(episode.metadata.title)}
                     </div>
-                    <div class="episode-title">
+                    <!--- <div class="episode-title">
                         ${this.escapeHtml(episodeTitle)}
-                    </div>
+                    </div> --->
                     <div class="episode-meta">
                         <span>Episode ${episode.metadata.episode}${episodeCount > 1 ? ` of ${episodeCount}` : ''}</span>
                         <span>${this.formatFileSize(episode.file_size)}</span>
