@@ -1,4 +1,15 @@
 // Latest Episodes Webapp JavaScript
+//
+// Navigation Features:
+// - URL-based navigation with query parameters
+// - Browser back/forward button support
+// - Direct episode linking via URLs
+// - Shareable episode links
+// - Automatic scrolling to selected episodes
+// - Filter state preservation in URLs
+//
+// URL Format: ?series=SeriesName&season=1&episode=5&search=term&watchStatus=watched
+// Legacy Hash Format: #episode:SeriesName:1:5
 
 class LatestEpisodesApp {
     constructor() {
@@ -13,6 +24,7 @@ class LatestEpisodesApp {
         this.popupTimeout = null;
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
+        this.isNavigating = false; // Flag to prevent infinite loops during navigation
         this.init();
     }    selectEpisodeByPath(filePath) {
         const episodeIndex = this.filteredEpisodes.findIndex(ep => ep.file_path === filePath);
@@ -63,11 +75,15 @@ class LatestEpisodesApp {
         return text.replace(/[&<>"']/g, match => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[match]));
-    } init() {
+    }
+    
+    init() {
         this.setupEventListeners();
+        this.setupNavigation();
         this.updateHeaderStats();
         this.populateSeriesFilter();
         this.filterAndDisplayEpisodes();
+        this.handleInitialNavigation();
     }
     
     setupEventListeners() {
@@ -112,6 +128,20 @@ class LatestEpisodesApp {
                 e.preventDefault();
                 this.navigateList(e.key === 'ArrowDown' ? 1 : -1);
             }
+        });
+    }
+
+    setupNavigation() {
+        // Handle browser back/forward navigation
+        window.addEventListener('popstate', (e) => {
+            if (this.isNavigating) return;
+            this.handleNavigation(e.state);
+        });
+
+        // Handle hash changes (for older browser compatibility)
+        window.addEventListener('hashchange', (e) => {
+            if (this.isNavigating) return;
+            this.handleHashNavigation();
         });
     }
     
@@ -330,17 +360,22 @@ class LatestEpisodesApp {
         `;
     }
     
-    selectEpisode(index) {
+    selectEpisode(index, updateUrl = true) {
         // Update visual selection
         document.querySelectorAll('.episode-item').forEach(item => {
             item.classList.remove('selected');
         });
-        
+
         const selectedItem = document.querySelector(`[data-index="${index}"]`);
         if (selectedItem) {
             selectedItem.classList.add('selected');
             this.selectedEpisode = this.filteredEpisodes[index];
             this.renderEpisodeDetails();
+            
+            // Update URL and browser history
+            if (updateUrl && !this.isNavigating) {
+                this.updateUrlForEpisode(this.selectedEpisode);
+            }
         }
     }
     
@@ -548,6 +583,11 @@ class LatestEpisodesApp {
             <div class="file-info">
                 <h5><i class="bi bi-file-play"></i> File Information</h5>
                 <div class="file-path">${this.escapeHtml(episode.file_path)}</div>
+                <div style="margin-top: 1rem;">
+                    <button class="btn btn-outline-primary btn-sm" onclick="app.copyEpisodeUrl()" title="Copy shareable link to this episode">
+                        <i class="bi bi-share"></i> Share Episode
+                    </button>
+                </div>
             </div>
         `;
         
@@ -567,12 +607,7 @@ class LatestEpisodesApp {
         if (newIndex >= this.filteredEpisodes.length) newIndex = 0;
         
         this.selectEpisode(newIndex);
-        
-        // Scroll to selected item
-        const selectedItem = document.querySelector(`[data-index="${newIndex}"]`);
-        if (selectedItem) {
-            selectedItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
+        this.scrollToEpisode(newIndex);
     }
     
     getThumbnailData(episode) {
@@ -711,6 +746,345 @@ class LatestEpisodesApp {
             ratings.push(`👤${userScore}`);
         }
         return ratings.length > 0 ? ratings.join(' ') : null;
+    }
+
+    // Navigation methods
+    updateUrlForEpisode(episode) {
+        if (!episode) return;
+        
+        const urlParams = new URLSearchParams();
+        
+        // Add episode identification
+        urlParams.set('series', encodeURIComponent(episode.metadata.title));
+        urlParams.set('season', episode.metadata.season || 1);
+        urlParams.set('episode', episode.metadata.episode);
+        
+        // Add current filters to maintain state
+        if (this.searchTerm) urlParams.set('search', this.searchTerm);
+        if (this.watchStatusFilter !== 'all') urlParams.set('watchStatus', this.watchStatusFilter);
+        if (this.malStatusFilter !== 'all') urlParams.set('malStatus', this.malStatusFilter);
+        if (this.seriesFilter !== 'all') urlParams.set('seriesFilter', this.seriesFilter);
+        if (this.groupBy !== 'none') urlParams.set('groupBy', this.groupBy);
+        
+        const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
+        const state = {
+            series: episode.metadata.title,
+            season: episode.metadata.season || 1,
+            episode: episode.metadata.episode,
+            filters: {
+                search: this.searchTerm,
+                watchStatus: this.watchStatusFilter,
+                malStatus: this.malStatusFilter,
+                seriesFilter: this.seriesFilter,
+                groupBy: this.groupBy
+            }
+        };
+        
+        this.isNavigating = true;
+        history.pushState(state, '', newUrl);
+        this.isNavigating = false;
+    }
+    
+    handleInitialNavigation() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const hash = window.location.hash;
+        
+        // Handle URL parameters
+        if (urlParams.has('series') && urlParams.has('episode')) {
+            this.applyFiltersFromUrl(urlParams);
+            this.navigateToEpisodeFromUrl(urlParams);
+        }
+        // Handle hash-based navigation (legacy support)
+        else if (hash) {
+            this.handleHashNavigation();
+        }
+    }
+    
+    handleNavigation(state) {
+        if (!state) {
+            // No state, just reset to default view
+            this.resetToDefaultView();
+            return;
+        }
+        
+        this.isNavigating = true;
+        
+        // Apply filters from state
+        if (state.filters) {
+            this.applyFilters(state.filters);
+        }
+        
+        // Navigate to specific episode
+        if (state.series && state.episode) {
+            this.navigateToEpisode(state.series, state.season || 1, state.episode);
+        }
+        
+        this.isNavigating = false;
+    }
+    
+    handleHashNavigation() {
+        const hash = window.location.hash.substring(1); // Remove #
+        if (!hash) return;
+        
+        // Parse hash format: #episode:title:season:episode
+        const parts = hash.split(':');
+        if (parts.length >= 4 && parts[0] === 'episode') {
+            const series = decodeURIComponent(parts[1]);
+            const season = parseInt(parts[2]) || 1;
+            const episode = parseInt(parts[3]);
+            
+            this.navigateToEpisode(series, season, episode);
+        }
+    }
+    
+    applyFiltersFromUrl(urlParams) {
+        // Apply filters from URL parameters
+        if (urlParams.has('search')) {
+            this.searchTerm = urlParams.get('search');
+            document.getElementById('search-input').value = this.searchTerm;
+        }
+        if (urlParams.has('watchStatus')) {
+            this.watchStatusFilter = urlParams.get('watchStatus');
+            document.getElementById('watch-status-filter').value = this.watchStatusFilter;
+        }
+        if (urlParams.has('malStatus')) {
+            this.malStatusFilter = urlParams.get('malStatus');
+            document.getElementById('mal-status-filter').value = this.malStatusFilter;
+        }
+        if (urlParams.has('seriesFilter')) {
+            this.seriesFilter = urlParams.get('seriesFilter');
+            document.getElementById('series-filter').value = this.seriesFilter;
+        }
+        if (urlParams.has('groupBy')) {
+            this.groupBy = urlParams.get('groupBy');
+            document.getElementById('group-by-select').value = this.groupBy;
+        }
+        
+        // Re-filter episodes with new criteria
+        this.filterAndDisplayEpisodes();
+    }
+    
+    applyFilters(filters) {
+        this.searchTerm = filters.search || '';
+        this.watchStatusFilter = filters.watchStatus || 'all';
+        this.malStatusFilter = filters.malStatus || 'all';
+        this.seriesFilter = filters.seriesFilter || 'all';
+        this.groupBy = filters.groupBy || 'none';
+        
+        // Update UI controls
+        document.getElementById('search-input').value = this.searchTerm;
+        document.getElementById('watch-status-filter').value = this.watchStatusFilter;
+        document.getElementById('mal-status-filter').value = this.malStatusFilter;
+        document.getElementById('series-filter').value = this.seriesFilter;
+        document.getElementById('group-by-select').value = this.groupBy;
+        
+        // Re-filter episodes
+        this.filterAndDisplayEpisodes();
+    }
+    
+    navigateToEpisodeFromUrl(urlParams) {
+        const series = decodeURIComponent(urlParams.get('series'));
+        const season = parseInt(urlParams.get('season')) || 1;
+        const episode = parseInt(urlParams.get('episode'));
+        
+        this.navigateToEpisode(series, season, episode);
+    }
+    
+    navigateToEpisode(seriesTitle, season, episodeNumber) {
+        // Find the episode in filtered results
+        const episodeIndex = this.filteredEpisodes.findIndex(ep => 
+            ep.metadata.title === seriesTitle && 
+            (ep.metadata.season || 1) === season && 
+            ep.metadata.episode === episodeNumber
+        );
+        
+        if (episodeIndex !== -1) {
+            // Episode found in filtered results
+            this.selectEpisode(episodeIndex, false); // Don't update URL again
+            this.scrollToEpisode(episodeIndex);
+        } else {
+            // Episode not found, might be filtered out
+            // Try to find in all episodes
+            const allEpisodeIndex = this.data.episodes.findIndex(ep => 
+                ep.metadata.title === seriesTitle && 
+                (ep.metadata.season || 1) === season && 
+                ep.metadata.episode === episodeNumber
+            );
+            
+            if (allEpisodeIndex !== -1) {
+                // Episode exists but is filtered out, clear filters and try again
+                this.resetFilters();
+                this.filterAndDisplayEpisodes();
+                
+                // Try to find again after clearing filters
+                const newIndex = this.filteredEpisodes.findIndex(ep => 
+                    ep.metadata.title === seriesTitle && 
+                    (ep.metadata.season || 1) === season && 
+                    ep.metadata.episode === episodeNumber
+                );
+                
+                if (newIndex !== -1) {
+                    this.selectEpisode(newIndex, false);
+                    this.scrollToEpisode(newIndex);
+                }
+            }
+        }
+    }
+    
+    scrollToEpisode(index) {
+        // Wait for DOM to be updated, then scroll
+        setTimeout(() => {
+            const episodeItem = document.querySelector(`[data-index="${index}"]`);
+            if (episodeItem) {
+                const episodesList = document.getElementById('episodes-list');
+                const itemRect = episodeItem.getBoundingClientRect();
+                const listRect = episodesList.getBoundingClientRect();
+                
+                // Calculate scroll position to center the episode
+                const scrollTop = episodesList.scrollTop + itemRect.top - listRect.top - (listRect.height / 2) + (itemRect.height / 2);
+                
+                episodesList.scrollTo({
+                    top: Math.max(0, scrollTop),
+                    behavior: 'smooth'
+                });
+            }
+        }, 100);
+    }
+    
+    resetFilters() {
+        this.searchTerm = '';
+        this.watchStatusFilter = 'all';
+        this.malStatusFilter = 'all';
+        this.seriesFilter = 'all';
+        this.groupBy = 'none';
+        
+        // Update UI
+        document.getElementById('search-input').value = '';
+        document.getElementById('watch-status-filter').value = 'all';
+        document.getElementById('mal-status-filter').value = 'all';
+        document.getElementById('series-filter').value = 'all';
+        document.getElementById('group-by-select').value = 'none';
+    }
+    
+    resetToDefaultView() {
+        this.resetFilters();
+        this.filterAndDisplayEpisodes();
+        
+        // Clear selection
+        document.querySelectorAll('.episode-item').forEach(item => {
+            item.classList.remove('selected');
+        });
+        this.selectedEpisode = null;
+        
+        // Show welcome message
+        const container = document.getElementById('episode-details');
+        container.innerHTML = `
+            <div class="welcome-message">
+                <i class="bi bi-play-circle display-1 text-muted"></i>
+                <h3 class="text-muted">Select an episode to view details</h3>
+                <p class="text-muted">Choose an episode from the list on the left to see detailed information about the episode and series.</p>
+            </div>
+        `;
+    }
+    
+    generateShareableLink(episode) {
+        if (!episode) return window.location.origin + window.location.pathname;
+        
+        const urlParams = new URLSearchParams();
+        urlParams.set('series', encodeURIComponent(episode.metadata.title));
+        urlParams.set('season', episode.metadata.season || 1);
+        urlParams.set('episode', episode.metadata.episode);
+        
+        return `${window.location.origin}${window.location.pathname}?${urlParams.toString()}`;
+    }
+    
+    copyEpisodeUrl() {
+        if (!this.selectedEpisode) return;
+        
+        const url = this.generateShareableLink(this.selectedEpisode);
+        
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(url).then(() => {
+                this.showToast('Episode link copied to clipboard!', 'success');
+            }).catch(() => {
+                this.fallbackCopyToClipboard(url);
+            });
+        } else {
+            this.fallbackCopyToClipboard(url);
+        }
+    }
+    
+    fallbackCopyToClipboard(text) {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+            document.execCommand('copy');
+            this.showToast('Episode link copied to clipboard!', 'success');
+        } catch (err) {
+            this.showToast('Failed to copy link. URL: ' + text, 'error');
+        }
+        
+        document.body.removeChild(textArea);
+    }
+    
+    showToast(message, type = 'info') {
+        // Remove any existing toast
+        const existingToast = document.getElementById('app-toast');
+        if (existingToast) {
+            existingToast.remove();
+        }
+        
+        // Create toast element
+        const toast = document.createElement('div');
+        toast.id = 'app-toast';
+        toast.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 6px;
+            color: white;
+            font-size: 14px;
+            font-weight: 500;
+            z-index: 2000;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s ease;
+            transform: translateX(100%);
+        `;
+        
+        // Set background color based on type
+        const colors = {
+            success: '#28a745',
+            error: '#dc3545',
+            info: '#17a2b8',
+            warning: '#ffc107'
+        };
+        toast.style.backgroundColor = colors[type] || colors.info;
+        
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        
+        // Animate in
+        setTimeout(() => {
+            toast.style.transform = 'translateX(0)';
+        }, 10);
+        
+        // Auto remove after 3 seconds
+        setTimeout(() => {
+            toast.style.transform = 'translateX(100%)';
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.parentNode.removeChild(toast);
+                }
+            }, 300);
+        }, 3000);
     }
 
     // Utility functions
