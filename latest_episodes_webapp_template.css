@@ -193,8 +193,8 @@ body {
 }
 
 .episode-item {
-  padding: 0.5rem 0.75rem;
-  margin-bottom: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  margin-bottom: 0.25rem;
   background: white;
   border-radius: 0.5rem;
   cursor: pointer;
@@ -202,8 +202,8 @@ body {
   border: 1px solid #e9ecef;
   display: flex;
   align-items: center;
-  gap: 1rem;
-  min-height: 110px;
+  gap: 0.5rem;
+  min-height: 80px;
 }
 
 .episode-item:hover {
