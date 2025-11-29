@@ -46,7 +46,7 @@
                         <i class="bi bi-search search-icon"></i>
                         <input type="text" id="search-input" class="search-input" placeholder="Search episodes...">
                     </div>
-                    <div class="filter-container">
+                    <div class="filter-row">
                         <select id="watch-status-filter" class="filter-select">
                             <option value="all">All Watch Status</option>
                             <option value="watched">Watched</option>
@@ -54,8 +54,6 @@
                             <option value="not_watched">Not Watched</option>
                             <option value="unknown">Unknown</option>
                         </select>
-                    </div>
-                    <div class="filter-container">
                         <select id="mal-status-filter" class="filter-select">
                             <option value="all">All MAL Status</option>
                             <option value="watching">Watching</option>
@@ -72,7 +70,6 @@
                         </select>
                     </div>
                     <div class="group-by-controls">
-                        <label for="group-by-select">Group By:</label>
                         <select id="group-by-select" class="group-by-select">
                             <option value="none">No Grouping</option>
                             <option value="series">Group by Series</option>

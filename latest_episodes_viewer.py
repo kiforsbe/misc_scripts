@@ -183,6 +183,7 @@ class LatestEpisodesViewer:
                         'year': title_info.year,
                         'rating': title_info.rating,
                         'genres': title_info.genres,
+                        'tags': title_info.tags,
                         'sources': title_info.sources,
                         'total_episodes': title_info.total_episodes,
                         'plot': title_info.plot

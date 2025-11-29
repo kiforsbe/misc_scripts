@@ -253,17 +253,28 @@ class LatestEpisodesApp {
             const episodes = groupedEpisodes[seriesTitle];
             const firstEpisode = episodes[0].episode;
             const seriesRating = this.getSeriesGroupRating(firstEpisode);
+            const totalEpisodes = firstEpisode.series_metadata && firstEpisode.series_metadata.total_episodes;
+            const episodeCountText = totalEpisodes ? `${episodes.length}/${totalEpisodes} episodes` : `${episodes.length} episode${episodes.length !== 1 ? 's' : ''}`;
+            const seriesTags = firstEpisode.series_metadata && firstEpisode.series_metadata.tags && firstEpisode.series_metadata.tags.length > 0 ? firstEpisode.series_metadata.tags : null;
             
             html += `
                 <div class="series-group">
                     <div class="series-group-header">
-                        <div class="series-group-title">
-                            <span>${this.escapeHtml(seriesTitle)}</span>
+                        <div class="series-group-main">
+                            <div class="series-group-title">
+                                <span>${this.escapeHtml(seriesTitle)}</span>
+                            </div>
+                            <div class="series-group-right">
+                                ${seriesRating ? `<span class="series-rating">${seriesRating}</span>` : ''}
+                                <span class="series-group-count">${episodeCountText}</span>
+                            </div>
                         </div>
-                        <div class="series-group-right">
-                            ${seriesRating ? `<span class="series-rating">${seriesRating}</span>` : ''}
-                            <span class="series-group-count">${episodes.length} episode${episodes.length !== 1 ? 's' : ''}</span>
-                        </div>
+                        ${seriesTags ? `
+                            <div class="series-tags">
+                                ${seriesTags.slice(0, 5).map(tag => `<span class="series-tag">${this.escapeHtml(tag)}</span>`).join('')}
+                                ${seriesTags.length > 5 ? `<span class="series-tag">+${seriesTags.length - 5}</span>` : ''}
+                            </div>
+                        ` : ''}
                     </div>
             `;
             
@@ -305,7 +316,7 @@ class LatestEpisodesApp {
                         ${this.escapeHtml(episodeTitle)}
                     </div> --->
                     <div class="episode-meta">
-                        <span>Episode ${episode.metadata.episode}${episodeCount > 1 ? ` of ${episodeCount}` : ''}</span>
+                        <span>Episode ${episode.metadata.episode}${this.getEpisodeCountDisplay(episode, episodeCount)}</span>
                         <span>${this.formatFileSize(episode.file_size)}</span>
                     </div>
                     ${this.renderRatingInfo(episode, 'compact')}
@@ -434,6 +445,7 @@ class LatestEpisodesApp {
                     ${this.renderSeriesRatingInfo(episode)}
                     ${series.total_episodes ? `<p><strong>Total Episodes:</strong> ${series.total_episodes}</p>` : ''}
                     ${series.genres && series.genres.length > 0 ? `<p><strong>Genres:</strong> ${series.genres.join(', ')}</p>` : ''}
+                    ${series.tags && series.tags.length > 0 ? this.renderTagsWithPopup(series.tags) : ''}
                     ${series.plot ? `<p><strong>Plot:</strong> ${this.escapeHtml(series.plot)}</p>` : ''}
             `;
             
@@ -599,6 +611,39 @@ class LatestEpisodesApp {
             });
     }
     
+    getEpisodeCountDisplay(episode, availableCount) {
+        const totalEpisodes = episode.series_metadata && episode.series_metadata.total_episodes;
+        if (availableCount > 1) {
+            if (totalEpisodes && totalEpisodes !== availableCount) {
+                return ` of ${availableCount} (${totalEpisodes} total)`;
+            } else {
+                return ` of ${availableCount}`;
+            }
+        }
+        return totalEpisodes && totalEpisodes > 1 ? ` (${totalEpisodes} total)` : '';
+    }
+    
+    renderTagsWithPopup(tags, maxVisible = 6) {
+        if (!tags || tags.length === 0) return '';
+        
+        const visibleTags = tags.slice(0, maxVisible);
+        const hiddenTags = tags.slice(maxVisible);
+        const hiddenCount = hiddenTags.length;
+        
+        const visibleTagsText = visibleTags.join(', ');
+        const hiddenTagsText = hiddenTags.join(', ');
+        
+        if (tags.length <= maxVisible) {
+            return `<p><strong>Tags:</strong> ${this.escapeHtml(visibleTagsText)}</p>`;
+        }
+        
+        return `
+            <p><strong>Tags:</strong> 
+                ${this.escapeHtml(visibleTagsText)}${hiddenCount > 0 ? `, <span class="tags-more" onmouseover="app.showTagsPopup(event, '${this.escapeHtml(hiddenTagsText).replace(/'/g, "\\'")}', ${hiddenCount})" onmouseout="app.hideTagsPopup()" style="color: var(--primary-color); cursor: help; text-decoration: underline;">+${hiddenCount} more</span>` : ''}
+            </p>
+        `;
+    }
+    
     // Rating display functions
     renderRatingInfo(episode, style = 'compact') {
         let ratingHtml = '';
@@ -676,6 +721,45 @@ class LatestEpisodesApp {
         }
         
         return `${size.toFixed(1)} ${units[unitIndex]}`;
+    }
+    
+    showTagsPopup(event, hiddenTags, hiddenCount) {
+        // Remove any existing tooltip
+        this.hideTagsPopup();
+        
+        // Create tooltip element
+        const tooltip = document.createElement('div');
+        tooltip.id = 'tags-tooltip-popup';
+        tooltip.style.cssText = `
+            position: fixed;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            z-index: 1000;
+            max-width: 400px;
+            line-height: 1.3;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            pointer-events: none;
+        `;
+        
+        tooltip.innerHTML = `<strong>Additional Tags (${hiddenCount}):</strong><br>${hiddenTags}`;
+        
+        // Position tooltip
+        const rect = event.target.getBoundingClientRect();
+        tooltip.style.left = Math.min(rect.left, window.innerWidth - 420) + 'px';
+        tooltip.style.top = (rect.top - 10) + 'px';
+        tooltip.style.transform = 'translateY(-100%)';
+        
+        document.body.appendChild(tooltip);
+    }
+    
+    hideTagsPopup() {
+        const existing = document.getElementById('tags-tooltip-popup');
+        if (existing) {
+            existing.remove();
+        }
     }
     
     escapeHtml(text) {
