@@ -94,6 +94,34 @@
         </div>
     </div>
 
+    <!-- Episode Hover Popup -->
+    <div id="episode-hover-popup" class="episode-hover-popup">
+        <div class="popup-arrow"></div>
+        <div class="popup-thumbnail">
+            <img id="popup-thumbnail-img" alt="Episode thumbnail" style="display: none;">
+            <div id="popup-thumbnail-placeholder">?</div>
+        </div>
+        <div class="popup-content">
+            <h3 class="popup-title" id="popup-title">Episode Title</h3>
+            <p class="popup-episode" id="popup-episode">Episode Info</p>
+            <div class="popup-meta">
+                <div class="popup-meta-item">
+                    <span class="popup-meta-label">Downloaded:</span>
+                    <span id="popup-download-date">-</span>
+                </div>
+                <div class="popup-meta-item">
+                    <span class="popup-meta-label">Size:</span>
+                    <span id="popup-file-size">-</span>
+                </div>
+            </div>
+            <div class="popup-status">
+                <div class="popup-status-indicator" id="popup-status-indicator"></div>
+                <span class="popup-status-text" id="popup-status-text">Watch Status</span>
+            </div>
+            <div class="popup-ratings" id="popup-ratings" style="display: none;"></div>
+        </div>
+    </div>
+
     <!-- Embedded Data -->
     <script>
         const EPISODES_DATA = [[embedded_json]];

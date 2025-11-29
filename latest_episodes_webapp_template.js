@@ -10,6 +10,9 @@ class LatestEpisodesApp {
         this.malStatusFilter = 'all';
         this.seriesFilter = 'all';
         this.groupBy = 'none';
+        this.popupTimeout = null;
+        this.hideTimeout = null;
+        this.currentPopupIndex = -1;
         this.init();
     }    selectEpisodeByPath(filePath) {
         const episodeIndex = this.filteredEpisodes.findIndex(ep => ep.file_path === filePath);
@@ -299,7 +302,8 @@ class LatestEpisodesApp {
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
         
         return `
-            <div class="episode-item ${watchStatus}" onclick="app.selectEpisode(${index})" data-index="${index}">
+            <div class="episode-item ${watchStatus}" onclick="app.selectEpisode(${index})" data-index="${index}"
+                 onmouseenter="app.showEpisodePopup(event, ${index})" onmouseleave="app.hideEpisodePopup()">
                 <div class="episode-thumbnail">
                     ${staticUrl ? 
                         `<img src="file:///${staticUrl}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src='file:///${animUrl}'" onmouseleave="if(this.dataset.animUrl) this.src='file:///${staticUrl}'" data-anim-url="${animUrl || ''}">` : 
@@ -760,6 +764,211 @@ class LatestEpisodesApp {
         if (existing) {
             existing.remove();
         }
+    }
+    
+    showEpisodePopup(event, index) {
+        // Clear any pending hide timeout
+        if (this.hideTimeout) {
+            clearTimeout(this.hideTimeout);
+            this.hideTimeout = null;
+        }
+        
+        if (this.popupTimeout) {
+            clearTimeout(this.popupTimeout);
+        }
+        
+        const episode = this.filteredEpisodes[index];
+        if (!episode) return;
+        
+        const popup = document.getElementById('episode-hover-popup');
+        const isAlreadyVisible = popup.classList.contains('show');
+        const isSameEpisode = this.currentPopupIndex === index;
+        
+        // If it's the same episode, don't do anything
+        if (isSameEpisode && isAlreadyVisible) {
+            return;
+        }
+        
+        // Update current popup index
+        this.currentPopupIndex = index;
+        
+        // If popup is already showing, use much faster transition
+        if (isAlreadyVisible) {
+            popup.style.transition = 'all 0.04s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        } else {
+            popup.style.transition = 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        }
+        
+        const thumbnailImg = document.getElementById('popup-thumbnail-img');
+        const thumbnailPlaceholder = document.getElementById('popup-thumbnail-placeholder');
+        const arrow = popup.querySelector('.popup-arrow');
+        
+        // Populate popup content
+        document.getElementById('popup-title').textContent = episode.metadata.title;
+        const episodeTitle = episode.metadata.episode_title || `Episode ${episode.metadata.episode}`;
+        document.getElementById('popup-episode').textContent = `Season ${episode.metadata.season || 1}, Episode ${episode.metadata.episode}${episodeTitle !== `Episode ${episode.metadata.episode}` ? ` - ${episodeTitle}` : ''}`;
+        document.getElementById('popup-download-date').textContent = new Date(episode.download_date).toLocaleDateString();
+        document.getElementById('popup-file-size').textContent = this.formatFileSize(episode.file_size);
+        
+        // Set watch status
+        const watchStatus = this.getEpisodeWatchStatus(episode);
+        const statusIndicator = document.getElementById('popup-status-indicator');
+        const statusText = document.getElementById('popup-status-text');
+        
+        statusIndicator.className = `popup-status-indicator ${watchStatus}`;
+        const statusLabels = {
+            watched: 'Watched',
+            partially_watched: 'Partially Watched',
+            not_watched: 'Not Watched',
+            unknown: 'Unknown Status'
+        };
+        statusText.textContent = statusLabels[watchStatus] || 'Unknown';
+        
+        // Set thumbnail
+        const thumbnailData = this.getThumbnailData(episode);
+        const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
+        
+        if (animUrl) {
+            thumbnailImg.src = `file:///${animUrl}`;
+            thumbnailImg.style.display = 'block';
+            thumbnailPlaceholder.style.display = 'none';
+            thumbnailImg.onerror = () => {
+                thumbnailImg.style.display = 'none';
+                thumbnailPlaceholder.style.display = 'flex';
+                thumbnailPlaceholder.textContent = episode.metadata.episode || '?';
+            };
+        } else {
+            thumbnailImg.style.display = 'none';
+            thumbnailPlaceholder.style.display = 'flex';
+            thumbnailPlaceholder.textContent = episode.metadata.episode || '?';
+        }
+        
+        // Set ratings
+        const ratingsContainer = document.getElementById('popup-ratings');
+        const hasEpisodeRating = episode.episode_metadata && episode.episode_metadata.rating && episode.episode_metadata.rating > 0;
+        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0;
+        
+        if (hasEpisodeRating || hasUserScore) {
+            let ratingsHtml = '';
+            if (hasEpisodeRating) {
+                ratingsHtml += `<div class="popup-rating community">★ ${episode.episode_metadata.rating.toFixed(1)}</div>`;
+            }
+            if (hasUserScore) {
+                ratingsHtml += `<div class="popup-rating user">♥ ${episode.myanimelist_watch_status.score}/10</div>`;
+            }
+            ratingsContainer.innerHTML = ratingsHtml;
+            ratingsContainer.style.display = 'flex';
+        } else {
+            ratingsContainer.style.display = 'none';
+        }
+        
+        // Position popup
+        const episodeItem = event.currentTarget;
+        const episodeRect = episodeItem.getBoundingClientRect();
+        const sidebarRect = document.querySelector('.sidebar').getBoundingClientRect();
+        const popupWidth = 525;
+        const popupHeight = 500; // Increased estimated height
+        
+        // Calculate the center of the episode item
+        const episodeCenterY = episodeRect.top + (episodeRect.height / 2);
+        
+        // Default: position to the right of the episode item, centered vertically
+        let left = sidebarRect.right + 15;
+        let top = episodeCenterY - (popupHeight / 2);
+        let arrowClass = 'left';
+        
+        // Check if popup would go off the right edge of the screen
+        if (left + popupWidth > window.innerWidth - 20) {
+            // Position to the left of the sidebar instead
+            left = sidebarRect.left - popupWidth - 15;
+            arrowClass = 'right';
+        }
+        
+        // Check if popup would go off the top or bottom of the screen
+        if (top < 20) {
+            // Too high - adjust down but keep same horizontal position and arrow
+            top = 20;
+        } else if (top + popupHeight > window.innerHeight - 20) {
+            // Too low - adjust up but keep same horizontal position and arrow
+            top = window.innerHeight - popupHeight - 20;
+        }
+        
+        // Only use top/bottom arrow positioning if we're extremely constrained
+        if (popupHeight > window.innerHeight - 40) {
+            // Popup is taller than available screen space - use top/bottom positioning
+            if (episodeCenterY < window.innerHeight / 2) {
+                // Episode is in top half - show popup below with top arrow
+                top = episodeRect.bottom + 15;
+                arrowClass = 'top';
+                left = episodeRect.left + (episodeRect.width / 2) - (popupWidth / 2);
+            } else {
+                // Episode is in bottom half - show popup above with bottom arrow
+                top = episodeRect.top - popupHeight - 15;
+                arrowClass = 'bottom';
+                left = episodeRect.left + (episodeRect.width / 2) - (popupWidth / 2);
+            }
+        }
+        
+        // Ensure popup doesn't go off the left edge
+        if (left < 20) {
+            left = 20;
+        }
+        
+        // Set initial popup position
+        popup.style.left = `${left}px`;
+        popup.style.top = `${top}px`;
+        
+        // Set arrow class
+        arrow.className = `popup-arrow ${arrowClass}`;
+        
+        // Show popup with delay (or immediately if already visible)
+        const showDelay = isAlreadyVisible ? 0 : 300;
+        this.popupTimeout = setTimeout(() => {
+            popup.classList.add('show');
+            
+            // Auto-adjust positioning after popup is rendered and has actual dimensions
+            setTimeout(() => {
+                const actualHeight = popup.offsetHeight;
+                if (actualHeight !== popupHeight && (arrowClass === 'left' || arrowClass === 'right')) {
+                    // Recalculate position with actual height for better centering
+                    let adjustedTop = episodeCenterY - (actualHeight / 2);
+                    
+                    // Check bounds with actual height
+                    if (adjustedTop < 20) {
+                        adjustedTop = 20;
+                    } else if (adjustedTop + actualHeight > window.innerHeight - 20) {
+                        adjustedTop = window.innerHeight - actualHeight - 20;
+                    }
+                    
+                    popup.style.top = `${adjustedTop}px`;
+                }
+                
+                // Reset transition speed after adjustment
+                if (isAlreadyVisible) {
+                    setTimeout(() => {
+                        popup.style.transition = 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+                    }, 50);
+                }
+            }, 50); // Small delay to ensure popup is fully rendered
+        }, showDelay);
+    }
+    
+    hideEpisodePopup() {
+        if (this.popupTimeout) {
+            clearTimeout(this.popupTimeout);
+        }
+        
+        // Use a small delay to allow for switching between episodes
+        this.hideTimeout = setTimeout(() => {
+            const popup = document.getElementById('episode-hover-popup');
+            popup.classList.remove('show');
+            this.currentPopupIndex = -1;
+            
+            // Reset transition speed
+            setTimeout(() => {
+                popup.style.transition = 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+            }, 50);
+        }, 100); // Small delay to allow moving between episodes
     }
     
     escapeHtml(text) {
