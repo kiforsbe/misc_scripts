@@ -84,12 +84,13 @@ class VideoThumbnailGenerator:
             return None
     
     def _generate_static_thumbnail(self, video_path: str, static_thumb_path: str, 
-                                  duration: float, verbose: int = 1) -> bool:
+                                    duration: float, verbose: int = 1) -> bool:
         """Generate a static thumbnail at 20% into the video."""
         static_time = duration * 0.2
         static_cmd = [
             "ffmpeg", "-y", "-ss", str(static_time), "-i", video_path,
-            "-vframes", "1", "-vf", f"scale=-2:{self.max_height}", "-f", "webp", static_thumb_path
+            "-vframes", "1", "-vf", f"scale=-2:{self.max_height}", 
+            "-f", "webp", "-quality", "75", static_thumb_path
         ]
         try:
             subprocess.run(static_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -101,19 +102,20 @@ class VideoThumbnailGenerator:
             return False
     
     def _generate_animated_thumbnail(self, video_path: str, animated_thumb_path: str, 
-                                   duration: float, verbose: int = 1) -> bool:
+                                    duration: float, verbose: int = 1) -> bool:
         """Generate an animated thumbnail with frames from 5-95% of the video."""
         frame_times = [duration * (i / 100) for i in range(5, 100, 5)]
         
         with tempfile.TemporaryDirectory() as tmpdir:
             frame_files = []
             
-            # Extract individual frames
+            # Extract individual frames with optimized ffmpeg flags
             for idx, t in enumerate(frame_times):
                 frame_file = os.path.join(tmpdir, f"frame_{idx:02d}.webp")
                 frame_cmd = [
                     "ffmpeg", "-y", "-noaccurate_seek", "-ss", str(t), "-i", video_path,
-                    "-vframes", "1", "-vf", f"scale=-2:{self.max_height}", "-f", "webp", frame_file
+                    "-vframes", "1", "-vf", f"scale=-2:{self.max_height}", 
+                    "-f", "webp", "-quality", "75", frame_file
                 ]
                 try:
                     subprocess.run(frame_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -126,11 +128,12 @@ class VideoThumbnailGenerator:
                         error_msg = e.stderr.decode(errors='ignore') if e.stderr else str(e)
                         print(f"Failed to extract frame {idx} for {video_path}: {e}\\nffmpeg stderr:\\n{error_msg}")
             
-            # Combine frames into animated WebP
+            # Combine frames into animated WebP with optimized settings
             if frame_files:
                 anim_cmd = [
                     "ffmpeg", "-y", "-framerate", "2", "-i", os.path.join(tmpdir, "frame_%02d.webp"),
-                    "-vf", f"scale=-2:{self.max_height}", "-loop", "0", "-f", "webp", animated_thumb_path
+                    "-vf", f"scale=-2:{self.max_height}", "-loop", "0", 
+                    "-quality", "75", "-f", "webp", animated_thumb_path
                 ]
                 try:
                     subprocess.run(anim_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -143,7 +146,7 @@ class VideoThumbnailGenerator:
             return False
     
     def generate_thumbnail_for_video(self, video_path: str, verbose: int = 1, 
-                                   force_regenerate: bool = False) -> Dict[str, Any]:
+                                    force_regenerate: bool = False) -> Dict[str, Any]:
         """
         Generate thumbnails for a single video file.
         
@@ -274,8 +277,6 @@ class VideoThumbnailGenerator:
         
         return thumbnail_index
     
-
-    
     def load_thumbnail_index(self, index_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Load existing thumbnail index from JSON file.
@@ -299,7 +300,7 @@ class VideoThumbnailGenerator:
         return []
     
     def save_thumbnail_index(self, thumbnail_index: List[Dict[str, Any]], 
-                           index_path: Optional[str] = None, verbose: int = 1) -> None:
+                            index_path: Optional[str] = None, verbose: int = 1) -> None:
         """
         Save thumbnail index to JSON file.
         
