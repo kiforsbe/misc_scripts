@@ -26,7 +26,9 @@ class LatestEpisodesApp {
         this.currentPopupIndex = -1;
         this.isNavigating = false; // Flag to prevent infinite loops during navigation
         this.init();
-    }    selectEpisodeByPath(filePath) {
+    }
+    
+    selectEpisodeByPath(filePath) {
         const episodeIndex = this.filteredEpisodes.findIndex(ep => ep.file_path === filePath);
         if (episodeIndex !== -1) {
             this.selectEpisode(episodeIndex);
