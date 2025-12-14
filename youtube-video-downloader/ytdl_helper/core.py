@@ -52,7 +52,71 @@ ProgressCallbackType = Callable[[DownloadItem, Dict[str, Any]], None]  # Progres
 StatusCallbackType = Callable[[DownloadItem, str, Optional[str]], None]  # Status callback
 
 
-async def fetch_info(url: str) -> DownloadItem:
+def get_cookies_from_browser() -> Optional[tuple]:
+    """
+    Try to get cookies from available browsers.
+    Returns a tuple for yt-dlp's cookiesfrombrowser option, or None if all fail.
+    """
+    browsers = ["chrome", "firefox", "edge", "chromium"]
+    
+    for browser in browsers:
+        try:
+            # Test if we can access the browser's cookies by creating a test YoutubeDL instance
+            test_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "cookiesfrombrowser": (browser,),
+                "extract_flat": True,
+            }
+            with yt_dlp.YoutubeDL(test_opts) as ydl:
+                # If this doesn't raise an exception, the browser is accessible
+                logger.info(f"Successfully configured cookie extraction from {browser}")
+                return (browser,)
+        except Exception as e:
+            logger.debug(f"Could not access {browser} cookies: {e}")
+            continue
+    
+    logger.warning("Could not access cookies from any browser. Continuing without cookies.")
+    return None
+
+
+def clean_youtube_url(url: str) -> str:
+    """
+    Clean YouTube URL by removing playlist and other parameters that might cause auth issues.
+    Keeps only the video ID parameter.
+    """
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+        
+        # Only keep the 'v' parameter (video ID)
+        cleaned_params = {}
+        if 'v' in query_params:
+            cleaned_params['v'] = query_params['v']
+        
+        # Reconstruct the URL with only the video ID
+        new_query = urlencode(cleaned_params, doseq=True)
+        cleaned_url = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment
+        ))
+        
+        if cleaned_url != url:
+            logger.info(f"Cleaned URL: {url} -> {cleaned_url}")
+        
+        return cleaned_url
+    except Exception as e:
+        logger.warning(f"Failed to clean URL: {e}, using original")
+        return url
+
+
+async def fetch_info(url: str, use_cookies: bool = False) -> DownloadItem:
     """
     Fetches metadata and available formats for a given URL.
 
@@ -66,8 +130,11 @@ async def fetch_info(url: str) -> DownloadItem:
         yt_dlp.utils.DownloadError: If yt-dlp fails to extract info.
         Exception: For other unexpected errors during fetching.
     """
-    item = DownloadItem(url=url, status="Fetching")
-    logger.info(f"Fetching info for URL: {url}")
+    # Clean the URL to remove playlist parameters that might cause auth issues
+    cleaned_url = clean_youtube_url(url)
+    
+    item = DownloadItem(url=cleaned_url, status="Fetching")
+    logger.info(f"Fetching info for URL: {cleaned_url}")
 
     try:
         # Use specific options for info fetching
@@ -82,18 +149,24 @@ async def fetch_info(url: str) -> DownloadItem:
             "dump_single_json": True,  # Get info as JSON string
             # 'simulate': True, # Alternative to skip_download? Test needed.
         }
+        
+        if use_cookies:
+            # Try to add browser cookies if available
+            cookies_config = get_cookies_from_browser()
+            if cookies_config:
+                info_ydl_opts["cookiesfrombrowser"] = cookies_config
 
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(info_ydl_opts) as ydl:  # type: ignore
             # Run synchronously in executor as yt-dlp info extraction can block
             info_dict = await loop.run_in_executor(
-                None, functools.partial(ydl.extract_info, url, download=False)
+                None, functools.partial(ydl.extract_info, cleaned_url, download=False)
             )
 
         if not info_dict:
-            raise yt_dlp.utils.DownloadError(f"No information extracted for {url}")
+            raise yt_dlp.utils.DownloadError(f"No information extracted for {cleaned_url}")
 
-        logger.debug(f"Successfully fetched info for {url}")
+        logger.debug(f"Successfully fetched info for {cleaned_url}")
         item._raw_info = dict(info_dict)  # Store raw info as dict
 
         # Populate DownloadItem fields
@@ -209,6 +282,7 @@ async def download_item(
     target_video_params: Optional[str] = None,
     progress_callback: Optional[ProgressCallbackType] = None,
     status_callback: Optional[StatusCallbackType] = None,
+    use_cookies: bool = False,
 ) -> None:
     """
     Downloads the specified DownloadItem based on its selected formats,
@@ -368,6 +442,12 @@ async def download_item(
                 "writethumbnail": True,
                 "metadata": metadata_dict,
             }
+            
+            if use_cookies:
+                # Try to add browser cookies if available
+                cookies_config = get_cookies_from_browser()
+                if cookies_config:
+                    ydl_opts["cookiesfrombrowser"] = cookies_config
 
             # --- Configure Postprocessors ---
             final_extension = ".?"  # The final desired extension

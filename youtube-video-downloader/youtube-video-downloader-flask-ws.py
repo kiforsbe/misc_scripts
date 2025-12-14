@@ -51,11 +51,7 @@ else:
 # --- Flask App and Logging Setup ---
 app = Flask(__name__)
 
-# --- Logging Setup ---
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logger will be configured in __main__
 log = logging.getLogger(__name__)  # Use a specific logger for the app
 
 # --- Temporary Directory Management ---
@@ -558,6 +554,17 @@ def list_formats():
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # Configure logging with force=True to ensure it takes effect
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        #stream=sys.stdout,
+        force=True,  # Force reconfiguration if already configured
+    )
+    
+    # Also ensure root logger is set to DEBUG
+    #logging.getLogger().setLevel(logging.DEBUG)
+
     # Log what version of pythong this process was started with and what path to the python environment, log this to debug
     log.debug(f"Starting server with Python {sys.version} at {sys.executable}")
 

@@ -186,8 +186,12 @@
   function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download') {
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
 
-    const downloadButton = document.getElementById('ytdl-download-button');
-    if (downloadButton) showSpinner(downloadButton);
+    // Show brief notification instead of blocking spinner
+    const notification = document.createElement('div');
+    notification.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #fff; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px;';
+    notification.textContent = 'Download starting...';
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
 
     const params = new URLSearchParams();
     params.append('url', url);
@@ -205,7 +209,6 @@
       responseType: 'blob', // Important for file download
       timeout: 3600000, // 1 hour timeout for potentially long downloads/conversions
       onload: function (response) {
-        if (downloadButton) hideSpinner(downloadButton);
 
         if (response.status >= 200 && response.status < 300) {
           const blob = response.response;
@@ -239,6 +242,13 @@
           document.body.removeChild(link);
           URL.revokeObjectURL(link.href); // Clean up
           console.log("Download initiated for:", filename);
+          
+          // Show success notification
+          const successNotif = document.createElement('div');
+          successNotif.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #0f0; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px;';
+          successNotif.textContent = `✓ Downloaded: ${filename}`;
+          document.body.appendChild(successNotif);
+          setTimeout(() => successNotif.remove(), 5000);
         } else {
           // Try to parse error from JSON response if possible
           response.blob.text().then(text => {
@@ -257,13 +267,19 @@
         }
       },
       onerror: function (response) {
-        if (downloadButton) hideSpinner(downloadButton);
-        alert(`Error connecting to download service at ${FLASK_SERVICE_BASE_URL}. Is it running? \nDetails: ${response.error || 'Network error'}`);
+        const errorNotif = document.createElement('div');
+        errorNotif.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #f00; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px; max-width: 400px;';
+        errorNotif.textContent = `✗ Error: Cannot connect to download service. Is it running?`;
+        document.body.appendChild(errorNotif);
+        setTimeout(() => errorNotif.remove(), 8000);
         console.error("GM_xmlhttpRequest error:", response);
       },
       ontimeout: function () {
-        if (downloadButton) hideSpinner(downloadButton);
-        alert("The download request timed out. The server might be busy or the file is very large.");
+        const timeoutNotif = document.createElement('div');
+        timeoutNotif.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #ff0; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px; max-width: 400px;';
+        timeoutNotif.textContent = `⏱ Download timed out. Server may be busy or file is very large.`;
+        document.body.appendChild(timeoutNotif);
+        setTimeout(() => timeoutNotif.remove(), 8000);
         console.error("Download request timed out.");
       }
     });
