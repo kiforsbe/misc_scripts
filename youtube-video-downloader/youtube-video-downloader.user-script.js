@@ -141,6 +141,28 @@
     `);
 
   // --- Core Functions ---
+  
+  /**
+   * Show a toast notification
+   * @param {string} message - The message to display
+   * @param {string} type - The type of toast: 'info', 'success', 'error', 'warning'
+   * @param {number} duration - How long to show the toast in milliseconds (default: 5000)
+   */
+  function showToast(message, type = 'info', duration = 5000) {
+    const colors = {
+      info: '#fff',
+      success: '#0f0',
+      error: '#f00',
+      warning: '#ff0'
+    };
+    
+    const toast = document.createElement('div');
+    toast.style.cssText = `position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: ${colors[type] || colors.info}; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px; max-width: 400px;`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), duration);
+  }
+  
   function gcd(a, b) {
     return b === 0 ? a : gcd(b, a % b);
   }
@@ -186,12 +208,8 @@
   function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download') {
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
 
-    // Show brief notification instead of blocking spinner
-    const notification = document.createElement('div');
-    notification.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #fff; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px;';
-    notification.textContent = 'Download starting...';
-    document.body.appendChild(notification);
-    setTimeout(() => notification.remove(), 3000);
+    // Show brief notification
+    showToast('Download starting...', 'info', 3000);
 
     const params = new URLSearchParams();
     params.append('url', url);
@@ -244,42 +262,31 @@
           console.log("Download initiated for:", filename);
           
           // Show success notification
-          const successNotif = document.createElement('div');
-          successNotif.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #0f0; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px;';
-          successNotif.textContent = `✓ Downloaded: ${filename}`;
-          document.body.appendChild(successNotif);
-          setTimeout(() => successNotif.remove(), 5000);
+          showToast(`✓ Downloaded: ${filename}`, 'success', 5000);
         } else {
           // Try to parse error from JSON response if possible
           response.blob.text().then(text => {
             try {
               const errorJson = JSON.parse(text);
-              alert(`Download failed: ${errorJson.error || `Server responded with status ${response.status}`}`);
+              const errorMsg = errorJson.error || `Server responded with status ${response.status}`;
+              showToast(`✗ Download failed: ${errorMsg}`, 'error', 8000);
               console.error("Download error response:", errorJson);
             } catch (e) {
-              alert(`Download failed: Server responded with status ${response.status}. Check Tampermonkey console and Flask service logs.`);
+              showToast(`✗ Download failed: Server error (${response.status})`, 'error', 8000);
               console.error("Download failed. Status:", response.status, "Response Text:", text);
             }
           }).catch(e => {
-            alert(`Download failed: Server responded with status ${response.status}. Check Tampermonkey console and Flask service logs.`);
+            showToast(`✗ Download failed: Server error (${response.status})`, 'error', 8000);
             console.error("Download failed. Status:", response.status, "Could not read error response body:", e);
           });
         }
       },
       onerror: function (response) {
-        const errorNotif = document.createElement('div');
-        errorNotif.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #f00; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px; max-width: 400px;';
-        errorNotif.textContent = `✗ Error: Cannot connect to download service. Is it running?`;
-        document.body.appendChild(errorNotif);
-        setTimeout(() => errorNotif.remove(), 8000);
+        showToast('✗ Error: Cannot connect to download service. Is it running?', 'error', 8000);
         console.error("GM_xmlhttpRequest error:", response);
       },
       ontimeout: function () {
-        const timeoutNotif = document.createElement('div');
-        timeoutNotif.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #ff0; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px; max-width: 400px;';
-        timeoutNotif.textContent = `⏱ Download timed out. Server may be busy or file is very large.`;
-        document.body.appendChild(timeoutNotif);
-        setTimeout(() => timeoutNotif.remove(), 8000);
+        showToast('⏱ Download timed out. Server may be busy or file is very large.', 'warning', 8000);
         console.error("Download request timed out.");
       }
     });
@@ -310,20 +317,48 @@
         if (response.status >= 200 && response.status < 300) {
           formatDataCache = response.response; // Store in cache
           console.log("Formats received and cached:", formatDataCache);
+          
+          // Auto-update dropdown if it's currently showing
+          const menu = document.getElementById('ytdl-dropdown-menu');
+          if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
+            console.log("Dropdown is open, auto-updating with formats...");
+            populateDropdown(menu, formatDataCache);
+          }
         } else {
           formatFetchError = response.response?.error || `Server responded with status ${response.status}`;
           console.error("Error fetching formats:", response.status, response.response);
+          
+          // Auto-update dropdown with error if it's currently showing
+          const menu = document.getElementById('ytdl-dropdown-menu');
+          if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
+            console.log("Dropdown is open, showing error...");
+            showDropdownError(menu, formatFetchError);
+          }
         }
         isFetchingFormats = false; // Mark fetching as complete
       },
       onerror: function (response) {
         formatFetchError = `Could not connect to service at ${FLASK_SERVICE_BASE_URL}. Is it running?`;
         console.error("GM_xmlhttpRequest error fetching formats:", response);
+        
+        // Auto-update dropdown with error if it's currently showing
+        const menu = document.getElementById('ytdl-dropdown-menu');
+        if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
+          console.log("Dropdown is open, showing error...");
+          showDropdownError(menu, formatFetchError);
+        }
         isFetchingFormats = false;
       },
       ontimeout: function () {
         formatFetchError = "Request timed out fetching formats.";
         console.error("Format fetch request timed out.");
+        
+        // Auto-update dropdown with error if it's currently showing
+        const menu = document.getElementById('ytdl-dropdown-menu');
+        if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
+          console.log("Dropdown is open, showing timeout error...");
+          showDropdownError(menu, formatFetchError);
+        }
         isFetchingFormats = false;
       }
     });
