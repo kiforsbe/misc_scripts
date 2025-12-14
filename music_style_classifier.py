@@ -10,16 +10,6 @@ import sys
 import warnings
 import logging # Import the logging library
 
-# --- Configure Logging ---
-# Log to stderr
-# Set level to INFO to see general progress messages
-# Include timestamp, level name, and message in the log format
-logging.basicConfig(
-    level=logging.WARN,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    stream=sys.stderr # Explicitly direct logs to stderr
-)
-
 # --- Constants ---
 TARGET_SR = 16000
 MAX_DURATION_SECONDS = 15
@@ -457,20 +447,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-    # # --- Example of using the public API function from another script ---
-    # # (Commented out by default)
-    # print("\n--- Example API Usage (commented out in script) ---")
-    # example_file = "path/to/your/test/audio_or_video.mp4" # <--- CHANGE THIS PATH
-    # if os.path.exists(example_file):
-    #     print(f"Running API example on: {example_file}")
-    #     # Example 1: Use default track
-    #     genre1 = get_music_genre(example_file)
-    #     print(f"API Example Result (default track): {genre1}")
-
-    #     # Example 2: Specify a track index (e.g., index 3, if it exists)
-    #     # genre2 = get_music_genre(example_file, track_index=3)
-    #     # print(f"API Example Result (track 3): {genre2}")
-    # else:
-    #      print(f"Skipping API example: File not found at {example_file}")
-    # print("--- End Example API Usage ---")
+    

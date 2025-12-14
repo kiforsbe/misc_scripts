@@ -53,11 +53,12 @@ try:
                 get_music_genre = imported_get_music_genre
                 classifier_path_found = potential_path
                 classifier_found = True
-                # print(f"DEBUG: Successfully imported from {search_dir}") # Optional debug print
+                logging.info(f"Successfully imported {module_name} from {search_dir}")
                 break # Stop searching once successfully imported
             except ImportError as import_err:
                 # This might happen if the file exists but has internal import errors
-                print(f"WARNING: Found '{potential_path}' but failed to import: {import_err}")
+                logging.warning(f"Found '{potential_path}' but failed to import: {import_err}")
+                
                 # Remove the path if we added it and it caused an error? Optional.
                 # if search_dir == sys.path[0]:
                 #     sys.path.pop(0)
@@ -71,7 +72,7 @@ try:
 except ImportError as e:
     # Construct a helpful error message showing where we looked
     error_msg = (
-        f"ERROR: Could not find or import '{module_name}'.\n"
+        f"Could not find or import '{module_name}'.\n"
         f"Searched for '{module_filename}' in the following locations relative to this script:\n"
     )
     # Use unique locations in the error message
@@ -84,18 +85,18 @@ except ImportError as e:
     )
     if str(e) != "Module not found in search paths.": # Add original error if it wasn't ours
          error_msg += f"Specific import error encountered: {e}"
-    print(error_msg)
+    logging.error(error_msg)
 
     # Define a dummy function so the PP doesn't crash immediately
     def get_music_genre_fallback(*args, **kwargs):
-        print(f"WARNING: {module_name} not found or failed to import. Cannot determine genre.")
+        logging.warning(f"{module_name} not found or failed to import. Cannot determine genre.")
         return None
 
     # Assign the fallback to the main function name
     get_music_genre = get_music_genre_fallback
     # Define dummy main as well if needed
     def classifier_main(*args, **kwargs):
-        print(f"WARNING: {module_name} not found or failed to import. Cannot run its main function.")
+        logging.warning(f"{module_name} not found or failed to import. Cannot run its main function.")
         pass
 
 # --- Continue with other imports ---
@@ -120,15 +121,15 @@ try:
         main as classifier_main,
     )  # Import main to potentially configure logging if needed
 except ImportError as e:
-    print(f"ERROR: Could not import music_style_classifier: {e}")
-    print(
+    logging.error(f"Could not import music_style_classifier: {e}")
+    logging.error(
         "Ensure music_style_classifier.py is in the Python path or adjust the import."
     )
 
     # Define a dummy function so the PP doesn't crash immediately if import fails,
     # but it won't do anything useful.
     def get_music_genre(*args, **kwargs):
-        print("WARNING: music_style_classifier not found, cannot determine genre.")
+        logging.warning("music_style_classifier not found, cannot determine genre.")
         return None
 
 
@@ -157,9 +158,13 @@ class FFmpegGenrePP(FFmpegPostProcessor):
             self.report_warning(
                 f"Filepath missing or file not found: {filepath}. Skipping genre detection."
             )
+            logging.warning(
+                f"Filepath missing or file not found: {filepath}. Skipping genre detection."
+            )
             return [], info  # Must return ([files_to_delete], info)        # Check if the fallback function is being used (meaning import failed)
         if get_music_genre == _get_music_genre_fallback:
             self.report_warning("Skipping genre detection because music_style_classifier could not be loaded.")
+            logging.warning("Skipping genre detection because music_style_classifier could not be loaded.")
             return [], info
 
         # Check if the fallback function is being used (meaning import failed)
@@ -167,6 +172,7 @@ class FFmpegGenrePP(FFmpegPostProcessor):
         is_fallback = getattr(get_music_genre, '_is_fallback', False)
         if is_fallback:
              self.report_warning("Skipping genre detection because music_style_classifier could not be loaded.")
+             logging.warning("Skipping genre detection because music_style_classifier could not be loaded.")
              return [], info
 
 
@@ -185,12 +191,16 @@ class FFmpegGenrePP(FFmpegPostProcessor):
 
         except Exception as e:
             self.report_error(f"Error running music genre classifier on {os.path.basename(filepath)}: {e}", exc_info=True)
+            logging.error(f"Error running music genre classifier on {os.path.basename(filepath)}: {e}", exc_info=True)
             # Decide whether to stop processing or continue without genre
             # For now, let's continue without genre
             predicted_genre = None
 
         if not predicted_genre:
             self.report_warning(
+                f"Could not determine genre for {os.path.basename(filepath)}. Skipping metadata embedding."
+            )
+            logging.warning(
                 f"Could not determine genre for {os.path.basename(filepath)}. Skipping metadata embedding."
             )
             return [], info
@@ -242,6 +252,9 @@ class FFmpegGenrePP(FFmpegPostProcessor):
             self.report_error(
                 f"Failed to embed genre metadata (ffmpeg execution failed): {ffmpeg_err}"
             )
+            logging.error(
+                f"Failed to embed genre metadata (ffmpeg execution failed): {ffmpeg_err}"
+            )
             files_to_delete = []
             # Clean up temp file on error
             if temp_filename_path and os.path.exists(temp_filename_path):
@@ -249,10 +262,13 @@ class FFmpegGenrePP(FFmpegPostProcessor):
                 except OSError: self.report_warning(f"Could not remove temporary file {temp_filename_path}")
         except Exception as e:
             self.report_error(f"Unexpected error during genre embedding: {e}", exc_info=True) # Log traceback for unexpected errors
+            logging.error(f"Unexpected error during genre embedding: {e}", exc_info=True)
             files_to_delete = []
             # Clean up temp file on error
             if temp_filename_path and os.path.exists(temp_filename_path):
                 try: os.remove(temp_filename_path)
-                except OSError: self.report_warning(f"Could not remove temporary file {temp_filename_path}")
+                except OSError: 
+                    self.report_warning(f"Could not remove temporary file {temp_filename_path}")
+                    logging.warning(f"Could not remove temporary file {temp_filename_path}")
 
         return files_to_delete, info

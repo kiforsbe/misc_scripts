@@ -15,11 +15,37 @@ from .models import DownloadItem, FormatInfo
 from .utils import sanitize_filename, check_ffmpeg
 from .ffmpeg_genre_pp import FFmpegGenrePP
 
+# Set up module-level logger
 logger = logging.getLogger(__name__)
+# Configure logging if not already configured
+# if not logger.hasHandlers():
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
-# TODO: Custom postprocessor registration needs to be fixed
-# For now, disable the custom genre postprocessor to avoid errors
+# Register the custom postprocessor with yt-dlp
 ENABLE_CUSTOM_GENRE_PP = False
+try:
+    # Test that our custom postprocessor can be imported and instantiated
+    test_pp = FFmpegGenrePP()
+    logging.debug("FFmpegGenrePP postprocessor is available")
+    
+    # Register the postprocessor in yt-dlp's registry
+    from yt_dlp.globals import postprocessors
+    postprocessors.value['FFmpegGenrePP'] = FFmpegGenrePP
+    
+    # Verify registration worked
+    if 'FFmpegGenrePP' in postprocessors.value:
+        logging.debug("Successfully registered FFmpegGenrePP in yt-dlp registry")
+        ENABLE_CUSTOM_GENRE_PP = True
+    else:
+        logging.warning("Failed to register FFmpegGenrePP - not found in registry after registration")
+        ENABLE_CUSTOM_GENRE_PP = False
+        
+except Exception as e:
+    logging.warning(f"FFmpegGenrePP postprocessor unavailable: {e}")
+    ENABLE_CUSTOM_GENRE_PP = False
 
 # Define callback types for clarity
 ProgressCallbackType = Callable[[DownloadItem, Dict[str, Any]], None]  # Progress callback
@@ -433,7 +459,13 @@ async def download_item(
                 
                 # Add genre postprocessor only if enabled
                 if ENABLE_CUSTOM_GENRE_PP:
-                    postprocessors_to_add.insert(-1, add_genremetadata_pp)  # Add before thumbnail
+                    logging.info("Adding custom genre postprocessor for audio download.")
+                    postprocessors_to_add.append({
+                        "key": "FFmpegGenre",
+                        "when": "post_process"
+                    })
+                else:
+                    logging.info("Custom genre postprocessor is disabled.")
                     
                 ydl_opts["postprocessors"].extend(postprocessors_to_add)
                 logger.info(
@@ -470,12 +502,13 @@ async def download_item(
                 
                 # Add genre postprocessor only if enabled
                 if ENABLE_CUSTOM_GENRE_PP:
-                    postprocessors_to_add.insert(-1, add_genremetadata_pp)  # Add before thumbnail
-                    
-                ydl_opts["postprocessors"].extend(postprocessors_to_add)
-                logger.info(
-                    f"Video download: Configured conversion to container '{target_format}'."
-                )
+                    logging.info("Adding custom genre postprocessor for audio download.")
+                    postprocessors_to_add.append({
+                        "key": "FFmpegGenre",
+                        "when": "post_process"
+                    })
+                else:
+                    logging.info("Custom genre postprocessor is disabled.")
 
             # --- Determine Final Output Path ---
             artist_part = item.artist or "Unknown Artist"

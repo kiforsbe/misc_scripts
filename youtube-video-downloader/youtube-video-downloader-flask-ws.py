@@ -50,8 +50,11 @@ else:
 
 # --- Flask App and Logging Setup ---
 app = Flask(__name__)
+
+# --- Logging Setup ---
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 log = logging.getLogger(__name__)  # Use a specific logger for the app
 
@@ -555,6 +558,9 @@ def list_formats():
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    # Log what version of pythong this process was started with and what path to the python environment, log this to debug
+    log.debug(f"Starting server with Python {sys.version} at {sys.executable}")
+
     # Start the background deletion task in a separate thread
     delete_thread = threading.Thread(
         target=delayed_delete, name="FileDeletionThread", daemon=True
