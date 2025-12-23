@@ -605,9 +605,9 @@ This tool is designed for Windows shell:sendto and drag-drop operations.
     )
     parser.add_argument(
         '--log-level',
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        choices=['DEBUG', 'DEBUG2', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
         default='WARNING',
-        help='Set logging level (default: WARNING)'
+        help='Set logging level (default: WARNING). DEBUG2 includes verbose regex debugging from guessit.'
     )
     parser.add_argument(
         '--extended-metadata',
@@ -620,19 +620,38 @@ This tool is designed for Windows shell:sendto and drag-drop operations.
         default='default',
         help='Output format: default (simple text), aligned (better spacing), color (ANSI colors), json (machine-readable)'
     )
+    parser.add_argument(
+        '--keep-window-open',
+        action='store_true',
+        help='Keep window open after execution (useful for drag-drop on Windows)'
+    )
     
     args = parser.parse_args()
+    
+    # Handle custom DEBUG2 level for verbose regex debugging
+    if args.log_level == 'DEBUG2':
+        # DEBUG2 is just DEBUG with rebulk logging enabled
+        log_level = logging.DEBUG
+        rebulk_log_level = logging.DEBUG
+    else:
+        log_level = getattr(logging, args.log_level)
+        # Suppress rebulk/guessit verbose debugging unless DEBUG2
+        rebulk_log_level = logging.WARNING
     
     # Configure logging with output tracker
     log_tracker = LogOutputTracker()
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
+        level=log_level,
         format='%(levelname)s: %(message)s',
         handlers=[
             logging.StreamHandler(),
             log_tracker
         ]
     )
+    
+    # Configure rebulk logger to suppress regex debugging unless DEBUG2
+    logging.getLogger('rebulk').setLevel(rebulk_log_level)
+    logging.getLogger('guessit').setLevel(rebulk_log_level)
     
     # Validate files exist
     valid_files: List[Path] = []
@@ -690,15 +709,9 @@ This tool is designed for Windows shell:sendto and drag-drop operations.
         # Default: display info
         logging.info("Executing display info action")
         tool.display_info(show_info, args.extended_metadata, args.format)
-        
-        # Keep window open until user exits (useful for drag-drop on Windows)
-        if args.format != 'json':  # Don't add prompt for JSON output
-            print("\n" + "=" * 70)
-            input("Press Enter to exit...")
-        return
     
-    # Keep window open if any log output was produced
-    if log_tracker.output_produced:
+    # Keep window open if requested via command line option
+    if args.keep_window_open:
         print("\n" + "=" * 70)
         input("Press Enter to exit...")
 
