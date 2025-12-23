@@ -5,6 +5,24 @@ import sys
 import webbrowser
 import subprocess
 import logging
+import json
+
+
+class Colors:
+    """ANSI color codes for terminal output."""
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    
+    # Foreground colors
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    GRAY = '\033[90m'
 
 
 class LogOutputTracker(logging.Handler):
@@ -134,30 +152,49 @@ class SeriesInfoTool:
         logging.info(f"Extracted {len(urls)} unique URL(s)")
         return sorted(urls)
     
-    def display_info(self, show_info: Dict[str, Any], extended_metadata: bool = False) -> None:
+    def display_info(self, show_info: Dict[str, Any], extended_metadata: bool = False, format_type: str = 'default') -> None:
         """Display show information on stdout.
         
         Args:
             show_info: Dictionary of show information to display
             extended_metadata: Whether to show extended metadata fields
+            format_type: Output format (default, aligned, color, json)
         """
         logging.info(f"Displaying information for {len(show_info)} show(s)")
+        
+        # JSON format
+        if format_type == 'json':
+            self._display_json(show_info, extended_metadata)
+            return
+        
+        # Text-based formats
+        use_colors = (format_type == 'color')
+        use_alignment = (format_type in ['aligned', 'color'])
         
         for group_key, info in show_info.items():
             title = info['title']
             metadata = info.get('metadata', {})
             mal_watch_status = info.get('myanimelist_watch_status')
             
-            print(f"\n{'=' * 70}")
-            print(f"  {title}")
-            print(f"{'=' * 70}")
+            # Header
+            if use_colors:
+                print(f"\n{Colors.CYAN}{Colors.BOLD}{'=' * 70}{Colors.RESET}")
+                print(f"{Colors.CYAN}{Colors.BOLD}  {title}{Colors.RESET}")
+                print(f"{Colors.CYAN}{Colors.BOLD}{'=' * 70}{Colors.RESET}")
+            else:
+                print(f"\n{'=' * 70}")
+                print(f"  {title}")
+                print(f"{'=' * 70}")
             
-            # Display general metadata fields (ordered by importance)
+            # Display general metadata fields
             metadata_fields = [
                 ('Type', 'type'),
                 ('Year', 'year'),
                 ('Status', 'status'),
                 ('Rating', 'rating'),
+                ('ID', 'id'),
+                ('Episodes', 'total_episodes'),
+                ('Seasons', 'total_seasons'),
                 ('Runtime', 'runtime'),
                 ('Genres', 'genres'),
                 ('Director', 'director'),
@@ -170,6 +207,8 @@ class SeriesInfoTool:
             ]
             
             general_info_found = False
+            displayed_fields = []
+            
             for display_name, field_name in metadata_fields:
                 if field_name in metadata and metadata[field_name]:
                     general_info_found = True
@@ -178,34 +217,9 @@ class SeriesInfoTool:
                         value = ', '.join(str(v) for v in value)
                     elif isinstance(value, str) and len(value) > 100:
                         value = value[:97] + '...'
-                    print(f"{display_name}: {value}")
+                    displayed_fields.append((display_name, value))
             
-            # Display additional metadata that wasn't in the standard fields
-            if metadata:
-                other_fields = []
-                excluded_prefixes = ('myanimelist_', 'imdb_', 'tmdb_')
-                excluded_fields = {'title', 'sources', 'tags'}  # Exclude title, handle sources/tags separately
-                standard_fields = {f[1] for f in metadata_fields}
-                
-                for key, value in metadata.items():
-                    if (key not in standard_fields and 
-                        key not in excluded_fields and
-                        not any(key.startswith(prefix) for prefix in excluded_prefixes) and
-                        value and not key.startswith('_')):
-                        other_fields.append((key, value))
-                
-                if other_fields:
-                    if general_info_found:
-                        print()  # Add spacing
-                    for key, value in other_fields:
-                        display_key = key.replace('_', ' ').title()
-                        if isinstance(value, list):
-                            value = ', '.join(str(v) for v in value)
-                        elif isinstance(value, str) and len(value) > 100:
-                            value = value[:97] + '...'
-                        print(f"{display_key}: {value}")
-            
-            # Display tags (shortened unless extended mode)
+            # Add tags to displayed fields if present
             if 'tags' in metadata and metadata['tags']:
                 tags = metadata['tags']
                 if isinstance(tags, list):
@@ -216,124 +230,278 @@ class SeriesInfoTool:
                 if not extended_metadata and len(tags_str) > 80:
                     tags_str = tags_str[:77] + '...'
                 
-                print(f"Tags: {tags_str}")
+                displayed_fields.append(('Tags', tags_str))
+                general_info_found = True
             
-            # Display MyAnimeList specific metadata
-            print(f"\n--- MyAnimeList Information ---")
+            if use_alignment and displayed_fields:
+                # Cap label width at 20 characters for better visual balance
+                max_label_len = min(max(len(label) for label, _ in displayed_fields), 20)
+                for label, value in displayed_fields:
+                    if use_colors:
+                        print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                    else:
+                        print(f"{label.rjust(max_label_len)}: {value}")
+            else:
+                for label, value in displayed_fields:
+                    print(f"{label}: {value}")
             
-            mal_metadata_fields = [
-                ('URL', 'myanimelist_url'),
-                ('MAL ID', 'myanimelist_id'),
-                ('Score', 'myanimelist_score'),
-                ('Rank', 'myanimelist_rank'),
-                ('Popularity', 'myanimelist_popularity'),
-                ('Members', 'myanimelist_members'),
-                ('Favorites', 'myanimelist_favorites'),
-                ('Status', 'myanimelist_status'),
-                ('Type', 'myanimelist_type'),
-                ('Episodes', 'myanimelist_episodes'),
-                ('Aired', 'myanimelist_aired'),
-                ('Premiered', 'myanimelist_premiered'),
-                ('Broadcast', 'myanimelist_broadcast'),
-                ('Producers', 'myanimelist_producers'),
-                ('Licensors', 'myanimelist_licensors'),
-                ('Studios', 'myanimelist_studios'),
-                ('Source', 'myanimelist_source'),
-                ('Duration', 'myanimelist_duration'),
-                ('Rating', 'myanimelist_rating'),
-                ('Genres', 'myanimelist_genres'),
-                ('Themes', 'myanimelist_themes'),
-                ('Demographics', 'myanimelist_demographics'),
-                ('Synopsis', 'myanimelist_synopsis'),
-            ]
+            # Display additional metadata
+            if metadata:
+                other_fields = []
+                excluded_prefixes = ('myanimelist_', 'imdb_', 'tmdb_')
+                excluded_fields = {'title', 'sources', 'tags', 'id', 'total_episodes', 'total_seasons'}
+                standard_fields = {f[1] for f in metadata_fields}
+                
+                for key, value in metadata.items():
+                    if (key not in standard_fields and 
+                        key not in excluded_fields and
+                        not any(key.startswith(prefix) for prefix in excluded_prefixes) and
+                        value and not key.startswith('_')):
+                        display_key = key.replace('_', ' ').title()
+                        if isinstance(value, list):
+                            value = ', '.join(str(v) for v in value)
+                        elif isinstance(value, str) and len(value) > 100:
+                            value = value[:97] + '...'
+                        other_fields.append((display_key, value))
+                
+                if other_fields:
+                    if general_info_found:
+                        print()
+                    if use_alignment:
+                        # Cap label width at 20 characters for better visual balance
+                        max_label_len = min(max(len(label) for label, _ in other_fields), 20)
+                        for label, value in other_fields:
+                            if use_colors:
+                                print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                            else:
+                                print(f"{label.rjust(max_label_len)}: {value}")
+                    else:
+                        for label, value in other_fields:
+                            print(f"{label}: {value}")
             
-            mal_info_found = False
-            for display_name, field_name in mal_metadata_fields:
-                if field_name in metadata and metadata[field_name]:
-                    mal_info_found = True
-                    value = metadata[field_name]
-                    if isinstance(value, list):
-                        value = ', '.join(str(v) for v in value)
-                    elif isinstance(value, str) and len(value) > 150:
-                        value = value[:147] + '...'
-                    print(f"{display_name}: {value}")
+            # MyAnimeList section
+            self._display_mal_section(metadata, mal_watch_status, use_colors, use_alignment)
             
-            # Display watch status from MyAnimeList
-            if mal_watch_status and isinstance(mal_watch_status, dict):
+            # IMDb section
+            self._display_imdb_section(metadata, use_colors, use_alignment)
+            
+            # Source URLs
+            self._display_sources(metadata, extended_metadata, use_colors)
+            
+            # Files section
+            self._display_files(info, use_colors)
+    
+    def _display_mal_section(self, metadata: Dict[str, Any], mal_watch_status: Optional[Dict[str, Any]], 
+                            use_colors: bool, use_alignment: bool) -> None:
+        """Display MyAnimeList metadata section."""
+        mal_metadata_fields = [
+            ('URL', 'myanimelist_url'),
+            ('MAL ID', 'myanimelist_id'),
+            ('Score', 'myanimelist_score'),
+            ('Rank', 'myanimelist_rank'),
+            ('Popularity', 'myanimelist_popularity'),
+            ('Members', 'myanimelist_members'),
+            ('Favorites', 'myanimelist_favorites'),
+            ('Status', 'myanimelist_status'),
+            ('Type', 'myanimelist_type'),
+            ('Episodes', 'myanimelist_episodes'),
+            ('Aired', 'myanimelist_aired'),
+            ('Premiered', 'myanimelist_premiered'),
+            ('Broadcast', 'myanimelist_broadcast'),
+            ('Producers', 'myanimelist_producers'),
+            ('Licensors', 'myanimelist_licensors'),
+            ('Studios', 'myanimelist_studios'),
+            ('Source', 'myanimelist_source'),
+            ('Duration', 'myanimelist_duration'),
+            ('Rating', 'myanimelist_rating'),
+            ('Genres', 'myanimelist_genres'),
+            ('Themes', 'myanimelist_themes'),
+            ('Demographics', 'myanimelist_demographics'),
+            ('Synopsis', 'myanimelist_synopsis'),
+        ]
+        
+        mal_info_found = False
+        mal_fields_to_display = []
+        
+        for display_name, field_name in mal_metadata_fields:
+            if field_name in metadata and metadata[field_name]:
                 mal_info_found = True
-                print(f"\n--- MyAnimeList Watch Status ---")
-                
-                watch_status_fields = [
-                    ('My Status', 'my_status'),
-                    ('My Score', 'my_score'),
-                    ('My Watched Episodes', 'my_watched_episodes'),
-                    ('My Start Date', 'my_start_date'),
-                    ('My Finish Date', 'my_finish_date'),
-                    ('Series Episodes', 'series_episodes'),
-                    ('Series URL', 'series_url'),
-                ]
-                
-                for display_name, field_name in watch_status_fields:
-                    if field_name in mal_watch_status and mal_watch_status[field_name]:
-                        value = mal_watch_status[field_name]
-                        print(f"{display_name}: {value}")
-            
-            if not mal_info_found:
-                print("(No MyAnimeList information available)")
-            
-            # Display IMDb specific metadata
-            imdb_metadata_fields = [
-                ('IMDb ID', 'imdb_id'),
-                ('IMDb Rating', 'imdb_rating'),
-                ('IMDb Votes', 'imdb_votes'),
-                ('Metascore', 'metascore'),
+                value = metadata[field_name]
+                if isinstance(value, list):
+                    value = ', '.join(str(v) for v in value)
+                elif isinstance(value, str) and len(value) > 150:
+                    value = value[:147] + '...'
+                mal_fields_to_display.append((display_name, value))
+        
+        # Display watch status from MyAnimeList
+        if mal_watch_status and isinstance(mal_watch_status, dict):
+            mal_info_found = True
+            watch_status_fields = [
+                ('My Status', 'my_status'),
+                ('My Score', 'my_score'),
+                ('My Watched Episodes', 'my_watched_episodes'),
+                ('My Start Date', 'my_start_date'),
+                ('My Finish Date', 'my_finish_date'),
+                ('Series Episodes', 'series_episodes'),
+                ('Series URL', 'series_url'),
             ]
             
-            imdb_info_found = False
-            for display_name, field_name in imdb_metadata_fields:
-                if field_name in metadata and metadata[field_name]:
-                    if not imdb_info_found:
-                        print(f"\n--- IMDb Information ---")
-                        imdb_info_found = True
-                    value = metadata[field_name]
-                    print(f"{display_name}: {value}")
+            for display_name, field_name in watch_status_fields:
+                if field_name in mal_watch_status and mal_watch_status[field_name]:
+                    mal_fields_to_display.append((display_name, str(mal_watch_status[field_name])))
+        
+        if mal_info_found:
+            if use_colors:
+                print(f"\n{Colors.MAGENTA}{Colors.BOLD}--- MyAnimeList Information ---{Colors.RESET}")
+            else:
+                print(f"\n--- MyAnimeList Information ---")
             
-            # Display source URLs (only MyAnimeList unless extended mode)
-            sources = metadata.get('sources', [])
-            if sources:
-                if extended_metadata:
-                    print(f"\n--- Source URLs ---")
-                    for source_url in sources:
-                        print(f"  • {source_url}")
+            if use_alignment and mal_fields_to_display:
+                max_label_len = max(len(label) for label, _ in mal_fields_to_display)
+                for label, value in mal_fields_to_display:
+                    if use_colors:
+                        print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                    else:
+                        print(f"{label.rjust(max_label_len)}: {value}")
+            else:
+                for label, value in mal_fields_to_display:
+                    print(f"{label}: {value}")
+        else:
+            if use_colors:
+                print(f"\n{Colors.MAGENTA}{Colors.BOLD}--- MyAnimeList Information ---{Colors.RESET}")
+                print(f"{Colors.DIM}(No MyAnimeList information available){Colors.RESET}")
+            else:
+                print(f"\n--- MyAnimeList Information ---")
+                print("(No MyAnimeList information available)")
+    
+    def _display_imdb_section(self, metadata: Dict[str, Any], use_colors: bool, use_alignment: bool) -> None:
+        """Display IMDb metadata section."""
+        imdb_metadata_fields = [
+            ('IMDb ID', 'imdb_id'),
+            ('IMDb Rating', 'imdb_rating'),
+            ('IMDb Votes', 'imdb_votes'),
+            ('Metascore', 'metascore'),
+        ]
+        
+        imdb_fields_to_display = []
+        for display_name, field_name in imdb_metadata_fields:
+            if field_name in metadata and metadata[field_name]:
+                imdb_fields_to_display.append((display_name, str(metadata[field_name])))
+        
+        if imdb_fields_to_display:
+            if use_colors:
+                print(f"\n{Colors.BLUE}{Colors.BOLD}--- IMDb Information ---{Colors.RESET}")
+            else:
+                print(f"\n--- IMDb Information ---")
+            
+            if use_alignment:
+                max_label_len = max(len(label) for label, _ in imdb_fields_to_display)
+                for label, value in imdb_fields_to_display:
+                    if use_colors:
+                        print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                    else:
+                        print(f"{label.rjust(max_label_len)}: {value}")
+            else:
+                for label, value in imdb_fields_to_display:
+                    print(f"{label}: {value}")
+    
+    def _display_sources(self, metadata: Dict[str, Any], extended_metadata: bool, use_colors: bool) -> None:
+        """Display source URLs."""
+        sources = metadata.get('sources', [])
+        if sources:
+            if extended_metadata:
+                if use_colors:
+                    print(f"\n{Colors.GREEN}{Colors.BOLD}--- Source URLs ---{Colors.RESET}")
                 else:
-                    # Only show MyAnimeList URL
-                    mal_sources = [s for s in sources if 'myanimelist' in s.lower()]
-                    if mal_sources:
+                    print(f"\n--- Source URLs ---")
+                for source_url in sources:
+                    if use_colors:
+                        print(f"  {Colors.CYAN}•{Colors.RESET} {source_url}")
+                    else:
+                        print(f"  • {source_url}")
+            else:
+                mal_sources = [s for s in sources if 'myanimelist' in s.lower()]
+                if mal_sources:
+                    if use_colors:
+                        print(f"\n{Colors.GREEN}{Colors.BOLD}--- Source URLs ---{Colors.RESET}")
+                    else:
                         print(f"\n--- Source URLs ---")
-                        for source_url in mal_sources:
+                    for source_url in mal_sources:
+                        if use_colors:
+                            print(f"  {Colors.CYAN}•{Colors.RESET} {source_url}")
+                        else:
                             print(f"  • {source_url}")
-            
-            # Show file count and sample files
-            file_count = len(info['files'])
+    
+    def _display_files(self, info: Dict[str, Any], use_colors: bool) -> None:
+        """Display files section."""
+        file_count = len(info['files'])
+        if use_colors:
+            print(f"\n{Colors.GREEN}{Colors.BOLD}--- Files ({file_count}) ---{Colors.RESET}")
+        else:
             print(f"\n--- Files ({file_count}) ---")
+        
+        for i, file_info in enumerate(info['files'][:5]):
+            file_path = file_info.get('path') or file_info.get('filepath')
+            if file_path:
+                if isinstance(file_path, Path):
+                    file_path = file_path.name
+                elif isinstance(file_path, str):
+                    file_path = Path(file_path).name
+                if use_colors:
+                    print(f"  {Colors.CYAN}•{Colors.RESET} {file_path}")
+                else:
+                    print(f"  • {file_path}")
+            else:
+                filename = file_info.get('filename', 'Unknown')
+                if use_colors:
+                    print(f"  {Colors.CYAN}•{Colors.RESET} {filename}")
+                else:
+                    print(f"  • {filename}")
+        
+        if file_count > 5:
+            if use_colors:
+                print(f"  {Colors.DIM}... and {file_count - 5} more{Colors.RESET}")
+            else:
+                print(f"  ... and {file_count - 5} more")
+    
+    def _display_json(self, show_info: Dict[str, Any], extended_metadata: bool) -> None:
+        """Display show information as JSON."""
+        output = []
+        
+        for group_key, info in show_info.items():
+            show_data = {
+                'title': info['title'],
+                'metadata': info.get('metadata', {}),
+                'myanimelist_watch_status': info.get('myanimelist_watch_status'),
+                'files': []
+            }
             
-            # Show up to 5 sample files
-            for i, file_info in enumerate(info['files'][:5]):
-                # Get path from the file_info dict - could be under 'path', 'filepath', or in metadata
+            # Add file information
+            for file_info in info['files']:
                 file_path = file_info.get('path') or file_info.get('filepath')
                 if file_path:
                     if isinstance(file_path, Path):
-                        file_path = file_path.name
-                    elif isinstance(file_path, str):
-                        file_path = Path(file_path).name
-                    print(f"  • {file_path}")
+                        file_path = str(file_path)
+                    show_data['files'].append({
+                        'path': file_path,
+                        'filename': Path(file_path).name
+                    })
                 else:
-                    # Fallback to filename if available
-                    filename = file_info.get('filename', 'Unknown')
-                    print(f"  • {filename}")
+                    show_data['files'].append({
+                        'filename': file_info.get('filename', 'Unknown')
+                    })
             
-            if file_count > 5:
-                print(f"  ... and {file_count - 5} more")
+            # Filter metadata if not extended
+            if not extended_metadata:
+                filtered_metadata = {}
+                for key, value in show_data['metadata'].items():
+                    if key not in ['title', 'tags'] or key == 'myanimelist_url':
+                        filtered_metadata[key] = value
+                show_data['metadata'] = filtered_metadata
+            
+            output.append(show_data)
+        
+        print(json.dumps(output, indent=2, ensure_ascii=False))
     
     def copy_urls_to_clipboard(self, urls: List[str]) -> None:
         """Copy URLs to clipboard using Windows clip.exe.
@@ -404,6 +572,11 @@ Examples:
   
   # Use with MyAnimeList XML for watch status
   %(prog)s --mal-xml animelist.xml file1.mkv file2.mkv
+  
+  # Different output formats
+  %(prog)s --format aligned file1.mkv       # Aligned text
+  %(prog)s --format color file1.mkv         # Colorful output
+  %(prog)s --format json file1.mkv          # JSON output
 
 This tool is designed for Windows shell:sendto and drag-drop operations.
         """
@@ -440,6 +613,12 @@ This tool is designed for Windows shell:sendto and drag-drop operations.
         '--extended-metadata',
         action='store_true',
         help='Show extended metadata fields (title, full tags, all sources, etc.)'
+    )
+    parser.add_argument(
+        '--format',
+        choices=['default', 'aligned', 'color', 'json'],
+        default='default',
+        help='Output format: default (simple text), aligned (better spacing), color (ANSI colors), json (machine-readable)'
     )
     
     args = parser.parse_args()
@@ -510,11 +689,12 @@ This tool is designed for Windows shell:sendto and drag-drop operations.
     else:
         # Default: display info
         logging.info("Executing display info action")
-        tool.display_info(show_info, args.extended_metadata)
+        tool.display_info(show_info, args.extended_metadata, args.format)
         
         # Keep window open until user exits (useful for drag-drop on Windows)
-        print("\n" + "=" * 70)
-        input("Press Enter to exit...")
+        if args.format != 'json':  # Don't add prompt for JSON output
+            print("\n" + "=" * 70)
+            input("Press Enter to exit...")
         return
     
     # Keep window open if any log output was produced
