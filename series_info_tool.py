@@ -6,6 +6,7 @@ import webbrowser
 import subprocess
 import logging
 import json
+import os
 
 
 class Colors:
@@ -46,6 +47,13 @@ except ImportError as e:
     logging.error(f"Required modules not found: {e}")
     logging.error("Make sure file_grouper.py is available in the same directory.")
     sys.exit(1)
+
+try:
+    from browser_utils import BrowserLauncher
+except ImportError:
+    # Fallback if browser_utils is not available
+    logging.warning("browser_utils module not found. Browser features may be limited.")
+    BrowserLauncher = None
 
 
 class SeriesInfoTool:
@@ -539,27 +547,36 @@ class SeriesInfoTool:
             logging.error(f"Error copying to clipboard: {e}")
             sys.exit(1)
     
-    def open_urls_in_browser(self, urls: List[str]) -> None:
+    def open_urls_in_browser(self, urls: List[str], window_mode: Optional[str] = None) -> None:
         """Open URLs in the default browser.
         
         Args:
             urls: List of URLs to open
+            window_mode: Window mode - 'default' (new window), 'popup' (chromeless, half-width), 'maximized', or None (same window)
         """
-        if not urls:
-            logging.warning("No URLs found to open")
-            return
-        
-        logging.info(f"Opening {len(urls)} URL(s) in browser")
-        print(f"Opening {len(urls)} URL(s) in browser:")
-        for url in urls:
-            print(f"  • {url}")
-            try:
-                webbrowser.open(url)
-                logging.debug(f"Opened URL: {url}")
-            except Exception as e:
-                logging.error(f"Error opening {url}: {e}")
-        
-        print(f"\n✓ Opened {len(urls)} URL(s) in default browser")
+        if BrowserLauncher:
+            launcher = BrowserLauncher()
+            if window_mode == 'popup':
+                launcher.open_urls(urls, popup=True)
+            elif window_mode == 'maximized':
+                launcher.open_urls(urls, maximized=True)
+            elif window_mode == 'default':
+                launcher.open_urls(urls, new_window=True)
+            else:
+                launcher.open_urls(urls)
+        else:
+            # Fallback to basic webbrowser module
+            if not urls:
+                logging.warning("No URLs found to open")
+                return
+            
+            logging.info(f"Opening {len(urls)} URL(s) in browser")
+            for url in urls:
+                try:
+                    webbrowser.open(url, new=1 if window_mode else 0)
+                    logging.debug(f"Opened URL: {url}")
+                except Exception as e:
+                    logging.error(f"Error opening {url}: {e}")
 
 
 def main() -> None:
@@ -602,9 +619,11 @@ This tool is designed for Windows shell:sendto and drag-drop operations.
         help='Copy MyAnimeList URLs to clipboard (Windows only)'
     )
     parser.add_argument(
-        '--open', '-o', 
-        action='store_true',
-        help='Open MyAnimeList URLs in default browser'
+        '--open', '-o',
+        choices=['default', 'popup', 'maximized'],
+        const='default',
+        nargs='?',
+        help='Open MyAnimeList URLs in browser. Options: default (new tab/window), popup (chromeless, half-width, centered), maximized (full screen)'
     )
     parser.add_argument(
         '--mal-xml', 
@@ -712,7 +731,8 @@ This tool is designed for Windows shell:sendto and drag-drop operations.
     elif args.open:
         logging.info("Executing open URLs action")
         urls = tool.extract_urls(show_info)
-        tool.open_urls_in_browser(urls)
+        # args.open contains the window mode: 'default', 'popup', 'maximized', or None for browser default
+        tool.open_urls_in_browser(urls, window_mode=args.open)
     else:
         # Default: display info
         logging.info("Executing display info action")
