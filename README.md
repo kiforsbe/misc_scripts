@@ -1,7 +1,98 @@
 # misc_scripts
 Miscellaneous scripts to automate common tasks.
 
-## srt_to_transcript.py
+## Libraries
+
+### browser_utils.py
+A cross-platform browser launcher library with support for different window modes. Provides functionality to open URLs in the default browser with control over window size, position, and behavior. Used by other scripts to provide consistent browser interaction across platforms.
+
+#### Features
+- Automatic detection of default browser on Windows, macOS, and Linux
+- Multiple window modes:
+  - **Default**: Opens in new tab or reuses existing window
+  - **New Window**: Opens in a new browser window
+  - **Popup**: Chromeless window, half screen width, centered
+  - **Maximized**: Full screen window
+- Custom window size and position support
+- Platform-specific optimizations for Chrome, Firefox, Edge, Safari
+- Screen dimension detection for popup positioning
+
+#### API
+- `BrowserLauncher` class with methods:
+  - `get_screen_dimensions()`: Detect primary screen size
+  - `get_browser_command()`: Find default browser executable
+  - `open_urls(urls, new_window, popup, maximized, window_size, window_position)`: Open URLs with specified mode
+- Convenience function: `open_urls_in_browser(urls, ...)`
+
+#### Requires
+- Platform-specific: winreg (Windows), ctypes (Windows)
+
+## Scripts
+
+### series_info_tool.py
+A comprehensive tool to extract and display series information for video files, with MyAnimeList integration. Groups video files by series title, retrieves metadata from anime and movie databases, and provides convenient ways to access online information. Designed for Windows shell:sendto and drag-drop operations.
+
+#### Features
+- Groups video files by series title using FileGrouper
+- Retrieves metadata from MyAnimeList, IMDb, and other sources
+- Extracts and displays comprehensive series information including:
+  - Basic metadata (Type, Year, Status, Rating, Episodes, Seasons)
+  - MyAnimeList information (Score, Rank, Studios, Genres, Themes)
+  - IMDb information (Rating, Votes, Metascore)
+  - Watch status from MyAnimeList XML exports
+- Multiple output formats:
+  - **default**: Simple text output
+  - **aligned**: Right-aligned labels for better readability
+  - **color**: ANSI colored output
+  - **json**: Machine-readable JSON format
+- URL operations:
+  - Display MyAnimeList URLs
+  - Copy URLs to clipboard (Windows)
+  - Open URLs in browser with window mode control
+- Browser window modes via browser_utils:
+  - **default**: New tab/window
+  - **popup**: Chromeless, half-width, centered
+  - **maximized**: Full screen
+- Configurable logging levels including DEBUG2 for regex debugging
+- Extended metadata mode for verbose output
+
+#### Usage Examples
+```bash
+# Display information about files
+series_info_tool.py file1.mkv file2.mkv
+
+# Copy MyAnimeList URLs to clipboard
+series_info_tool.py --copy file1.mkv file2.mkv
+
+# Open URLs in browser (new tab)
+series_info_tool.py --open file1.mkv
+
+# Open in popup mode (chromeless, half-width, centered)
+series_info_tool.py --open=popup file1.mkv
+
+# Open maximized
+series_info_tool.py --open=maximized file1.mkv
+
+# Use with MyAnimeList XML for watch status
+series_info_tool.py --mal-xml animelist.xml file1.mkv
+
+# Different output formats
+series_info_tool.py --format aligned file1.mkv
+series_info_tool.py --format color file1.mkv
+series_info_tool.py --format json file1.mkv
+
+# Extended metadata with all sources and full tags
+series_info_tool.py --extended-metadata file1.mkv
+
+# Debug mode with regex debugging
+series_info_tool.py --log-level DEBUG2 file1.mkv
+```
+
+#### Requires
+- file_grouper (local module)
+- browser_utils (local module)
+
+### srt_to_transcript.py
 Saves contents of the specified `.srt` files to a plain text transcripts.
 
 ### Requires
