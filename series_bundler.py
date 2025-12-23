@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
@@ -384,7 +385,7 @@ class SeriesBundler:
         
         return len(warnings) == 0, warnings
     
-    def create_bundles(self, destination: str, copy_files: bool = False, dry_run: bool = False) -> Dict[str, str]:
+    def create_bundles(self, destination: str, copy_files: bool = False, dry_run: bool = False) -> Dict[str, Dict]:
         """
         Create bundle folders and organize files.
         
@@ -394,7 +395,7 @@ class SeriesBundler:
             dry_run: If True, don't actually move/copy files
             
         Returns:
-            Dictionary mapping original group keys to created folder paths
+            Dictionary mapping original group keys to dict containing folder path and newest file date
         """
         if not self.series_groups:
             self._log("No series groups found. Run analyze_files() first.", 1)
@@ -432,6 +433,7 @@ class SeriesBundler:
             # Process files in this group
             success_count = 0
             error_count = 0
+            newest_file_time = None
             
             for metadata in group_metadata:
                 source_path = Path(metadata['filepath'])
@@ -439,6 +441,12 @@ class SeriesBundler:
                 dest_path = folder_path / filename
                 
                 try:
+                    # Track the newest file modification time
+                    if source_path.exists():
+                        file_mtime = source_path.stat().st_mtime
+                        if newest_file_time is None or file_mtime > newest_file_time:
+                            newest_file_time = file_mtime
+                    
                     if dry_run:
                         action = "copy" if copy_files else "move"
                         self._log(f"  Would {action}: {filename}", 2)
@@ -456,12 +464,25 @@ class SeriesBundler:
                     self._log(f"  Error processing {filename}: {e}", 1)
                     error_count += 1
             
+            # Set folder modified date to newest file date
+            if not dry_run and newest_file_time is not None and folder_path.exists():
+                try:
+                    os.utime(str(folder_path), (newest_file_time, newest_file_time))
+                    newest_date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d %H:%M:%S')
+                    self._log(f"  Set folder date to: {newest_date_str}", 1)
+                except Exception as e:
+                    self._log(f"  Warning: Could not set folder date: {e}", 1)
+            
             status_word = "Would process" if dry_run else "Processed"
             self._log(f"  {status_word} {success_count} files successfully", 1)
             if error_count > 0:
                 self._log(f"  {error_count} files had errors", 1)
             
-            results[group_key] = str(folder_path)
+            # Store folder path and newest file date
+            results[group_key] = {
+                'folder_path': str(folder_path),
+                'newest_file_date': datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d %H:%M:%S') if newest_file_time else None
+            }
         
         return results
     
@@ -675,7 +696,19 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         folder_name = bundler.generate_folder_name(group_metadata)
         folder_path = destination / folder_name
         
+        # Find newest file date in this group
+        newest_file_time = None
+        for metadata in group_metadata:
+            source_path = Path(metadata['filepath'])
+            if source_path.exists():
+                file_mtime = source_path.stat().st_mtime
+                if newest_file_time is None or file_mtime > newest_file_time:
+                    newest_file_time = file_mtime
+        
+        newest_date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d %H:%M:%S') if newest_file_time else "Unknown"
+        
         print(f"📁 {folder_name}/")
+        print(f"   📅 Folder date will be set to: {newest_date_str}")
         for metadata in group_metadata:
             filename = metadata['filename']
             print(f"   📄 {filename}")
@@ -706,6 +739,11 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         if results:
             print(f"\n✅ Successfully created {len(results)} bundle folders!")
             print(f"Files have been organized in: {destination}")
+            print("\nFolder dates set to newest file:")
+            for group_key, result_info in results.items():
+                folder_name = Path(result_info['folder_path']).name
+                newest_date = result_info.get('newest_file_date', 'Unknown')
+                print(f"  📁 {folder_name}: {newest_date}")
         else:
             print("❌ No files were bundled.")
             print("\nPress Enter to exit...")
