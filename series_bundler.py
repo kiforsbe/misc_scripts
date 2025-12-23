@@ -9,6 +9,18 @@ from typing import Dict, List, Optional, Tuple
 import re
 
 try:
+    from colorama import Fore, Style, init as colorama_init
+    colorama_init(autoreset=True)
+    COLORAMA_AVAILABLE = True
+except ImportError:
+    COLORAMA_AVAILABLE = False
+    # Fallback to empty strings
+    class Fore:
+        GREEN = CYAN = YELLOW = RED = MAGENTA = BLUE = WHITE = RESET = ""
+    class Style:
+        BRIGHT = DIM = RESET_ALL = ""
+
+try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
 except ImportError:
@@ -50,14 +62,16 @@ class SeriesBundler:
     the pattern: [Release Group] Series Name (YYYY) (xx-yy) (Resolution)
     """
     
-    def __init__(self, verbose: int = 0):
+    def __init__(self, verbose: int = 0, use_colors: bool = True):
         """
         Initialize the SeriesBundler.
         
         Args:
             verbose: Verbosity level (0=quiet, 1=normal, 2=verbose)
+            use_colors: Whether to use color formatting in output
         """
         self.verbose = verbose
+        self.use_colors = use_colors and COLORAMA_AVAILABLE
         self.file_metadata = {}
         self.series_groups = defaultdict(list)
         
@@ -65,6 +79,12 @@ class SeriesBundler:
         """Log message if verbosity level is sufficient."""
         if self.verbose >= level:
             print(message)
+    
+    def _color(self, text: str, color: str = "") -> str:
+        """Apply color to text if colors are enabled."""
+        if self.use_colors and color:
+            return f"{color}{text}{Style.RESET_ALL}"
+        return text
     
     def _clean_filename(self, name: str) -> str:
         """Clean filename/folder name for filesystem compatibility."""
@@ -468,7 +488,7 @@ class SeriesBundler:
             if not dry_run and newest_file_time is not None and folder_path.exists():
                 try:
                     os.utime(str(folder_path), (newest_file_time, newest_file_time))
-                    newest_date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d %H:%M:%S')
+                    newest_date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d')
                     self._log(f"  Set folder date to: {newest_date_str}", 1)
                 except Exception as e:
                     self._log(f"  Warning: Could not set folder date: {e}", 1)
@@ -481,7 +501,7 @@ class SeriesBundler:
             # Store folder path and newest file date
             results[group_key] = {
                 'folder_path': str(folder_path),
-                'newest_file_date': datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d %H:%M:%S') if newest_file_time else None
+                'newest_file_date': datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d') if newest_file_time else None
             }
         
         return results
@@ -705,24 +725,36 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
                 if newest_file_time is None or file_mtime > newest_file_time:
                     newest_file_time = file_mtime
         
-        newest_date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d %H:%M:%S') if newest_file_time else "Unknown"
+        newest_date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d') if newest_file_time else "Unknown"
         
-        print(f"📁 {folder_name}/")
-        print(f"   📅 Folder date will be set to: {newest_date_str}")
+        # Print folder and files
+        print(bundler._color(f"📁 {folder_name}/", Fore.CYAN + Style.BRIGHT))
         for metadata in group_metadata:
             filename = metadata['filename']
-            print(f"   📄 {filename}")
+            source_path = Path(metadata['filepath'])
+            
+            # Get file modification time
+            if source_path.exists():
+                file_mtime = source_path.stat().st_mtime
+                file_date_str = datetime.fromtimestamp(file_mtime).strftime('%Y-%m-%d')
+            else:
+                file_date_str = "Unknown"
+            
+            print(f"   📄 {filename} {bundler._color(f'({file_date_str})', Style.DIM + Fore.WHITE)}")
+        
+        # Print folder date footer
+        print(bundler._color(f"   📅 Folder date will be set to: {newest_date_str}", Fore.YELLOW))
         print()
     
     # Get user confirmation
-    print("This will:")
-    print(f"1. Create folder structure in: {destination}")
-    print(f"2. Move {len(files)} files into {len(bundler.series_groups)} organized folders")
-    print(f"3. Original files will be moved (not copied)")
+    print(bundler._color("This will:", Fore.YELLOW + Style.BRIGHT))
+    print(f"1. Create folder structure in: {bundler._color(str(destination), Fore.CYAN)}")
+    print(f"2. Move {bundler._color(str(len(files)), Fore.MAGENTA)} files into {bundler._color(str(len(bundler.series_groups)), Fore.MAGENTA)} organized folders")
+    print(f"3. Original files will be {bundler._color('moved', Fore.RED)} (not copied)")
     print()
     
     if not get_user_confirmation("Do you want to proceed with bundling?", default=False):
-        print("Operation cancelled by user.")
+        print(bundler._color("Operation cancelled by user.", Fore.YELLOW))
         print("\nPress Enter to exit...")
         input()
         return 1
@@ -737,21 +769,21 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         )
         
         if results:
-            print(f"\n✅ Successfully created {len(results)} bundle folders!")
-            print(f"Files have been organized in: {destination}")
-            print("\nFolder dates set to newest file:")
+            print(bundler._color(f"\n✅ Successfully created {len(results)} bundle folders!", Fore.GREEN + Style.BRIGHT))
+            print(f"Files have been organized in: {bundler._color(str(destination), Fore.CYAN)}")
+            print(bundler._color("\nFolder dates set to newest file:", Fore.YELLOW))
             for group_key, result_info in results.items():
                 folder_name = Path(result_info['folder_path']).name
                 newest_date = result_info.get('newest_file_date', 'Unknown')
-                print(f"  📁 {folder_name}: {newest_date}")
+                print(f"  📁 {bundler._color(folder_name, Fore.CYAN)}: {bundler._color(newest_date, Style.DIM + Fore.WHITE)}")
         else:
-            print("❌ No files were bundled.")
+            print(bundler._color("❌ No files were bundled.", Fore.RED))
             print("\nPress Enter to exit...")
             input()
             return 1
             
     except Exception as e:
-        print(f"❌ Error during bundling: {e}")
+        print(bundler._color(f"❌ Error during bundling: {e}", Fore.RED))
         print("\nPress Enter to exit...")
         input()
         return 1
@@ -833,6 +865,12 @@ Examples:
         help='Disable interactive mode even for drag-and-drop scenarios'
     )
     
+    parser.add_argument(
+        '--no-color',
+        action='store_true',
+        help='Disable color formatting in output'
+    )
+    
     args = parser.parse_args()
     
     # Check for drag-and-drop mode
@@ -865,7 +903,7 @@ Examples:
             return 1
         
         # Initialize bundler
-        bundler = SeriesBundler(verbose=1)  # Always use some verbosity in interactive mode
+        bundler = SeriesBundler(verbose=1, use_colors=not args.no_color)  # Always use some verbosity in interactive mode
         
         # Run interactive bundling
         return interactive_bundle_mode(video_files, bundler)
@@ -887,7 +925,7 @@ Examples:
             print(f"Found {len(files)} video files")
         
         # Initialize bundler
-        bundler = SeriesBundler(verbose=args.verbose)
+        bundler = SeriesBundler(verbose=args.verbose, use_colors=not args.no_color)
         
         # Analyze files
         bundler.analyze_files(files)
