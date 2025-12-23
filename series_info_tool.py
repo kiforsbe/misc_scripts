@@ -141,6 +141,14 @@ class SeriesInfoTool:
                 logging.debug(f"Found MAL URL in metadata: {mal_url}")
                 urls.add(mal_url)
             
+            # Check sources list for MyAnimeList URLs
+            sources = metadata.get('sources', [])
+            if sources:
+                for source_url in sources:
+                    if 'myanimelist' in str(source_url).lower():
+                        logging.debug(f"Found MAL URL in sources: {source_url}")
+                        urls.add(source_url)
+            
             # Also check watch status for URL
             mal_watch_status = info.get('myanimelist_watch_status')
             if mal_watch_status and isinstance(mal_watch_status, dict):
