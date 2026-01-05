@@ -18,6 +18,7 @@ import json
 import hashlib
 import subprocess
 import tempfile
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 
@@ -46,7 +47,7 @@ class VideoThumbnailGenerator:
     """Generates and manages video thumbnails with caching support."""
     
     def __init__(self, thumbnail_dir: Optional[str] = None, max_height: int = 480, 
-                 min_duration: float = 300.0):
+                 min_duration: float = 300.0, skip_cbr: bool = False):
         """
         Initialize the thumbnail generator.
         
@@ -54,7 +55,9 @@ class VideoThumbnailGenerator:
             thumbnail_dir: Directory to store thumbnails (default: ~/.video_thumbnail_cache)
             max_height: Maximum height for thumbnails in pixels
             min_duration: Minimum video duration in seconds to generate thumbnails (default: 300 = 5 minutes)
+            skip_cbr: Whether to skip CBR (RAR) comic archive processing
         """
+        self.logger = logging.getLogger(__name__)
         if thumbnail_dir is None:
             self.thumbnail_dir = os.path.expanduser("~/.video_thumbnail_cache")
         else:
@@ -62,6 +65,7 @@ class VideoThumbnailGenerator:
             
         self.max_height = max_height
         self.min_duration = min_duration
+        self.skip_cbr = skip_cbr
         os.makedirs(self.thumbnail_dir, exist_ok=True)
     
     def _get_thumbnail_paths(self, video_path: str) -> tuple[str, str]:
@@ -171,8 +175,7 @@ class VideoThumbnailGenerator:
             try:
                 from PIL import Image
             except ImportError:
-                if verbose >= 1:
-                    print(f"PIL/Pillow not available for comic thumbnail generation: {comic_path}")
+                self.logger.warning(f"PIL/Pillow not available for comic thumbnail generation: {comic_path}")
                 return {
                     "video": comic_path,
                     "static_thumbnail": None,
@@ -208,37 +211,82 @@ class VideoThumbnailGenerator:
             
             # Handle CBR (RAR) archives
             elif ext.endswith('.cbr'):
+                # Try libarchive first (fast, native library)
                 try:
-                    import rarfile
-                    with rarfile.RarFile(comic_path, 'r') as archive:
-                        # Get list of image files
-                        image_files = [f for f in archive.namelist() 
-                                     if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
-                                     and not f.startswith('__MACOSX/')]
-                        
-                        if not image_files:
-                            if verbose >= 1:
-                                print(f"No images found in comic archive: {comic_path}")
-                            return {
-                                "video": comic_path,
-                                "static_thumbnail": None,
-                                "animated_thumbnail": None
-                            }
-                        
-                        # Sort to get first page
-                        image_files.sort()
-                        
-                        # Read first image
-                        with archive.open(image_files[0]) as img_file:
-                            image_data = img_file.read()
+                    import libarchive
+                    
+                    image_files = []
+                    
+                    # First pass: collect image filenames
+                    try:
+                        with libarchive.file_reader(comic_path) as archive:
+                            for entry in archive:
+                                try:
+                                    filename = entry.pathname
+                                    
+                                    # Skip if pathname is None or not a string
+                                    if not filename or not isinstance(filename, str):
+                                        continue
+                                    
+                                    if (filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                        and not filename.startswith('__MACOSX/')):
+                                        image_files.append(filename)
+                                except Exception:
+                                    continue
+                    except Exception as e:
+                        self.logger.error(f"Error reading CBR archive with libarchive: {e}")
+                        raise  # Re-raise to trigger fallback to rarfile
+                    
+                    if not image_files:
+                        self.logger.warning(f"No images found in comic archive: {comic_path}")
+                        return {
+                            "video": comic_path,
+                            "static_thumbnail": None,
+                            "animated_thumbnail": None
+                        }
+                    
+                    # Sort to get first page
+                    image_files.sort()
+                    first_image = image_files[0]
+                    
+                    # Second pass: extract first image data
+                    with libarchive.file_reader(comic_path) as archive:
+                        for entry in archive:
+                            if entry.pathname == first_image:
+                                image_data = b''.join(entry.get_blocks())
+                                break
+                    
                 except ImportError:
-                    if verbose >= 1:
-                        print(f"rarfile library not available for CBR extraction: {comic_path}")
-                    return {
-                        "video": comic_path,
-                        "static_thumbnail": None,
-                        "animated_thumbnail": None
-                    }
+                    # Fallback to rarfile
+                    try:
+                        import rarfile
+                        with rarfile.RarFile(comic_path, 'r') as archive:
+                            # Get list of image files
+                            image_files = [f for f in archive.namelist() 
+                                         if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                         and not f.startswith('__MACOSX/')]
+                            
+                            if not image_files:
+                                self.logger.warning(f"No images found in comic archive: {comic_path}")
+                                return {
+                                    "video": comic_path,
+                                    "static_thumbnail": None,
+                                    "animated_thumbnail": None
+                                }
+                            
+                            # Sort to get first page
+                            image_files.sort()
+                            
+                            # Read first image
+                            with archive.open(image_files[0]) as img_file:
+                                image_data = img_file.read()
+                    except ImportError:
+                        self.logger.warning(f"No RAR library available for CBR extraction: {comic_path}")
+                        return {
+                            "video": comic_path,
+                            "static_thumbnail": None,
+                            "animated_thumbnail": None
+                        }
             
             if image_data:
                 # Open image and resize
@@ -299,6 +347,14 @@ class VideoThumbnailGenerator:
         
         # Check if this is a comic file
         if video_path_str.lower().endswith(('.cbr', '.cbz')):
+            # Skip CBR files if skip_cbr is enabled
+            if self.skip_cbr and video_path_str.lower().endswith('.cbr'):
+                self.logger.debug(f"Skipping CBR thumbnail generation (--skip-cbr enabled): {os.path.basename(video_path_str)}")
+                return {
+                    "video": video_path_str,
+                    "static_thumbnail": None,
+                    "animated_thumbnail": None
+                }
             return self._generate_comic_thumbnail(video_path_str, verbose, force_regenerate)
         
         static_thumb, animated_thumb = self._get_thumbnail_paths(video_path_str)

@@ -15,6 +15,7 @@ import json
 import csv
 import argparse
 import subprocess
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Any
@@ -57,6 +58,48 @@ except ImportError:
     VideoThumbnailGenerator = None
 
 
+def setup_logging(log_level: str, log_file: Optional[str] = None) -> None:
+    """Configure logging with both console and file handlers.
+    
+    Args:
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: Optional path to log file. If None, defaults to file_metadata_scanner.log
+    """
+    # Convert string level to logging constant
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {log_level}')
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Get root logger
+    logger = logging.getLogger()
+    logger.setLevel(numeric_level)
+    
+    # Remove existing handlers
+    logger.handlers.clear()
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(numeric_level)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler
+    if log_file is None:
+        log_file = 'file_metadata_scanner.log'
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    file_handler.setLevel(numeric_level)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    logging.info(f"Logging initialized at {log_level} level")
+
+
 @dataclass
 class FileMetadata:
     """Data class for file metadata."""
@@ -90,7 +133,9 @@ class ExtendedMetadataExtractor:
     DOCUMENT_EXTENSIONS = {'.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt'}
     COMIC_EXTENSIONS = {'.cbr', '.cbz'}
     
-    def __init__(self):
+    def __init__(self, skip_cbr: bool = False):
+        self.logger = logging.getLogger(__name__)
+        self.skip_cbr = skip_cbr
         self._ffmpeg_available = self._check_ffmpeg()
         self._ffprobe_available = self._check_ffprobe()
     
@@ -142,6 +187,7 @@ class ExtendedMetadataExtractor:
     def _extract_media_metadata(self, file_path: str) -> Dict[str, Any]:
         """Extract metadata from audio/video files using ffprobe."""
         if not self._ffprobe_available:
+            self.logger.warning("ffprobe not available for media metadata extraction")
             return {'error': 'ffprobe not available'}
         
         try:
@@ -199,7 +245,14 @@ class ExtendedMetadataExtractor:
             
             return metadata
             
-        except (subprocess.CalledProcessError, json.JSONDecodeError, Exception) as e:
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"ffprobe failed for {Path(file_path).name}: {e.stderr if hasattr(e, 'stderr') else str(e)}", exc_info=True)
+            return {'error': str(e)}
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse ffprobe output for {Path(file_path).name}: {str(e)}", exc_info=True)
+            return {'error': f'JSON decode error: {str(e)}'}
+        except Exception as e:
+            self.logger.error(f"Error extracting media metadata for {Path(file_path).name}: {str(e)}", exc_info=True)
             return {'error': str(e)}
     
     def _extract_image_metadata(self, file_path: str) -> Dict[str, Any]:
@@ -245,8 +298,11 @@ class ExtendedMetadataExtractor:
             # Handle CBZ (ZIP) archives
             if ext == '.cbz':
                 with zipfile.ZipFile(file_path, 'r') as archive:
+                    # Get namelist once and cache it
+                    all_files = archive.namelist()
+                    
                     # Get list of image files
-                    image_files = [f for f in archive.namelist() 
+                    image_files = [f for f in all_files
                                  if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
                                  and not f.startswith('__MACOSX/')]
                     image_files.sort()
@@ -255,7 +311,7 @@ class ExtendedMetadataExtractor:
                     metadata['format'] = 'CBZ'
                     
                     # Try to read ComicInfo.xml if present
-                    if 'ComicInfo.xml' in archive.namelist():
+                    if 'ComicInfo.xml' in all_files:
                         try:
                             with archive.open('ComicInfo.xml') as xml_file:
                                 tree = ET.parse(xml_file)
@@ -276,45 +332,118 @@ class ExtendedMetadataExtractor:
             
             # Handle CBR (RAR) archives
             elif ext == '.cbr':
+                if self.skip_cbr:
+                    self.logger.debug(f"Skipping CBR file (--skip-cbr enabled): {Path(file_path).name}")
+                    metadata['format'] = 'CBR'
+                    metadata['page_count'] = 0
+                    metadata['error'] = 'CBR processing skipped (--skip-cbr flag)'
+                    return metadata
+                
+                # Try libarchive first (fast, native library)
+                libarchive_failed = False
                 try:
-                    import rarfile
-                    with rarfile.RarFile(file_path, 'r') as archive:
-                        # Get list of image files
-                        image_files = [f for f in archive.namelist() 
-                                     if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
-                                     and not f.startswith('__MACOSX/')]
+                    import libarchive
+                    self.logger.debug(f"Using libarchive for CBR archive: {Path(file_path).name}")
+                    
+                    image_files = []
+                    comicinfo_data = None
+                    
+                    try:
+                        with libarchive.file_reader(file_path) as archive:
+                            for entry in archive:
+                                try:
+                                    filename = entry.pathname
+                                    
+                                    # Skip if pathname is None or not a string
+                                    if not filename or not isinstance(filename, str):
+                                        continue
+                                    
+                                    # Check for ComicInfo.xml
+                                    if filename == 'ComicInfo.xml':
+                                        # Read the XML data
+                                        comicinfo_data = b''.join(entry.get_blocks())
+                                    
+                                    # Check for image files
+                                    elif (filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                          and not filename.startswith('__MACOSX/')):
+                                        image_files.append(filename)
+                                except Exception as e:
+                                    self.logger.debug(f"Error processing archive entry: {e}")
+                                    continue
+                    except Exception as e:
+                        self.logger.warning(f"libarchive failed for {Path(file_path).name}: {e}, falling back to rarfile")
+                        libarchive_failed = True
+                    
+                    if not libarchive_failed:
                         image_files.sort()
-                        
                         metadata['page_count'] = len(image_files)
                         metadata['format'] = 'CBR'
                         
-                        # Try to read ComicInfo.xml if present
-                        if 'ComicInfo.xml' in archive.namelist():
+                        # Parse ComicInfo.xml if found
+                        if comicinfo_data:
                             try:
-                                with archive.open('ComicInfo.xml') as xml_file:
-                                    tree = ET.parse(xml_file)
-                                    root = tree.getroot()
-                                    
-                                    # Extract common comic metadata
-                                    for field in ['Title', 'Series', 'Number', 'Volume', 'Writer', 
-                                                'Penciller', 'Publisher', 'Year', 'PageCount']:
-                                        elem = root.find(field)
-                                        if elem is not None and elem.text:
-                                            metadata[field.lower()] = elem.text
+                                import xml.etree.ElementTree as ET
+                                root = ET.fromstring(comicinfo_data)
+                                for field in ['Title', 'Series', 'Number', 'Volume', 'Writer', 
+                                            'Penciller', 'Publisher', 'Year', 'PageCount']:
+                                    elem = root.find(field)
+                                    if elem is not None and elem.text:
+                                        metadata[field.lower()] = elem.text
                             except Exception:
                                 pass
                         
                         # Store first page name for thumbnail generation
                         if image_files:
                             metadata['first_page'] = image_files[0]
-                except ImportError:
-                    metadata['error'] = 'rarfile library not available for CBR extraction'
-                    metadata['page_count'] = 0
-                    metadata['format'] = 'CBR'
+                        
+                        self.logger.debug(f"Finished CBR archive (libarchive): {Path(file_path).name}")
+                    
+                except (ImportError, OSError, TypeError) as e:
+                    # ImportError: libarchive-c not installed
+                    # OSError: libarchive DLL not found or invalid path
+                    # TypeError: libarchive path is None during import (DLL not installed)
+                    if isinstance(e, TypeError):
+                        self.logger.debug(f"libarchive-c is installed but libarchive DLL is missing. Install libarchive DLL or use 'pip install rarfile' for CBR support. Falling back to rarfile.")
+                    elif isinstance(e, OSError):
+                        self.logger.debug(f"libarchive DLL initialization failed: {e}. The DLL path may be incorrect or dependencies are missing. Falling back to rarfile.")
+                    else:
+                        self.logger.debug(f"libarchive import/initialization failed: {e}. Falling back to rarfile.")
+                    libarchive_failed = True
+                
+                # Fallback to rarfile if libarchive failed or not available
+                if libarchive_failed:
+                    try:
+                        import rarfile
+                        self.logger.debug(f"Using rarfile (slow) for CBR archive: {Path(file_path).name}")
+                        with rarfile.RarFile(file_path, 'r') as archive:
+                            # Get namelist once and cache it (subprocess call - slow)
+                            all_files = archive.namelist()
+                            
+                            # Get list of image files
+                            image_files = [f for f in all_files
+                                         if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                         and not f.startswith('__MACOSX/')]
+                            image_files.sort()
+                            
+                            metadata['page_count'] = len(image_files)
+                            metadata['format'] = 'CBR'
+                            
+                            # Skip ComicInfo.xml extraction to avoid additional subprocess overhead
+                            
+                            # Store first page name for thumbnail generation
+                            if image_files:
+                                metadata['first_page'] = image_files[0]
+                        self.logger.debug(f"Finished CBR archive (rarfile): {Path(file_path).name}")
+                    except ImportError:
+                        self.logger.warning(f"Neither libarchive nor rarfile library available for CBR extraction: {Path(file_path).name}")
+                        metadata['error'] = 'No RAR library available for CBR extraction (install libarchive-c or rarfile)'
+                        metadata['page_count'] = 0
+                        metadata['format'] = 'CBR'
             
             return metadata
             
         except Exception as e:
+            self.logger.error(f"Error extracting comic metadata for {Path(file_path).name}: {str(e)}", exc_info=True)
             return {'error': str(e)}
     
     @staticmethod
@@ -359,11 +488,15 @@ class WebappGenerator:
         Returns:
             True if successful, False otherwise
         """
+        logger = logging.getLogger(__name__)
+        logger.info(f"Generating webapp HTML with {len(metadata_list)} items")
+        
         # Get script directory to load templates
         script_dir = Path(__file__).parent
         
         try:
             # Load templates
+            logger.debug("Loading template files")
             html_template = (script_dir / 'file_metadata_scanner_template.html').read_text(encoding='utf-8')
             css_template = (script_dir / 'file_metadata_scanner_template.css').read_text(encoding='utf-8')
             js_template = (script_dir / 'file_metadata_scanner_template.js').read_text(encoding='utf-8')
@@ -380,13 +513,16 @@ class WebappGenerator:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             
+            logger.info(f"Webapp generated successfully: {output_path}")
             return True
             
         except FileNotFoundError as e:
+            logger.error(f"Template file not found: {e}")
             print(f"Error: Template file not found. Make sure template files are in the script directory.", file=sys.stderr)
             print(f"Details: {e}", file=sys.stderr)
             return False
         except Exception as e:
+            logger.error(f"Error generating webapp: {e}")
             print(f"Error generating webapp: {e}", file=sys.stderr)
             return False
 
@@ -404,7 +540,8 @@ class FileMetadataScanner:
                  extract_extended: bool = False,
                  metadata_root: Optional[str] = None,
                  thumbnails_enabled: bool = False,
-                 min_duration: float = 300.0):
+                 min_duration: float = 300.0,
+                 skip_cbr: bool = False):
         """
         Initialize the scanner.
         
@@ -417,7 +554,9 @@ class FileMetadataScanner:
             metadata_root: Root directory for metadata files (CSV, JSON, thumbnails)
             thumbnails_enabled: Whether to generate thumbnails for video files
             min_duration: Minimum video duration in seconds for thumbnail generation
+            skip_cbr: Whether to skip CBR (RAR) comic archive processing
         """
+        self.logger = logging.getLogger(__name__)
         self.root_path = Path(root_path).resolve()
         self.recursive = recursive
         self.exclude_paths = set(exclude_paths or [])
@@ -426,6 +565,9 @@ class FileMetadataScanner:
         self.extract_extended = extract_extended
         self.thumbnails_enabled = thumbnails_enabled
         self.min_duration = min_duration
+        self.skip_cbr = skip_cbr
+        
+        self.logger.info(f"Scanner initialized: path={root_path}, recursive={recursive}, extended={extract_extended}, thumbnails={thumbnails_enabled}, min_duration={min_duration}s, skip_cbr={skip_cbr}")
         
         # Set metadata root directory
         if metadata_root:
@@ -448,7 +590,7 @@ class FileMetadataScanner:
         # Create metadata root directory
         self.metadata_root.mkdir(parents=True, exist_ok=True)
         
-        self.metadata_extractor = ExtendedMetadataExtractor() if extract_extended else None
+        self.metadata_extractor = ExtendedMetadataExtractor(skip_cbr=skip_cbr) if extract_extended else None
         self.results: List[FileMetadata] = []
         self.video_files: List[Path] = []  # Track video files for batch thumbnail generation
         
@@ -460,7 +602,8 @@ class FileMetadataScanner:
                 self.thumbnail_generator = VideoThumbnailGenerator(
                     thumbnail_dir=str(thumbnail_dir),
                     max_height=480,
-                    min_duration=min_duration
+                    min_duration=min_duration,
+                    skip_cbr=skip_cbr
                 )
             else:
                 print("Warning: Video thumbnail generation requested but video_thumbnail_generator.py not available", 
@@ -693,10 +836,12 @@ class FileMetadataScanner:
         Returns:
             List of FileMetadata objects
         """
+        self.logger.info(f"Starting scan of {self.root_path}")
         self.results = []
         self.video_files = []
         
         if not self.root_path.exists():
+            self.logger.error(f"Path does not exist: {self.root_path}")
             print(f"Error: Path '{self.root_path}' does not exist.", file=sys.stderr)
             return self.results
         
@@ -705,12 +850,14 @@ class FileMetadataScanner:
             self.results.append(self._extract_metadata(self.root_path))
         
         # Scan directory with progress indication
+        self.logger.info(f"Scanning files (recursive={self.recursive})...")
         print(f"Scanning files...")
         if self.recursive:
             self._scan_recursive(self.root_path, show_progress=show_progress)
         else:
             self._scan_non_recursive(self.root_path, show_progress=show_progress)
         
+        self.logger.info(f"Scan complete: found {len(self.results)} items, {len(self.video_files)} video/comic files")
         return self.results
     
     def generate_thumbnails(self, show_progress: bool = True, force_regenerate: bool = False) -> bool:
@@ -725,14 +872,17 @@ class FileMetadataScanner:
             True if thumbnails were generated successfully, False otherwise
         """
         if not self.thumbnail_generator:
+            self.logger.warning("Thumbnail generator not initialized")
             print("Warning: Thumbnail generator not initialized", file=sys.stderr)
             return False
         
         if not self.video_files:
+            self.logger.info("No video files found for thumbnail generation")
             if show_progress:
                 print("No video files found for thumbnail generation")
             return True
         
+        self.logger.info(f"Generating thumbnails for {len(self.video_files)} video files")
         print(f"\nGenerating thumbnails for {len(self.video_files)} video files...")
         thumbnail_results = self.thumbnail_generator.generate_thumbnails_for_videos(
             self.video_files,
@@ -740,6 +890,8 @@ class FileMetadataScanner:
             force_regenerate=force_regenerate,
             show_progress=show_progress
         )
+        
+        self.logger.info(f"Thumbnail generation complete: {len(thumbnail_results)} results")
         
         # Map thumbnail results back to file metadata
         thumbnail_map = {r['video']: r for r in thumbnail_results}
@@ -810,11 +962,14 @@ class FileMetadataScanner:
             output_filename: Filename for output CSV file (will be placed in metadata_root)
         """
         if not self.results:
+            self.logger.warning("No results to export to CSV")
             print("No results to export.", file=sys.stderr)
             return
         
         # Ensure output is in metadata root
         output_path = self.metadata_root / output_filename
+        
+        self.logger.info(f"Exporting {len(self.results)} items to CSV: {output_path}")
         
         with open(output_path, 'w', newline='', encoding='utf-8') as f:
             # Define basic fields
@@ -834,6 +989,7 @@ class FileMetadataScanner:
                 row.pop('extended_metadata', None)
                 writer.writerow(row)
         
+        self.logger.info(f"CSV export completed: {output_path}")
         print(f"CSV exported to: {output_path}")
     
     def export_to_json(self, output_filename: str):
@@ -844,17 +1000,21 @@ class FileMetadataScanner:
             output_filename: Filename for output JSON file (will be placed in metadata_root)
         """
         if not self.results:
+            self.logger.warning("No results to export to JSON")
             print("No results to export.", file=sys.stderr)
             return
         
         # Ensure output is in metadata root
         output_path = self.metadata_root / output_filename
         
+        self.logger.info(f"Exporting {len(self.results)} items to JSON: {output_path}")
+        
         data = [asdict(item) for item in self.results]
         
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
+        self.logger.info(f"JSON export completed: {output_path}")
         print(f"JSON exported to: {output_path}")
     
     def export_to_webapp(self, output_filename: str):
@@ -865,22 +1025,26 @@ class FileMetadataScanner:
             output_filename: Filename for output HTML file (will be placed in metadata_root)
         """
         if not self.results:
+            self.logger.warning("No results to export to webapp")
             print("No results to export.", file=sys.stderr)
             return
         
         # Ensure output is in metadata root
         output_path = self.metadata_root / output_filename
         
+        self.logger.info(f"Generating webapp with {len(self.results)} items: {output_path}")
+        
         # Convert results to dictionary list
         data = [asdict(item) for item in self.results]
         
         # Generate webapp
         if WebappGenerator.generate_html(data, output_path):
+            self.logger.info(f"Webapp generation completed: {output_path}")
             print(f"Webapp exported to: {output_path}")
     
     @staticmethod
     def regenerate_webapp_from_bundle(bundle_path: str, generate_thumbnails: bool = False,
-                                      min_duration: float = 300.0) -> bool:
+                                      min_duration: float = 300.0, skip_cbr: bool = False) -> bool:
         """
         Regenerate the webapp HTML file from existing JSON metadata in a bundle.
         
@@ -888,13 +1052,18 @@ class FileMetadataScanner:
             bundle_path: Path to the metadata bundle directory
             generate_thumbnails: Whether to generate missing thumbnails for videos
             min_duration: Minimum video duration in seconds for thumbnail generation
+            skip_cbr: Whether to skip CBR (RAR) comic archive processing
             
         Returns:
             True if successful, False otherwise
         """
+        logger = logging.getLogger(__name__)
         bundle_dir = Path(bundle_path).resolve()
         
+        logger.info(f"Regenerating webapp from bundle: {bundle_dir}")
+        
         if not bundle_dir.exists() or not bundle_dir.is_dir():
+            logger.error(f"Bundle directory does not exist: {bundle_path}")
             print(f"Error: Bundle directory '{bundle_path}' does not exist.", file=sys.stderr)
             return False
         
@@ -902,11 +1071,13 @@ class FileMetadataScanner:
         json_files = list(bundle_dir.glob('*_metadata_*.json'))
         
         if not json_files:
+            logger.error(f"No metadata JSON files found in bundle: {bundle_path}")
             print(f"Error: No metadata JSON files found in '{bundle_path}'.", file=sys.stderr)
             return False
         
         # Get the most recent JSON file
         latest_json = max(json_files, key=lambda p: p.stat().st_mtime)
+        logger.info(f"Loading metadata from: {latest_json}")
         print(f"Loading metadata from: {latest_json}")
         
         try:
@@ -919,18 +1090,21 @@ class FileMetadataScanner:
             # Generate missing thumbnails if requested
             if generate_thumbnails:
                 if not THUMBNAIL_GENERATOR_AVAILABLE or not VideoThumbnailGenerator:
+                    logger.warning("Video thumbnail generation requested but video_thumbnail_generator.py not available")
                     print("Warning: Video thumbnail generation requested but video_thumbnail_generator.py not available", file=sys.stderr)
                 else:
-                    # Find videos without thumbnails
+                    # Find videos and comics without thumbnails
                     videos_needing_thumbnails = []
                     for item in metadata:
                         if (item.get('type') == 'file' and 
-                            item.get('extension', '').lower() in [ext for ext in ExtendedMetadataExtractor.VIDEO_EXTENSIONS] and
+                            (item.get('extension', '').lower() in [ext for ext in ExtendedMetadataExtractor.VIDEO_EXTENSIONS] or
+                             item.get('extension', '').lower() in [ext for ext in ExtendedMetadataExtractor.COMIC_EXTENSIONS]) and
                             not item.get('static_thumbnail') and 
                             not item.get('animated_thumbnail')):
                             videos_needing_thumbnails.append(Path(item['path']))
                     
                     if videos_needing_thumbnails:
+                        logger.info(f"Generating thumbnails for {len(videos_needing_thumbnails)} videos")
                         print(f"\nGenerating thumbnails for {len(videos_needing_thumbnails)} videos...")
                         
                         # Initialize thumbnail generator
@@ -938,7 +1112,8 @@ class FileMetadataScanner:
                         thumbnail_generator = VideoThumbnailGenerator(
                             thumbnail_dir=str(thumbnail_dir),
                             max_height=480,
-                            min_duration=min_duration
+                            min_duration=min_duration,
+                            skip_cbr=skip_cbr
                         )
                         
                         # Generate thumbnails
@@ -948,6 +1123,8 @@ class FileMetadataScanner:
                             force_regenerate=False,
                             show_progress=True
                         )
+                        
+                        logger.info(f"Thumbnail generation complete: {len(thumbnail_results)} results")
                         
                         # Update metadata with thumbnail information
                         thumbnail_map = {r['video']: r for r in thumbnail_results}
@@ -960,11 +1137,14 @@ class FileMetadataScanner:
                                 item['animated_thumbnail'] = Path(animated_path).name if animated_path else ''
                         
                         # Save updated metadata back to JSON
+                        logger.info("Updating metadata file with thumbnail information")
                         print("\nUpdating metadata file with thumbnail information...")
                         with open(latest_json, 'w', encoding='utf-8') as f:
                             json.dump(metadata, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Metadata updated: {latest_json}")
                         print(f"Metadata updated: {latest_json}")
                     else:
+                        logger.info("All videos already have thumbnails")
                         print("All videos already have thumbnails")
             
             # Generate output filename
@@ -1031,24 +1211,45 @@ Examples:
                        help='Extract extended metadata (audio/video info, etc.)')
     parser.add_argument('--thumbnails', action='store_true',
                        help='Generate thumbnails for video files (requires ffmpeg). In scan mode, generates thumbnails during scan. In regenerate mode, generates missing thumbnails.')
+    parser.add_argument('--skip-cbr', action='store_true',
+                       help='Skip CBR (RAR) comic archives during metadata extraction (CBR processing is slow due to subprocess overhead). CBZ files will still be processed.')
     parser.add_argument('--export-bundle', type=str, dest='export_bundle',
                        help='Directory path where CSV, JSON, and thumbnails will be exported (default: <path>/metadata)')
     parser.add_argument('--min-duration', type=float, default=300.0,
                        help='Minimum video duration in seconds for thumbnail generation (default: 300 = 5 minutes). Set to 0 to generate for all videos.')
     
+    # Logging arguments
+    parser.add_argument('--log-level', type=str, default='ERROR',
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                       help='Set the logging level (default: ERROR)')
+    parser.add_argument('--log-file', type=str, default=None,
+                       help='Path to log file (default: file_metadata_scanner.log)')
+    
     args = parser.parse_args()
+    
+    # Setup logging
+    setup_logging(args.log_level, args.log_file)
+    logger = logging.getLogger(__name__)
+    
+    logger.info("=" * 80)
+    logger.info("File Metadata Scanner started")
+    logger.info(f"Arguments: {vars(args)}")
     
     # Handle regenerate mode
     if args.regenerate_bundle:
         success = FileMetadataScanner.regenerate_webapp_from_bundle(
             args.regenerate_bundle, 
             generate_thumbnails=args.thumbnails,
-            min_duration=args.min_duration
+            min_duration=args.min_duration,
+            skip_cbr=args.skip_cbr
         )
+        logger.info("Webapp regeneration completed")
+        logger.info("=" * 80)
         sys.exit(0 if success else 1)
     
     # Validate path argument for scan mode
     if not args.path:
+        logger.error("No path specified for scan")
         parser.error('path is required when not using --regenerate-bundle')
     
     # Parse extensions
@@ -1070,12 +1271,14 @@ Examples:
         extract_extended=args.extended,
         metadata_root=args.export_bundle,
         thumbnails_enabled=args.thumbnails,
-        min_duration=args.min_duration
+        min_duration=args.min_duration,
+        skip_cbr=args.skip_cbr
     )
     
     # Scan for files
     results = scanner.scan()
     print(f"Found {len(results)} items")
+    logger.info(f"Scan completed: {len(results)} items found")
     
     # Export initial results (without thumbnails)
     base_name = scanner.metadata_root.name or 'metadata'
@@ -1085,6 +1288,7 @@ Examples:
     webapp_filename = f'{base_name}_explorer.html'
     
     print("\nSaving metadata...")
+    logger.info("Exporting metadata to CSV and JSON")
     scanner.export_to_csv(csv_filename)
     scanner.export_to_json(json_filename)
     
@@ -1093,11 +1297,15 @@ Examples:
         if scanner.generate_thumbnails():
             # Re-export with thumbnail information
             print("\nUpdating metadata with thumbnail information...")
+            logger.info("Updating metadata with thumbnail information")
             scanner.export_to_csv(csv_filename)
             scanner.export_to_json(json_filename)
     
     # Generate webapp
     scanner.export_to_webapp(webapp_filename)
+    
+    logger.info("File Metadata Scanner completed successfully")
+    logger.info("=" * 80)
 
 
 if __name__ == '__main__':
