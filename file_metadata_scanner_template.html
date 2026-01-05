@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Metadata Explorer</title>
+    <style>/*CSS_PLACEHOLDER*/</style>
+</head>
+<body>
+    <div class="header">
+        <h1>File Metadata Explorer</h1>
+        <div class="header-info">
+            <span id="rootPath"></span>
+            <span id="scanDate"></span>
+        </div>
+        <div class="search-bar">
+            <input type="text" id="searchInput" placeholder="Search files and folders...">
+            <button id="clearSearch">Clear</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>Folders</h2>
+                <div class="folder-stats">
+                    <span id="folderCount">0 folders</span>
+                </div>
+            </div>
+            <div id="folderTree" class="folder-tree"></div>
+        </div>
+
+        <div class="main-panel">
+            <div class="toolbar">
+                <div class="breadcrumb" id="breadcrumb"></div>
+                <div class="view-options">
+                    <label>
+                        <input type="checkbox" id="showHidden"> Show hidden
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showExtended"> Show extended metadata
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showThumbnails" checked> Show thumbnails
+                    </label>
+                </div>
+            </div>
+
+            <div class="file-list-container">
+                <div class="file-list-header">
+                    <span class="current-path" id="currentPath">Select a folder</span>
+                    <span class="item-count" id="itemCount"></span>
+                </div>
+                <table id="fileList" class="file-list">
+                    <thead>
+                        <tr>
+                            <th class="sortable" data-column="name">Name</th>
+                            <th class="sortable" data-column="type">Type</th>
+                            <th class="sortable" data-column="size">Size</th>
+                            <th class="sortable" data-column="modified_time">Modified</th>
+                            <th class="sortable" data-column="created_time">Created</th>
+                            <th>Attributes</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fileListBody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Details Modal -->
+    <div id="detailsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>File Details</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <script>
+        // Embed metadata JSON
+        const METADATA = /*JSON_PLACEHOLDER*/;
+        const THUMBNAIL_PATH = 'thumbnails/';
+    </script>
+    <script>/*JS_PLACEHOLDER*/</script>
+</body>
+</html>

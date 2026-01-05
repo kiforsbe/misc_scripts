@@ -583,8 +583,11 @@ class FileMetadataScanner:
             for item in self.results:
                 if item.path in thumbnail_map:
                     thumb_data = thumbnail_map[item.path]
-                    item.static_thumbnail = thumb_data.get('static_thumbnail') or ''
-                    item.animated_thumbnail = thumb_data.get('animated_thumbnail') or ''
+                    # Store only filename, not full path
+                    static_path = thumb_data.get('static_thumbnail')
+                    animated_path = thumb_data.get('animated_thumbnail')
+                    item.static_thumbnail = Path(static_path).name if static_path else ''
+                    item.animated_thumbnail = Path(animated_path).name if animated_path else ''
         
         return self.results
     
@@ -690,6 +693,50 @@ class FileMetadataScanner:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
         print(f"JSON exported to: {output_path}")
+    
+    def export_to_webapp(self, output_filename: str):
+        """
+        Export metadata to a standalone HTML webapp in metadata root directory.
+        
+        Args:
+            output_filename: Filename for output HTML file (will be placed in metadata_root)
+        """
+        if not self.results:
+            print("No results to export.", file=sys.stderr)
+            return
+        
+        # Ensure output is in metadata root
+        output_path = self.metadata_root / output_filename
+        
+        # Get script directory to load templates
+        script_dir = Path(__file__).parent
+        
+        try:
+            # Load templates
+            html_template = (script_dir / 'file_metadata_scanner_template.html').read_text(encoding='utf-8')
+            css_template = (script_dir / 'file_metadata_scanner_template.css').read_text(encoding='utf-8')
+            js_template = (script_dir / 'file_metadata_scanner_template.js').read_text(encoding='utf-8')
+            
+            # Prepare metadata JSON
+            data = [asdict(item) for item in self.results]
+            metadata_json = json.dumps(data, ensure_ascii=False)
+            
+            # Replace placeholders
+            html_content = html_template.replace('/*CSS_PLACEHOLDER*/', css_template)
+            html_content = html_content.replace('/*JS_PLACEHOLDER*/', js_template)
+            html_content = html_content.replace('/*JSON_PLACEHOLDER*/', metadata_json)
+            
+            # Write output
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            print(f"Webapp exported to: {output_path}")
+            
+        except FileNotFoundError as e:
+            print(f"Error: Template file not found. Make sure template files are in the script directory.", file=sys.stderr)
+            print(f"Details: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"Error generating webapp: {e}", file=sys.stderr)
 
 
 def main():
@@ -768,15 +815,17 @@ Examples:
     results = scanner.scan()
     print(f"Found {len(results)} items")
     
-    # Export results - always export both CSV and JSON
+    # Export results - always export CSV, JSON, and webapp
     # Use export-bundle folder name for the output files
     base_name = scanner.metadata_root.name or 'metadata'
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     csv_filename = f'{base_name}_metadata_{timestamp}.csv'
     json_filename = f'{base_name}_metadata_{timestamp}.json'
+    webapp_filename = f'{base_name}_explorer.html'
     
     scanner.export_to_csv(csv_filename)
     scanner.export_to_json(json_filename)
+    scanner.export_to_webapp(webapp_filename)
 
 
 if __name__ == '__main__':
