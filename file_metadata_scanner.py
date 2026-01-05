@@ -403,7 +403,7 @@ class FileMetadataScanner:
                  file_extensions: Optional[Set[str]] = None,
                  extract_extended: bool = False,
                  metadata_root: Optional[str] = None,
-                 generate_thumbnails: bool = False,
+                 thumbnails_enabled: bool = False,
                  min_duration: float = 300.0):
         """
         Initialize the scanner.
@@ -415,7 +415,7 @@ class FileMetadataScanner:
             file_extensions: Set of file extensions to filter (e.g., {'.mp4', '.txt'})
             extract_extended: Whether to extract extended metadata
             metadata_root: Root directory for metadata files (CSV, JSON, thumbnails)
-            generate_thumbnails: Whether to generate thumbnails for video files
+            thumbnails_enabled: Whether to generate thumbnails for video files
             min_duration: Minimum video duration in seconds for thumbnail generation
         """
         self.root_path = Path(root_path).resolve()
@@ -424,7 +424,7 @@ class FileMetadataScanner:
         self.file_extensions = set(ext.lower() if ext.startswith('.') else f'.{ext.lower()}' 
                                    for ext in (file_extensions or []))
         self.extract_extended = extract_extended
-        self.generate_thumbnails = generate_thumbnails
+        self.thumbnails_enabled = thumbnails_enabled
         self.min_duration = min_duration
         
         # Set metadata root directory
@@ -454,7 +454,7 @@ class FileMetadataScanner:
         
         # Initialize thumbnail generator if requested
         self.thumbnail_generator = None
-        if generate_thumbnails:
+        if thumbnails_enabled:
             if THUMBNAIL_GENERATOR_AVAILABLE and VideoThumbnailGenerator:
                 thumbnail_dir = self.metadata_root / 'thumbnails'
                 self.thumbnail_generator = VideoThumbnailGenerator(
@@ -1069,7 +1069,7 @@ Examples:
         file_extensions=extensions,
         extract_extended=args.extended,
         metadata_root=args.export_bundle,
-        generate_thumbnails=args.thumbnails,
+        thumbnails_enabled=args.thumbnails,
         min_duration=args.min_duration
     )
     
