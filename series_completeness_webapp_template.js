@@ -17,6 +17,9 @@ class SeriesCompletenessApp {
         // --- Thumbnails index ---
         this.thumbnails = SERIES_DATA.thumbnails || [];
         this.thumbnailMap = this.buildThumbnailMap(this.thumbnails);
+        this.popupTimeout = null;
+        this.hideTimeout = null;
+        this.currentPopupIndex = -1;
         this.init();
     }
 
@@ -44,6 +47,91 @@ class SeriesCompletenessApp {
             if (k.split(/[/\\]/).pop() === base) return this.thumbnailMap[k];
         }
         return null;
+    }
+
+    getThumbnailData(file) {
+        // Build thumbnail map if not already done
+        if (!this.thumbnailMap) {
+            this.thumbnailMap = {};
+            if (this.data.thumbnails && Array.isArray(this.data.thumbnails)) {
+                this.data.thumbnails.forEach(thumb => {
+                    if (thumb && thumb.video) {
+                        this.thumbnailMap[thumb.video] = thumb;
+                    }
+                });
+            }
+        }
+        
+        // Try to find thumbnail by exact path match
+        const filePath = file.path || file.filename;
+        if (!filePath) return null;
+        
+        if (this.thumbnailMap[filePath]) {
+            return this.thumbnailMap[filePath];
+        }
+        
+        // Try to match by basename (fallback)
+        const basename = filePath.split(/[/\\]/).pop();
+        for (const path in this.thumbnailMap) {
+            if (path.split(/[/\\]/).pop() === basename) {
+                return this.thumbnailMap[path];
+            }
+        }
+        
+        return null;
+    }
+
+    renderRatingInfo(file, style = 'compact') {
+        let ratingHtml = '';
+        const hasEpisodeRating = file.episode_metadata && file.episode_metadata.rating && file.episode_metadata.rating > 0;
+        const hasUserScore = file.myanimelist_watch_status && file.myanimelist_watch_status.score && file.myanimelist_watch_status.score > 0;
+        
+        if (!hasEpisodeRating && !hasUserScore) return '';
+        
+        if (style === 'compact') {
+            const ratings = [];
+            if (hasEpisodeRating) {
+                const communityScore = parseFloat(file.episode_metadata.rating).toFixed(1);
+                ratings.push(`⭐ ${communityScore}/10`);
+            }
+            if (hasUserScore) {
+                const userScore = parseFloat(file.myanimelist_watch_status.score).toFixed(1);
+                ratings.push(`👤 ${userScore}/10`);
+            }
+            if (ratings.length > 0) {
+                ratingHtml = `<div class="episode-ratings">${ratings.join(' • ')}</div>`;
+            }
+        } else if (style === 'detailed') {
+            if (hasEpisodeRating) {
+                const communityScore = parseFloat(file.episode_metadata.rating).toFixed(1);
+                ratingHtml += `<p><strong>Rating:</strong> <span class="community-score">⭐ ${communityScore}/10</span></p>`;
+            }
+            if (hasUserScore) {
+                const userScore = parseFloat(file.myanimelist_watch_status.score).toFixed(1);
+                ratingHtml += `<p><strong>Your Score:</strong> <span class="user-score">👤 ${userScore}/10</span></p>`;
+            }
+        }
+        
+        return ratingHtml;
+    }
+    
+    renderSeriesRatingInfo(series) {
+        let ratingHtml = '';
+        const metadata_id = series.title_id || (series.files && series.files[0] && series.files[0].metadata_id) || '';
+        const title_metadata = this.data.title_metadata[metadata_id] || {};
+        const hasCommunityRating = title_metadata.rating && title_metadata.rating > 0;
+        const hasUserScore = series.myanimelist_watch_status && series.myanimelist_watch_status.score && series.myanimelist_watch_status.score > 0;
+        
+        if (hasCommunityRating) {
+            const communityScore = parseFloat(title_metadata.rating).toFixed(1);
+            ratingHtml += `<p><strong>Rating:</strong> <span class="community-score">⭐ ${communityScore}/10</span></p>`;
+        }
+        if (hasUserScore) {
+            const userScore = parseFloat(series.myanimelist_watch_status.score).toFixed(1);
+            ratingHtml += `<p><strong>Your Score:</strong> <span class="user-score">👤 ${userScore}/10</span></p>`;
+        }
+        
+        return ratingHtml;
     }
 
     init() {
@@ -262,14 +350,35 @@ class SeriesCompletenessApp {
                 malStatusDisplay = `<span class="mal-status" title="MyAnimeList: ${malStatus.my_status}">${icon} ${malStatus.my_status}</span>`;
             }
 
+            // Get thumbnail for first episode
+            const thumb = firstFile ? this.getThumbnailData(firstFile) : null;
+            const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : '';
+            const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : '';
+            const thumbnailHtml = staticUrl 
+                ? `<div class="series-thumbnail">
+                    <img src="${staticUrl}" alt="${this.escapeHtml(titleWithSeason)}" loading="lazy" 
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                         onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" 
+                         onmouseleave="if(this.dataset.animUrl) this.src='${staticUrl}'" 
+                         data-anim-url="${animUrl}">
+                    <div style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: 600;">📺</div>
+                   </div>`
+                : '<div class="series-thumbnail-placeholder">📺</div>';
+
             return `
-                <div class="series-item" data-series-key="${series.key}" onclick="app.selectSeries('${series.key}')">
-                    <div class="series-title">${this.escapeHtml(titleWithSeason)}</div>
-                    <div class="series-meta">
-                        ${statusDisplay}
-                        ${malStatusDisplay}
-                        <div>
-                          ${episodeDisplay}
+                <div class="series-item" data-series-key="${series.key}" 
+                     onclick="app.selectSeries('${series.key}')" 
+                     onmouseenter="app.showSeriesPopup(event, '${series.key}')" 
+                     onmouseleave="app.hideSeriesPopup()">
+                    ${thumbnailHtml}
+                    <div class="series-info">
+                        <div class="series-title">${this.escapeHtml(titleWithSeason)}</div>
+                        <div class="series-meta">
+                            ${statusDisplay}
+                            ${malStatusDisplay}
+                            <div>
+                              ${episodeDisplay}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -304,6 +413,12 @@ class SeriesCompletenessApp {
         // Use series.title_id for season-specific metadata, fallback to first file's metadata_id
         const metadata_id = series.title_id || series.files[0].metadata_id || '';
         const title_metadata = this.data.title_metadata[metadata_id] || {};
+
+        // Get thumbnail for first episode
+        const firstFile = series.files && series.files[0];
+        const thumbnailData = firstFile ? this.getThumbnailData(firstFile) : null;
+        const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
+        const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
 
         // Get all available sources
         const sources = title_metadata.sources || [];
@@ -346,7 +461,19 @@ class SeriesCompletenessApp {
 
         const container = document.getElementById('series-details');
         container.innerHTML = `
-            <div class="details-header">
+            <div class="details-header" style="position: relative;">
+                ${staticUrl ? `
+                    <div class="series-detail-thumbnail">
+                        <img src="${staticUrl}" alt="Series thumbnail" 
+                             onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" 
+                             onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" 
+                             onmouseleave="if(this.dataset.animUrl) this.src='${staticUrl}'" 
+                             data-anim-url="${animUrl || ''}">
+                        <div style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; font-size: 2rem; font-weight: 600;">
+                            📺
+                        </div>
+                    </div>
+                ` : ''}
                 ${titleHtml}
                 <div class="details-subtitle">
                     ${series.episodes_found} episodes found${series.episodes_expected ? ` of ${series.episodes_expected} expected` : ''}
@@ -372,6 +499,8 @@ class SeriesCompletenessApp {
                     </h4>
                     ${this.renderWatchProgress(series)}
                 </div>
+                
+                ${this.renderSeriesInfo(series)}
                 
                 ${this.renderMalInfo(series)}
             </div>
@@ -457,6 +586,44 @@ class SeriesCompletenessApp {
                 </div>
             </div>
         `;
+        
+        // Add rating information
+        const ratingInfo = this.renderSeriesRatingInfo(series);
+        if (ratingInfo) {
+            content += `<div class="mt-3">${ratingInfo}</div>`;
+        }
+        
+        return content;
+    }
+    
+    renderSeriesInfo(series) {
+        const metadata_id = series.title_id || (series.files && series.files[0] && series.files[0].metadata_id) || '';
+        const title_metadata = this.data.title_metadata[metadata_id] || {};
+        
+        // Check if we have any metadata to show
+        const hasYear = title_metadata.year;
+        const hasGenres = title_metadata.genres && title_metadata.genres.length > 0;
+        const hasTags = title_metadata.tags && title_metadata.tags.length > 0;
+        const hasPlot = title_metadata.plot;
+        const hasType = title_metadata.type;
+        
+        if (!hasYear && !hasGenres && !hasTags && !hasPlot && !hasType) {
+            return ''; // Don't show the card if no metadata available
+        }
+        
+        return `
+            <div class="details-card">
+                <h4 class="card-title">
+                    <i class="bi bi-info-circle"></i>
+                    Series Information
+                </h4>
+                ${hasType ? `<p><strong>Type:</strong> ${this.escapeHtml(title_metadata.type)}</p>` : ''}
+                ${hasYear ? `<p><strong>Year:</strong> ${title_metadata.year}</p>` : ''}
+                ${hasGenres ? `<p><strong>Genres:</strong> ${title_metadata.genres.map(g => this.escapeHtml(g)).join(', ')}</p>` : ''}
+                ${hasTags ? this.renderTagsWithPopup(title_metadata.tags) : ''}
+                ${hasPlot ? `<p><strong>Plot:</strong> ${this.escapeHtml(title_metadata.plot)}</p>` : ''}
+            </div>
+        `;
     }
     
     renderMalInfo(series) {
@@ -538,6 +705,12 @@ class SeriesCompletenessApp {
                     ${malStatus.my_watched_episodes !== undefined && malStatus.my_watched_episodes >= 0 ? `
                     <div class="mal-episodes">
                         <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes} (Series Total)
+                    </div>
+                    ` : ''}
+                    ${malStatus.comments ? `
+                    <div class="mal-comments mt-3">
+                        <strong>Your Review:</strong>
+                        <div class="mal-comments-text">${this.escapeHtml(malStatus.comments)}</div>
                     </div>
                     ` : ''}
                 </div>
@@ -692,6 +865,7 @@ class SeriesCompletenessApp {
                                     ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}
                                     ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
                                     ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
+                                    ${this.renderRatingInfo(file, 'compact')}
                                 </div>
                             </div>
                         </div>
@@ -791,6 +965,249 @@ class SeriesCompletenessApp {
         ranges.push(start === end ? start.toString() : `${start}-${end}`);
         
         return ranges.join(', ');
+    }
+    
+    showSeriesPopup(event, seriesKey) {
+        // Clear any existing hide timeout
+        if (this.hideTimeout) {
+            clearTimeout(this.hideTimeout);
+        }
+        
+        if (this.popupTimeout) {
+            clearTimeout(this.popupTimeout);
+        }
+        
+        const series = this.data.groups[seriesKey];
+        if (!series) return;
+        
+        const popup = document.getElementById('series-hover-popup');
+        const isAlreadyVisible = popup.classList.contains('show');
+        const isSameSeries = this.currentPopupIndex === seriesKey;
+        
+        // If it's the same series, don't do anything
+        if (isSameSeries && isAlreadyVisible) {
+            return;
+        }
+        
+        // Update current popup index
+        this.currentPopupIndex = seriesKey;
+        
+        // If popup is already showing, use much faster transition
+        if (isAlreadyVisible) {
+            popup.style.transition = 'all 0.04s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        } else {
+            popup.style.transition = 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+        }
+        
+        const thumbnailImg = document.getElementById('popup-thumbnail-img');
+        const thumbnailPlaceholder = document.getElementById('popup-thumbnail-placeholder');
+        const arrow = popup.querySelector('.popup-arrow');
+        
+        // Populate popup content
+        const titleWithSeason = series.title + (series.season ? ` Season ${series.season}` : '');
+        document.getElementById('popup-title').textContent = titleWithSeason;
+        
+        const statusIcon = this.getStatusIcon(series.status);
+        const statusLabel = this.formatStatus(series.status);
+        document.getElementById('popup-status-info').textContent = `${statusIcon} ${statusLabel} - ${series.episodes_found}/${series.episodes_expected || '?'} episodes`;
+        
+        // Set watch progress
+        const watchStatus = series.watch_status || {};
+        const watchedPercent = watchStatus.completion_percent || 0;
+        document.getElementById('popup-watch-progress').textContent = `${watchStatus.watched_episodes || 0} watched (${watchedPercent.toFixed(0)}%)`;
+        
+        // Set MAL status if available
+        const malContainer = document.getElementById('popup-mal-status');
+        const malStatus = series.myanimelist_watch_status;
+        if (malStatus && malStatus.my_status) {
+            const statusIcons = {
+                'Watching': '👁️',
+                'Completed': '✅',
+                'On-Hold': '⏸️',
+                'Dropped': '❌',
+                'Plan to Watch': '📋'
+            };
+            const icon = statusIcons[malStatus.my_status] || '❓';
+            malContainer.textContent = `${icon} ${malStatus.my_status}`;
+            malContainer.style.display = 'block';
+        } else {
+            malContainer.style.display = 'none';
+        }
+        
+        // Set thumbnail
+        const firstFile = series.files && series.files[0];
+        const thumbnailData = firstFile ? this.getThumbnailData(firstFile) : null;
+        const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
+        
+        if (animUrl) {
+            thumbnailImg.src = animUrl;
+            thumbnailImg.style.display = 'block';
+            thumbnailPlaceholder.style.display = 'none';
+            thumbnailImg.onerror = () => {
+                thumbnailImg.style.display = 'none';
+                thumbnailPlaceholder.style.display = 'flex';
+                thumbnailPlaceholder.textContent = '📺';
+            };
+        } else {
+            thumbnailImg.style.display = 'none';
+            thumbnailPlaceholder.style.display = 'flex';
+            thumbnailPlaceholder.textContent = '📺';
+        }
+        
+        // Set ratings
+        const ratingsContainer = document.getElementById('popup-ratings');
+        const metadata_id = series.title_id || (series.files && series.files[0] && series.files[0].metadata_id) || '';
+        const title_metadata = this.data.title_metadata[metadata_id] || {};
+        const hasCommunityRating = title_metadata.rating && title_metadata.rating > 0;
+        const hasUserScore = series.myanimelist_watch_status && series.myanimelist_watch_status.score && series.myanimelist_watch_status.score > 0;
+        
+        let ratingsHtml = '';
+        if (hasCommunityRating) {
+            ratingsHtml += `<div class="popup-rating community">⭐ ${title_metadata.rating.toFixed(1)}</div>`;
+        }
+        if (hasUserScore) {
+            ratingsHtml += `<div class="popup-rating user">♥ ${series.myanimelist_watch_status.score}/10</div>`;
+        }
+        if (ratingsHtml) {
+            ratingsContainer.innerHTML = ratingsHtml;
+            ratingsContainer.style.display = 'flex';
+        } else {
+            ratingsContainer.style.display = 'none';
+        }
+        
+        // Position popup
+        const seriesItem = event.currentTarget;
+        const seriesRect = seriesItem.getBoundingClientRect();
+        const sidebarRect = document.querySelector('.sidebar').getBoundingClientRect();
+        const popupWidth = 525;
+        const popupHeight = 450;
+        
+        // Calculate the center of the series item
+        const seriesCenterY = seriesRect.top + (seriesRect.height / 2);
+        
+        // Default: position to the right of the series item, centered vertically
+        let left = sidebarRect.right + 15;
+        let top = seriesCenterY - (popupHeight / 2);
+        let arrowClass = 'left';
+        
+        // Check if popup would go off the right edge of the screen
+        if (left + popupWidth > window.innerWidth - 20) {
+            // Position to the left of the sidebar instead
+            left = sidebarRect.left - popupWidth - 15;
+            arrowClass = 'right';
+        }
+        
+        // Check if popup would go off the top or bottom of the screen
+        if (top < 20) {
+            top = 20;
+        } else if (top + popupHeight > window.innerHeight - 20) {
+            top = window.innerHeight - popupHeight - 20;
+        }
+        
+        // Ensure popup doesn't go off the left edge
+        if (left < 20) {
+            left = 20;
+        }
+        
+        // Set initial popup position
+        popup.style.left = `${left}px`;
+        popup.style.top = `${top}px`;
+        
+        // Set arrow class
+        arrow.className = `popup-arrow ${arrowClass}`;
+        
+        // Show popup with delay (or immediately if already visible)
+        const showDelay = isAlreadyVisible ? 0 : 300;
+        this.popupTimeout = setTimeout(() => {
+            popup.classList.add('show');
+            
+            // Auto-adjust positioning after popup is rendered
+            setTimeout(() => {
+                const actualHeight = popup.offsetHeight;
+                if (actualHeight !== popupHeight && (arrowClass === 'left' || arrowClass === 'right')) {
+                    let adjustedTop = seriesCenterY - (actualHeight / 2);
+                    
+                    if (adjustedTop < 20) {
+                        adjustedTop = 20;
+                    } else if (adjustedTop + actualHeight > window.innerHeight - 20) {
+                        adjustedTop = window.innerHeight - actualHeight - 20;
+                    }
+                    
+                    popup.style.top = `${adjustedTop}px`;
+                }
+                
+                if (isAlreadyVisible) {
+                    setTimeout(() => {
+                        popup.style.transition = 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+                    }, 50);
+                }
+            }, 50);
+        }, showDelay);
+    }
+    
+    hideSeriesPopup() {
+        if (this.popupTimeout) {
+            clearTimeout(this.popupTimeout);
+        }
+        
+        // Use a small delay to allow for switching between series
+        this.hideTimeout = setTimeout(() => {
+            const popup = document.getElementById('series-hover-popup');
+            popup.classList.remove('show');
+            this.currentPopupIndex = -1;
+            
+            // Reset transition speed
+            setTimeout(() => {
+                popup.style.transition = 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+            }, 50);
+        }, 100);
+    }
+    
+    renderTagsWithPopup(tags, maxVisible = 6) {
+        if (!tags || tags.length === 0) return '';
+        
+        const visibleTags = tags.slice(0, maxVisible);
+        const hiddenTags = tags.slice(maxVisible);
+        const hiddenCount = hiddenTags.length;
+        
+        const visibleTagsText = visibleTags.join(', ');
+        const hiddenTagsText = hiddenTags.join(', ');
+        
+        if (tags.length <= maxVisible) {
+            return `<p><strong>Tags:</strong> ${this.escapeHtml(visibleTagsText)}</p>`;
+        }
+        
+        return `
+            <p><strong>Tags:</strong> 
+                ${this.escapeHtml(visibleTagsText)}${hiddenCount > 0 ? `, <span class="tags-more" onmouseenter="app.showTagsPopup(event, '${this.escapeHtml(hiddenTagsText).replace(/'/g, "\\'")}'${hiddenCount})" onmouseleave="app.hideTagsPopup()" style="color: var(--primary-color); cursor: help; text-decoration: underline;">+${hiddenCount} more</span>` : ''}
+            </p>
+        `;
+    }
+    
+    showTagsPopup(event, hiddenTagsText, hiddenCount) {
+        const popup = document.getElementById('tags-popup');
+        if (!popup) {
+            // Create popup if it doesn't exist
+            const popupDiv = document.createElement('div');
+            popupDiv.id = 'tags-popup';
+            popupDiv.className = 'tags-popup';
+            document.body.appendChild(popupDiv);
+        }
+        
+        const tagsPopup = document.getElementById('tags-popup');
+        tagsPopup.textContent = hiddenTagsText;
+        tagsPopup.style.display = 'block';
+        
+        const rect = event.target.getBoundingClientRect();
+        tagsPopup.style.left = `${rect.left}px`;
+        tagsPopup.style.top = `${rect.bottom + 5}px`;
+    }
+    
+    hideTagsPopup() {
+        const popup = document.getElementById('tags-popup');
+        if (popup) {
+            popup.style.display = 'none';
+        }
     }
     
     getFileName(path) {

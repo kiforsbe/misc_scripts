@@ -5,10 +5,15 @@ import subprocess
 import shlex
 import os
 import sys
+import shutil
 
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
+import argparse
+import json
+import os
+import shutil
 
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
@@ -414,7 +419,7 @@ class SeriesCompletenessChecker:
                         # Check for missing episodes
                         if episode_numbers:
                             max_episode = max(episode_numbers)
-                            expected_range = list(range(1, expected_episodes + 1))
+                            expected_range = list(range(1, int(expected_episodes) + 1))
                             missing = [ep for ep in expected_range if ep not in episode_numbers]
                             extra = [ep for ep in episode_numbers if ep > expected_episodes]
                             
@@ -538,7 +543,7 @@ class SeriesCompletenessChecker:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
     
-    def export_webapp(self, results: Dict[str, Any], output_path: str) -> None:
+    def export_webapp(self, results: Dict[str, Any], output_path: str, use_relative_thumbnails: bool = False, thumbnail_relative_path: str = None) -> None:
         """Export analysis results as a standalone HTML webapp."""
         import os
         from pathlib import Path
@@ -571,7 +576,23 @@ class SeriesCompletenessChecker:
                 with open(thumbnail_index_path, 'r', encoding='utf-8') as tf:
                     loaded = json.load(tf)
                     if isinstance(loaded, list):
-                        thumbnail_index = loaded
+                        # Convert absolute paths to relative paths if needed for bundle export
+                        if use_relative_thumbnails and thumbnail_relative_path:
+                            # Make a deep copy to avoid modifying the original
+                            import copy
+                            thumbnail_index = copy.deepcopy(loaded)
+                            for entry in thumbnail_index:
+                                if entry.get('static_thumbnail'):
+                                    # Use forward slashes for web compatibility
+                                    rel_path = thumbnail_relative_path + '/' + os.path.basename(entry['static_thumbnail'])
+                                    entry['static_thumbnail'] = rel_path.replace('\\', '/')
+                                if entry.get('animated_thumbnail'):
+                                    # Use forward slashes for web compatibility
+                                    rel_path = thumbnail_relative_path + '/' + os.path.basename(entry['animated_thumbnail'])
+                                    entry['animated_thumbnail'] = rel_path.replace('\\', '/')
+                        else:
+                            # Keep absolute paths for non-bundle mode
+                            thumbnail_index = loaded
             except Exception as e:
                 thumbnail_index = []
                 # Optionally print warning
@@ -591,6 +612,48 @@ class SeriesCompletenessChecker:
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html_content)
+    
+    def export_bundle(self, results: Dict[str, Any], bundle_path: str, verbosity: int = 1) -> None:
+        """Export a complete bundle with webapp, metadata JSON, and thumbnails.
+        
+        Note: Thumbnails should already be generated in the bundle's thumbnails folder.
+        
+        Args:
+            results: Analysis results to export
+            bundle_path: Root directory for the bundle
+            verbosity: Verbosity level for logging
+        """
+        bundle_root = Path(bundle_path)
+        bundle_root.mkdir(parents=True, exist_ok=True)
+        
+        if verbosity >= 1:
+            print(f"\nExporting bundle to {bundle_root}...")
+        
+        # Define paths
+        metadata_path = bundle_root / 'metadata.json'
+        webapp_path = bundle_root / 'webapp.html'
+        thumbnails_dir = bundle_root / 'thumbnails'
+        
+        # Export metadata.json
+        if verbosity >= 1:
+            print(f"  Writing metadata to {metadata_path}...")
+        self.export_results(results, str(metadata_path))
+        
+        # Count thumbnails already in bundle directory
+        if thumbnails_dir.exists():
+            thumbnail_files = list(thumbnails_dir.glob('*.webp'))
+            if verbosity >= 1:
+                print(f"  Bundle contains {len(thumbnail_files)} thumbnail files")
+        
+        # Export webapp with relative thumbnail paths
+        if verbosity >= 1:
+            print(f"  Writing webapp to {webapp_path}...")
+        self.export_webapp(results, str(webapp_path), use_relative_thumbnails=True, thumbnail_relative_path='thumbnails')
+        
+        if verbosity >= 1:
+            print(f"\nBundle export complete!")
+            print(f"  Bundle location: {bundle_root}")
+            print(f"  Open {webapp_path} in a web browser to view")
     
     def _format_metadata_value(self, value: Any, max_length: int = 20) -> str:
         """Format a metadata value for display with smart truncation."""
@@ -805,6 +868,10 @@ Examples:
                        help='Export results to JSON file')
     parser.add_argument('--webapp-export', metavar='FILE',
                        help='Export results as a standalone HTML webapp')
+    parser.add_argument('--export-bundle', metavar='DIR',
+                       help='Export complete bundle (webapp + metadata.json + thumbnails) to specified directory. '
+                            'This overrides --export, --webapp-export, and --generate-thumbnails. '
+                            'Cannot be used together with those options.')
     parser.add_argument('--recursive', '-r', action='store_true',
                        help='Recursively search subdirectories (default: False)')
     parser.add_argument('--verbose', '-v', type=int, choices=[0, 1, 2, 3], default=1,
@@ -834,6 +901,20 @@ Examples:
                        help='Path to MyAnimeList XML file (can be .gz) or URL for watch status lookup')
     
     args = parser.parse_args()
+    
+    # Check for conflicts with --export-bundle
+    if hasattr(args, 'export_bundle') and args.export_bundle:
+        conflicts = []
+        if args.export:
+            conflicts.append('--export')
+        if args.webapp_export:
+            conflicts.append('--webapp-export')
+        if args.generate_thumbnails:
+            conflicts.append('--generate-thumbnails')
+        
+        if conflicts:
+            parser.error(f"--export-bundle cannot be used together with: {', '.join(conflicts)}. "
+                        f"The --export-bundle option automatically enables and configures these features.")
     
     # Handle quiet flag
     if args.quiet:
@@ -880,18 +961,70 @@ Examples:
             print("No series files found matching criteria.")
         return
 
-    if args.generate_thumbnails:
-        generator = VideoThumbnailGenerator(args.thumbnail_dir, max_height=480)
+    # Determine if we should generate thumbnails
+    should_generate_thumbnails = args.generate_thumbnails
+    thumbnail_dir = args.thumbnail_dir
+    
+    # If using bundle mode, override thumbnail settings
+    if hasattr(args, 'export_bundle') and args.export_bundle:
+        should_generate_thumbnails = True
+        # Use bundle's thumbnails subfolder directly
+        bundle_root = Path(args.export_bundle)
+        thumbnail_dir = str(bundle_root / 'thumbnails')
+    
+    if should_generate_thumbnails:
+        thumbnail_dir_expanded = os.path.expanduser(thumbnail_dir)
+        
+        # If using bundle mode, check global cache first
+        if hasattr(args, 'export_bundle') and args.export_bundle:
+            global_cache_dir = os.path.expanduser('~/.video_thumbnail_cache')
+            if verbosity >= 1:
+                print(f"Checking global cache at {global_cache_dir} for existing thumbnails...")
+            
+            # Create the bundle thumbnails directory
+            os.makedirs(thumbnail_dir_expanded, exist_ok=True)
+            
+            # Check global cache and copy existing thumbnails
+            global_generator = VideoThumbnailGenerator(global_cache_dir, max_height=480)
+            copied_from_cache = 0
+            
+            for file_info in files:
+                file_path = file_info if isinstance(file_info, (str, Path)) else file_info.get('path')
+                existing = global_generator.get_thumbnail_for_video(str(file_path))
+                
+                # If thumbnails exist in cache, copy them to bundle
+                if existing.get('static_thumbnail') and existing.get('animated_thumbnail'):
+                    try:
+                        static_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['static_thumbnail']))
+                        animated_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['animated_thumbnail']))
+                        
+                        shutil.copy2(existing['static_thumbnail'], static_dest)
+                        shutil.copy2(existing['animated_thumbnail'], animated_dest)
+                        copied_from_cache += 1
+                    except Exception as e:
+                        if verbosity >= 2:
+                            print(f"Could not copy cached thumbnails for {file_path}: {e}")
+            
+            if verbosity >= 1 and copied_from_cache > 0:
+                print(f"Copied {copied_from_cache} thumbnail pairs from global cache")
+        
+        # Generate thumbnails (will skip files that already have thumbnails in target dir)
+        generator = VideoThumbnailGenerator(thumbnail_dir_expanded, max_height=480)
         thumbnail_index = generator.generate_thumbnails_for_videos(
             files, verbose=verbosity, force_regenerate=False, show_progress=(verbosity >= 1)
         )
         generator.save_thumbnail_index(thumbnail_index, verbose=verbosity)
         # Do not return here; continue to analysis and export
+    
     if verbosity >= 1:
         print(f"Found {len(files)} files")
         print("Analyzing series collection for completeness...")
     # Analyze collection
     results = checker.analyze_series_collection(files)
+    
+    # Store thumbnail directory in results for later use
+    if should_generate_thumbnails:
+        results['thumbnail_dir'] = os.path.expanduser(thumbnail_dir)
     
     # Filter results if requested
     status_filters = None
@@ -1041,15 +1174,20 @@ Examples:
     if verbosity >= 1:
         checker.print_summary(results, verbosity, args.show_metadata)
     
-    # Export if requested
-    if args.export:
-        checker.export_results(results, args.export)
-        if verbosity >= 1:
-            print(f"\nExported results to: {args.export}")
-    if args.webapp_export:
-        checker.export_webapp(results, args.webapp_export)
-        if verbosity >= 1:
-            print(f"\nExported webapp to: {args.webapp_export}")
+    # Export based on mode
+    if hasattr(args, 'export_bundle') and args.export_bundle:
+        # Bundle export mode - exports everything to the bundle directory
+        checker.export_bundle(results, args.export_bundle, verbosity)
+    else:
+        # Individual export modes
+        if args.export:
+            checker.export_results(results, args.export)
+            if verbosity >= 1:
+                print(f"\nExported results to: {args.export}")
+        if args.webapp_export:
+            checker.export_webapp(results, args.webapp_export)
+            if verbosity >= 1:
+                print(f"\nExported webapp to: {args.webapp_export}")
 
 if __name__ == '__main__':
     main()
