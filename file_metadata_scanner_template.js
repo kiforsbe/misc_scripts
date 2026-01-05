@@ -86,9 +86,22 @@ class FileMetadataExplorer {
     getParentPath(path) {
         // Handle both Windows and Unix paths
         const separator = path.includes('\\') ? '\\' : '/';
-        const parts = path.split(separator);
+        const parts = path.split(separator).filter(p => p !== '');
+        
+        // If only one part (e.g., 'I:' from 'I:\'), there's no parent
+        if (parts.length <= 1) {
+            return '';
+        }
+        
         parts.pop();
-        return parts.join(separator);
+        const parentPath = parts.join(separator);
+        
+        // For Windows, if we only have a drive letter left, add the backslash
+        if (separator === '\\' && parentPath.match(/^[A-Z]:$/i)) {
+            return parentPath + '\\';
+        }
+        
+        return parentPath || '';
     }
     
     renderHeader() {
