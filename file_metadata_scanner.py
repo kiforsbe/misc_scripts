@@ -254,6 +254,56 @@ class ExtendedMetadataExtractor:
             return 0.0
 
 
+class WebappGenerator:
+    """
+    Generator for standalone HTML webapps from file metadata.
+    Handles template loading and HTML generation independently of metadata source.
+    """
+    
+    @staticmethod
+    def generate_html(metadata_list: List[Dict[str, Any]], output_path: Path) -> bool:
+        """
+        Generate webapp HTML from metadata list.
+        
+        Args:
+            metadata_list: List of metadata dictionaries
+            output_path: Path where the HTML file will be written
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        # Get script directory to load templates
+        script_dir = Path(__file__).parent
+        
+        try:
+            # Load templates
+            html_template = (script_dir / 'file_metadata_scanner_template.html').read_text(encoding='utf-8')
+            css_template = (script_dir / 'file_metadata_scanner_template.css').read_text(encoding='utf-8')
+            js_template = (script_dir / 'file_metadata_scanner_template.js').read_text(encoding='utf-8')
+            
+            # Prepare metadata JSON
+            metadata_json = json.dumps(metadata_list, ensure_ascii=False)
+            
+            # Replace placeholders
+            html_content = html_template.replace('/*CSS_PLACEHOLDER*/', css_template)
+            html_content = html_content.replace('/*JS_PLACEHOLDER*/', js_template)
+            html_content = html_content.replace('/*JSON_PLACEHOLDER*/', metadata_json)
+            
+            # Write output
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            return True
+            
+        except FileNotFoundError as e:
+            print(f"Error: Template file not found. Make sure template files are in the script directory.", file=sys.stderr)
+            print(f"Details: {e}", file=sys.stderr)
+            return False
+        except Exception as e:
+            print(f"Error generating webapp: {e}", file=sys.stderr)
+            return False
+
+
 class FileMetadataScanner:
     """
     Main class for scanning directories and extracting file metadata.
@@ -708,35 +758,67 @@ class FileMetadataScanner:
         # Ensure output is in metadata root
         output_path = self.metadata_root / output_filename
         
-        # Get script directory to load templates
-        script_dir = Path(__file__).parent
+        # Convert results to dictionary list
+        data = [asdict(item) for item in self.results]
+        
+        # Generate webapp
+        if WebappGenerator.generate_html(data, output_path):
+            print(f"Webapp exported to: {output_path}")
+    
+    @staticmethod
+    def regenerate_webapp_from_bundle(bundle_path: str) -> bool:
+        """
+        Regenerate the webapp HTML file from existing JSON metadata in a bundle.
+        
+        Args:
+            bundle_path: Path to the metadata bundle directory
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        bundle_dir = Path(bundle_path).resolve()
+        
+        if not bundle_dir.exists() or not bundle_dir.is_dir():
+            print(f"Error: Bundle directory '{bundle_path}' does not exist.", file=sys.stderr)
+            return False
+        
+        # Find the latest JSON file in the bundle
+        json_files = list(bundle_dir.glob('*_metadata_*.json'))
+        
+        if not json_files:
+            print(f"Error: No metadata JSON files found in '{bundle_path}'.", file=sys.stderr)
+            return False
+        
+        # Get the most recent JSON file
+        latest_json = max(json_files, key=lambda p: p.stat().st_mtime)
+        print(f"Loading metadata from: {latest_json}")
         
         try:
-            # Load templates
-            html_template = (script_dir / 'file_metadata_scanner_template.html').read_text(encoding='utf-8')
-            css_template = (script_dir / 'file_metadata_scanner_template.css').read_text(encoding='utf-8')
-            js_template = (script_dir / 'file_metadata_scanner_template.js').read_text(encoding='utf-8')
+            # Load metadata from JSON
+            with open(latest_json, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
             
-            # Prepare metadata JSON
-            data = [asdict(item) for item in self.results]
-            metadata_json = json.dumps(data, ensure_ascii=False)
+            print(f"Loaded {len(metadata)} items")
             
-            # Replace placeholders
-            html_content = html_template.replace('/*CSS_PLACEHOLDER*/', css_template)
-            html_content = html_content.replace('/*JS_PLACEHOLDER*/', js_template)
-            html_content = html_content.replace('/*JSON_PLACEHOLDER*/', metadata_json)
+            # Generate output filename
+            bundle_name = bundle_dir.name
+            webapp_filename = f'{bundle_name}_explorer.html'
+            output_path = bundle_dir / webapp_filename
             
-            # Write output
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
+            # Generate webapp using WebappGenerator
+            if WebappGenerator.generate_html(metadata, output_path):
+                print(f"Webapp regenerated: {output_path}")
+                return True
+            else:
+                return False
             
-            print(f"Webapp exported to: {output_path}")
-            
-        except FileNotFoundError as e:
-            print(f"Error: Template file not found. Make sure template files are in the script directory.", file=sys.stderr)
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON in metadata file.", file=sys.stderr)
             print(f"Details: {e}", file=sys.stderr)
+            return False
         except Exception as e:
-            print(f"Error generating webapp: {e}", file=sys.stderr)
+            print(f"Error regenerating webapp: {e}", file=sys.stderr)
+            return False
 
 
 def main():
@@ -760,10 +842,18 @@ Examples:
 
   # Full scan with all features and custom export location
   python file_metadata_scanner.py /path/to/media -r --extended --thumbnails --export-bundle C:\\MyMetadata
+
+  # Regenerate webapp from existing bundle
+  python file_metadata_scanner.py --regenerate-bundle /path/to/bundle
         """
     )
     
-    parser.add_argument('path', help='Path to scan')
+    # Create mutually exclusive group for scan vs regenerate
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument('path', nargs='?', help='Path to scan')
+    mode_group.add_argument('--regenerate-bundle', type=str, dest='regenerate_bundle',
+                           help='Regenerate webapp from existing metadata bundle directory')
+    
     parser.add_argument('-r', '--recursive', action='store_true',
                        help='Scan recursively (default: non-recursive)')
     parser.add_argument('-e', '--extensions', type=str,
@@ -778,6 +868,15 @@ Examples:
                        help='Directory path where CSV, JSON, and thumbnails will be exported (default: <path>/metadata)')
     
     args = parser.parse_args()
+    
+    # Handle regenerate mode
+    if args.regenerate_bundle:
+        success = FileMetadataScanner.regenerate_webapp_from_bundle(args.regenerate_bundle)
+        sys.exit(0 if success else 1)
+    
+    # Validate path argument for scan mode
+    if not args.path:
+        parser.error('path is required when not using --regenerate-bundle')
     
     # Parse extensions
     extensions = None
