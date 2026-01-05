@@ -678,13 +678,25 @@ class FileMetadataExplorer {
         // Thumbnails
         if (item.static_thumbnail || item.animated_thumbnail) {
             html += '<div class="detail-section">';
-            html += '<h3>Thumbnails</h3>';
-            if (item.static_thumbnail) {
+            html += '<h3>Thumbnail</h3>';
+            
+            // Prefer animated thumbnail, fallback to static
+            if (item.animated_thumbnail && item.static_thumbnail) {
+                // Use static as default, swap to animated on hover
+                html += '<div class="thumbnail-wrapper">';
+                html += `<img src="${THUMBNAIL_PATH}${item.static_thumbnail}" 
+                             class="thumbnail-preview thumbnail-hoverable" 
+                             data-static="${THUMBNAIL_PATH}${item.static_thumbnail}"
+                             data-animated="${THUMBNAIL_PATH}${item.animated_thumbnail}"
+                             alt="Thumbnail">`;
+                html += '<div class="thumbnail-play-overlay"><div class="play-icon"></div></div>';
+                html += '</div>';
+            } else if (item.animated_thumbnail) {
+                html += `<img src="${THUMBNAIL_PATH}${item.animated_thumbnail}" class="thumbnail-preview" alt="Animated thumbnail">`;
+            } else if (item.static_thumbnail) {
                 html += `<img src="${THUMBNAIL_PATH}${item.static_thumbnail}" class="thumbnail-preview" alt="Static thumbnail">`;
             }
-            if (item.animated_thumbnail) {
-                html += `<img src="${THUMBNAIL_PATH}${item.animated_thumbnail}" class="thumbnail-preview" alt="Animated thumbnail">`;
-            }
+            
             html += '</div>';
         }
         
@@ -705,6 +717,24 @@ class FileMetadataExplorer {
         
         modalBody.innerHTML = html;
         modal.classList.add('show');
+        
+        // Setup hover listeners for animated thumbnails
+        const hoverableThumbnails = modalBody.querySelectorAll('.thumbnail-hoverable');
+        hoverableThumbnails.forEach(img => {
+            const staticSrc = img.dataset.static;
+            const animatedSrc = img.dataset.animated;
+            const overlay = img.parentElement.querySelector('.thumbnail-play-overlay');
+            
+            img.addEventListener('mouseenter', () => {
+                img.src = animatedSrc;
+                if (overlay) overlay.style.opacity = '0';
+            });
+            
+            img.addEventListener('mouseleave', () => {
+                img.src = staticSrc;
+                if (overlay) overlay.style.opacity = '1';
+            });
+        });
     }
     
     setupEventListeners() {

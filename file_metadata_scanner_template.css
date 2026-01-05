@@ -498,6 +498,45 @@ body {
     margin-top: 10px;
 }
 
+.thumbnail-wrapper {
+    position: relative;
+    display: inline-block;
+    margin-top: 10px;
+}
+
+.thumbnail-hoverable {
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    display: block;
+}
+
+.thumbnail-hoverable:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.thumbnail-play-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+.play-icon {
+    width: 0;
+    height: 0;
+    border-left: 30px solid rgba(255, 255, 255, 0.9);
+    border-top: 20px solid transparent;
+    border-bottom: 20px solid transparent;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+
 /* Animations */
 @keyframes fadeIn {
     from { opacity: 0; }
