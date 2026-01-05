@@ -63,7 +63,8 @@ class VideoThumbnailGenerator:
     
     def _get_thumbnail_paths(self, video_path: str) -> tuple[str, str]:
         """Get the static and animated thumbnail paths for a video file."""
-        h = hashlib.sha256(video_path.encode("utf-8")).hexdigest()
+        filename = os.path.basename(video_path)
+        h = hashlib.sha256(filename.encode("utf-8")).hexdigest()
         static_thumb = os.path.join(self.thumbnail_dir, f"{h}_static.webp")
         animated_thumb = os.path.join(self.thumbnail_dir, f"{h}_video.webp")
         return static_thumb, animated_thumb
