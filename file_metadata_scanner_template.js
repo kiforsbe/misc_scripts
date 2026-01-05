@@ -12,6 +12,9 @@ class FileMetadataExplorer {
         this.showThumbnails = true;
         this.searchTerm = '';
         
+        // Hover preview
+        this.currentPreviewItem = null;
+        
         // Build folder structure
         this.rootFolder = this.buildFolderStructure();
         
@@ -24,9 +27,19 @@ class FileMetadataExplorer {
         this.renderFolderTree();
         this.setupEventListeners();
         
-        // Select root folder by default
-        if (this.rootFolder) {
-            this.selectFolder(this.rootFolder.path);
+        // Setup browser history navigation
+        window.addEventListener('popstate', (e) => {
+            if (e.state && e.state.path) {
+                this.selectFolder(e.state.path, false);
+            }
+        });
+        
+        // Initialize from URL hash or select root folder
+        const hash = window.location.hash.substring(1);
+        const initialPath = hash ? decodeURIComponent(hash) : (this.rootFolder ? this.rootFolder.path : null);
+        
+        if (initialPath) {
+            this.selectFolder(initialPath, true);
         }
     }
     
@@ -166,8 +179,18 @@ class FileMetadataExplorer {
         }
     }
     
-    selectFolder(path) {
+    selectFolder(path, addToHistory = true) {
         this.currentPath = path;
+        
+        // Hide hover preview when navigating
+        this.hideHoverPreview();
+        
+        // Add to browser history
+        if (addToHistory) {
+            const url = new URL(window.location);
+            url.hash = encodeURIComponent(path);
+            window.history.pushState({ path: path }, '', url);
+        }
         
         // Update selected state in tree
         document.querySelectorAll('.tree-item').forEach(item => {
@@ -179,9 +202,34 @@ class FileMetadataExplorer {
             selectedNode.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
         
+        // Update Up button state
+        this.updateUpButton();
+        
         // Render file list
         this.renderFileList();
         this.renderBreadcrumb();
+    }
+    
+    navigateUp() {
+        if (!this.currentPath) return;
+        
+        const parentPath = this.getParentPath(this.currentPath);
+        
+        // Check if we have a parent folder
+        const parentFolder = this.findFolder(parentPath);
+        if (parentFolder) {
+            this.selectFolder(parentPath);
+        } else if (this.rootFolder && this.currentPath !== this.rootFolder.path) {
+            // If parent not found but we're not at root, go to root
+            this.selectFolder(this.rootFolder.path);
+        }
+    }
+    
+    updateUpButton() {
+        const upBtn = document.getElementById('upBtn');
+        // Disable if at root
+        const isAtRoot = this.rootFolder && this.currentPath === this.rootFolder.path;
+        upBtn.disabled = isAtRoot;
     }
     
     renderBreadcrumb() {
@@ -310,6 +358,16 @@ class FileMetadataExplorer {
             }
         };
         
+        // Add hover preview for files
+        if (item.type === 'file') {
+            row.onmouseenter = (e) => this.showHoverPreview(item, e);
+            row.onmouseleave = () => this.hideHoverPreview();
+            row.onmousemove = (e) => {
+                // Update position as mouse moves
+                this.showHoverPreview(item, e);
+            };
+        }
+        
         // Name column
         const nameCell = document.createElement('td');
         const nameDiv = document.createElement('div');
@@ -420,6 +478,82 @@ class FileMetadataExplorer {
         `;
     }
     
+    showHoverPreview(item, event) {
+        const preview = document.getElementById('hoverPreview');
+        const content = document.getElementById('hoverPreviewContent');
+        
+        // Update content if item changed
+        if (this.currentPreviewItem !== item) {
+            this.updatePreviewContent(item, content);
+            this.currentPreviewItem = item;
+        }
+        
+        // Position and show immediately
+        this.positionPreview(preview, event);
+        preview.classList.add('show');
+    }
+    
+    updatePreviewContent(item, content) {
+        let html = '';
+        
+        // Show thumbnail if available (prefer animated)
+        if (item.animated_thumbnail || item.static_thumbnail) {
+            const thumb = item.animated_thumbnail || item.static_thumbnail;
+            html += `<img src="${THUMBNAIL_PATH}${thumb}" class="preview-thumbnail" alt="${item.name}">`;
+        }
+        
+        html += '<div class="preview-info">';
+        html += `<div class="preview-name">${item.name}</div>`;
+        html += '<div class="preview-details">';
+        html += `<span class="preview-label">Type:</span><span class="preview-value">${item.type === 'directory' ? 'Folder' : item.extension || 'File'}</span>`;
+        html += `<span class="preview-label">Size:</span><span class="preview-value">${item.size_human}</span>`;
+        html += `<span class="preview-label">Modified:</span><span class="preview-value">${this.formatDate(item.modified_time)}</span>`;
+        
+        // Add extended metadata if available
+        if (item.extended_metadata && !item.extended_metadata.error) {
+            if (item.extended_metadata.duration_human) {
+                html += `<span class="preview-label">Duration:</span><span class="preview-value">${item.extended_metadata.duration_human}</span>`;
+            }
+            if (item.extended_metadata.video_width && item.extended_metadata.video_height) {
+                html += `<span class="preview-label">Resolution:</span><span class="preview-value">${item.extended_metadata.video_width}x${item.extended_metadata.video_height}</span>`;
+            }
+            if (item.extended_metadata.video_codec) {
+                html += `<span class="preview-label">Codec:</span><span class="preview-value">${item.extended_metadata.video_codec}</span>`;
+            }
+        }
+        
+        html += '</div></div>';
+        
+        content.innerHTML = html;
+    }
+    
+    positionPreview(preview, event) {
+        // Position popup near mouse
+        const x = event.clientX + 15;
+        const y = event.clientY + 15;
+        
+        // Ensure popup stays within viewport
+        preview.style.left = x + 'px';
+        preview.style.top = y + 'px';
+        
+        // Adjust if off-screen (need to wait a frame for content to render)
+        requestAnimationFrame(() => {
+            const rect = preview.getBoundingClientRect();
+            if (rect.right > window.innerWidth) {
+                preview.style.left = (x - rect.width - 30) + 'px';
+            }
+            if (rect.bottom > window.innerHeight) {
+                preview.style.top = (y - rect.height - 30) + 'px';
+            }
+        });
+    }
+    
+    hideHoverPreview() {
+        const preview = document.getElementById('hoverPreview');
+        preview.classList.remove('show');
+        this.currentPreviewItem = null;
+    }
+    
     showFileDetails(item) {
         const modal = document.getElementById('detailsModal');
         const modalBody = document.getElementById('modalBody');
@@ -479,6 +613,55 @@ class FileMetadataExplorer {
     }
     
     setupEventListeners() {
+        // Navigation buttons - use browser's back/forward
+        document.getElementById('backBtn').onclick = () => window.history.back();
+        document.getElementById('forwardBtn').onclick = () => window.history.forward();
+        document.getElementById('upBtn').onclick = () => this.navigateUp();
+        
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.altKey && e.key === 'ArrowLeft') {
+                e.preventDefault();
+                window.history.back();
+            } else if (e.altKey && e.key === 'ArrowRight') {
+                e.preventDefault();
+                window.history.forward();
+            } else if (e.altKey && e.key === 'ArrowUp') {
+                e.preventDefault();
+                this.navigateUp();
+            }
+        });
+        
+        // Resizable sidebar
+        const resizeHandle = document.getElementById('resizeHandle');
+        const sidebar = document.getElementById('sidebar');
+        let isResizing = false;
+        
+        resizeHandle.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            resizeHandle.classList.add('resizing');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            
+            const newWidth = e.clientX;
+            if (newWidth >= 200 && newWidth <= 600) {
+                sidebar.style.width = newWidth + 'px';
+            }
+        });
+        
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                resizeHandle.classList.remove('resizing');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+        
         // Sort columns
         document.querySelectorAll('.sortable').forEach(th => {
             th.onclick = () => {
@@ -542,6 +725,18 @@ class FileMetadataExplorer {
                 modal.classList.remove('show');
             }
         };
+        
+        // Hide preview on scroll or click anywhere
+        const fileListContainer = document.querySelector('.file-list-container');
+        if (fileListContainer) {
+            fileListContainer.addEventListener('scroll', () => {
+                this.hideHoverPreview();
+            });
+        }
+        
+        document.addEventListener('click', () => {
+            this.hideHoverPreview();
+        });
     }
 }
 

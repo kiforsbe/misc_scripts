@@ -20,7 +20,7 @@
     </div>
 
     <div class="container">
-        <div class="sidebar">
+        <div class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <h2>Folders</h2>
                 <div class="folder-stats">
@@ -30,8 +30,15 @@
             <div id="folderTree" class="folder-tree"></div>
         </div>
 
-        <div class="main-panel">
+        <div class="resize-handle" id="resizeHandle"></div>
+
+        <div class="main-panel" id="mainPanel">
             <div class="toolbar">
+                <div class="nav-controls">
+                    <button id="backBtn" class="nav-btn" title="Back (Alt+Left)" disabled>◀</button>
+                    <button id="forwardBtn" class="nav-btn" title="Forward (Alt+Right)" disabled>▶</button>
+                    <button id="upBtn" class="nav-btn" title="Up to Parent Folder (Alt+Up)">▲</button>
+                </div>
                 <div class="breadcrumb" id="breadcrumb"></div>
                 <div class="view-options">
                     <label>
@@ -78,6 +85,11 @@
             </div>
             <div class="modal-body" id="modalBody"></div>
         </div>
+    </div>
+
+    <!-- Hover Preview Popup -->
+    <div id="hoverPreview" class="hover-preview">
+        <div class="hover-preview-content" id="hoverPreviewContent"></div>
     </div>
 
     <script>

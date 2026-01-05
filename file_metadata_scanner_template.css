@@ -70,10 +70,25 @@ body {
 
 .sidebar {
     width: 300px;
+    min-width: 200px;
+    max-width: 600px;
     border-right: 1px solid #d1d1d1;
     display: flex;
     flex-direction: column;
     background: #fafafa;
+}
+
+.resize-handle {
+    width: 5px;
+    cursor: col-resize;
+    background: transparent;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.resize-handle:hover,
+.resize-handle.resizing {
+    background: #0078d4;
 }
 
 .sidebar-header {
@@ -168,13 +183,43 @@ body {
     background: #f9f9f9;
     border-bottom: 1px solid #d1d1d1;
     display: flex;
-    justify-content: space-between;
+    gap: 15px;
     align-items: center;
+}
+
+.nav-controls {
+    display: flex;
+    gap: 5px;
+}
+
+.nav-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid #d1d1d1;
+    background: white;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.nav-btn:hover:not(:disabled) {
+    background: #e8e8e8;
+    border-color: #999;
+}
+
+.nav-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 .breadcrumb {
     font-size: 14px;
     color: #666;
+    flex: 1;
 }
 
 .breadcrumb-item {
@@ -503,4 +548,61 @@ body {
 
 .empty-state-text {
     font-size: 16px;
+}
+
+/* Hover Preview Popup */
+.hover-preview {
+    position: fixed;
+    z-index: 999;
+    display: none;
+    pointer-events: none;
+    filter: drop-shadow(0 4px 12px rgba(0,0,0,0.3));
+}
+
+.hover-preview.show {
+    display: block;
+}
+
+.hover-preview-content {
+    background: white;
+    border: 1px solid #d1d1d1;
+    border-radius: 6px;
+    padding: 12px;
+    min-width: 250px;
+    max-width: 400px;
+}
+
+.preview-thumbnail {
+    width: 100%;
+    max-height: 200px;
+    object-fit: contain;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    background: #f5f5f5;
+}
+
+.preview-info {
+    font-size: 13px;
+}
+
+.preview-name {
+    font-weight: 600;
+    margin-bottom: 8px;
+    word-break: break-word;
+    color: #333;
+}
+
+.preview-details {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+    color: #666;
+}
+
+.preview-label {
+    font-weight: 500;
+}
+
+.preview-value {
+    color: #333;
 }
