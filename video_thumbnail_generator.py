@@ -45,13 +45,15 @@ except ImportError:
 class VideoThumbnailGenerator:
     """Generates and manages video thumbnails with caching support."""
     
-    def __init__(self, thumbnail_dir: Optional[str] = None, max_height: int = 480):
+    def __init__(self, thumbnail_dir: Optional[str] = None, max_height: int = 480, 
+                 min_duration: float = 300.0):
         """
         Initialize the thumbnail generator.
         
         Args:
             thumbnail_dir: Directory to store thumbnails (default: ~/.video_thumbnail_cache)
             max_height: Maximum height for thumbnails in pixels
+            min_duration: Minimum video duration in seconds to generate thumbnails (default: 300 = 5 minutes)
         """
         if thumbnail_dir is None:
             self.thumbnail_dir = os.path.expanduser("~/.video_thumbnail_cache")
@@ -59,6 +61,7 @@ class VideoThumbnailGenerator:
             self.thumbnail_dir = os.path.expanduser(thumbnail_dir)
             
         self.max_height = max_height
+        self.min_duration = min_duration
         os.makedirs(self.thumbnail_dir, exist_ok=True)
     
     def _get_thumbnail_paths(self, video_path: str) -> tuple[str, str]:
@@ -178,6 +181,16 @@ class VideoThumbnailGenerator:
         if duration is None:
             if verbose >= 1:
                 print(f"Invalid or missing duration for {video_path_str}")
+            return {
+                "video": video_path_str,
+                "static_thumbnail": None,
+                "animated_thumbnail": None
+            }
+        
+        # Skip videos shorter than minimum duration
+        if duration < self.min_duration:
+            if verbose >= 2:
+                print(f"Skipping {video_path_str}: duration {duration:.1f}s is less than minimum {self.min_duration:.1f}s")
             return {
                 "video": video_path_str,
                 "static_thumbnail": None,
