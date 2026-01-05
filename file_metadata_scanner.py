@@ -316,7 +316,8 @@ class FileMetadataScanner:
                  file_extensions: Optional[Set[str]] = None,
                  extract_extended: bool = False,
                  metadata_root: Optional[str] = None,
-                 generate_thumbnails: bool = False):
+                 generate_thumbnails: bool = False,
+                 min_duration: float = 300.0):
         """
         Initialize the scanner.
         
@@ -328,6 +329,7 @@ class FileMetadataScanner:
             extract_extended: Whether to extract extended metadata
             metadata_root: Root directory for metadata files (CSV, JSON, thumbnails)
             generate_thumbnails: Whether to generate thumbnails for video files
+            min_duration: Minimum video duration in seconds for thumbnail generation
         """
         self.root_path = Path(root_path).resolve()
         self.recursive = recursive
@@ -336,6 +338,7 @@ class FileMetadataScanner:
                                    for ext in (file_extensions or []))
         self.extract_extended = extract_extended
         self.generate_thumbnails = generate_thumbnails
+        self.min_duration = min_duration
         
         # Set metadata root directory
         if metadata_root:
@@ -369,7 +372,8 @@ class FileMetadataScanner:
                 thumbnail_dir = self.metadata_root / 'thumbnails'
                 self.thumbnail_generator = VideoThumbnailGenerator(
                     thumbnail_dir=str(thumbnail_dir),
-                    max_height=480
+                    max_height=480,
+                    min_duration=min_duration
                 )
             else:
                 print("Warning: Video thumbnail generation requested but video_thumbnail_generator.py not available", 
@@ -786,12 +790,15 @@ class FileMetadataScanner:
             print(f"Webapp exported to: {output_path}")
     
     @staticmethod
-    def regenerate_webapp_from_bundle(bundle_path: str) -> bool:
+    def regenerate_webapp_from_bundle(bundle_path: str, generate_thumbnails: bool = False,
+                                      min_duration: float = 300.0) -> bool:
         """
         Regenerate the webapp HTML file from existing JSON metadata in a bundle.
         
         Args:
             bundle_path: Path to the metadata bundle directory
+            generate_thumbnails: Whether to generate missing thumbnails for videos
+            min_duration: Minimum video duration in seconds for thumbnail generation
             
         Returns:
             True if successful, False otherwise
@@ -819,6 +826,57 @@ class FileMetadataScanner:
                 metadata = json.load(f)
             
             print(f"Loaded {len(metadata)} items")
+            
+            # Generate missing thumbnails if requested
+            if generate_thumbnails:
+                if not THUMBNAIL_GENERATOR_AVAILABLE or not VideoThumbnailGenerator:
+                    print("Warning: Video thumbnail generation requested but video_thumbnail_generator.py not available", file=sys.stderr)
+                else:
+                    # Find videos without thumbnails
+                    videos_needing_thumbnails = []
+                    for item in metadata:
+                        if (item.get('type') == 'file' and 
+                            item.get('extension', '').lower() in [ext for ext in ExtendedMetadataExtractor.VIDEO_EXTENSIONS] and
+                            not item.get('static_thumbnail') and 
+                            not item.get('animated_thumbnail')):
+                            videos_needing_thumbnails.append(Path(item['path']))
+                    
+                    if videos_needing_thumbnails:
+                        print(f"\nGenerating thumbnails for {len(videos_needing_thumbnails)} videos...")
+                        
+                        # Initialize thumbnail generator
+                        thumbnail_dir = bundle_dir / 'thumbnails'
+                        thumbnail_generator = VideoThumbnailGenerator(
+                            thumbnail_dir=str(thumbnail_dir),
+                            max_height=480,
+                            min_duration=min_duration
+                        )
+                        
+                        # Generate thumbnails
+                        thumbnail_results = thumbnail_generator.generate_thumbnails_for_videos(
+                            videos_needing_thumbnails,
+                            verbose=1,
+                            force_regenerate=False,
+                            show_progress=True
+                        )
+                        
+                        # Update metadata with thumbnail information
+                        thumbnail_map = {r['video']: r for r in thumbnail_results}
+                        for item in metadata:
+                            if item.get('path') in thumbnail_map:
+                                thumb_data = thumbnail_map[item['path']]
+                                static_path = thumb_data.get('static_thumbnail')
+                                animated_path = thumb_data.get('animated_thumbnail')
+                                item['static_thumbnail'] = Path(static_path).name if static_path else ''
+                                item['animated_thumbnail'] = Path(animated_path).name if animated_path else ''
+                        
+                        # Save updated metadata back to JSON
+                        print("\nUpdating metadata file with thumbnail information...")
+                        with open(latest_json, 'w', encoding='utf-8') as f:
+                            json.dump(metadata, f, indent=2, ensure_ascii=False)
+                        print(f"Metadata updated: {latest_json}")
+                    else:
+                        print("All videos already have thumbnails")
             
             # Generate output filename
             bundle_name = bundle_dir.name
@@ -883,15 +941,21 @@ Examples:
     parser.add_argument('--extended', action='store_true',
                        help='Extract extended metadata (audio/video info, etc.)')
     parser.add_argument('--thumbnails', action='store_true',
-                       help='Generate thumbnails for video files (requires ffmpeg)')
+                       help='Generate thumbnails for video files (requires ffmpeg). In scan mode, generates thumbnails during scan. In regenerate mode, generates missing thumbnails.')
     parser.add_argument('--export-bundle', type=str, dest='export_bundle',
                        help='Directory path where CSV, JSON, and thumbnails will be exported (default: <path>/metadata)')
+    parser.add_argument('--min-duration', type=float, default=300.0,
+                       help='Minimum video duration in seconds for thumbnail generation (default: 300 = 5 minutes). Set to 0 to generate for all videos.')
     
     args = parser.parse_args()
     
     # Handle regenerate mode
     if args.regenerate_bundle:
-        success = FileMetadataScanner.regenerate_webapp_from_bundle(args.regenerate_bundle)
+        success = FileMetadataScanner.regenerate_webapp_from_bundle(
+            args.regenerate_bundle, 
+            generate_thumbnails=args.thumbnails,
+            min_duration=args.min_duration
+        )
         sys.exit(0 if success else 1)
     
     # Validate path argument for scan mode
@@ -916,7 +980,8 @@ Examples:
         file_extensions=extensions,
         extract_extended=args.extended,
         metadata_root=args.export_bundle,
-        generate_thumbnails=args.thumbnails
+        generate_thumbnails=args.thumbnails,
+        min_duration=args.min_duration
     )
     
     # Scan for files
