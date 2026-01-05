@@ -618,28 +618,48 @@ class FileMetadataScanner:
         else:
             self._scan_non_recursive(self.root_path, show_progress=show_progress)
         
-        # Generate thumbnails in batch if needed
-        if self.video_files and self.thumbnail_generator:
-            print(f"\nGenerating thumbnails for {len(self.video_files)} video files...")
-            thumbnail_results = self.thumbnail_generator.generate_thumbnails_for_videos(
-                self.video_files,
-                verbose=1,
-                force_regenerate=False,
-                show_progress=show_progress
-            )
-            
-            # Map thumbnail results back to file metadata
-            thumbnail_map = {r['video']: r for r in thumbnail_results}
-            for item in self.results:
-                if item.path in thumbnail_map:
-                    thumb_data = thumbnail_map[item.path]
-                    # Store only filename, not full path
-                    static_path = thumb_data.get('static_thumbnail')
-                    animated_path = thumb_data.get('animated_thumbnail')
-                    item.static_thumbnail = Path(static_path).name if static_path else ''
-                    item.animated_thumbnail = Path(animated_path).name if animated_path else ''
-        
         return self.results
+    
+    def generate_thumbnails(self, show_progress: bool = True, force_regenerate: bool = False) -> bool:
+        """
+        Generate thumbnails for video files found during scan.
+        
+        Args:
+            show_progress: Whether to show progress bars
+            force_regenerate: Force regeneration even if thumbnails exist
+            
+        Returns:
+            True if thumbnails were generated successfully, False otherwise
+        """
+        if not self.thumbnail_generator:
+            print("Warning: Thumbnail generator not initialized", file=sys.stderr)
+            return False
+        
+        if not self.video_files:
+            if show_progress:
+                print("No video files found for thumbnail generation")
+            return True
+        
+        print(f"\nGenerating thumbnails for {len(self.video_files)} video files...")
+        thumbnail_results = self.thumbnail_generator.generate_thumbnails_for_videos(
+            self.video_files,
+            verbose=1,
+            force_regenerate=force_regenerate,
+            show_progress=show_progress
+        )
+        
+        # Map thumbnail results back to file metadata
+        thumbnail_map = {r['video']: r for r in thumbnail_results}
+        for item in self.results:
+            if item.path in thumbnail_map:
+                thumb_data = thumbnail_map[item.path]
+                # Store only filename, not full path
+                static_path = thumb_data.get('static_thumbnail')
+                animated_path = thumb_data.get('animated_thumbnail')
+                item.static_thumbnail = Path(static_path).name if static_path else ''
+                item.animated_thumbnail = Path(animated_path).name if animated_path else ''
+        
+        return True
     
     def _scan_recursive(self, dir_path: Path, show_progress: bool = True, _pbar: Optional[tqdm] = None):
         """Recursively scan directory with progress indication."""
@@ -899,31 +919,30 @@ Examples:
         generate_thumbnails=args.thumbnails
     )
     
-    # Scan
-    print(f"Scanning {'recursively' if args.recursive else 'non-recursively'}: {args.path}")
-    print(f"Metadata root directory: {scanner.metadata_root}")
-    if extensions:
-        print(f"Filtering by extensions: {', '.join(extensions)}")
-    if exclude_paths:
-        print(f"Excluding paths: {', '.join(exclude_paths)}")
-    if args.extended:
-        print("Extracting extended metadata...")
-    if args.thumbnails:
-        print("Generating video thumbnails...")
-    
+    # Scan for files
     results = scanner.scan()
     print(f"Found {len(results)} items")
     
-    # Export results - always export CSV, JSON, and webapp
-    # Use export-bundle folder name for the output files
+    # Export initial results (without thumbnails)
     base_name = scanner.metadata_root.name or 'metadata'
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     csv_filename = f'{base_name}_metadata_{timestamp}.csv'
     json_filename = f'{base_name}_metadata_{timestamp}.json'
     webapp_filename = f'{base_name}_explorer.html'
     
+    print("\nSaving metadata...")
     scanner.export_to_csv(csv_filename)
     scanner.export_to_json(json_filename)
+    
+    # Generate thumbnails if requested
+    if args.thumbnails:
+        if scanner.generate_thumbnails():
+            # Re-export with thumbnail information
+            print("\nUpdating metadata with thumbnail information...")
+            scanner.export_to_csv(csv_filename)
+            scanner.export_to_json(json_filename)
+    
+    # Generate webapp
     scanner.export_to_webapp(webapp_filename)
 
 
