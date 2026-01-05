@@ -849,6 +849,222 @@ class SeriesCompletenessChecker:
         
         print(line)
 
+def _refresh_myanimelist_metadata(results: Dict[str, Any], myanimelist_xml_path: str, verbosity: int) -> None:
+    """Refresh MyAnimeList metadata in loaded results.
+    
+    Args:
+        results: The loaded results dictionary to update
+        myanimelist_xml_path: Path to MyAnimeList XML file
+        verbosity: Verbosity level for output
+    """
+    if verbosity >= 1:
+        print(f"Refreshing MyAnimeList metadata from {myanimelist_xml_path}...")
+    
+    # Import MyAnimeList watch status module
+    try:
+        import sys
+        video_optimizer_path = Path(__file__).parent / 'video-optimizer-v2'
+        if video_optimizer_path.exists() and str(video_optimizer_path) not in sys.path:
+            sys.path.insert(0, str(video_optimizer_path))
+        
+        from myanimelist_watch_status import MyAnimeListWatchStatusProvider
+        
+        # Load MyAnimeList data
+        mal_provider = MyAnimeListWatchStatusProvider(myanimelist_xml_path)
+        
+        # Helper function to serialize MAL status
+        def serialize_mal_status(mal_status):
+            return {
+                'series_animedb_id': mal_status.series_animedb_id,
+                'series_title': mal_status.series_title,
+                'my_status': mal_status.my_status,
+                'my_watched_episodes': mal_status.my_watched_episodes,
+                'my_score': mal_status.my_score,
+                'score': mal_status.my_score,  # Alias for consistency
+                'my_start_date': mal_status.my_start_date,
+                'my_finish_date': mal_status.my_finish_date,
+                'my_times_watched': mal_status.my_times_watched,
+                'my_rewatching': mal_status.my_rewatching,
+                'series_episodes': mal_status.series_episodes,
+                'progress_percent': mal_status.progress_percent
+            }
+        
+        # Update title_metadata with fresh MAL data
+        title_metadata_found = 0
+        title_metadata_updated = 0
+        title_metadata_unchanged = 0
+        title_metadata_cleared = 0
+        update_details = []
+        
+        for metadata_id, metadata_entry in results.get('title_metadata', {}).items():
+            # Check if this metadata entry has MyAnimeList sources
+            # The sources are directly in the metadata_entry, not nested under 'metadata'
+            sources = metadata_entry.get('sources', [])
+            
+            # Look for MyAnimeList source
+            mal_source = None
+            for source in sources:
+                if isinstance(source, str) and 'myanimelist' in source.lower():
+                    mal_source = source
+                    break
+            
+            if mal_source:
+                title_metadata_found += 1
+                # Get fresh MAL status from provider
+                mal_status = mal_provider.get_watch_status(mal_source)
+                if mal_status:
+                    old_mal = metadata_entry.get('myanimelist_watch_status', {})
+                    new_mal = serialize_mal_status(mal_status)
+                    
+                    # Check if anything actually changed
+                    changed = False
+                    changes = []
+                    
+                    if old_mal.get('my_status') != new_mal.get('my_status'):
+                        changed = True
+                        changes.append(f"status: {old_mal.get('my_status', 'None')} -> {new_mal.get('my_status')}")
+                    
+                    if old_mal.get('my_watched_episodes') != new_mal.get('my_watched_episodes'):
+                        changed = True
+                        changes.append(f"watched: {old_mal.get('my_watched_episodes', 0)} -> {new_mal.get('my_watched_episodes')}")
+                    
+                    if old_mal.get('my_score') != new_mal.get('my_score'):
+                        changed = True
+                        changes.append(f"score: {old_mal.get('my_score', 0)} -> {new_mal.get('my_score')}")
+                    
+                    if changed:
+                        metadata_entry['myanimelist_watch_status'] = new_mal
+                        title_metadata_updated += 1
+                        title = metadata_entry.get('title', f'ID:{metadata_id}')
+                        update_details.append(f"  • {title}: {', '.join(changes)}")
+                    else:
+                        title_metadata_unchanged += 1
+                else:
+                    # Clear MAL status if not found in new data
+                    if 'myanimelist_watch_status' in metadata_entry:
+                        metadata_entry.pop('myanimelist_watch_status')
+                        title = metadata_entry.get('title', f'ID:{metadata_id}')
+                        update_details.append(f"  • {title}: CLEARED (not found in MAL XML)")
+                        title_metadata_cleared += 1
+        
+        # Add missing title_metadata entries for series in groups that don't have metadata yet
+        # This ensures new series with MAL data get proper title_metadata entries
+        title_metadata = results.get('title_metadata', {})
+        for group_key, analysis in results['groups'].items():
+            metadata_id = analysis.get('title_id')
+            if not metadata_id and analysis.get('files'):
+                metadata_id = analysis['files'][0].get('metadata_id')
+            
+            if metadata_id and metadata_id not in title_metadata:
+                # Create minimal metadata entry
+                title_metadata[metadata_id] = {
+                    'title': analysis.get('title', f'ID:{metadata_id}'),
+                    'sources': []
+                }
+        
+        # Update each series group with fresh MAL metadata
+        groups_updated = 0
+        groups_unchanged = 0
+        for group_key, analysis in results['groups'].items():
+            try:
+                title = analysis.get('title', '')
+                season = analysis.get('season')
+                
+                # Get the metadata_id for this series (prefer title_id, fallback to first file's metadata_id)
+                metadata_id = analysis.get('title_id')
+                if not metadata_id and analysis.get('files'):
+                    metadata_id = analysis['files'][0].get('metadata_id')
+                
+                if metadata_id:
+                    # Get MAL status from title_metadata
+                    metadata_entry = results.get('title_metadata', {}).get(metadata_id, {})
+                    mal_metadata = metadata_entry.get('myanimelist_watch_status')
+                    
+                    # If no MAL metadata in title_metadata, try to fetch it directly from the provider
+                    if not mal_metadata and metadata_id:
+                        # Check if provider has this anime ID
+                        mal_status = mal_provider.anime_status_map.get(str(metadata_id))
+                        if mal_status:
+                            mal_metadata = serialize_mal_status(mal_status)
+                            # Store it in title_metadata for consistency
+                            if metadata_id in results.get('title_metadata', {}):
+                                results['title_metadata'][metadata_id]['myanimelist_watch_status'] = mal_metadata
+                    
+                    if mal_metadata:
+                        # Calculate season-specific watch status if applicable
+                        if season and analysis.get('files'):
+                            episode_files = [f for f in analysis['files'] if f.get('episode') is not None]
+                            if episode_files:
+                                # Create a temporary checker instance to use the calculation method
+                                temp_checker = SeriesCompletenessChecker(metadata_only=True)
+                                season_mal = temp_checker._calculate_season_specific_mal_status(
+                                    mal_metadata, season, episode_files
+                                )
+                                if season_mal:
+                                    mal_metadata = season_mal
+                        
+                        # Ensure mal_metadata is still valid after season calculation
+                        if not mal_metadata:
+                            continue
+                        
+                        # Check if this is actually different from what we had
+                        old_mal = analysis.get('myanimelist_watch_status') or {}
+                        if (old_mal.get('my_status') != mal_metadata.get('my_status') or
+                            old_mal.get('my_watched_episodes') != mal_metadata.get('my_watched_episodes') or
+                            old_mal.get('my_score') != mal_metadata.get('my_score')):
+                            analysis['myanimelist_watch_status'] = mal_metadata
+                            groups_updated += 1
+                        else:
+                            # Even if MAL status unchanged, still update it
+                            analysis['myanimelist_watch_status'] = mal_metadata
+                            groups_unchanged += 1
+                        
+                        # Always recalculate watch_status based on MAL data when refreshing
+                        # This ensures the UI reflects MAL watch status
+                        episodes_found = analysis.get('episodes_found', 0)
+                        mal_watched = mal_metadata.get('my_watched_episodes', 0)
+                        
+                        old_watch_status = analysis.get('watch_status', {})
+                        new_watch_status = {
+                            'watched_episodes': mal_watched,
+                            'partially_watched_episodes': 0,
+                            'unwatched_episodes': max(0, episodes_found - mal_watched),
+                            'total_watch_count': mal_watched,
+                            'completion_percent': (mal_watched / episodes_found * 100) if episodes_found > 0 else 0
+                        }
+                        analysis['watch_status'] = new_watch_status
+                    else:
+                        # Clear existing MAL metadata if not found
+                        if 'myanimelist_watch_status' in analysis:
+                            analysis.pop('myanimelist_watch_status')
+                            groups_updated += 1
+                        else:
+                            groups_unchanged += 1
+            except Exception as e:
+                if verbosity >= 2:
+                    print(f"Warning: Error processing group '{group_key}': {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        if verbosity >= 1:
+            print(f"✓ MyAnimeList metadata refresh complete:")
+            print(f"  Title metadata: {title_metadata_found} found, {title_metadata_updated} updated, {title_metadata_unchanged} unchanged, {title_metadata_cleared} cleared")
+            print(f"  Series groups: {groups_updated} updated, {groups_unchanged} unchanged")
+            
+            if verbosity >= 2 and update_details:
+                print(f"\nDetailed changes:")
+                for detail in update_details[:20]:  # Limit to first 20 to avoid spam
+                    print(detail)
+                if len(update_details) > 20:
+                    print(f"  ... and {len(update_details) - 20} more")
+    
+    except ImportError as e:
+        if verbosity >= 1:
+            print(f"Warning: Could not load MyAnimeList module: {e}")
+    except Exception as e:
+        if verbosity >= 1:
+            print(f"Warning: Error refreshing MyAnimeList metadata: {e}")
+
 def _handle_refresh_bundle_mode(checker: 'SeriesCompletenessChecker', bundle_dir: str, verbosity: int) -> None:
     """Handle --refresh-bundle mode: regenerate webapp from existing bundle metadata."""
     bundle_root = Path(bundle_dir)
@@ -862,6 +1078,10 @@ def _handle_refresh_bundle_mode(checker: 'SeriesCompletenessChecker', bundle_dir
         print(f"Loading metadata from {metadata_path}...")
     
     results = checker.load_results(str(metadata_path))
+    
+    # Refresh MyAnimeList metadata if provided
+    if checker.myanimelist_xml_path:
+        _refresh_myanimelist_metadata(results, checker.myanimelist_xml_path, verbosity)
     
     if verbosity >= 1:
         print(f"Regenerating bundle webapp...")
@@ -884,6 +1104,10 @@ def _handle_refresh_webapp_mode(checker: 'SeriesCompletenessChecker', json_path:
         print(f"Loading metadata from {json_file}...")
     
     results = checker.load_results(str(json_file))
+    
+    # Refresh MyAnimeList metadata if provided
+    if checker.myanimelist_xml_path:
+        _refresh_myanimelist_metadata(results, checker.myanimelist_xml_path, verbosity)
     
     # Determine output path (default to same directory as JSON with .html extension)
     if output_path:
@@ -1099,16 +1323,20 @@ Examples:
   %(prog)s /path/to/series --show-metadata genres director --status-filter "complete"
   %(prog)s /path/to/series --generate-thumbnails --thumbnail-dir ~/.video_thumbnail_cache
   %(prog)s --refresh-bundle /path/to/bundle/dir
+  %(prog)s --refresh-bundle /path/to/bundle/dir --myanimelist-xml ~/myanimelist.xml
   %(prog)s --webapp-refresh /path/to/series_completeness.json
   %(prog)s --webapp-refresh /path/to/series.json --webapp-export /path/to/output.html
+  %(prog)s --webapp-refresh /path/to/series.json --myanimelist-xml ~/myanimelist.xml
         """
     )
     parser.add_argument('input_paths', nargs='*',
                        help='Input paths to search for series files (not required when using --refresh-bundle or --webapp-refresh)')
     parser.add_argument('--refresh-bundle', metavar='BUNDLE_DIR',
-                       help='Regenerate webapp from existing bundle metadata.json. Provide path to bundle root directory.')
+                       help='Regenerate webapp from existing bundle metadata.json. Provide path to bundle root directory. '
+                            'Can be combined with --myanimelist-xml to refresh MAL metadata.')
     parser.add_argument('--webapp-refresh', metavar='JSON_FILE',
-                       help='Regenerate standalone webapp from existing metadata JSON file.')
+                       help='Regenerate standalone webapp from existing metadata JSON file. '
+                            'Can be combined with --myanimelist-xml to refresh MAL metadata.')
     parser.add_argument('--exclude-paths', nargs='*', default=[],
                        help='Paths to exclude from search')
     parser.add_argument('--include-patterns', nargs='*', default=['*.mkv', '*.mp4', '*.avi'],
@@ -1163,6 +1391,29 @@ Examples:
     # Validate input_paths requirement (not needed in refresh modes)
     if not refresh_mode and (not args.input_paths or len(args.input_paths) == 0):
         parser.error('input_paths is required when not using --refresh-bundle or --webapp-refresh')
+    
+    # Check for incompatible arguments in refresh modes
+    if refresh_mode:
+        incompatible_args = []
+        if args.input_paths:
+            incompatible_args.append('input_paths')
+        if args.exclude_paths:
+            incompatible_args.append('--exclude-paths')
+        if args.include_patterns != ['*.mkv', '*.mp4', '*.avi']:  # Check if not default
+            incompatible_args.append('--include-patterns')
+        if args.exclude_patterns:
+            incompatible_args.append('--exclude-patterns')
+        if args.recursive:
+            incompatible_args.append('--recursive')
+        if args.generate_thumbnails:
+            incompatible_args.append('--generate-thumbnails')
+        if args.thumbnail_dir != '~/.video_thumbnail_cache':  # Check if not default
+            incompatible_args.append('--thumbnail-dir')
+        
+        if incompatible_args:
+            mode_name = '--refresh-bundle' if refresh_mode == 'bundle' else '--webapp-refresh'
+            parser.error(f"{mode_name} cannot be used with file discovery arguments: {', '.join(incompatible_args)}. "
+                        f"Use {mode_name} only with --myanimelist-xml to refresh MAL metadata.")
     
     # Check for conflicts with --export-bundle
     if hasattr(args, 'export_bundle') and args.export_bundle:
