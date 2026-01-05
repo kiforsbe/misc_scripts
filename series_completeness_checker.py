@@ -351,6 +351,7 @@ class SeriesCompletenessChecker:
         result = {
             'title': title,
             'season': season,
+            'metadata_id': metadata_id,  # Add metadata_id to group result
             'episodes_found': episodes_found,
             'episodes_expected': 0,
             'status': 'unknown',
@@ -982,8 +983,52 @@ def _refresh_myanimelist_metadata(results: Dict[str, Any], myanimelist_xml_path:
                     
                     # If no MAL metadata in title_metadata, try to fetch it directly from the provider
                     if not mal_metadata and metadata_id:
-                        # Check if provider has this anime ID
-                        mal_status = mal_provider.anime_status_map.get(str(metadata_id))
+                        # For Season 2+, search season-specific entries FIRST, then fall back to base title
+                        mal_status = None
+                        season_specific_match = None
+                        
+                        if season and season > 1:
+                            # Search for season-specific MAL entries before checking metadata_id
+                            title_lower = title.lower()
+                            
+                            # Extract base title by removing common separators and trailing parts
+                            # This handles titles like "Title - Subtitle", "Title: Subtitle", etc.
+                            base_title_parts = title_lower.replace(':', ' ').replace(' - ', ' ').split()
+                            # Get first significant words (ignore articles)
+                            significant_words = [w for w in base_title_parts if w not in ['the', 'a', 'an']]
+                            # Use first 1-3 significant words as search terms to match partial titles
+                            search_terms = significant_words[:3] if significant_words else base_title_parts[:3]
+                            
+                            for mal_id, mal_entry in mal_provider.anime_status_map.items():
+                                entry_title_lower = mal_entry.series_title.lower()
+                                
+                                # Check if entry title contains any of our search terms
+                                has_title_match = any(term in entry_title_lower for term in search_terms if term)
+                                
+                                if has_title_match:
+                                    # Check for season indicators
+                                    has_season_indicator = (
+                                        f'part {season}' in entry_title_lower or
+                                        f'season {season}' in entry_title_lower or
+                                        (season == 2 and ('2nd' in entry_title_lower or 'part 2' in entry_title_lower or 'part two' in entry_title_lower or 'ii' in entry_title_lower.split())) or
+                                        (season == 3 and ('3rd' in entry_title_lower or 'part 3' in entry_title_lower or 'part three' in entry_title_lower or 'iii' in entry_title_lower.split())) or
+                                        (season == 4 and ('4th' in entry_title_lower or 'part 4' in entry_title_lower or 'part four' in entry_title_lower or 'iv' in entry_title_lower.split())) or
+                                        (season >= 5 and (f'{season}th' in entry_title_lower or f'part {season}' in entry_title_lower))
+                                    )
+                                    
+                                    if has_season_indicator:
+                                        season_specific_match = mal_entry
+                                        if verbosity >= 2:
+                                            print(f"  Found season-specific MAL entry for '{title}' Season {season}: ID {mal_id} - {mal_entry.series_title}")
+                                        break
+                        
+                        # Prioritize season-specific match, otherwise use metadata_id lookup
+                        if season_specific_match:
+                            mal_status = season_specific_match
+                        else:
+                            # Fall back to metadata_id lookup (for Season 1 or when no season-specific entry exists)
+                            mal_status = mal_provider.anime_status_map.get(str(metadata_id))
+                        
                         if mal_status:
                             mal_metadata = serialize_mal_status(mal_status)
                             # Store it in title_metadata for consistency

@@ -249,41 +249,63 @@ class FileGrouper:
                 season = result.get('season')
                 if title:
                     try:
-                        # Search for metadata using the base title - let the provider handle season mapping
-                        enhanced_info, provider = self.metadata_manager.find_title(title, year)
-                        
-                        if enhanced_info:
-                            # Use the actual metadata ID as the key
-                            metadata_id = enhanced_info.id
+                        # DEBUG: Check if metadata_manager is available
+                        if not self.metadata_manager:
+                            # No metadata manager - can't look up enhanced metadata
+                            pass
+                        else:
+                            # For Season 2+, try season-specific title first (e.g., "Title Season 2", "Title Part 2")
+                            # This ensures multi-season series get correct metadata per season
+                            enhanced_info = None
+                            provider = None
                             
-                            # Only store metadata once per unique ID
-                            if metadata_id not in self.title_metadata:
-                                title_metadata = {
-                                    'metadata': self._serialize_title_info(enhanced_info),
-                                    'provider': provider.__class__.__name__ if provider else None
-                                }
-                                
-                                # Add MyAnimeList watch status at title level if available
-                                if self.myanimelist_xml_path and MyAnimeListWatchStatusProvider:
-                                    try:
-                                        sources = enhanced_info.sources or []
-                                        for source in sources:
-                                            if 'myanimelist' in source:
-                                                if self._mal_provider is None:
-                                                    self._mal_provider = MyAnimeListWatchStatusProvider(self.myanimelist_xml_path)
-                                                
-                                                mal_status = self._mal_provider.get_watch_status(source)
-                                                if mal_status:
-                                                    title_metadata['myanimelist_watch_status'] = self._serialize_mal_watch_status(mal_status)
-                                                break
-                                    except Exception:
-                                        pass
-                                
-                                self.title_metadata[metadata_id] = title_metadata
-                        
-                            # Add reference to title metadata by ID
-                            result['metadata_id'] = metadata_id
+                            if season and season > 1:
+                                # Try common season naming patterns
+                                season_titles = [
+                                    f"{title} Season {season}",
+                                    f"{title} Part {season}",
+                                    f"{title} {season}",
+                                ]
+                                for season_title in season_titles:
+                                    enhanced_info, provider = self.metadata_manager.find_title(season_title, year)
+                                    if enhanced_info:
+                                        break
                             
+                            # Fall back to base title if no season-specific match found
+                            if not enhanced_info:
+                                enhanced_info, provider = self.metadata_manager.find_title(title, year)
+                        
+                            if enhanced_info:
+                                # Use the actual metadata ID as the key
+                                metadata_id = enhanced_info.id
+                                
+                                # Only store metadata once per unique ID
+                                if metadata_id not in self.title_metadata:
+                                    title_metadata = {
+                                        'metadata': self._serialize_title_info(enhanced_info),
+                                        'provider': provider.__class__.__name__ if provider else None
+                                    }
+                                    
+                                    # Add MyAnimeList watch status at title level if available
+                                    if self.myanimelist_xml_path and MyAnimeListWatchStatusProvider:
+                                        try:
+                                            sources = enhanced_info.sources or []
+                                            for source in sources:
+                                                if 'myanimelist' in source:
+                                                    if self._mal_provider is None:
+                                                        self._mal_provider = MyAnimeListWatchStatusProvider(self.myanimelist_xml_path)
+                                                    
+                                                    mal_status = self._mal_provider.get_watch_status(source)
+                                                    if mal_status:
+                                                        title_metadata['myanimelist_watch_status'] = self._serialize_mal_watch_status(mal_status)
+                                                    break
+                                        except Exception:
+                                            pass
+                                    
+                                    self.title_metadata[metadata_id] = title_metadata
+                            
+                                # Add reference to title metadata by ID
+                                result['metadata_id'] = metadata_id
                             # Add episode info if it's a TV show
                             if metadata_id in self.title_metadata:
                                 enhanced_info_dict = self.title_metadata[metadata_id]['metadata']
@@ -324,6 +346,54 @@ class FileGrouper:
                                                         # Store the enhanced episode info
                                                         if episode_info:
                                                             result['episode_info'] = self._serialize_episode_info(episode_info)
+                                                        
+                                                        # IMPORTANT: Re-lookup metadata with season-specific title now that we have the correct season
+                                                        # This ensures multi-season anime get the correct metadata_id per season
+                                                        updated_season = result.get('season')
+                                                        if updated_season and updated_season != original_season and updated_season > 1:
+                                                            season_enhanced_info = None
+                                                            season_provider = None
+                                                            season_titles = [
+                                                                f"{original_title} Season {updated_season}",
+                                                                f"{original_title} Part {updated_season}",
+                                                                f"{original_title} {updated_season}",
+                                                            ]
+                                                            for season_title in season_titles:
+                                                                season_enhanced_info, season_provider = self.metadata_manager.find_title(season_title, year)
+                                                                if season_enhanced_info:
+                                                                    break
+                                                            
+                                                            # If we found season-specific metadata, update metadata_id
+                                                            if season_enhanced_info:
+                                                                metadata_id = season_enhanced_info.id
+                                                                
+                                                                # Store season-specific metadata
+                                                                if metadata_id not in self.title_metadata:
+                                                                    title_metadata = {
+                                                                        'metadata': self._serialize_title_info(season_enhanced_info),
+                                                                        'provider': season_provider.__class__.__name__ if season_provider else None
+                                                                    }
+                                                                    
+                                                                    # Add MyAnimeList watch status for this season
+                                                                    if self.myanimelist_xml_path and MyAnimeListWatchStatusProvider:
+                                                                        try:
+                                                                            sources = season_enhanced_info.sources or []
+                                                                            for source in sources:
+                                                                                if 'myanimelist' in source:
+                                                                                    if self._mal_provider is None:
+                                                                                        self._mal_provider = MyAnimeListWatchStatusProvider(self.myanimelist_xml_path)
+                                                                                    
+                                                                                    mal_status = self._mal_provider.get_watch_status(source)
+                                                                                    if mal_status:
+                                                                                        title_metadata['myanimelist_watch_status'] = self._serialize_mal_watch_status(mal_status)
+                                                                                    break
+                                                                        except Exception:
+                                                                            pass
+                                                                    
+                                                                    self.title_metadata[metadata_id] = title_metadata
+                                                                
+                                                                # Update the file's metadata_id reference
+                                                                result['metadata_id'] = metadata_id
                                         except Exception as anime_error:
                                             # Fallback: if anime-specific parsing fails, continue without episode info
                                             pass
@@ -364,8 +434,19 @@ class FileGrouper:
             if metadata_id and metadata_id in self.title_metadata:
                 mal_status = self.title_metadata[metadata_id].get('myanimelist_watch_status')
                 if mal_status:
-                    # Use original (absolute) episode number for MyAnimeList comparison, not in-season episode number
-                    episode_num = result.get('original_episode') or result.get('episode')
+                    # Determine which episode number to use based on whether metadata is season-specific
+                    # If the MAL entry is for a specific season (e.g., "86 Part 2"), use in-season episode number
+                    # If it's for the entire series, use original (absolute) episode number
+                    mal_title = self.title_metadata[metadata_id]['metadata'].get('title', '')
+                    is_season_specific = any(keyword in mal_title.lower() for keyword in ['part', 'season', 'cour'])
+                    
+                    if is_season_specific:
+                        # Season-specific MAL entry - use in-season episode number
+                        episode_num = result.get('episode')
+                    else:
+                        # Series-wide MAL entry - use absolute episode number
+                        episode_num = result.get('original_episode') or result.get('episode')
+                    
                     mal_watched_episodes = mal_status.get('my_watched_episodes', 0)
                     if episode_num and episode_num <= mal_watched_episodes:
                         mal_episode_watched = True
@@ -384,6 +465,8 @@ class FileGrouper:
             return result
         except Exception as e:
             print(f"Warning: Could not extract metadata from {file_path.name}: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'filepath': str(file_path),
                 'filename': file_path.name,
