@@ -15,6 +15,9 @@ class FileMetadataExplorer {
         // Hover preview
         this.currentPreviewItem = null;
         
+        // Context menu
+        this.contextMenuTarget = null;
+        
         // Build folder structure
         this.rootFolder = this.buildFolderStructure();
         
@@ -358,6 +361,11 @@ class FileMetadataExplorer {
             }
         };
         
+        // Add context menu for right-click
+        row.oncontextmenu = (e) => {
+            this.showContextMenu(item, e);
+        };
+        
         // Add hover preview for files
         if (item.type === 'file') {
             row.onmouseenter = (e) => this.showHoverPreview(item, e);
@@ -554,6 +562,93 @@ class FileMetadataExplorer {
         this.currentPreviewItem = null;
     }
     
+    showContextMenu(item, event) {
+        event.preventDefault();
+        
+        const menu = document.getElementById('contextMenu');
+        this.contextMenuTarget = item;
+        
+        // Position menu at mouse
+        menu.style.left = event.pageX + 'px';
+        menu.style.top = event.pageY + 'px';
+        menu.classList.add('show');
+        
+        // Adjust if off-screen
+        setTimeout(() => {
+            const rect = menu.getBoundingClientRect();
+            if (rect.right > window.innerWidth) {
+                menu.style.left = (event.pageX - rect.width) + 'px';
+            }
+            if (rect.bottom > window.innerHeight) {
+                menu.style.top = (event.pageY - rect.height) + 'px';
+            }
+        }, 0);
+    }
+    
+    hideContextMenu() {
+        const menu = document.getElementById('contextMenu');
+        menu.classList.remove('show');
+        this.contextMenuTarget = null;
+    }
+    
+    handleContextMenuAction(action) {
+        if (!this.contextMenuTarget) return;
+        
+        const item = this.contextMenuTarget;
+        
+        switch (action) {
+            case 'copy-name':
+                this.copyToClipboard(item.name);
+                break;
+            case 'copy-path':
+                this.copyToClipboard(item.path);
+                break;
+            case 'copy-size':
+                this.copyToClipboard(item.size_human || item.size.toString());
+                break;
+            case 'copy-metadata':
+                this.copyToClipboard(JSON.stringify(item, null, 2));
+                break;
+            case 'show-details':
+                this.showFileDetails(item);
+                break;
+        }
+        
+        this.hideContextMenu();
+    }
+    
+    copyToClipboard(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                console.log('Copied to clipboard:', text);
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+                this.fallbackCopyToClipboard(text);
+            });
+        } else {
+            this.fallbackCopyToClipboard(text);
+        }
+    }
+    
+    fallbackCopyToClipboard(text) {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+            document.execCommand('copy');
+            console.log('Copied to clipboard (fallback):', text);
+        } catch (err) {
+            console.error('Fallback copy failed:', err);
+        }
+        
+        document.body.removeChild(textArea);
+    }
+    
     showFileDetails(item) {
         const modal = document.getElementById('detailsModal');
         const modalBody = document.getElementById('modalBody');
@@ -726,16 +821,38 @@ class FileMetadataExplorer {
             }
         };
         
-        // Hide preview on scroll or click anywhere
+        // Get file list container for scroll handlers
         const fileListContainer = document.querySelector('.file-list-container');
+        
+        // Hide preview and context menu on scroll
         if (fileListContainer) {
             fileListContainer.addEventListener('scroll', () => {
                 this.hideHoverPreview();
+                this.hideContextMenu();
             });
         }
         
         document.addEventListener('click', () => {
             this.hideHoverPreview();
+        });
+        
+        // Context menu
+        const contextMenu = document.getElementById('contextMenu');
+        
+        // Handle menu item clicks
+        contextMenu.addEventListener('click', (e) => {
+            const item = e.target.closest('.context-menu-item');
+            if (item) {
+                const action = item.dataset.action;
+                this.handleContextMenuAction(action);
+            }
+        });
+        
+        // Hide context menu on click outside
+        document.addEventListener('click', (e) => {
+            if (!contextMenu.contains(e.target)) {
+                this.hideContextMenu();
+            }
         });
     }
 }

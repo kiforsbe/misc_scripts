@@ -606,3 +606,42 @@ body {
 .preview-value {
     color: #333;
 }
+
+/* Context Menu */
+.context-menu {
+    position: fixed;
+    z-index: 1000;
+    display: none;
+    background: white;
+    border: 1px solid #d1d1d1;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    min-width: 200px;
+    padding: 4px 0;
+}
+
+.context-menu.show {
+    display: block;
+}
+
+.context-menu-item {
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #333;
+    transition: background 0.1s;
+}
+
+.context-menu-item:hover {
+    background: #f0f0f0;
+}
+
+.context-menu-item:active {
+    background: #e0e0e0;
+}
+
+.context-menu-separator {
+    height: 1px;
+    background: #e0e0e0;
+    margin: 4px 0;
+}
