@@ -10,71 +10,51 @@ class SeriesCompletenessApp {
         this.malStatusFilter = 'all';
         this.watchStatusFilter = 'all';
         this.groupBy = 'none';
-        // --- Thumbnails index ---
-        this.thumbnails = SERIES_DATA.thumbnails || [];
-        this.thumbnailMap = this.buildThumbnailMap(this.thumbnails);
+        // --- Thumbnail directory for hash-based lookup ---
+        this.thumbnailDir = SERIES_DATA.thumbnail_dir || 'thumbnails';
         this.popupTimeout = null;
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
         this.init();
     }
 
-    buildThumbnailMap(thumbnails) {
-        // Map by absolute path for fast lookup
-        const map = {};
-        for (const entry of thumbnails) {
-            if (entry && entry.video) {
-                map[entry.video] = entry;
-            }
-        }
-        return map;
+    // Calculate SHA256 hash of a string (for thumbnail lookup)
+    async sha256(text) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(text);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        return hashHex;
     }
 
-    getFileThumbnail(file) {
-        // Try to match by file.path or file.filename
-        if (!file) return null;
-        let key = file.path || file.filename;
-        if (!key) return null;
-        // Try exact match
-        if (this.thumbnailMap[key]) return this.thumbnailMap[key];
-        // Try basename match (fallback)
-        const base = key.split(/[/\\]/).pop();
-        for (const k in this.thumbnailMap) {
-            if (k.split(/[/\\]/).pop() === base) return this.thumbnailMap[k];
-        }
-        return null;
-    }
-
-    getThumbnailData(file) {
-        // Build thumbnail map if not already done
-        if (!this.thumbnailMap) {
-            this.thumbnailMap = {};
-            if (this.data.thumbnails && Array.isArray(this.data.thumbnails)) {
-                this.data.thumbnails.forEach(thumb => {
-                    if (thumb && thumb.video) {
-                        this.thumbnailMap[thumb.video] = thumb;
-                    }
-                });
-            }
-        }
+    // Get thumbnail paths for a video file based on filename hash
+    async getThumbnailPaths(videoPath) {
+        if (!videoPath) return { static: null, animated: null };
         
-        // Try to find thumbnail by exact path match
-        const filePath = file.path || file.filename;
+        // Extract filename from path
+        const filename = videoPath.split(/[/\\]/).pop();
+        
+        // Calculate SHA256 hash of filename
+        const hash = await this.sha256(filename);
+        
+        // Build thumbnail paths
+        const staticPath = `${this.thumbnailDir}/${hash}_static.webp`;
+        const animatedPath = `${this.thumbnailDir}/${hash}_video.webp`;
+        
+        return { static: staticPath, animated: animatedPath };
+    }
+
+    async getThumbnailData(file) {
+        // Calculate thumbnail paths on-the-fly using filename hash
+        const filePath = file.file_path || file.filepath || file.path || file.filename;
         if (!filePath) return null;
         
-        if (this.thumbnailMap[filePath]) {
-            return this.thumbnailMap[filePath];
-        }
-        
-        // Try to match by basename (fallback)
-        const basename = filePath.split(/[/\\]/).pop();
-        for (const path in this.thumbnailMap) {
-            if (path.split(/[/\\]/).pop() === basename) {
-                return this.thumbnailMap[path];
-            }
-        }
-        
-        return null;
+        const paths = await this.getThumbnailPaths(filePath);
+        return {
+            static_thumbnail: paths.static,
+            animated_thumbnail: paths.animated
+        };
     }
 
     renderRatingInfo(file, style = 'compact') {
@@ -199,7 +179,7 @@ class SeriesCompletenessApp {
         document.getElementById('completion-rate').textContent = `${completionRate}%`;
     }
     
-    filterAndDisplaySeries() {
+    async filterAndDisplaySeries() {
         const groups = this.data.groups;
         this.filteredSeries = [];
         
@@ -275,10 +255,10 @@ class SeriesCompletenessApp {
             return titleA.localeCompare(titleB);
         });
         
-        this.renderSeriesList();
+        await this.renderSeriesList();
     }
     
-    renderSeriesList() {
+    async renderSeriesList() {
         const container = document.getElementById('series-list');
         
         if (this.filteredSeries.length === 0) {
@@ -294,22 +274,27 @@ class SeriesCompletenessApp {
         let html = '';
         
         if (this.groupBy === 'none') {
-            html = this.renderSeriesItems(this.filteredSeries);
+            html = await this.renderSeriesItems(this.filteredSeries);
         } else {
             // Group series
             const groups = this.groupSeries(this.filteredSeries);
             
-            for (const [groupName, seriesList] of Object.entries(groups)) {
-                html += `
-                    <div class="series-group">
-                        <div class="series-group-header">
-                            <span class="series-group-title">${this.escapeHtml(groupName)}</span>
-                            <span class="series-group-count">${seriesList.length}</span>
+            // Render all groups in parallel
+            const groupHtmlPairs = await Promise.all(
+                Object.entries(groups).map(async ([groupName, seriesList]) => {
+                    const itemsHtml = await this.renderSeriesItems(seriesList);
+                    return `
+                        <div class="series-group">
+                            <div class="series-group-header">
+                                <span class="series-group-title">${this.escapeHtml(groupName)}</span>
+                                <span class="series-group-count">${seriesList.length}</span>
+                            </div>
+                            ${itemsHtml}
                         </div>
-                        ${this.renderSeriesItems(seriesList)}
-                    </div>
-                `;
-            }
+                    `;
+                })
+            );
+            html = groupHtmlPairs.join('');
         }
         
         container.innerHTML = html;
@@ -341,8 +326,8 @@ class SeriesCompletenessApp {
         return groups;
     }
     
-    renderSeriesItems(seriesList) {
-        return seriesList.map(series => {
+    async renderSeriesItems(seriesList) {
+        const items = await Promise.all(seriesList.map(async (series) => {
             const titleWithSeason = series.title + (series.season ? ` S${series.season.toString().padStart(2, '0')}` : '');
             const statusClass = `status-${series.status}`;
             const statusIcon = this.getStatusIcon(series.status);
@@ -398,8 +383,8 @@ class SeriesCompletenessApp {
                 malStatusDisplay = `<span class="mal-status" title="MyAnimeList: ${malStatus.my_status}">${icon} ${malStatus.my_status}</span>`;
             }
 
-            // Get thumbnail for first episode
-            const thumb = firstFile ? this.getThumbnailData(firstFile) : null;
+            // Get thumbnail for first episode (await the async call)
+            const thumb = firstFile ? await this.getThumbnailData(firstFile) : null;
             const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : '';
             const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : '';
             const thumbnailHtml = staticUrl 
@@ -431,10 +416,11 @@ class SeriesCompletenessApp {
                     </div>
                 </div>
             `;
-        }).join('');
+        }));
+        return items.join('');
     }
     
-    selectSeries(seriesKey) {
+    async selectSeries(seriesKey) {
         // Update visual selection
         document.querySelectorAll('.series-item').forEach(item => {
             item.classList.remove('selected');
@@ -447,10 +433,10 @@ class SeriesCompletenessApp {
         
         // Store selection and render details
         this.selectedSeries = this.data.groups[seriesKey];
-        this.renderSeriesDetails();
+        await this.renderSeriesDetails();
     }
     
-    renderSeriesDetails() {
+    async renderSeriesDetails() {
         if (!this.selectedSeries) return;
         
         const series = this.selectedSeries;
@@ -462,9 +448,9 @@ class SeriesCompletenessApp {
         const metadata_id = series.title_id || series.files[0].metadata_id || '';
         const title_metadata = this.data.title_metadata[metadata_id] || {};
 
-        // Get thumbnail for first episode
+        // Get thumbnail for first episode (await the async call)
         const firstFile = series.files && series.files[0];
-        const thumbnailData = firstFile ? this.getThumbnailData(firstFile) : null;
+        const thumbnailData = firstFile ? await this.getThumbnailData(firstFile) : null;
         const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
 
@@ -553,14 +539,14 @@ class SeriesCompletenessApp {
                 ${this.renderMalInfo(series)}
             </div>
             
-            ${this.renderEpisodeGrid(series)}
+            ${await this.renderEpisodeGrid(series)}
             
             <div class="details-card">
                 <h4 class="card-title">
                     <i class="bi bi-file-earmark-play"></i>
                     Files (${series.files.length})
                 </h4>
-                ${this.renderFilesList(series)}
+                ${await this.renderFilesList(series)}
             </div>
         `;
     }
@@ -766,7 +752,7 @@ class SeriesCompletenessApp {
         `;
     }
     
-    renderEpisodeGrid(series) {
+    async renderEpisodeGrid(series) {
         if (!series.episode_numbers || series.episode_numbers.length === 0) {
             return '';
         }
@@ -808,6 +794,9 @@ class SeriesCompletenessApp {
             missing: '<svg width="24" height="24" viewBox="0 0 24 24" fill="#dc3545" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="#dc3545"/><line x1="8" y1="8" x2="16" y2="16"/><line x1="16" y1="8" x2="8" y2="16"/></svg>'
         };
         let grid = '<div class="details-card"><h4 class="card-title"><i class="bi bi-grid-3x3"></i>Episode Grid</h4><div class="episode-grid">';
+        
+        // Process episodes in parallel
+        const episodes = [];
         for (let i = 1; i <= maxEpisode; i++) {
             let className = 'episode-number ';
             let title = `Episode ${i}`;
@@ -834,93 +823,114 @@ class SeriesCompletenessApp {
                 status = 'missing';
                 icon = statusIcons.missing;
             }
-            // Always render a box for every episode in the range
-            let thumbBg = '';
+            
             const file = episodeToFile[i];
-            const thumb = this.getFileThumbnail(file);
-            const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
-            const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
-            if (staticUrl) {
-                // Add mouse events for animated thumbnail
-                thumbBg = `
-                    <img class="episode-thumb-bg" src="${staticUrl}" alt="thumb" loading="lazy"
-                        ${animUrl ? `
-                            data-static="${staticUrl}" data-anim="${animUrl}"
-                            onmouseenter="app._swapToAnimThumb(this)" 
-                            onmouseleave="app._swapToStaticThumb(this)"
-                        ` : ''}
-                    >
-                `;
-            }
-            // Top-left: episode number, Top-right: status icon (SVG)
-            grid += `<div class="${className}" title="${title}">${thumbBg}<span class="ep-corner ep-num-corner">${i}</span><span class="ep-corner ep-status-corner">${icon}</span></div>`;
+            episodes.push({ i, className, title, file });
         }
+        
+        // Get all thumbnails in parallel
+        const episodeHtmlArray = await Promise.all(episodes.map(async ({i, className, title, file}) => {
+            let thumbBg = '';
+            if (file) {
+                const thumb = await this.getThumbnailData(file);
+                const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
+                const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
+                if (staticUrl) {
+                    // Add mouse events for animated thumbnail
+                    thumbBg = `
+                        <img class="episode-thumb-bg" src="${staticUrl}" alt="thumb" loading="lazy"
+                            ${animUrl ? `
+                                data-static="${staticUrl}" data-anim="${animUrl}"
+                                onmouseenter="app._swapToAnimThumb(this)" 
+                                onmouseleave="app._swapToStaticThumb(this)"
+                            ` : ''}
+                        >
+                    `;
+                }
+            }
+            
+            // Determine status icon
+            let icon = '';
+            if (watched.has(i)) {
+                icon = statusIcons.watched;
+            } else if (found.has(i)) {
+                icon = statusIcons.found;
+            } else if (extra.has(i)) {
+                icon = statusIcons.extra;
+            } else {
+                icon = statusIcons.missing;
+            }
+            
+            return `<div class="${className}" title="${title}">${thumbBg}<span class="ep-corner ep-num-corner">${i}</span><span class="ep-corner ep-status-corner">${icon}</span></div>`;
+        }));
+        
+        grid += episodeHtmlArray.join('');
         grid += '</div></div>';
         return grid;
     }
     
-    renderFilesList(series) {
+    async renderFilesList(series) {
         if (!series.files || series.files.length === 0) {
             return '<p class="text-muted">No files found</p>';
         }
-        return `
-            <div class="files-list">
-                ${series.files.map((file, idx) => {
-                    //Use the basic watch-status, and if available, use the partial watch-status from Plex
-                    const watchIndicator = file.episode_watched ? 'watched' : (file.plex_watch_status?.view_offset > 0 ? 'partially-watched' : 'unwatched');
-                    const thumb = this.getFileThumbnail(file);
-                    const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
-                    const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
-                    // Give the image a unique id for lookup
-                    const imgId = `file-thumb-img-${idx}`;
-                    // --- Add episode type label if type:extra or type:movie ---
-                    let typeLabel = '';
-                    let fileType = file.type;
-                    const typeLabels = [];
-                    const typeArr = Array.isArray(fileType) ? fileType : (fileType ? [fileType] : []);
-                    typeArr.forEach(t => {
-                        const typeLower = (t || '').toLowerCase();
-                        if (typeLower === 'extra') {
-                            typeLabels.push('<span class="file-type-label file-type-extra">Extra</span>');
-                        } else if (typeLower === 'movie') {
-                            typeLabels.push('<span class="file-type-label file-type-movie">Movie</span>');
-                        }
-                    });
-                    typeLabel = typeLabels.join(' ');
-                    // Attach mouse events to the file-item div
-                    return `
-                        <div class="file-item file-item-with-thumb"
-                            ${animUrl ? `
-                                onmouseenter="app._swapToAnimThumbById('${imgId}', '${animUrl}')"
-                                onmouseleave="app._swapToStaticThumbById('${imgId}', '${staticUrl}')"
-                            ` : ''}
-                        >
-                            <div class="file-thumb">
-                                ${staticUrl ? `
-                                    <img id="${imgId}" src="${staticUrl}" alt="thumbnail" loading="lazy">
-                                ` : '<div class="file-thumb-placeholder"></div>'}
-                            </div>
-                            <div class="file-info">
-                                <div class="file-name" title="${this.escapeHtml(file.filename || file.path)}">
-                                    ${this.escapeHtml(this.getFileName(file.filename || file.path))}
-                                </div>
-                                <div class="file-meta">
-                                    <span>
-                                        <span class="watch-indicator ${watchIndicator}"></span>
-                                        ${watchIndicator === 'watched' ? 'Watched' : (watchIndicator === 'partially-watched' ? 'Partially Watched' : 'Unwatched')}
-                                    </span>
-                                    ${typeLabel}
-                                    ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}
-                                    ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
-                                    ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
-                                    ${this.renderRatingInfo(file, 'compact')}
-                                </div>
-                            </div>
+        
+        // Render all file items in parallel
+        const fileItemsHtml = await Promise.all(series.files.map(async (file, idx) => {
+            //Use the basic watch-status, and if available, use the partial watch-status from Plex
+            const watchIndicator = file.episode_watched ? 'watched' : (file.plex_watch_status?.view_offset > 0 ? 'partially-watched' : 'unwatched');
+            const thumb = await this.getThumbnailData(file);
+            const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
+            const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
+            // Give the image a unique id for lookup
+            const imgId = `file-thumb-img-${idx}`;
+            // --- Add episode type label if type:extra or type:movie ---
+            let typeLabel = '';
+            let fileType = file.type;
+            const typeLabels = [];
+            const typeArr = Array.isArray(fileType) ? fileType : (fileType ? [fileType] : []);
+            typeArr.forEach(t => {
+                const typeLower = (t || '').toLowerCase();
+                if (typeLower === 'extra') {
+                    typeLabels.push('<span class="file-type-label file-type-extra">Extra</span>');
+                } else if (typeLower === 'movie') {
+                    typeLabels.push('<span class="file-type-label file-type-movie">Movie</span>');
+                }
+            });
+            typeLabel = typeLabels.join(' ');
+            // Attach mouse events to the file-item div
+            return `
+                <div class="file-item file-item-with-thumb"
+                    ${animUrl ? `
+                        onmouseenter="app._swapToAnimThumbById('${imgId}', '${animUrl}')"
+                        onmouseleave="app._swapToStaticThumbById('${imgId}', '${staticUrl}')"
+                    ` : ''}
+                >
+                    <div class="file-thumb">
+                        ${staticUrl ? `
+                            <img id="${imgId}" src="${staticUrl}" alt="thumbnail" loading="lazy">
+                        ` : '<div class="file-thumb-placeholder"></div>'}
+                    </div>
+                    <div class="file-info">
+                        <div class="file-name" title="${this.escapeHtml(file.filename || file.path)}">
+                            ${this.escapeHtml(this.getFileName(file.filename || file.path))}
                         </div>
-                    `;
-                }).join('')}
-            </div>
-        `;
+                        <div class="file-meta">
+                            <span>
+                                <span class="watch-indicator ${watchIndicator}"></span>
+                                ${watchIndicator === 'watched' ? 'Watched' : (watchIndicator === 'partially-watched' ? 'Partially Watched' : 'Unwatched')}
+                            </span>
+                            ${typeLabel}
+                            ${file.episode ? `<span><i class="bi bi-hash"></i>Episode ${Array.isArray(file.episode) ? file.episode.join(', ') : file.episode}</span>` : ''}
+                            ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
+                            ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
+                            ${this.renderRatingInfo(file, 'compact')}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }));
+        
+        return `<div class="files-list">${fileItemsHtml.join('')}</div>`;
     }
 
     // --- Animated thumbnail swap handlers ---
@@ -1015,7 +1025,7 @@ class SeriesCompletenessApp {
         return ranges.join(', ');
     }
     
-    showSeriesPopup(event, seriesKey) {
+    async showSeriesPopup(event, seriesKey) {
         // Clear any existing hide timeout
         if (this.hideTimeout) {
             clearTimeout(this.hideTimeout);
@@ -1082,9 +1092,9 @@ class SeriesCompletenessApp {
             malContainer.style.display = 'none';
         }
         
-        // Set thumbnail
+        // Set thumbnail (await the async call)
         const firstFile = series.files && series.files[0];
-        const thumbnailData = firstFile ? this.getThumbnailData(firstFile) : null;
+        const thumbnailData = firstFile ? await this.getThumbnailData(firstFile) : null;
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
         
         if (animUrl) {

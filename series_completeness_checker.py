@@ -585,38 +585,14 @@ class SeriesCompletenessChecker:
         except FileNotFoundError as e:
             raise FileNotFoundError(f"Template file not found: {e}. Make sure all template files are in the same directory as this script.")
 
-        # --- Merge thumbnail index into results ---
-        # Try to find the thumbnail index JSON in the thumbnail dir (default or from config)
-        thumbnail_dir = results.get('thumbnail_dir') or os.path.expanduser('~/.video_thumbnail_cache')
-        thumbnail_index_path = os.path.join(thumbnail_dir, 'thumbnail_index.json')
-        thumbnail_index = []
-        if os.path.exists(thumbnail_index_path):
-            try:
-                with open(thumbnail_index_path, 'r', encoding='utf-8') as tf:
-                    loaded = json.load(tf)
-                    if isinstance(loaded, list):
-                        # Convert absolute paths to relative paths if needed for bundle export
-                        if use_relative_thumbnails and thumbnail_relative_path:
-                            # Make a deep copy to avoid modifying the original
-                            import copy
-                            thumbnail_index = copy.deepcopy(loaded)
-                            for entry in thumbnail_index:
-                                if entry.get('static_thumbnail'):
-                                    # Use forward slashes for web compatibility
-                                    rel_path = thumbnail_relative_path + '/' + os.path.basename(entry['static_thumbnail'])
-                                    entry['static_thumbnail'] = rel_path.replace('\\', '/')
-                                if entry.get('animated_thumbnail'):
-                                    # Use forward slashes for web compatibility
-                                    rel_path = thumbnail_relative_path + '/' + os.path.basename(entry['animated_thumbnail'])
-                                    entry['animated_thumbnail'] = rel_path.replace('\\', '/')
-                        else:
-                            # Keep absolute paths for non-bundle mode
-                            thumbnail_index = loaded
-            except Exception as e:
-                thumbnail_index = []
-                # Optionally print warning
-                # print(f"Warning: Could not load thumbnail index: {e}")
-        results['thumbnails'] = thumbnail_index
+        # Set thumbnail directory for webapp to use for hash-based lookup
+        # The webapp JavaScript will calculate thumbnail paths on-the-fly using SHA256 hash of filenames
+        if use_relative_thumbnails and thumbnail_relative_path:
+            # For bundle exports, use relative path
+            results['thumbnail_dir'] = thumbnail_relative_path
+        else:
+            # For standalone exports, use absolute path or default
+            results['thumbnail_dir'] = results.get('thumbnail_dir') or os.path.expanduser('~/.video_thumbnail_cache')
         # Prepare data for embedding (minify JSON)
         json_data = json.dumps(results, separators=(',', ':'), cls=CustomJSONEncoder)
         
@@ -1110,8 +1086,15 @@ def _refresh_myanimelist_metadata(results: Dict[str, Any], myanimelist_xml_path:
         if verbosity >= 1:
             print(f"Warning: Error refreshing MyAnimeList metadata: {e}")
 
-def _handle_refresh_bundle_mode(checker: 'SeriesCompletenessChecker', bundle_dir: str, verbosity: int) -> None:
-    """Handle --refresh-bundle mode: regenerate webapp from existing bundle metadata."""
+def _handle_refresh_bundle_mode(checker: 'SeriesCompletenessChecker', bundle_dir: str, verbosity: int, update_metadata: bool = False) -> None:
+    """Handle --refresh-bundle mode: regenerate webapp from existing bundle metadata.
+    
+    Args:
+        checker: SeriesCompletenessChecker instance
+        bundle_dir: Path to bundle directory
+        verbosity: Verbosity level
+        update_metadata: If True, also save refreshed metadata back to metadata.json
+    """
     bundle_root = Path(bundle_dir)
     metadata_path = bundle_root / 'metadata.json'
     
@@ -1127,6 +1110,19 @@ def _handle_refresh_bundle_mode(checker: 'SeriesCompletenessChecker', bundle_dir
     # Refresh MyAnimeList metadata if provided
     if checker.myanimelist_xml_path:
         _refresh_myanimelist_metadata(results, checker.myanimelist_xml_path, verbosity)
+    
+    # Save updated metadata if requested
+    if update_metadata:
+        if verbosity >= 1:
+            print(f"Saving updated metadata to {metadata_path}...")
+        
+        # Ensure thumbnail_dir is set for bundle (webapp will calculate paths on-the-fly)
+        if 'thumbnail_dir' not in results:
+            results['thumbnail_dir'] = 'thumbnails'
+        
+        checker.export_results(results, str(metadata_path))
+        if verbosity >= 1:
+            print(f"✓ Metadata updated: {metadata_path}")
     
     if verbosity >= 1:
         print(f"Regenerating bundle webapp...")
@@ -1369,6 +1365,7 @@ Examples:
   %(prog)s /path/to/series --generate-thumbnails --thumbnail-dir ~/.video_thumbnail_cache
   %(prog)s --refresh-bundle /path/to/bundle/dir
   %(prog)s --refresh-bundle /path/to/bundle/dir --myanimelist-xml ~/myanimelist.xml
+  %(prog)s --refresh-bundle /path/to/bundle/dir --myanimelist-xml ~/myanimelist.xml --refresh-bundle-metadata
   %(prog)s --webapp-refresh /path/to/series_completeness.json
   %(prog)s --webapp-refresh /path/to/series.json --webapp-export /path/to/output.html
   %(prog)s --webapp-refresh /path/to/series.json --myanimelist-xml ~/myanimelist.xml
@@ -1379,6 +1376,9 @@ Examples:
     parser.add_argument('--refresh-bundle', metavar='BUNDLE_DIR',
                        help='Regenerate webapp from existing bundle metadata.json. Provide path to bundle root directory. '
                             'Can be combined with --myanimelist-xml to refresh MAL metadata.')
+    parser.add_argument('--refresh-bundle-metadata', action='store_true',
+                       help='When used with --refresh-bundle, also save the refreshed metadata back to metadata.json. '
+                            'This updates the stored metadata file with any MAL status changes.')
     parser.add_argument('--webapp-refresh', metavar='JSON_FILE',
                        help='Regenerate standalone webapp from existing metadata JSON file. '
                             'Can be combined with --myanimelist-xml to refresh MAL metadata.')
@@ -1512,7 +1512,8 @@ Examples:
 
     # Handle refresh modes
     if refresh_mode == 'bundle':
-        _handle_refresh_bundle_mode(checker, args.refresh_bundle, verbosity)
+        update_metadata = args.refresh_bundle_metadata if hasattr(args, 'refresh_bundle_metadata') else False
+        _handle_refresh_bundle_mode(checker, args.refresh_bundle, verbosity, update_metadata)
         return
     elif refresh_mode == 'webapp':
         _handle_refresh_webapp_mode(checker, args.webapp_refresh, args.webapp_export, verbosity)
