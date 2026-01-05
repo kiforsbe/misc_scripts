@@ -8,12 +8,8 @@ class SeriesCompletenessApp {
         this.searchTerm = '';
         this.statusFilter = 'all';
         this.malStatusFilter = 'all';
-        // New: Watch status filter states
-        this.watchFilters = {
-            notWatched: true,
-            partiallyWatched: true,
-            fullyWatched: true
-        };
+        this.watchStatusFilter = 'all';
+        this.groupBy = 'none';
         // --- Thumbnails index ---
         this.thumbnails = SERIES_DATA.thumbnails || [];
         this.thumbnailMap = this.buildThumbnailMap(this.thumbnails);
@@ -162,17 +158,17 @@ class SeriesCompletenessApp {
             this.filterAndDisplaySeries();
         });
         
-        // Watch status filters
-        document.getElementById('filter-not-watched').addEventListener('change', (e) => {
-            this.watchFilters.notWatched = e.target.checked;
+        // Watch status filter
+        const watchStatusFilter = document.getElementById('watch-status-filter');
+        watchStatusFilter.addEventListener('change', (e) => {
+            this.watchStatusFilter = e.target.value;
             this.filterAndDisplaySeries();
         });
-        document.getElementById('filter-partially-watched').addEventListener('change', (e) => {
-            this.watchFilters.partiallyWatched = e.target.checked;
-            this.filterAndDisplaySeries();
-        });
-        document.getElementById('filter-fully-watched').addEventListener('change', (e) => {
-            this.watchFilters.fullyWatched = e.target.checked;
+        
+        // Group by filter
+        const groupBySelect = document.getElementById('group-by-select');
+        groupBySelect.addEventListener('change', (e) => {
+            this.groupBy = e.target.value;
             this.filterAndDisplaySeries();
         });
         
@@ -234,17 +230,18 @@ class SeriesCompletenessApp {
                 (isMovie && this.statusFilter === 'complete') ||
                 (!isMovie && series.status === this.statusFilter);
 
-            // --- New: Watch status filter ---
+            // --- Watch status filter ---
             // Determine watch status for the group
             const ws = series.watch_status || {};
-            let watchCategory = 'notWatched';
+            let watchStatus = 'not-watched';
             if ((ws.watched_episodes || 0) === (series.episodes_found || 0) && (series.episodes_found || 0) > 0) {
-                watchCategory = 'fullyWatched';
+                watchStatus = 'fully-watched';
             } else if ((ws.partially_watched_episodes || 0) > 0 || (ws.watched_episodes || 0) > 0) {
-                watchCategory = 'partiallyWatched';
+                watchStatus = 'partially-watched';
             }
-            // Only include if the corresponding filter is checked
-            const matchesWatch = this.watchFilters[watchCategory];
+            
+            // Apply watch status filter
+            const matchesWatch = this.watchStatusFilter === 'all' || watchStatus === this.watchStatusFilter;
             // --- End new ---
 
             // Apply MAL status filter
@@ -294,7 +291,58 @@ class SeriesCompletenessApp {
             return;
         }
         
-        container.innerHTML = this.filteredSeries.map(series => {
+        let html = '';
+        
+        if (this.groupBy === 'none') {
+            html = this.renderSeriesItems(this.filteredSeries);
+        } else {
+            // Group series
+            const groups = this.groupSeries(this.filteredSeries);
+            
+            for (const [groupName, seriesList] of Object.entries(groups)) {
+                html += `
+                    <div class="series-group">
+                        <div class="series-group-header">
+                            <span class="series-group-title">${this.escapeHtml(groupName)}</span>
+                            <span class="series-group-count">${seriesList.length}</span>
+                        </div>
+                        ${this.renderSeriesItems(seriesList)}
+                    </div>
+                `;
+            }
+        }
+        
+        container.innerHTML = html;
+    }
+    
+    groupSeries(series) {
+        const groups = {};
+        
+        for (const s of series) {
+            let groupName = 'Other';
+            
+            if (this.groupBy === 'status') {
+                groupName = this.formatStatus(s.status);
+            } else if (this.groupBy === 'mal-status') {
+                const malStatus = s.myanimelist_watch_status;
+                if (malStatus && malStatus.my_status) {
+                    groupName = malStatus.my_status;
+                } else {
+                    groupName = 'No MAL Data';
+                }
+            }
+            
+            if (!groups[groupName]) {
+                groups[groupName] = [];
+            }
+            groups[groupName].push(s);
+        }
+        
+        return groups;
+    }
+    
+    renderSeriesItems(seriesList) {
+        return seriesList.map(series => {
             const titleWithSeason = series.title + (series.season ? ` S${series.season.toString().padStart(2, '0')}` : '');
             const statusClass = `status-${series.status}`;
             const statusIcon = this.getStatusIcon(series.status);

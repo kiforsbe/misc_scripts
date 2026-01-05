@@ -46,7 +46,7 @@
                         <i class="bi bi-search search-icon"></i>
                         <input type="text" id="search-input" class="search-input" placeholder="Search series...">
                     </div>
-                    <div class="filter-container">
+                    <div class="filter-row">
                         <select id="status-filter" class="filter-select">
                             <option value="all">All Status</option>
                             <option value="complete">Complete</option>
@@ -55,9 +55,6 @@
                             <option value="no_episode_numbers">No episode numbers</option>
                             <option value="unknown">Unknown</option>
                         </select>
-                    </div>
-                    <!-- MyAnimeList status filter -->
-                    <div class="filter-container">
                         <select id="mal-status-filter" class="filter-select">
                             <option value="all">All MAL Status</option>
                             <option value="watching">Watching</option>
@@ -68,14 +65,20 @@
                             <option value="no-mal-data">No MAL Data</option>
                         </select>
                     </div>
-                    <!-- New: Watch status filter checkboxes -->
-                    <div class="filter-container">
-                        <label class="form-check-label d-block mb-1"><input type="checkbox" class="form-check-input me-1"
-                                id="filter-not-watched" checked> Not Watched</label>
-                        <label class="form-check-label d-block mb-1"><input type="checkbox" class="form-check-input me-1"
-                                id="filter-partially-watched" checked> Partially Watched</label>
-                        <label class="form-check-label d-block mb-1"><input type="checkbox" class="form-check-input me-1"
-                                id="filter-fully-watched" checked> Fully Watched</label>
+                    <div class="filter-row">
+                        <select id="watch-status-filter" class="filter-select">
+                            <option value="all">All Watch Status</option>
+                            <option value="not-watched">Not Watched</option>
+                            <option value="partially-watched">Partially Watched</option>
+                            <option value="fully-watched">Fully Watched</option>
+                        </select>
+                    </div>
+                    <div class="group-by-controls">
+                        <select id="group-by-select" class="group-by-select">
+                            <option value="none">No Grouping</option>
+                            <option value="status">Group by Status</option>
+                            <option value="mal-status">Group by MAL Status</option>
+                        </select>
                     </div>
                 </div>
                 <div class="series-list" id="series-list">
