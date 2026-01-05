@@ -1,19 +1,11 @@
 import argparse
 import json
-import hashlib
-import subprocess
-import shlex
 import os
-import sys
-import shutil
-
 from pathlib import Path
 from typing import Dict, List, Any, Optional
-from collections import defaultdict
 import argparse
 import json
 import os
-import shutil
 
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
@@ -81,15 +73,42 @@ MetadataManager = None
 class SeriesCompletenessChecker:
     """Checks series collection completeness using FileGrouper and metadata providers."""
     
-    def __init__(self, metadata_manager=None, plex_provider=None, myanimelist_xml_path=None):
-        self.file_grouper = FileGrouper(metadata_manager, plex_provider, myanimelist_xml_path)
+    def __init__(self, metadata_manager=None, plex_provider=None, myanimelist_xml_path=None, metadata_only=False):
+        """Initialize the checker.
+        
+        Args:
+            metadata_manager: Metadata manager for looking up series info
+            plex_provider: Plex provider for watch status
+            myanimelist_xml_path: Path to MyAnimeList XML file
+            metadata_only: If True, skip FileGrouper initialization (for loading from JSON)
+        """
+        self.metadata_only = metadata_only
+        if not metadata_only:
+            self.file_grouper = FileGrouper(metadata_manager, plex_provider, myanimelist_xml_path)
+        else:
+            self.file_grouper = None
         self.metadata_manager = metadata_manager
         self.plex_provider = plex_provider
         self.myanimelist_xml_path = myanimelist_xml_path
         self.completeness_results = {}
     
+    def load_results(self, input_path: str) -> Dict[str, Any]:
+        """Load analysis results from a previously saved JSON file.
+        
+        Args:
+            input_path: Path to the JSON file containing results
+            
+        Returns:
+            Dictionary containing the loaded results
+        """
+        with open(input_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
     def analyze_series_collection(self, files: List[Path], show_progress: bool = True) -> Dict[str, Any]:
         """Analyze series collection for completeness."""
+        if self.metadata_only or not self.file_grouper:
+            raise RuntimeError("Cannot analyze files when initialized in metadata_only mode. Use load_results() instead.")
+        
         # Group files by title and season with progress tracking
         groups = self.file_grouper.group_files(files, ['title', 'season'], show_progress)
 
@@ -509,7 +528,6 @@ class SeriesCompletenessChecker:
         
         return season_mal_status
 
-    
     def _format_episode_ranges(self, episodes: List[int]) -> str:
         """Format episode list as smart ranges (e.g., [1,2,3,5,6,8] -> '[1-3, 5-6, 8]')."""
         if not episodes:
@@ -830,8 +848,234 @@ class SeriesCompletenessChecker:
         line = f"{status_emoji} {title_str:<{title_length}} {episodes_found:>4}/{episodes_expected_str:<4}{extra_info_str}"
         
         print(line)
-    
 
+def _handle_refresh_bundle_mode(checker: 'SeriesCompletenessChecker', bundle_dir: str, verbosity: int) -> None:
+    """Handle --refresh-bundle mode: regenerate webapp from existing bundle metadata."""
+    bundle_root = Path(bundle_dir)
+    metadata_path = bundle_root / 'metadata.json'
+    
+    if not metadata_path.exists():
+        print(f"Error: metadata.json not found in bundle directory: {metadata_path}")
+        return
+    
+    if verbosity >= 1:
+        print(f"Loading metadata from {metadata_path}...")
+    
+    results = checker.load_results(str(metadata_path))
+    
+    if verbosity >= 1:
+        print(f"Regenerating bundle webapp...")
+    
+    webapp_path = bundle_root / 'webapp.html'
+    checker.export_webapp(results, str(webapp_path), use_relative_thumbnails=True, thumbnail_relative_path='thumbnails')
+    
+    if verbosity >= 1:
+        print(f"✓ Bundle webapp regenerated: {webapp_path}")
+
+def _handle_refresh_webapp_mode(checker: 'SeriesCompletenessChecker', json_path: str, output_path: str, verbosity: int) -> None:
+    """Handle --webapp-refresh mode: regenerate standalone webapp from JSON."""
+    json_file = Path(json_path)
+    
+    if not json_file.exists():
+        print(f"Error: JSON file not found: {json_file}")
+        return
+    
+    if verbosity >= 1:
+        print(f"Loading metadata from {json_file}...")
+    
+    results = checker.load_results(str(json_file))
+    
+    # Determine output path (default to same directory as JSON with .html extension)
+    if output_path:
+        output_file = Path(output_path)
+    else:
+        output_file = json_file.with_suffix('.html')
+    
+    if verbosity >= 1:
+        print(f"Regenerating standalone webapp...")
+    
+    checker.export_webapp(results, str(output_file))
+    
+    if verbosity >= 1:
+        print(f"✓ Webapp regenerated: {output_file}")
+
+def _handle_thumbnail_generation(files: List[Path], args, verbosity: int) -> Optional[str]:
+    """Handle thumbnail generation and return the thumbnail directory path."""
+    should_generate_thumbnails = args.generate_thumbnails
+    thumbnail_dir = args.thumbnail_dir
+    
+    # If using bundle mode, override thumbnail settings
+    if hasattr(args, 'export_bundle') and args.export_bundle:
+        should_generate_thumbnails = True
+        bundle_root = Path(args.export_bundle)
+        thumbnail_dir = str(bundle_root / 'thumbnails')
+    
+    if not should_generate_thumbnails:
+        return None
+    
+    thumbnail_dir_expanded = os.path.expanduser(thumbnail_dir)
+    
+    # If using bundle mode, check global cache first
+    if hasattr(args, 'export_bundle') and args.export_bundle:
+        import shutil
+        global_cache_dir = os.path.expanduser('~/.video_thumbnail_cache')
+        if verbosity >= 1:
+            print(f"Checking global cache at {global_cache_dir} for existing thumbnails...")
+        
+        # Create the bundle thumbnails directory
+        os.makedirs(thumbnail_dir_expanded, exist_ok=True)
+        
+        # Check global cache and copy existing thumbnails
+        global_generator = VideoThumbnailGenerator(global_cache_dir, max_height=480)
+        copied_from_cache = 0
+        
+        for file_info in files:
+            file_path = file_info if isinstance(file_info, (str, Path)) else file_info.get('path')
+            existing = global_generator.get_thumbnail_for_video(str(file_path))
+            
+            # If thumbnails exist in cache, copy them to bundle
+            if existing.get('static_thumbnail') and existing.get('animated_thumbnail'):
+                try:
+                    static_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['static_thumbnail']))
+                    animated_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['animated_thumbnail']))
+                    
+                    shutil.copy2(existing['static_thumbnail'], static_dest)
+                    shutil.copy2(existing['animated_thumbnail'], animated_dest)
+                    copied_from_cache += 1
+                except Exception as e:
+                    if verbosity >= 2:
+                        print(f"Could not copy cached thumbnails for {file_path}: {e}")
+        
+        if verbosity >= 1 and copied_from_cache > 0:
+            print(f"Copied {copied_from_cache} thumbnail pairs from global cache")
+    
+    # Generate thumbnails (will skip files that already have thumbnails in target dir)
+    generator = VideoThumbnailGenerator(thumbnail_dir_expanded, max_height=480)
+    thumbnail_index = generator.generate_thumbnails_for_videos(
+        files, verbose=verbosity, force_regenerate=False, show_progress=(verbosity >= 1)
+    )
+    generator.save_thumbnail_index(thumbnail_index, verbose=verbosity)
+    
+    return thumbnail_dir_expanded
+
+def _apply_status_filters(results: Dict[str, Any], status_filters: List[str]) -> None:
+    """Apply status filters to results and update summary."""
+    all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
+                   'unknown_total_episodes', 'not_series', 'no_metadata', 'no_metadata_manager', 'unknown'}
+    
+    # Parse include/exclude patterns
+    include_statuses = set()
+    exclude_statuses = set()
+    plain_statuses = set()
+    
+    for filter_item in status_filters:
+        if filter_item.startswith('+'):
+            status = filter_item[1:]
+            if status in all_statuses:
+                include_statuses.add(status)
+        elif filter_item.startswith('-'):
+            status = filter_item[1:]
+            if status in all_statuses:
+                exclude_statuses.add(status)
+        elif filter_item in all_statuses:
+            plain_statuses.add(filter_item)
+    
+    # Determine final filter set
+    if plain_statuses:
+        final_statuses = plain_statuses
+    elif include_statuses:
+        final_statuses = include_statuses - exclude_statuses
+    elif exclude_statuses:
+        final_statuses = all_statuses - exclude_statuses
+    else:
+        final_statuses = all_statuses
+    
+    # Apply filtering
+    filtered_groups = {}
+    for group_key, analysis in results['groups'].items():
+        if analysis['status'] in final_statuses:
+            filtered_groups[group_key] = analysis
+    results['groups'] = filtered_groups
+    
+    # Recalculate summary
+    _recalculate_summary(results)
+
+def _apply_mal_status_filters(results: Dict[str, Any], mal_status_filters: List[str]) -> None:
+    """Apply MyAnimeList status filters to results and update summary."""
+    mal_status_map = {
+        'watching': 'Watching',
+        'completed': 'Completed', 
+        'on-hold': 'On-Hold',
+        'dropped': 'Dropped',
+        'plan-to-watch': 'Plan to Watch'
+    }
+    all_mal_statuses = set(mal_status_map.keys())
+    
+    # Parse include/exclude patterns
+    include_mal_statuses = set()
+    exclude_mal_statuses = set()
+    plain_mal_statuses = set()
+    
+    for filter_item in mal_status_filters:
+        if filter_item.startswith('+'):
+            status = filter_item[1:]
+            if status in all_mal_statuses:
+                include_mal_statuses.add(status)
+        elif filter_item.startswith('-'):
+            status = filter_item[1:]
+            if status in all_mal_statuses:
+                exclude_mal_statuses.add(status)
+        elif filter_item in all_mal_statuses:
+            plain_mal_statuses.add(filter_item)
+    
+    # Determine final filter set
+    if plain_mal_statuses:
+        final_mal_statuses = plain_mal_statuses
+    elif include_mal_statuses:
+        final_mal_statuses = include_mal_statuses - exclude_mal_statuses
+    elif exclude_mal_statuses:
+        final_mal_statuses = all_mal_statuses - exclude_mal_statuses
+    else:
+        final_mal_statuses = all_mal_statuses
+    
+    # Convert to actual MAL status values for filtering
+    final_mal_status_values = {mal_status_map[status] for status in final_mal_statuses}
+    
+    # Apply filtering
+    filtered_groups = {}
+    for group_key, analysis in results['groups'].items():
+        mal_status = analysis.get('myanimelist_watch_status')
+        if mal_status and mal_status.get('my_status'):
+            if mal_status['my_status'] in final_mal_status_values:
+                filtered_groups[group_key] = analysis
+        elif not mal_status:
+            # Series has no MAL status - only include if no positive filters specified
+            if not plain_mal_statuses and not include_mal_statuses:
+                filtered_groups[group_key] = analysis
+    
+    results['groups'] = filtered_groups
+    
+    # Recalculate summary
+    _recalculate_summary(results)
+
+def _recalculate_summary(results: Dict[str, Any]) -> None:
+    """Recalculate summary statistics after filtering."""
+    filtered_groups = results['groups']
+    total_series = len(filtered_groups)
+    complete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['complete', 'complete_with_extras'])
+    incomplete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['incomplete', 'no_episode_numbers'])
+    unknown_series = total_series - complete_series - incomplete_series
+    total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
+    total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
+
+    results['completeness_summary'].update({
+        'total_series': total_series,
+        'complete_series': complete_series,
+        'incomplete_series': incomplete_series,
+        'unknown_series': unknown_series,
+        'total_episodes_found': total_episodes_found,
+        'total_episodes_expected': total_episodes_expected
+    })
 
 def main():
     """Command-line interface for series completeness checker."""
@@ -854,10 +1098,17 @@ Examples:
   %(prog)s /path/to/series --show-metadata year rating
   %(prog)s /path/to/series --show-metadata genres director --status-filter "complete"
   %(prog)s /path/to/series --generate-thumbnails --thumbnail-dir ~/.video_thumbnail_cache
+  %(prog)s --refresh-bundle /path/to/bundle/dir
+  %(prog)s --webapp-refresh /path/to/series_completeness.json
+  %(prog)s --webapp-refresh /path/to/series.json --webapp-export /path/to/output.html
         """
     )
-    parser.add_argument('input_paths', nargs='+',
-                       help='Input paths to search for series files')
+    parser.add_argument('input_paths', nargs='*',
+                       help='Input paths to search for series files (not required when using --refresh-bundle or --webapp-refresh)')
+    parser.add_argument('--refresh-bundle', metavar='BUNDLE_DIR',
+                       help='Regenerate webapp from existing bundle metadata.json. Provide path to bundle root directory.')
+    parser.add_argument('--webapp-refresh', metavar='JSON_FILE',
+                       help='Regenerate standalone webapp from existing metadata JSON file.')
     parser.add_argument('--exclude-paths', nargs='*', default=[],
                        help='Paths to exclude from search')
     parser.add_argument('--include-patterns', nargs='*', default=['*.mkv', '*.mp4', '*.avi'],
@@ -902,6 +1153,17 @@ Examples:
     
     args = parser.parse_args()
     
+    # Check for refresh modes
+    refresh_mode = False
+    if hasattr(args, 'refresh_bundle') and args.refresh_bundle:
+        refresh_mode = 'bundle'
+    elif hasattr(args, 'webapp_refresh') and args.webapp_refresh:
+        refresh_mode = 'webapp'
+    
+    # Validate input_paths requirement (not needed in refresh modes)
+    if not refresh_mode and (not args.input_paths or len(args.input_paths) == 0):
+        parser.error('input_paths is required when not using --refresh-bundle or --webapp-refresh')
+    
     # Check for conflicts with --export-bundle
     if hasattr(args, 'export_bundle') and args.export_bundle:
         conflicts = []
@@ -922,29 +1184,43 @@ Examples:
     else:
         verbosity = args.verbose
 
-    # Get metadata manager and plex provider
-    try:
-        metadata_manager = get_metadata_manager()
-        if not metadata_manager and verbosity >= 1:
-            print("Warning: No metadata manager available. Completeness checking will be limited.")
-    except Exception as e:
-        if verbosity >= 1:
-            print(f"Warning: Could not initialize metadata manager: {e}")
-        metadata_manager = None
+    # Get metadata manager and plex provider (skip in refresh modes)
+    metadata_manager = None
+    plex_provider = None
     
-    try:
-        plex_provider = get_plex_provider()
-    except Exception as e:
-        if verbosity >= 2:
-            print(f"Warning: Could not initialize Plex provider: {e}")
-        plex_provider = None
+    if not refresh_mode:
+        try:
+            metadata_manager = get_metadata_manager()
+            if not metadata_manager and verbosity >= 1:
+                print("Warning: No metadata manager available. Completeness checking will be limited.")
+        except Exception as e:
+            if verbosity >= 1:
+                print(f"Warning: Could not initialize metadata manager: {e}")
+            metadata_manager = None
+        
+        try:
+            plex_provider = get_plex_provider()
+        except Exception as e:
+            if verbosity >= 2:
+                print(f"Warning: Could not initialize Plex provider: {e}")
+            plex_provider = None
     
     # Create checker instance with MyAnimeList support
+    # Use metadata_only mode when in refresh mode to skip FileGrouper initialization
     checker = SeriesCompletenessChecker(
         metadata_manager, 
         plex_provider,
-        args.myanimelist_xml if hasattr(args, 'myanimelist_xml') else None
+        args.myanimelist_xml if hasattr(args, 'myanimelist_xml') else None,
+        metadata_only=bool(refresh_mode)
     )
+
+    # Handle refresh modes
+    if refresh_mode == 'bundle':
+        _handle_refresh_bundle_mode(checker, args.refresh_bundle, verbosity)
+        return
+    elif refresh_mode == 'webapp':
+        _handle_refresh_webapp_mode(checker, args.webapp_refresh, args.webapp_export, verbosity)
+        return
 
     # Discover files
     if verbosity >= 1:
@@ -961,214 +1237,28 @@ Examples:
             print("No series files found matching criteria.")
         return
 
-    # Determine if we should generate thumbnails
-    should_generate_thumbnails = args.generate_thumbnails
-    thumbnail_dir = args.thumbnail_dir
-    
-    # If using bundle mode, override thumbnail settings
-    if hasattr(args, 'export_bundle') and args.export_bundle:
-        should_generate_thumbnails = True
-        # Use bundle's thumbnails subfolder directly
-        bundle_root = Path(args.export_bundle)
-        thumbnail_dir = str(bundle_root / 'thumbnails')
-    
-    if should_generate_thumbnails:
-        thumbnail_dir_expanded = os.path.expanduser(thumbnail_dir)
-        
-        # If using bundle mode, check global cache first
-        if hasattr(args, 'export_bundle') and args.export_bundle:
-            global_cache_dir = os.path.expanduser('~/.video_thumbnail_cache')
-            if verbosity >= 1:
-                print(f"Checking global cache at {global_cache_dir} for existing thumbnails...")
-            
-            # Create the bundle thumbnails directory
-            os.makedirs(thumbnail_dir_expanded, exist_ok=True)
-            
-            # Check global cache and copy existing thumbnails
-            global_generator = VideoThumbnailGenerator(global_cache_dir, max_height=480)
-            copied_from_cache = 0
-            
-            for file_info in files:
-                file_path = file_info if isinstance(file_info, (str, Path)) else file_info.get('path')
-                existing = global_generator.get_thumbnail_for_video(str(file_path))
-                
-                # If thumbnails exist in cache, copy them to bundle
-                if existing.get('static_thumbnail') and existing.get('animated_thumbnail'):
-                    try:
-                        static_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['static_thumbnail']))
-                        animated_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['animated_thumbnail']))
-                        
-                        shutil.copy2(existing['static_thumbnail'], static_dest)
-                        shutil.copy2(existing['animated_thumbnail'], animated_dest)
-                        copied_from_cache += 1
-                    except Exception as e:
-                        if verbosity >= 2:
-                            print(f"Could not copy cached thumbnails for {file_path}: {e}")
-            
-            if verbosity >= 1 and copied_from_cache > 0:
-                print(f"Copied {copied_from_cache} thumbnail pairs from global cache")
-        
-        # Generate thumbnails (will skip files that already have thumbnails in target dir)
-        generator = VideoThumbnailGenerator(thumbnail_dir_expanded, max_height=480)
-        thumbnail_index = generator.generate_thumbnails_for_videos(
-            files, verbose=verbosity, force_regenerate=False, show_progress=(verbosity >= 1)
-        )
-        generator.save_thumbnail_index(thumbnail_index, verbose=verbosity)
-        # Do not return here; continue to analysis and export
+    # Handle thumbnail generation
+    thumbnail_dir_expanded = _handle_thumbnail_generation(files, args, verbosity)
     
     if verbosity >= 1:
         print(f"Found {len(files)} files")
         print("Analyzing series collection for completeness...")
+    
     # Analyze collection
     results = checker.analyze_series_collection(files)
     
     # Store thumbnail directory in results for later use
-    if should_generate_thumbnails:
-        results['thumbnail_dir'] = os.path.expanduser(thumbnail_dir)
+    if thumbnail_dir_expanded:
+        results['thumbnail_dir'] = thumbnail_dir_expanded
     
-    # Filter results if requested
-    status_filters = None
+    # Apply filters if requested
     if args.status_filter:
-        # Split the string into individual filter items
         status_filters = args.status_filter.split()
+        _apply_status_filters(results, status_filters)
     
-    # MyAnimeList status filter
-    mal_status_filters = None
     if hasattr(args, 'mal_status_filter') and args.mal_status_filter:
         mal_status_filters = args.mal_status_filter.split()
-    
-    if status_filters:
-        all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
-                       'unknown_total_episodes', 'not_series', 'no_metadata', 'no_metadata_manager', 'unknown'}
-        
-        # Parse include/exclude patterns
-        include_statuses = set()
-        exclude_statuses = set()
-        plain_statuses = set()
-        
-        for filter_item in status_filters:
-            if filter_item.startswith('+'):
-                status = filter_item[1:]
-                if status in all_statuses:
-                    include_statuses.add(status)
-            elif filter_item.startswith('-'):
-                status = filter_item[1:]
-                if status in all_statuses:
-                    exclude_statuses.add(status)
-            elif filter_item in all_statuses:
-                plain_statuses.add(filter_item)
-        
-        # Determine final filter set
-        if plain_statuses:
-            # Plain statuses take precedence (exact match mode)
-            final_statuses = plain_statuses
-        elif include_statuses:
-            # Include mode: start with empty set, add includes, remove excludes
-            final_statuses = include_statuses - exclude_statuses
-        elif exclude_statuses:
-            # Exclude mode: start with all, remove excludes
-            final_statuses = all_statuses - exclude_statuses
-        else:
-            # No valid filters, show all
-            final_statuses = all_statuses
-        
-        # Apply filtering
-        filtered_groups = {}
-        for group_key, analysis in results['groups'].items():
-            if analysis['status'] in final_statuses:
-                filtered_groups[group_key] = analysis
-        results['groups'] = filtered_groups
-        
-        # Recalculate summary for filtered results
-        total_series = len(filtered_groups)
-        complete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['complete', 'complete_with_extras'])
-        incomplete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['incomplete', 'no_episode_numbers'])
-        unknown_series = total_series - complete_series - incomplete_series
-        total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
-        total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
-
-        results['completeness_summary'].update({
-            'total_series': total_series,
-            'complete_series': complete_series,
-            'incomplete_series': incomplete_series,
-            'unknown_series': unknown_series,
-            'total_episodes_found': total_episodes_found,
-            'total_episodes_expected': total_episodes_expected
-        })
-    
-    # Apply MyAnimeList status filtering
-    if mal_status_filters:
-        # Convert status names to normalized format (lowercase with dashes)
-        mal_status_map = {
-            'watching': 'Watching',
-            'completed': 'Completed', 
-            'on-hold': 'On-Hold',
-            'dropped': 'Dropped',
-            'plan-to-watch': 'Plan to Watch'
-        }
-        all_mal_statuses = set(mal_status_map.keys())
-        
-        # Parse include/exclude patterns
-        include_mal_statuses = set()
-        exclude_mal_statuses = set()
-        plain_mal_statuses = set()
-        
-        for filter_item in mal_status_filters:
-            if filter_item.startswith('+'):
-                status = filter_item[1:]
-                if status in all_mal_statuses:
-                    include_mal_statuses.add(status)
-            elif filter_item.startswith('-'):
-                status = filter_item[1:]
-                if status in all_mal_statuses:
-                    exclude_mal_statuses.add(status)
-            elif filter_item in all_mal_statuses:
-                plain_mal_statuses.add(filter_item)
-        
-        # Determine final filter set
-        if plain_mal_statuses:
-            final_mal_statuses = plain_mal_statuses
-        elif include_mal_statuses:
-            final_mal_statuses = include_mal_statuses - exclude_mal_statuses
-        elif exclude_mal_statuses:
-            final_mal_statuses = all_mal_statuses - exclude_mal_statuses
-        else:
-            final_mal_statuses = all_mal_statuses
-        
-        # Convert to actual MAL status values for filtering
-        final_mal_status_values = {mal_status_map[status] for status in final_mal_statuses}
-        
-        # Apply filtering
-        filtered_groups = {}
-        for group_key, analysis in results['groups'].items():
-            mal_status = analysis.get('myanimelist_watch_status')
-            if mal_status and hasattr(mal_status, 'my_status'):
-                # Series has MAL status, check if it matches filter
-                if mal_status.my_status in final_mal_status_values:
-                    filtered_groups[group_key] = analysis
-            elif not mal_status:
-                # Series has no MAL status - only include if no positive filters specified
-                if not plain_mal_statuses and not include_mal_statuses:
-                    filtered_groups[group_key] = analysis
-        
-        results['groups'] = filtered_groups
-        
-        # Recalculate summary for filtered results
-        total_series = len(filtered_groups)
-        complete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['complete', 'complete_with_extras'])
-        incomplete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['incomplete', 'no_episode_numbers'])
-        unknown_series = total_series - complete_series - incomplete_series
-        total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
-        total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
-
-        results['completeness_summary'].update({
-            'total_series': total_series,
-            'complete_series': complete_series,
-            'incomplete_series': incomplete_series,
-            'unknown_series': unknown_series,
-            'total_episodes_found': total_episodes_found,
-            'total_episodes_expected': total_episodes_expected
-        })
+        _apply_mal_status_filters(results, mal_status_filters)
     
     # Display results
     if verbosity >= 1:
