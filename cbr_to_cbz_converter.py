@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 import zipfile
 import io
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Try to import libarchive (preferred method)
 LIBARCHIVE_AVAILABLE = False
@@ -79,6 +81,8 @@ class CBRtoCBZConverter:
         elif RARFILE_AVAILABLE:
             self.logger.info("Using rarfile for CBR extraction")
         
+        # Thread-safe stats tracking
+        self.stats_lock = threading.Lock()
         self.stats = {
             'total': 0,
             'converted': 0,
@@ -125,7 +129,8 @@ class CBRtoCBZConverter:
         # Check if CBZ already exists
         if cbz_path.exists():
             self.logger.warning(f"CBZ already exists, skipping: {cbz_path.name}")
-            self.stats['skipped'] += 1
+            with self.stats_lock:
+                self.stats['skipped'] += 1
             return False
         
         self.logger.debug(f"Converting: {cbr_path.name}")
@@ -194,7 +199,8 @@ class CBRtoCBZConverter:
                 f.write(zip_buffer.getvalue())
             
             self.logger.info(f"✓ Converted: {cbr_path.name} ({file_count} files)")
-            self.stats['converted'] += 1
+            with self.stats_lock:
+                self.stats['converted'] += 1
             
             # Delete original if requested
             if delete_original:
@@ -205,7 +211,8 @@ class CBRtoCBZConverter:
             
         except Exception as e:
             self.logger.error(f"✗ Failed to convert {cbr_path.name}: {str(e)}")
-            self.stats['failed'] += 1
+            with self.stats_lock:
+                self.stats['failed'] += 1
             
             # Clean up partial CBZ file if it exists
             if cbz_path.exists():
@@ -217,13 +224,14 @@ class CBRtoCBZConverter:
             
             return False
     
-    def convert_directory(self, root_path: Path, delete_original: bool = False) -> None:
+    def convert_directory(self, root_path: Path, delete_original: bool = False, workers: int = 1) -> None:
         """
         Convert all CBR files in a directory tree.
         
         Args:
             root_path: Root directory to process
             delete_original: Whether to delete original CBR files after successful conversion
+            workers: Number of worker threads (1 = single-threaded)
         """
         cbr_files = self.find_cbr_files(root_path)
         self.stats['total'] = len(cbr_files)
@@ -239,17 +247,49 @@ class CBRtoCBZConverter:
         print(f"Root directory:       {root_path}")
         print(f"Total CBR files:      {len(cbr_files)}")
         print(f"Delete originals:     {'Yes' if delete_original else 'No'}")
+        print(f"Worker threads:       {workers}")
         extraction_method = "libarchive" if LIBARCHIVE_AVAILABLE else "rarfile"
         print(f"Extraction method:    {extraction_method}")
         print("=" * 50 + "\n")
         
         self.logger.info(f"Starting conversion of {len(cbr_files)} file(s)...")
         
-        # Process files with progress bar
-        with tqdm(cbr_files, desc="Converting", unit="file") as pbar:
-            for cbr_file in pbar:
-                pbar.set_description(f"Converting {cbr_file.name[:30]}")
-                self.convert_cbr_to_cbz(cbr_file, delete_original)
+        if workers == 1:
+            # Single-threaded mode
+            with tqdm(cbr_files, desc="Converting", unit="file") as pbar:
+                for cbr_file in pbar:
+                    pbar.set_description(f"Converting {cbr_file.name[:30]}")
+                    self.convert_cbr_to_cbz(cbr_file, delete_original)
+        else:
+            # Multi-threaded mode
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                # Submit all conversion tasks
+                future_to_file = {
+                    executor.submit(self.convert_cbr_to_cbz, cbr_file, delete_original): cbr_file
+                    for cbr_file in cbr_files
+                }
+                
+                # Process completed tasks with progress bar
+                with tqdm(total=len(cbr_files), desc="Converting", unit="file") as pbar:
+                    try:
+                        for future in as_completed(future_to_file):
+                            cbr_file = future_to_file[future]
+                            try:
+                                # Use timeout to allow KeyboardInterrupt to be caught
+                                future.result(timeout=0.1)
+                            except KeyboardInterrupt:
+                                # Cancel remaining tasks
+                                for f in future_to_file:
+                                    f.cancel()
+                                raise
+                            except Exception as e:
+                                self.logger.error(f"Thread exception for {cbr_file.name}: {e}")
+                            pbar.update(1)
+                    except KeyboardInterrupt:
+                        # Cancel all pending futures
+                        for f in future_to_file:
+                            f.cancel()
+                        raise
         
         # Print summary
         self.print_summary()
@@ -291,6 +331,14 @@ Examples:
         '--keep-original',
         action='store_true',
         help='Keep original CBR files after conversion (default: delete after successful conversion)'
+    )
+    
+    parser.add_argument(
+        '-j', '--jobs',
+        type=int,
+        default=1,
+        metavar='N',
+        help='Number of parallel conversion jobs (default: 1, recommended: 2-4)'
     )
     
     # Verbosity control
@@ -352,10 +400,15 @@ def main():
     # Create converter and run
     converter = CBRtoCBZConverter(log_level=log_level)
     
+    # Validate number of jobs
+    if args.jobs < 1:
+        print(f"Error: Number of jobs must be at least 1", file=sys.stderr)
+        sys.exit(1)
+    
     try:
         # By default, delete originals unless --keep-original is specified
         delete_original = not args.keep_original
-        converter.convert_directory(root_path, delete_original=delete_original)
+        converter.convert_directory(root_path, delete_original=delete_original, workers=args.jobs)
     except KeyboardInterrupt:
         print("\n\nConversion interrupted by user")
         converter.print_summary()
