@@ -149,13 +149,146 @@ class VideoThumbnailGenerator:
             
             return False
     
+    def _generate_comic_thumbnail(self, comic_path: str, verbose: int = 1,
+                                  force_regenerate: bool = False) -> Dict[str, Any]:
+        """Generate thumbnail for comic book archive (CBR/CBZ)."""
+        import zipfile
+        from io import BytesIO
+        
+        static_thumb, animated_thumb = self._get_thumbnail_paths(comic_path)
+        static_exists = os.path.exists(static_thumb)
+        
+        # Return existing thumbnail if it exists and we're not forcing regeneration
+        if not force_regenerate and static_exists:
+            return {
+                "video": comic_path,
+                "static_thumbnail": static_thumb,
+                "animated_thumbnail": None
+            }
+        
+        try:
+            # Try to use PIL for image processing
+            try:
+                from PIL import Image
+            except ImportError:
+                if verbose >= 1:
+                    print(f"PIL/Pillow not available for comic thumbnail generation: {comic_path}")
+                return {
+                    "video": comic_path,
+                    "static_thumbnail": None,
+                    "animated_thumbnail": None
+                }
+            
+            ext = comic_path.lower()
+            image_data = None
+            
+            # Handle CBZ (ZIP) archives
+            if ext.endswith('.cbz'):
+                with zipfile.ZipFile(comic_path, 'r') as archive:
+                    # Get list of image files
+                    image_files = [f for f in archive.namelist() 
+                                 if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                 and not f.startswith('__MACOSX/')]
+                    
+                    if not image_files:
+                        if verbose >= 1:
+                            print(f"No images found in comic archive: {comic_path}")
+                        return {
+                            "video": comic_path,
+                            "static_thumbnail": None,
+                            "animated_thumbnail": None
+                        }
+                    
+                    # Sort to get first page
+                    image_files.sort()
+                    
+                    # Read first image
+                    with archive.open(image_files[0]) as img_file:
+                        image_data = img_file.read()
+            
+            # Handle CBR (RAR) archives
+            elif ext.endswith('.cbr'):
+                try:
+                    import rarfile
+                    with rarfile.RarFile(comic_path, 'r') as archive:
+                        # Get list of image files
+                        image_files = [f for f in archive.namelist() 
+                                     if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                     and not f.startswith('__MACOSX/')]
+                        
+                        if not image_files:
+                            if verbose >= 1:
+                                print(f"No images found in comic archive: {comic_path}")
+                            return {
+                                "video": comic_path,
+                                "static_thumbnail": None,
+                                "animated_thumbnail": None
+                            }
+                        
+                        # Sort to get first page
+                        image_files.sort()
+                        
+                        # Read first image
+                        with archive.open(image_files[0]) as img_file:
+                            image_data = img_file.read()
+                except ImportError:
+                    if verbose >= 1:
+                        print(f"rarfile library not available for CBR extraction: {comic_path}")
+                    return {
+                        "video": comic_path,
+                        "static_thumbnail": None,
+                        "animated_thumbnail": None
+                    }
+            
+            if image_data:
+                # Open image and resize
+                img = Image.open(BytesIO(image_data))
+                
+                # Calculate new dimensions maintaining aspect ratio
+                width, height = img.size
+                if height > self.max_height:
+                    new_height = self.max_height
+                    new_width = int(width * (new_height / height))
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Convert to RGB if necessary (for WebP compatibility)
+                if img.mode not in ('RGB', 'RGBA'):
+                    img = img.convert('RGB')
+                
+                # Save as WebP
+                img.save(static_thumb, 'WEBP', quality=75)
+                
+                if verbose >= 2:
+                    print(f"Generated comic thumbnail: {static_thumb}")
+                
+                return {
+                    "video": comic_path,
+                    "static_thumbnail": static_thumb,
+                    "animated_thumbnail": None
+                }
+            
+        except Exception as e:
+            if verbose >= 1:
+                print(f"Failed to generate comic thumbnail for {comic_path}: {e}")
+            return {
+                "video": comic_path,
+                "static_thumbnail": None,
+                "animated_thumbnail": None
+            }
+        
+        return {
+            "video": comic_path,
+            "static_thumbnail": None,
+            "animated_thumbnail": None
+        }
+    
     def generate_thumbnail_for_video(self, video_path: str, verbose: int = 1, 
                                     force_regenerate: bool = False) -> Dict[str, Any]:
         """
-        Generate thumbnails for a single video file.
+        Generate thumbnails for a single video or comic file.
         
         Args:
-            video_path: Path to the video file
+            video_path: Path to the video or comic file
             verbose: Verbosity level (0=silent, 1=errors, 2=detailed)
             force_regenerate: Force regeneration even if thumbnails exist
             
@@ -163,6 +296,11 @@ class VideoThumbnailGenerator:
             Dictionary with video path and thumbnail paths (None if generation failed)
         """
         video_path_str = str(video_path)
+        
+        # Check if this is a comic file
+        if video_path_str.lower().endswith(('.cbr', '.cbz')):
+            return self._generate_comic_thumbnail(video_path_str, verbose, force_regenerate)
+        
         static_thumb, animated_thumb = self._get_thumbnail_paths(video_path_str)
         
         static_exists = os.path.exists(static_thumb)
@@ -187,25 +325,21 @@ class VideoThumbnailGenerator:
                 "animated_thumbnail": None
             }
         
-        # Skip videos shorter than minimum duration
-        if duration < self.min_duration:
-            if verbose >= 2:
-                print(f"Skipping {video_path_str}: duration {duration:.1f}s is less than minimum {self.min_duration:.1f}s")
-            return {
-                "video": video_path_str,
-                "static_thumbnail": None,
-                "animated_thumbnail": None
-            }
-        
-        # Generate static thumbnail if needed
+        # Generate static thumbnail if needed (always generate regardless of duration)
         static_success = static_exists
         if not static_exists or force_regenerate:
             static_success = self._generate_static_thumbnail(video_path_str, static_thumb, duration, verbose)
         
-        # Generate animated thumbnail if needed
+        # Generate animated thumbnail only for videos longer than minimum duration
         animated_success = animated_exists
-        if not animated_exists or force_regenerate:
-            animated_success = self._generate_animated_thumbnail(video_path_str, animated_thumb, duration, verbose)
+        if duration >= self.min_duration:
+            if not animated_exists or force_regenerate:
+                animated_success = self._generate_animated_thumbnail(video_path_str, animated_thumb, duration, verbose)
+        else:
+            # Skip animated thumbnail for short videos
+            if verbose >= 2:
+                print(f"Skipping animated thumbnail for {video_path_str}: duration {duration:.1f}s is less than minimum {self.min_duration:.1f}s")
+            animated_success = False
         
         return {
             "video": video_path_str,

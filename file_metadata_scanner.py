@@ -88,6 +88,7 @@ class ExtendedMetadataExtractor:
     AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus', '.ape'}
     IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.svg', '.ico'}
     DOCUMENT_EXTENSIONS = {'.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt'}
+    COMIC_EXTENSIONS = {'.cbr', '.cbz'}
     
     def __init__(self):
         self._ffmpeg_available = self._check_ffmpeg()
@@ -133,6 +134,8 @@ class ExtendedMetadataExtractor:
             return self._extract_image_metadata(file_path)
         elif ext in self.DOCUMENT_EXTENSIONS:
             return self._extract_document_metadata(file_path)
+        elif ext in self.COMIC_EXTENSIONS:
+            return self._extract_comic_metadata(file_path)
         else:
             return {}
     
@@ -229,6 +232,90 @@ class ExtendedMetadataExtractor:
         # Placeholder for document metadata extraction
         # Could be extended with libraries like pypdf2, python-docx, etc.
         return {}
+    
+    def _extract_comic_metadata(self, file_path: str) -> Dict[str, Any]:
+        """Extract metadata from comic book archive files (CBR/CBZ)."""
+        import zipfile
+        import xml.etree.ElementTree as ET
+        
+        ext = Path(file_path).suffix.lower()
+        metadata = {}
+        
+        try:
+            # Handle CBZ (ZIP) archives
+            if ext == '.cbz':
+                with zipfile.ZipFile(file_path, 'r') as archive:
+                    # Get list of image files
+                    image_files = [f for f in archive.namelist() 
+                                 if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                 and not f.startswith('__MACOSX/')]
+                    image_files.sort()
+                    
+                    metadata['page_count'] = len(image_files)
+                    metadata['format'] = 'CBZ'
+                    
+                    # Try to read ComicInfo.xml if present
+                    if 'ComicInfo.xml' in archive.namelist():
+                        try:
+                            with archive.open('ComicInfo.xml') as xml_file:
+                                tree = ET.parse(xml_file)
+                                root = tree.getroot()
+                                
+                                # Extract common comic metadata
+                                for field in ['Title', 'Series', 'Number', 'Volume', 'Writer', 
+                                            'Penciller', 'Publisher', 'Year', 'PageCount']:
+                                    elem = root.find(field)
+                                    if elem is not None and elem.text:
+                                        metadata[field.lower()] = elem.text
+                        except Exception:
+                            pass
+                    
+                    # Store first page name for thumbnail generation
+                    if image_files:
+                        metadata['first_page'] = image_files[0]
+            
+            # Handle CBR (RAR) archives
+            elif ext == '.cbr':
+                try:
+                    import rarfile
+                    with rarfile.RarFile(file_path, 'r') as archive:
+                        # Get list of image files
+                        image_files = [f for f in archive.namelist() 
+                                     if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'))
+                                     and not f.startswith('__MACOSX/')]
+                        image_files.sort()
+                        
+                        metadata['page_count'] = len(image_files)
+                        metadata['format'] = 'CBR'
+                        
+                        # Try to read ComicInfo.xml if present
+                        if 'ComicInfo.xml' in archive.namelist():
+                            try:
+                                with archive.open('ComicInfo.xml') as xml_file:
+                                    tree = ET.parse(xml_file)
+                                    root = tree.getroot()
+                                    
+                                    # Extract common comic metadata
+                                    for field in ['Title', 'Series', 'Number', 'Volume', 'Writer', 
+                                                'Penciller', 'Publisher', 'Year', 'PageCount']:
+                                        elem = root.find(field)
+                                        if elem is not None and elem.text:
+                                            metadata[field.lower()] = elem.text
+                            except Exception:
+                                pass
+                        
+                        # Store first page name for thumbnail generation
+                        if image_files:
+                            metadata['first_page'] = image_files[0]
+                except ImportError:
+                    metadata['error'] = 'rarfile library not available for CBR extraction'
+                    metadata['page_count'] = 0
+                    metadata['format'] = 'CBR'
+            
+            return metadata
+            
+        except Exception as e:
+            return {'error': str(e)}
     
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -571,11 +658,13 @@ class FileMetadataScanner:
             if not is_dir and self.extract_extended and self.metadata_extractor:
                 metadata.extended_metadata = self.metadata_extractor.extract(str(path))
             
-            # Collect video files for batch thumbnail generation later
+            # Collect video files and comic files for batch thumbnail generation later
             if not is_dir and self.thumbnail_generator:
                 ext = path.suffix.lower()
                 if ext in ExtendedMetadataExtractor.VIDEO_EXTENSIONS:
                     self.video_files.append(path)
+                elif ext in ExtendedMetadataExtractor.COMIC_EXTENSIONS:
+                    self.video_files.append(path)  # Reuse video_files list for all thumbnail generation
             
             return metadata
             
