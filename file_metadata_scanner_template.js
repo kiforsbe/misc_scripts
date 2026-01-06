@@ -985,7 +985,7 @@ class FileMetadataExplorer {
             this.searchTimeout = setTimeout(() => {
                 this.searchTerm = searchInput.value;
                 this.renderFileList();
-            }, 300); // 300ms delay
+            }, 750); // 750ms delay
         };
         
         document.getElementById('clearSearch').onclick = () => {
