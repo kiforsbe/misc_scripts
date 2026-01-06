@@ -11,6 +11,8 @@ class FileMetadataExplorer {
         this.showExtended = false;
         this.showThumbnails = true;
         this.searchTerm = '';
+        this.isSearching = false;
+        this.searchTimeout = null;
         
         // Hover preview
         this.currentPreviewItem = null;
@@ -287,20 +289,37 @@ class FileMetadataExplorer {
             return;
         }
         
-        document.getElementById('currentPath').textContent = folder.name || 'Root';
+        let items;
+        let totalFolders, totalFiles;
         
-        // Get items (subfolders + files)
-        let items = [
-            ...folder.children.map(f => ({ ...f, type: 'directory' })),
-            ...folder.files
-        ];
+        // Check if searching
+        if (this.searchTerm && this.searchTerm.length > 0) {
+            // Recursive search
+            this.isSearching = true;
+            items = this.searchRecursive(folder, this.searchTerm);
+            totalFolders = items.filter(i => i.type === 'directory').length;
+            totalFiles = items.filter(i => i.type === 'file').length;
+            
+            document.getElementById('currentPath').textContent = `Search results in "${folder.name || 'Root'}"`;
+        } else {
+            // Normal folder view
+            this.isSearching = false;
+            items = [
+                ...folder.children.map(f => ({ ...f, type: 'directory' })),
+                ...folder.files
+            ];
+            totalFolders = folder.children.length;
+            totalFiles = folder.files.length;
+            
+            document.getElementById('currentPath').textContent = folder.name || 'Root';
+        }
         
-        // Apply filters
+        // Apply filters (hidden files, etc.)
         items = this.filterItems(items);
         
         // Update count
         document.getElementById('itemCount').textContent = 
-            `${items.length} items (${folder.children.length} folders, ${folder.files.length} files)`;
+            `${items.length} items (${totalFolders} folders, ${totalFiles} files)`;
         
         if (items.length === 0) {
             this.showEmptyState();
@@ -325,16 +344,32 @@ class FileMetadataExplorer {
             filtered = filtered.filter(item => !item.is_hidden);
         }
         
-        // Filter by search term
-        if (this.searchTerm) {
-            const term = this.searchTerm.toLowerCase();
-            filtered = filtered.filter(item => 
-                item.name.toLowerCase().includes(term) ||
-                item.path.toLowerCase().includes(term)
-            );
-        }
-        
         return filtered;
+    }
+    
+    searchRecursive(folder, searchTerm) {
+        const term = searchTerm.toLowerCase();
+        let results = [];
+        
+        // Search in current folder's files
+        folder.files.forEach(file => {
+            if (file.name.toLowerCase().includes(term) || file.path.toLowerCase().includes(term)) {
+                results.push(file);
+            }
+        });
+        
+        // Search in subfolders
+        folder.children.forEach(child => {
+            // Check if folder name matches
+            if (child.name.toLowerCase().includes(term) || child.path.toLowerCase().includes(term)) {
+                results.push({ ...child, type: 'directory' });
+            }
+            
+            // Recursively search in child folders
+            results = results.concat(this.searchRecursive(child, term));
+        });
+        
+        return results;
     }
     
     sortItems(items) {
@@ -408,9 +443,30 @@ class FileMetadataExplorer {
             nameDiv.appendChild(thumb);
         }
         
-        const nameSpan = document.createElement('span');
-        nameSpan.textContent = item.name;
-        nameDiv.appendChild(nameSpan);
+        // Show name with path breadcrumbs if searching
+        if (this.isSearching) {
+            const pathContainer = document.createElement('div');
+            pathContainer.className = 'file-path-container';
+            
+            // Create breadcrumb path
+            const relativePath = this.getRelativePath(item.path, this.currentPath);
+            if (relativePath) {
+                const breadcrumbDiv = this.createPathBreadcrumbs(item.path, relativePath);
+                pathContainer.appendChild(breadcrumbDiv);
+            }
+            
+            // File/folder name
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'file-name';
+            nameSpan.textContent = item.name;
+            pathContainer.appendChild(nameSpan);
+            
+            nameDiv.appendChild(pathContainer);
+        } else {
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = item.name;
+            nameDiv.appendChild(nameSpan);
+        }
         
         nameCell.appendChild(nameDiv);
         row.appendChild(nameCell);
@@ -483,6 +539,86 @@ class FileMetadataExplorer {
             return null;
         };
         return find(this.rootFolder);
+    }
+    
+    getRelativePath(itemPath, basePath) {
+        if (itemPath === basePath) return '';
+        
+        // Get the separator used in the paths
+        const separator = itemPath.includes('\\') ? '\\' : '/';
+        
+        // Normalize paths for comparison
+        const normalizedItem = itemPath.replace(/[\\\/]/g, separator);
+        const normalizedBase = basePath.replace(/[\\\/]/g, separator);
+        
+        if (!normalizedItem.startsWith(normalizedBase)) {
+            return itemPath; // Item is not under base path
+        }
+        
+        // Get relative portion
+        let relative = normalizedItem.substring(normalizedBase.length);
+        
+        // Remove leading separator
+        if (relative.startsWith(separator)) {
+            relative = relative.substring(separator.length);
+        }
+        
+        // Remove the item's own name from the path
+        const parts = relative.split(separator);
+        if (parts.length > 1) {
+            parts.pop(); // Remove last part (the item name itself)
+            return parts.join(separator);
+        }
+        
+        return '';
+    }
+    
+    createPathBreadcrumbs(fullPath, relativePath) {
+        const breadcrumbDiv = document.createElement('div');
+        breadcrumbDiv.className = 'path-breadcrumbs';
+        
+        if (!relativePath) return breadcrumbDiv;
+        
+        const separator = relativePath.includes('\\') ? '\\' : '/';
+        const parts = relativePath.split(separator).filter(p => p);
+        
+        // Build up the path incrementally
+        const currentFolder = this.findFolder(this.currentPath);
+        if (!currentFolder) return breadcrumbDiv;
+        
+        let accumulatedPath = this.currentPath;
+        const pathSeparator = accumulatedPath.includes('\\') ? '\\' : '/';
+        
+        parts.forEach((part, index) => {
+            if (index > 0) {
+                const sep = document.createElement('span');
+                sep.className = 'breadcrumb-sep';
+                sep.textContent = separator;
+                breadcrumbDiv.appendChild(sep);
+            }
+            
+            accumulatedPath += pathSeparator + part;
+            
+            const crumb = document.createElement('a');
+            crumb.className = 'breadcrumb-link';
+            crumb.textContent = part;
+            crumb.dataset.path = accumulatedPath;
+            crumb.onclick = (e) => {
+                e.stopPropagation();
+                this.selectFolder(crumb.dataset.path);
+            };
+            breadcrumbDiv.appendChild(crumb);
+        });
+        
+        // Add final separator
+        if (parts.length > 0) {
+            const sep = document.createElement('span');
+            sep.className = 'breadcrumb-sep';
+            sep.textContent = separator;
+            breadcrumbDiv.appendChild(sep);
+        }
+        
+        return breadcrumbDiv;
     }
     
     showEmptyState() {
@@ -840,11 +976,24 @@ class FileMetadataExplorer {
         // Search
         const searchInput = document.getElementById('searchInput');
         searchInput.oninput = () => {
-            this.searchTerm = searchInput.value;
-            this.renderFileList();
+            // Clear previous timeout
+            if (this.searchTimeout) {
+                clearTimeout(this.searchTimeout);
+            }
+            
+            // Set new timeout to delay search
+            this.searchTimeout = setTimeout(() => {
+                this.searchTerm = searchInput.value;
+                this.renderFileList();
+            }, 300); // 300ms delay
         };
         
         document.getElementById('clearSearch').onclick = () => {
+            // Clear any pending search
+            if (this.searchTimeout) {
+                clearTimeout(this.searchTimeout);
+            }
+            
             searchInput.value = '';
             this.searchTerm = '';
             this.renderFileList();

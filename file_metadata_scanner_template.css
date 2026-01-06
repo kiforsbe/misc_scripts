@@ -340,6 +340,45 @@ body {
     gap: 8px;
 }
 
+.file-path-container {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.path-breadcrumbs {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 2px;
+}
+
+.breadcrumb-link {
+    color: #0078d4;
+    cursor: pointer;
+    text-decoration: none;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: all 0.2s;
+}
+
+.breadcrumb-link:hover {
+    background: #e3f2fd;
+    text-decoration: underline;
+}
+
+.breadcrumb-sep {
+    margin: 0 4px;
+    color: #999;
+    user-select: none;
+}
+
+.file-name {
+    font-weight: 500;
+}
+
 .file-icon {
     width: 20px;
     height: 20px;
