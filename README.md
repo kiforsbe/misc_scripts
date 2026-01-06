@@ -29,6 +29,54 @@ A cross-platform browser launcher library with support for different window mode
 
 ## Scripts
 
+### cbr_to_cbz_converter.py
+A script to convert Comic Book RAR (CBR) files to Comic Book ZIP (CBZ) files using in-memory processing. It does this to avoid first extracting the files onto the drive and then recompressing them, generating additional IO operations. Recursively scans directories for CBR files and converts them in parallel with progress tracking.
+
+#### Features
+- In-memory processing to minimize disk I/O
+- Recursive directory scanning for CBR files
+- Multi-threaded parallel conversion for faster processing
+- Progress bars with tqdm for visual feedback
+- Automatic CBZ duplicate detection (skips existing files)
+- Optional deletion of original CBR files after successful conversion
+- Dual extraction method support:
+  - **libarchive-c** (preferred, faster, requires an installation of libarchive library)
+  - **rarfile** (fallback if libarchive unavailable, requires unrar tool installed)
+- Detailed logging with configurable verbosity levels
+- Comprehensive conversion statistics and error reporting
+- Thread-safe statistics tracking
+- Automatic cleanup of partial files on failure
+
+#### Usage Examples
+```bash
+# Convert all CBR files in a directory (deletes originals by default)
+python cbr_to_cbz_converter.py /path/to/comics
+
+# Keep original CBR files after conversion
+python cbr_to_cbz_converter.py /path/to/comics --keep-original
+
+# Use parallel processing with 4 workers
+python cbr_to_cbz_converter.py /path/to/comics -j 4
+
+# Verbose output (INFO level)
+python cbr_to_cbz_converter.py /path/to/comics -v
+
+# Very verbose output (DEBUG level)
+python cbr_to_cbz_converter.py /path/to/comics -vv
+
+# Quiet mode (errors only)
+python cbr_to_cbz_converter.py /path/to/comics --quiet
+
+# Combine options
+python cbr_to_cbz_converter.py /path/to/comics --keep-original -j 4 -v
+```
+
+#### Requires
+- tqdm
+- libarchive-c (recommended) or rarfile (fallback)
+  - libarchive-c requires libarchive DLL installed on system
+  - rarfile requires UnRAR tool installed and on PATH
+
 ### series_info_tool.py
 A comprehensive tool to extract and display series information for video files, with MyAnimeList integration. Groups video files by series title, retrieves metadata from anime and movie databases, and provides convenient ways to access online information. Designed for Windows shell:sendto and drag-drop operations.
 
@@ -152,6 +200,78 @@ If the user approves them, the user simply responds "y", or "yes" or presses ent
 - csv
 - logging
 - traceback
+
+## file_metadata_scanner.py
+A comprehensive tool for extracting metadata from files and folders with support for various file types. Scans directories recursively or non-recursively, extracts basic file information (size, timestamps, attributes) and optional extended metadata (audio/video properties via ffmpeg, image dimensions, comic archive contents), and exports results to CSV, JSON, and an interactive HTML webapp. Supports thumbnail generation for video files and provides flexible filtering options.
+
+### Features
+- Recursive and non-recursive directory scanning with progress tracking
+- Basic metadata extraction:
+  - File/directory name, type, size (bytes and human-readable)
+  - Timestamps (created, modified, accessed)
+  - File attributes (hidden, readonly, system)
+  - File extensions
+- Extended metadata extraction (optional):
+  - **Video/Audio**: Duration, bitrate, codec, resolution, frame rate, audio channels, sample rate
+  - **Images**: Dimensions, format, color mode, DPI
+  - **Comic Archives (CBR/CBZ)**: Page count, image formats, dimensions
+- Thumbnail generation for video files using `video_thumbnail_generator`:
+  - Static thumbnails (3x3 grid of frames)
+  - Animated WEBM thumbnails
+  - Configurable minimum duration filter
+  - Batch processing with progress tracking
+- Flexible filtering and exclusion:
+  - Filter by file extensions (e.g., only .mp4, .mkv)
+  - Exclude specific paths or directories
+- Multiple export formats:
+  - **CSV**: Tabular data for spreadsheet analysis
+  - **JSON**: Structured data for programmatic use
+  - **HTML Webapp**: Standalone interactive file explorer with search, filtering, and thumbnail viewing
+- Customizable export location for metadata bundles
+- Regenerate webapp from existing metadata without rescanning
+- CBR processing can be skipped to improve performance (RAR extraction is slow)
+
+### Usage Examples
+```bash
+# Basic scan of current directory (exports to ./metadata/)
+python file_metadata_scanner.py .
+
+# Recursive scan with custom export location
+python file_metadata_scanner.py /path/to/folder -r --export-bundle /output/location
+
+# Scan only video files with extended metadata and thumbnails
+python file_metadata_scanner.py /path/to/videos -r -e mp4,mkv,avi --extended --thumbnails
+
+# Exclude specific paths (node_modules, cache directories, etc.)
+python file_metadata_scanner.py /path/to/folder -r --exclude node_modules,__pycache__,.git
+
+# Full scan with all features and custom export location
+python file_metadata_scanner.py /path/to/media -r --extended --thumbnails --export-bundle C:\MyMetadata
+
+# Skip slow CBR processing, only process CBZ comic archives
+python file_metadata_scanner.py /path/to/comics -r --extended --skip-cbr
+
+# Set minimum video duration for thumbnail generation (e.g., 10 minutes)
+python file_metadata_scanner.py /path/to/videos -r --thumbnails --min-duration 600
+
+# Regenerate webapp from existing metadata bundle
+python file_metadata_scanner.py --regenerate-bundle /path/to/bundle
+
+# Regenerate webapp with missing thumbnails
+python file_metadata_scanner.py --regenerate-bundle /path/to/bundle --thumbnails
+
+# Verbose logging for troubleshooting
+python file_metadata_scanner.py /path/to/folder -r --extended --log-level DEBUG
+```
+
+### Requires
+- tqdm (for progress bars)
+- Pillow (for image metadata extraction)
+- video_thumbnail_generator (local module, for thumbnail generation)
+- ffmpeg and ffprobe (system binaries, for extended video/audio metadata)
+- libarchive-c or rarfile (for CBR comic archive extraction)
+  - libarchive-c (preferred): Requires libarchive DLL
+  - rarfile (fallback): Requires UnRAR tool on PATH
 
 ## m3u8-to-mp4-flask-webservice.py
 A flask web service that takes a m3u8 file as input and converts it into an MP4 file.
