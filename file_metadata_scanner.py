@@ -826,6 +826,34 @@ class FileMetadataScanner:
                 extended_metadata={'error': str(e)}
             )
     
+    def _count_files(self, dir_path: Path) -> int:
+        """Count total files and directories that will be scanned.
+        
+        Args:
+            dir_path: Directory to count files in
+            
+        Returns:
+            Total number of files and directories to scan
+        """
+        count = 0
+        try:
+            items = list(dir_path.iterdir())
+            for item in items:
+                if self._is_excluded(item):
+                    continue
+                
+                if item.is_dir():
+                    count += 1  # Count the directory itself
+                    if self.recursive:
+                        count += self._count_files(item)  # Count contents recursively
+                elif item.is_file():
+                    if self._should_include_file(item):
+                        count += 1
+        except (OSError, PermissionError) as e:
+            self.logger.debug(f"Cannot access '{dir_path}' during counting: {e}")
+        
+        return count
+    
     def scan(self, show_progress: bool = True) -> List[FileMetadata]:
         """
         Scan the directory and collect metadata.
@@ -849,13 +877,21 @@ class FileMetadataScanner:
         if self.root_path.is_dir():
             self.results.append(self._extract_metadata(self.root_path))
         
+        # Count total files first
+        if show_progress:
+            print(f"Counting files...")
+            total_files = self._count_files(self.root_path)
+            self.logger.info(f"Found {total_files} files/directories to scan")
+        else:
+            total_files = None
+        
         # Scan directory with progress indication
         self.logger.info(f"Scanning files (recursive={self.recursive})...")
         print(f"Scanning files...")
         if self.recursive:
-            self._scan_recursive(self.root_path, show_progress=show_progress)
+            self._scan_recursive(self.root_path, show_progress=show_progress, total_files=total_files)
         else:
-            self._scan_non_recursive(self.root_path, show_progress=show_progress)
+            self._scan_non_recursive(self.root_path, show_progress=show_progress, total_files=total_files)
         
         self.logger.info(f"Scan complete: found {len(self.results)} items, {len(self.video_files)} video/comic files")
         return self.results
@@ -906,12 +942,18 @@ class FileMetadataScanner:
         
         return True
     
-    def _scan_recursive(self, dir_path: Path, show_progress: bool = True, _pbar: Optional[tqdm] = None):
+    def _scan_recursive(self, dir_path: Path, show_progress: bool = True, _pbar: Optional[tqdm] = None, total_files: Optional[int] = None):
         """Recursively scan directory with progress indication."""
         # Create progress bar only at the top level
         is_top_level = _pbar is None
         if is_top_level and show_progress:
-            _pbar = tqdm(desc="Scanning", unit="files", leave=False)
+            _pbar = tqdm(
+                desc="Scanning files",
+                unit="file",
+                total=total_files,
+                leave=True,
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+            )
         
         try:
             items = sorted(dir_path.iterdir())
@@ -920,12 +962,24 @@ class FileMetadataScanner:
                     continue
                 
                 if item.is_dir():
+                    if _pbar is not None:
+                        # Truncate path for display
+                        display_path = str(item)
+                        if len(display_path) > 50:
+                            display_path = '...' + display_path[-47:]
+                        _pbar.set_postfix_str(display_path, refresh=True)
                     self.results.append(self._extract_metadata(item))
                     if _pbar is not None:
                         _pbar.update(1)
-                    self._scan_recursive(item, show_progress=show_progress, _pbar=_pbar)
+                    self._scan_recursive(item, show_progress=show_progress, _pbar=_pbar, total_files=total_files)
                 elif item.is_file():
                     if self._should_include_file(item):
+                        if _pbar is not None:
+                            # Truncate path for display
+                            display_path = str(item)
+                            if len(display_path) > 50:
+                                display_path = '...' + display_path[-47:]
+                            _pbar.set_postfix_str(display_path, refresh=True)
                         self.results.append(self._extract_metadata(item))
                         if _pbar is not None:
                             _pbar.update(1)
@@ -936,21 +990,45 @@ class FileMetadataScanner:
             if is_top_level and _pbar is not None:
                 _pbar.close()
     
-    def _scan_non_recursive(self, dir_path: Path, show_progress: bool = True):
+    def _scan_non_recursive(self, dir_path: Path, show_progress: bool = True, total_files: Optional[int] = None):
         """Scan directory non-recursively with progress indication."""
         try:
             items = list(sorted(dir_path.iterdir()))
-            iterator = tqdm(items, desc="Scanning", unit="files", leave=False) if show_progress else items
             
-            for item in iterator:
-                if self._is_excluded(item):
-                    continue
-                
-                if item.is_dir():
-                    self.results.append(self._extract_metadata(item))
-                elif item.is_file():
-                    if self._should_include_file(item):
+            if show_progress:
+                pbar = tqdm(
+                    items,
+                    desc="Scanning files",
+                    unit="file",
+                    total=total_files,
+                    leave=True,
+                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'
+                )
+                for item in pbar:
+                    if self._is_excluded(item):
+                        continue
+                    
+                    # Truncate path for display
+                    display_path = str(item)
+                    if len(display_path) > 50:
+                        display_path = '...' + display_path[-47:]
+                    pbar.set_postfix_str(display_path, refresh=True)
+                    
+                    if item.is_dir():
                         self.results.append(self._extract_metadata(item))
+                    elif item.is_file():
+                        if self._should_include_file(item):
+                            self.results.append(self._extract_metadata(item))
+            else:
+                for item in items:
+                    if self._is_excluded(item):
+                        continue
+                    
+                    if item.is_dir():
+                        self.results.append(self._extract_metadata(item))
+                    elif item.is_file():
+                        if self._should_include_file(item):
+                            self.results.append(self._extract_metadata(item))
         except (OSError, PermissionError) as e:
             print(f"Warning: Cannot access '{dir_path}': {e}", file=sys.stderr)
     
