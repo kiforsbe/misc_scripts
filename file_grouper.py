@@ -249,6 +249,30 @@ class FileGrouper:
         except ValueError:
             return False
     
+    def _add_mal_watch_status(self, enhanced_info, title_metadata: Dict[str, Any]) -> None:
+        """Add MyAnimeList watch status to title_metadata if available.
+        
+        Args:
+            enhanced_info: TitleInfo object containing source URLs
+            title_metadata: Dictionary to add MAL watch status to (modified in place)
+        """
+        if not (self.myanimelist_xml_path and MyAnimeListWatchStatusProvider):
+            return
+        
+        try:
+            sources = enhanced_info.sources or []
+            for source in sources:
+                if 'myanimelist' in source:
+                    if self._mal_provider is None:
+                        self._mal_provider = MyAnimeListWatchStatusProvider(self.myanimelist_xml_path)
+                    
+                    mal_status = self._mal_provider.get_watch_status(source)
+                    if mal_status:
+                        title_metadata['myanimelist_watch_status'] = self._serialize_mal_watch_status(mal_status)
+                    break
+        except Exception:
+            pass
+    
     def extract_metadata(self, file_path: Path) -> Dict[str, Any]:
         """Extract metadata from filename using guessit."""
         try:
@@ -300,20 +324,7 @@ class FileGrouper:
                                     }
                                     
                                     # Add MyAnimeList watch status at title level if available
-                                    if self.myanimelist_xml_path and MyAnimeListWatchStatusProvider:
-                                        try:
-                                            sources = enhanced_info.sources or []
-                                            for source in sources:
-                                                if 'myanimelist' in source:
-                                                    if self._mal_provider is None:
-                                                        self._mal_provider = MyAnimeListWatchStatusProvider(self.myanimelist_xml_path)
-                                                    
-                                                    mal_status = self._mal_provider.get_watch_status(source)
-                                                    if mal_status:
-                                                        title_metadata['myanimelist_watch_status'] = self._serialize_mal_watch_status(mal_status)
-                                                    break
-                                        except Exception:
-                                            pass
+                                    self._add_mal_watch_status(enhanced_info, title_metadata)
                                     
                                     self.title_metadata[metadata_id] = title_metadata
                             
@@ -384,20 +395,7 @@ class FileGrouper:
                                                                     }
                                                                     
                                                                     # Add MyAnimeList watch status for this season
-                                                                    if self.myanimelist_xml_path and MyAnimeListWatchStatusProvider:
-                                                                        try:
-                                                                            sources = season_enhanced_info.sources or []
-                                                                            for source in sources:
-                                                                                if 'myanimelist' in source:
-                                                                                    if self._mal_provider is None:
-                                                                                        self._mal_provider = MyAnimeListWatchStatusProvider(self.myanimelist_xml_path)
-                                                                                    
-                                                                                    mal_status = self._mal_provider.get_watch_status(source)
-                                                                                    if mal_status:
-                                                                                        title_metadata['myanimelist_watch_status'] = self._serialize_mal_watch_status(mal_status)
-                                                                                    break
-                                                                        except Exception:
-                                                                            pass
+                                                                    self._add_mal_watch_status(season_enhanced_info, title_metadata)
                                                                     
                                                                     self.title_metadata[metadata_id] = title_metadata
                                                                 
