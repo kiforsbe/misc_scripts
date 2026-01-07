@@ -292,6 +292,46 @@ class FileGrouper:
             
             self.title_metadata[metadata_id] = title_metadata
     
+    def _calculate_watch_stats(self, group_files: List[Dict]) -> Dict[str, int]:
+        """Calculate watch statistics for a list of files.
+        
+        Args:
+            group_files: List of file metadata dictionaries
+            
+        Returns:
+            Dictionary with watch statistics including:
+            - watched_files: Number of watched files
+            - total_watch_count: Total number of times files were watched
+            - files_with_progress: Number of files with partial progress
+            - mal_watched_files: Number of files watched according to MyAnimeList
+        """
+        watched_files = 0
+        total_watch_count = 0
+        files_with_progress = 0
+        mal_watched_files = 0
+        
+        for file_info in group_files:
+            # Use combined episode watch status
+            if file_info.get('episode_watched'):
+                watched_files += 1
+                watch_sources = file_info.get('watch_source', [])
+                if 'myanimelist' in watch_sources:
+                    mal_watched_files += 1
+            
+            # Plex-specific stats
+            plex_status = file_info.get('plex_watch_status')
+            if plex_status:
+                total_watch_count += plex_status.get('watch_count', 0)
+                if plex_status.get('view_offset', 0) > 0:
+                    files_with_progress += 1
+        
+        return {
+            'watched_files': watched_files,
+            'total_watch_count': total_watch_count,
+            'files_with_progress': files_with_progress,
+            'mal_watched_files': mal_watched_files
+        }
+    
     def extract_metadata(self, file_path: Path) -> Dict[str, Any]:
         """Extract metadata from filename using guessit."""
         try:
@@ -537,26 +577,8 @@ class FileGrouper:
         )
         
         # Calculate watch status summary (include both Plex and MAL data)
-        watched_files = 0
-        total_watch_count = 0
-        files_with_progress = 0
-        mal_watched_files = 0
-        
-        for files in self.groups.values():
-            for file_info in files:
-                # Use combined episode watch status
-                if file_info.get('episode_watched'):
-                    watched_files += 1
-                    watch_sources = file_info.get('watch_source', [])
-                    if 'myanimelist' in watch_sources:
-                        mal_watched_files += 1
-                
-                # Plex-specific stats
-                plex_status = file_info.get('plex_watch_status')
-                if plex_status:
-                    total_watch_count += plex_status.get('watch_count', 0)
-                    if plex_status.get('view_offset', 0) > 0:
-                        files_with_progress += 1
+        all_files = [file_info for files in self.groups.values() for file_info in files]
+        watch_stats = self._calculate_watch_stats(all_files)
         
         summary = {
             'total_files': total_files,
@@ -566,20 +588,20 @@ class FileGrouper:
         }
         
         # Add watch status summary if any files have watch data
-        if watched_files > 0 or total_watch_count > 0 or files_with_progress > 0 or mal_watched_files > 0:
+        if any(watch_stats.values()):
             summary['watch_summary'] = {
-                'watched_files': watched_files,
-                'unwatched_files': total_files - watched_files,
-                'total_watch_count': total_watch_count,
-                'files_with_progress': files_with_progress,
-                'mal_watched_files': mal_watched_files
+                'watched_files': watch_stats['watched_files'],
+                'unwatched_files': total_files - watch_stats['watched_files'],
+                'total_watch_count': watch_stats['total_watch_count'],
+                'files_with_progress': watch_stats['files_with_progress'],
+                'mal_watched_files': watch_stats['mal_watched_files']
             }
             # Keep plex_summary for backwards compatibility
             summary['plex_summary'] = {
-                'watched_files': watched_files,
-                'unwatched_files': total_files - watched_files,
-                'total_watch_count': total_watch_count,
-                'files_with_progress': files_with_progress
+                'watched_files': watch_stats['watched_files'],
+                'unwatched_files': total_files - watch_stats['watched_files'],
+                'total_watch_count': watch_stats['total_watch_count'],
+                'files_with_progress': watch_stats['files_with_progress']
             }
         
         return summary
@@ -610,26 +632,16 @@ class FileGrouper:
             # Add group-level watch status summary using combined watch status
             group_summaries = {}
             for group_name, group_files in self.groups.items():
-                group_watched = sum(1 for f in group_files if f.get('episode_watched', False))
-                group_total_watches = 0
-                group_with_progress = 0
-                group_mal_watched = sum(1 for f in group_files if 'myanimelist' in f.get('watch_source', []))
+                watch_stats = self._calculate_watch_stats(group_files)
                 
-                for file_info in group_files:
-                    plex_status = file_info.get('plex_watch_status')
-                    if plex_status:
-                        group_total_watches += plex_status.get('watch_count', 0)
-                        if plex_status.get('view_offset', 0) > 0:
-                            group_with_progress += 1
-                
-                if group_watched > 0 or group_total_watches > 0 or group_with_progress > 0 or group_mal_watched > 0:
+                if any(watch_stats.values()):
                     group_summaries[group_name] = {
                         'total_files': len(group_files),
-                        'watched_files': group_watched,
-                        'unwatched_files': len(group_files) - group_watched,
-                        'total_watch_count': group_total_watches,
-                        'files_with_progress': group_with_progress,
-                        'mal_watched_files': group_mal_watched
+                        'watched_files': watch_stats['watched_files'],
+                        'unwatched_files': len(group_files) - watch_stats['watched_files'],
+                        'total_watch_count': watch_stats['total_watch_count'],
+                        'files_with_progress': watch_stats['files_with_progress'],
+                        'mal_watched_files': watch_stats['mal_watched_files']
                     }
             
             if group_summaries:
