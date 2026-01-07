@@ -133,6 +133,9 @@ class FileGrouper:
         self.plex_provider = plex_provider
         self.myanimelist_xml_path = myanimelist_xml_path
         self._mal_provider = None
+    
+    # Keywords that indicate a season-specific title (vs. series-wide)
+    SEASON_KEYWORDS = ['part', 'season', 'cour']
 
     @staticmethod
     def _escape_pattern_for_fnmatch(pattern: str) -> str:
@@ -490,7 +493,7 @@ class FileGrouper:
                     # If the MAL entry is for a specific season (e.g., "86 Part 2"), use in-season episode number
                     # If it's for the entire series, use original (absolute) episode number
                     mal_title = self.title_metadata[metadata_id]['metadata'].get('title', '')
-                    is_season_specific = any(keyword in mal_title.lower() for keyword in ['part', 'season', 'cour'])
+                    is_season_specific = any(keyword in mal_title.lower() for keyword in self.SEASON_KEYWORDS)
                     
                     if is_season_specific:
                         # Season-specific MAL entry - use in-season episode number
