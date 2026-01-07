@@ -273,6 +273,25 @@ class FileGrouper:
         except Exception:
             pass
     
+    def _store_title_metadata(self, metadata_id: str, enhanced_info, provider) -> None:
+        """Store title metadata if not already cached.
+        
+        Args:
+            metadata_id: Unique identifier for the metadata
+            enhanced_info: TitleInfo object from metadata provider
+            provider: The metadata provider that found this title
+        """
+        if metadata_id not in self.title_metadata:
+            title_metadata = {
+                'metadata': self._serialize_title_info(enhanced_info),
+                'provider': provider.__class__.__name__ if provider else None
+            }
+            
+            # Add MyAnimeList watch status at title level if available
+            self._add_mal_watch_status(enhanced_info, title_metadata)
+            
+            self.title_metadata[metadata_id] = title_metadata
+    
     def extract_metadata(self, file_path: Path) -> Dict[str, Any]:
         """Extract metadata from filename using guessit."""
         try:
@@ -317,16 +336,7 @@ class FileGrouper:
                                 metadata_id = enhanced_info.id
                                 
                                 # Only store metadata once per unique ID
-                                if metadata_id not in self.title_metadata:
-                                    title_metadata = {
-                                        'metadata': self._serialize_title_info(enhanced_info),
-                                        'provider': provider.__class__.__name__ if provider else None
-                                    }
-                                    
-                                    # Add MyAnimeList watch status at title level if available
-                                    self._add_mal_watch_status(enhanced_info, title_metadata)
-                                    
-                                    self.title_metadata[metadata_id] = title_metadata
+                                self._store_title_metadata(metadata_id, enhanced_info, provider)
                             
                                 # Add reference to title metadata by ID
                                 result['metadata_id'] = metadata_id
@@ -388,16 +398,7 @@ class FileGrouper:
                                                                 metadata_id = season_enhanced_info.id
                                                                 
                                                                 # Store season-specific metadata
-                                                                if metadata_id not in self.title_metadata:
-                                                                    title_metadata = {
-                                                                        'metadata': self._serialize_title_info(season_enhanced_info),
-                                                                        'provider': season_provider.__class__.__name__ if season_provider else None
-                                                                    }
-                                                                    
-                                                                    # Add MyAnimeList watch status for this season
-                                                                    self._add_mal_watch_status(season_enhanced_info, title_metadata)
-                                                                    
-                                                                    self.title_metadata[metadata_id] = title_metadata
+                                                                self._store_title_metadata(metadata_id, season_enhanced_info, season_provider)
                                                                 
                                                                 # Update the file's metadata_id reference
                                                                 result['metadata_id'] = metadata_id
