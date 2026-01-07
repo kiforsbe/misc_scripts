@@ -401,8 +401,8 @@ class FileGrouper:
                                             # Get anime provider for episode info lookup
                                             anime_provider = next((p for p in self.metadata_manager.providers if p.__class__.__name__ == provider), None)
                                             if anime_provider and hasattr(anime_provider, 'get_episode_info'):
-                                                # Find title in anime provider to get the anime ID
-                                                original_title = result.get('title')
+                                                # Find title in anime provider to get the anime ID, if the result does not come with a title, then use the title from filename
+                                                original_title = result.get('title', title)
                                                 title_result = anime_provider.find_title(original_title, year)
                                                 if title_result:
                                                     # Use anime provider's episode lookup with anime ID, season, and episode
