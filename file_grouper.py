@@ -165,6 +165,23 @@ class FileGrouper:
         else:
             # Use standard fnmatch for patterns without brackets
             return fnmatch.fnmatch(filename, pattern)
+    
+    @staticmethod
+    def _generate_season_titles(title: str, season: int) -> List[str]:
+        """Generate common season naming patterns for metadata lookup.
+        
+        Args:
+            title: Base title of the series
+            season: Season number
+            
+        Returns:
+            List of common season title variations
+        """
+        return [
+            f"{title} Season {season}",
+            f"{title} Part {season}",
+            f"{title} {season}",
+        ]
         
     def discover_files(self, input_paths: List[str], excluded_paths: List[str] | None = None,
                       include_patterns: List[str] | None = None, exclude_patterns: List[str] | None = None,
@@ -261,11 +278,7 @@ class FileGrouper:
                             
                             if season and season > 1:
                                 # Try common season naming patterns
-                                season_titles = [
-                                    f"{title} Season {season}",
-                                    f"{title} Part {season}",
-                                    f"{title} {season}",
-                                ]
+                                season_titles = self._generate_season_titles(title, season)
                                 for season_title in season_titles:
                                     enhanced_info, provider = self.metadata_manager.find_title(season_title, year)
                                     if enhanced_info:
@@ -353,11 +366,7 @@ class FileGrouper:
                                                         if updated_season and updated_season != original_season and updated_season > 1:
                                                             season_enhanced_info = None
                                                             season_provider = None
-                                                            season_titles = [
-                                                                f"{original_title} Season {updated_season}",
-                                                                f"{original_title} Part {updated_season}",
-                                                                f"{original_title} {updated_season}",
-                                                            ]
+                                                            season_titles = self._generate_season_titles(original_title, updated_season)
                                                             for season_title in season_titles:
                                                                 season_enhanced_info, season_provider = self.metadata_manager.find_title(season_title, year)
                                                                 if season_enhanced_info:
@@ -399,8 +408,12 @@ class FileGrouper:
                                             pass
                                     elif season and episode and provider:
                                         # Non-anime series with explicit season/episode
-                                        season_title = f"{title} Season {season}"
-                                        enhanced_info, _ = self.metadata_manager.find_title(season_title, year)
+                                        # Try all common season title patterns
+                                        enhanced_info = None
+                                        for season_title in self._generate_season_titles(title, season):
+                                            enhanced_info, _ = self.metadata_manager.find_title(season_title, year)
+                                            if enhanced_info:
+                                                break
                                         if enhanced_info:                                            
                                             episode_info = self.metadata_manager.get_episode_info(
                                                 next(p for p in self.metadata_manager.providers if p.__class__.__name__ == provider),
