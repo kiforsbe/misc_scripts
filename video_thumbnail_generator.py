@@ -19,8 +19,8 @@ import hashlib
 import subprocess
 import tempfile
 import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+import time
+from typing import List, Dict, Any, Optional
 
 try:
     from tqdm import tqdm
@@ -112,6 +112,7 @@ class VideoThumbnailGenerator:
     def _generate_animated_thumbnail(self, video_path: str, animated_thumb_path: str, 
                                     duration: float, verbose: int = 1) -> bool:
         """Generate an animated thumbnail with frames from 5-95% of the video."""
+        start_time = time.time()
         frame_times = [duration * (i / 100) for i in range(5, 100, 5)]
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,9 +122,16 @@ class VideoThumbnailGenerator:
             for idx, t in enumerate(frame_times):
                 frame_file = os.path.join(tmpdir, f"frame_{idx:02d}.webp")
                 frame_cmd = [
-                    "ffmpeg", "-y", "-noaccurate_seek", "-ss", str(t), "-i", video_path,
-                    "-vframes", "1", "-vf", f"scale=-2:{self.max_height}", 
-                    "-f", "webp", "-quality", "75", frame_file
+                    "ffmpeg", "-y",
+                    #"-hwaccel", "auto", # Hardware acceleration does not seem to improve time here
+                    "-noaccurate_seek",
+                    "-ss", str(t),
+                    "-i", video_path,
+                    "-vframes", "1",
+                    "-vf", f"scale=-2:{self.max_height}", 
+                    "-f", "webp",
+                    "-quality", "75",
+                    frame_file
                 ]
                 try:
                     subprocess.run(frame_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -139,18 +147,30 @@ class VideoThumbnailGenerator:
             # Combine frames into animated WebP with optimized settings
             if frame_files:
                 anim_cmd = [
-                    "ffmpeg", "-y", "-framerate", "2", "-i", os.path.join(tmpdir, "frame_%02d.webp"),
-                    "-vf", f"scale=-2:{self.max_height}", "-loop", "0", 
-                    "-quality", "75", "-f", "webp", animated_thumb_path
+                    "ffmpeg", "-y",
+                    #"-hwaccel", "auto", # Hardware acceleration does not seem to improve time here
+                    "-framerate", "2",
+                    "-i", os.path.join(tmpdir, "frame_%02d.webp"),
+                    "-vf", f"scale=-2:{self.max_height}",
+                    "-loop", "0", 
+                    "-quality", "75",
+                    "-f", "webp",
+                    animated_thumb_path
                 ]
                 try:
                     subprocess.run(anim_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    elapsed = time.time() - start_time
+                    if verbose >= 3:
+                        print(f"DEBUG2: Generated animated thumbnail for {os.path.basename(video_path)} in {elapsed:.2f}s")
                     return True
                 except subprocess.CalledProcessError as e:
                     if verbose >= 2:
                         error_msg = e.stderr.decode(errors='ignore') if e.stderr else str(e)
                         print(f"Failed to generate animated thumbnail for {video_path}: {e}\\nffmpeg stderr:\\n{error_msg}")
             
+            elapsed = time.time() - start_time
+            if verbose >= 3:
+                print(f"DEBUG2: Failed to generate animated thumbnail for {os.path.basename(video_path)} after {elapsed:.2f}s")
             return False
     
     def _generate_comic_thumbnail(self, comic_path: str, verbose: int = 1,
