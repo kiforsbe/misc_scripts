@@ -159,9 +159,16 @@ class SeriesArchiver:
             metadata_type = str(group_data.get('type', '')).lower()
             if "movie" in first_file_type or "movie" in metadata_type:
                 status = "movie"
+            
+            # Get season info and format title if season > 1
+            season = group_data.get('season')
+            if not season and files:
+                season = files[0].get('season')
+            
+            formatted_title = f"{title} S{season:02d}" if season else title
 
             details = {
-                'title': title,
+                'title': formatted_title,
                 'episodes_found': episodes_found,
                 'episodes_expected': episodes_expected,
                 'status': status,
