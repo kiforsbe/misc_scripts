@@ -665,59 +665,9 @@ class SeriesCompletenessChecker:
                     display_title += "..."
                 pbar.set_postfix(current=display_title)
         
-        # Find proper season-specific metadata IDs from the database
-        for group_key, analysis in results['groups'].items():
-            mal_status = analysis.get('myanimelist_watch_status')
-            if mal_status and mal_status.get('_season_specific'):
-                title = analysis.get('title')
-                season = analysis.get('season')
-                
-                if title and season and self.metadata_manager:
-                    # Query the metadata manager to find the proper season-specific entry
-                    try:
-                        # For season > 1, try to find season-specific title
-                        if season > 1:
-                            season_title = f"{title} Season {season}"
-                            enhanced_info, provider = self.metadata_manager.find_title(season_title)
-                            if not enhanced_info:
-                                # Try alternative formats
-                                season_title = f"{title} {season}"
-                                enhanced_info, provider = self.metadata_manager.find_title(season_title)
-                        else:
-                            # For season 1, use the original title
-                            enhanced_info, provider = self.metadata_manager.find_title(title)
-                        
-                        if enhanced_info:
-                            # Use the proper metadata ID from the database
-                            season_metadata_id = enhanced_info.id
-                            
-                            # Create or update the metadata entry
-                            season_metadata = {
-                                'id': season_metadata_id,
-                                'title': enhanced_info.title,
-                                'type': getattr(enhanced_info, 'type', 'anime_series'),
-                                'year': getattr(enhanced_info, 'year', None),
-                                'myanimelist_watch_status': mal_status,
-                                '_season_number': season
-                            }
-                            
-                            # Add any additional metadata from enhanced_info
-                            for attr in ['genres', 'rating', 'plot', 'sources']:
-                                if hasattr(enhanced_info, attr):
-                                    season_metadata[attr] = getattr(enhanced_info, attr)
-                            
-                            # Add to title_metadata
-                            title_metadata_export[str(season_metadata_id)] = season_metadata
-                            
-                            # Update the group to reference the proper metadata ID
-                            analysis['title_id'] = season_metadata_id
-                            if 'myanimelist_watch_status' in analysis:
-                                analysis['myanimelist_watch_status']['series_animedb_id'] = season_metadata_id
-                        
-                    except Exception as e:
-                        print(f"Warning: Could not find season-specific metadata for {title} Season {season}: {e}")
-                        # Keep the original metadata_id as fallback
-                        pass
+        # NOTE: Season-specific metadata IDs are now correctly determined by FileGrouper
+        # using ordinal season patterns ("2nd Season", etc.) during initial metadata extraction.
+        # No post-processing needed here.
         
         # Update the results with the enhanced title_metadata
         results['title_metadata'] = title_metadata_export
@@ -1132,12 +1082,12 @@ class SeriesCompletenessChecker:
             group_files: All files in the group
         """
         if not self.metadata_manager:
-            result['status'] = SeriesStatus.NO_METADATA_MANAGER.value
+            result.status = SeriesStatus.NO_METADATA_MANAGER
             return
         
         metadata_id = first_file.get('metadata_id')
         if not metadata_id or metadata_id not in self.file_grouper.title_metadata:
-            result['status'] = SeriesStatus.NO_METADATA.value
+            result.status = SeriesStatus.NO_METADATA
             return
         
         metadata = self.file_grouper.title_metadata[metadata_id]['metadata']

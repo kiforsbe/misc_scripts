@@ -166,6 +166,7 @@ class LatestEpisodesViewer:
         title = episode['metadata'].get('title', 'Unknown')
         season = episode['metadata'].get('season', 1)
         episode_num = episode['metadata'].get('episode')
+        metadata_id = episode['metadata'].get('metadata_id')
         
         # Get series episodes for context
         series_episodes = series_groups.get(title, [])
@@ -174,58 +175,107 @@ class LatestEpisodesViewer:
         # Try to get enhanced metadata
         if self.metadata_manager:
             try:
-                title_info, provider = self.metadata_manager.find_title(title)
-                if title_info:
-                    enhanced['series_metadata'] = {
-                        'id': title_info.id,
-                        'title': title_info.title,
-                        'type': title_info.type,
-                        'year': title_info.year,
-                        'rating': title_info.rating,
-                        'genres': title_info.genres,
-                        'tags': title_info.tags,
-                        'sources': title_info.sources,
-                        'total_episodes': title_info.total_episodes,
-                        'plot': title_info.plot
-                    }
+                # Prefer using metadata from FileGrouper's cache if available (ensures correct season-specific metadata)
+                series_metadata = None
+                myanimelist_url = None
+                provider = None
+                title_info_id = None
+                
+                if metadata_id and hasattr(self.file_grouper, 'title_metadata'):
+                    # Get cached metadata from FileGrouper (already has correct season-specific ID)
+                    # FileGrouper may store IDs as integers or strings, so try both
+                    cached_metadata = self.file_grouper.title_metadata.get(metadata_id) or \
+                                     self.file_grouper.title_metadata.get(str(metadata_id))
+                    if cached_metadata:
+                        # Use metadata from cache directly
+                        metadata_dict = cached_metadata.get('metadata', {})
+                        if metadata_dict:
+                            title_info_id = metadata_id
+                            series_metadata = {
+                                'id': metadata_id,
+                                'title': metadata_dict.get('title', title),
+                                'type': metadata_dict.get('type', 'unknown'),
+                                'year': metadata_dict.get('year'),
+                                'rating': metadata_dict.get('rating'),
+                                'genres': metadata_dict.get('genres', []),
+                                'tags': metadata_dict.get('tags', []),
+                                'sources': metadata_dict.get('sources', []),
+                                'total_episodes': metadata_dict.get('total_episodes'),
+                                'plot': metadata_dict.get('plot')
+                            }
+                            
+                            # Get MyAnimeList source URL for linking
+                            sources = metadata_dict.get('sources', [])
+                            if sources:
+                                mal_sources = [src for src in sources if 'myanimelist.net' in src]
+                                if mal_sources:
+                                    myanimelist_url = mal_sources[0]
+                            
+                            # Get the provider for episode metadata lookup
+                            provider_name = cached_metadata.get('provider')
+                            if provider_name and hasattr(self.metadata_manager, 'providers'):
+                                provider = next((p for p in self.metadata_manager.providers 
+                                               if p.__class__.__name__ == provider_name), None)
+                
+                # Fallback to looking up by title if cached metadata not available
+                # NOTE: This may return Season 1 for multi-season series
+                if not series_metadata:
+                    title_info, provider = self.metadata_manager.find_title(title)
+                    if title_info:
+                        title_info_id = title_info.id
+                        series_metadata = {
+                            'id': title_info.id,
+                            'title': title_info.title,
+                            'type': title_info.type,
+                            'year': title_info.year,
+                            'rating': title_info.rating,
+                            'genres': title_info.genres,
+                            'tags': title_info.tags,
+                            'sources': title_info.sources,
+                            'total_episodes': title_info.total_episodes,
+                            'plot': title_info.plot
+                        }
+                        
+                        # Get MyAnimeList source URL for linking
+                        if title_info.sources:
+                            mal_sources = [src for src in title_info.sources if 'myanimelist.net' in src]
+                            if mal_sources:
+                                myanimelist_url = mal_sources[0]
+                
+                if series_metadata:
+                    enhanced['series_metadata'] = series_metadata
                     
-                    # Get MyAnimeList source URL for linking
-                    if title_info.sources:
-                        mal_sources = [src for src in title_info.sources if 'myanimelist.net' in src]
-                        if mal_sources:
-                            enhanced['myanimelist_url'] = mal_sources[0]
+                if myanimelist_url:
+                    enhanced['myanimelist_url'] = myanimelist_url
                     
-                    # Get episode-specific metadata if available
-                    if episode_num and provider:
-                        try:
-                            episode_info = provider.get_episode_info(title_info.id, season, episode_num)
-                            if episode_info:
-                                enhanced['episode_metadata'] = {
-                                    'title': episode_info.title,
-                                    'rating': episode_info.rating,
-                                    'plot': episode_info.plot,
-                                    'air_date': episode_info.air_date
-                                }
-                        except Exception as e:
-                            logging.debug(f"Could not get episode metadata for {title} S{season}E{episode_num}: {e}")
-                    
-                    # Get MyAnimeList watch status
-                    if self.myanimelist_provider and title_info.sources:
-                        for source in title_info.sources:
-                            if 'myanimelist.net' in source:
-                                try:
-                                    mal_status = self.myanimelist_provider.get_watch_status(source)
-                                    if mal_status:
-                                        enhanced['myanimelist_watch_status'] = {
-                                            'status': mal_status.my_status,
-                                            'watched_episodes': mal_status.my_watched_episodes,
-                                            'score': mal_status.my_score,
-                                            'total_episodes': mal_status.series_episodes,
-                                            'progress_percent': mal_status.progress_percent
-                                        }
-                                        break
-                                except Exception as e:
-                                    logging.debug(f"Could not get MAL status for {source}: {e}")
+                # Get episode-specific metadata if available
+                if episode_num and provider and title_info_id:
+                    try:
+                        episode_info = provider.get_episode_info(title_info_id, season, episode_num)
+                        if episode_info:
+                            enhanced['episode_metadata'] = {
+                                'title': episode_info.title,
+                                'rating': episode_info.rating,
+                                'plot': episode_info.plot,
+                                'air_date': episode_info.air_date
+                            }
+                    except Exception as e:
+                        logging.debug(f"Could not get episode metadata for {title} S{season}E{episode_num}: {e}")
+                
+                # Get MyAnimeList watch status
+                if self.myanimelist_provider and myanimelist_url:
+                    try:
+                        mal_status = self.myanimelist_provider.get_watch_status(myanimelist_url)
+                        if mal_status:
+                            enhanced['myanimelist_watch_status'] = {
+                                'status': mal_status.my_status,
+                                'watched_episodes': mal_status.my_watched_episodes,
+                                'score': mal_status.my_score,
+                                'total_episodes': mal_status.series_episodes,
+                                'progress_percent': mal_status.progress_percent
+                            }
+                    except Exception as e:
+                        logging.debug(f"Could not get MAL status for {myanimelist_url}: {e}")
             
             except Exception as e:
                 logging.debug(f"Could not enhance metadata for {title}: {e}")

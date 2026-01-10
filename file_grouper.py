@@ -170,6 +170,15 @@ class FileGrouper:
             return fnmatch.fnmatch(filename, pattern)
     
     @staticmethod
+    def _get_ordinal_suffix(n: int) -> str:
+        """Get the ordinal suffix for a number (1st, 2nd, 3rd, 4th, etc.)."""
+        if 10 <= n % 100 <= 20:
+            suffix = 'th'
+        else:
+            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+        return f"{n}{suffix}"
+    
+    @staticmethod
     def _generate_season_titles(title: str, season: int) -> List[str]:
         """Generate common season naming patterns for metadata lookup.
         
@@ -180,10 +189,12 @@ class FileGrouper:
         Returns:
             List of common season title variations
         """
+        ordinal = FileGrouper._get_ordinal_suffix(season)
         return [
-            f"{title} Season {season}",
-            f"{title} Part {season}",
-            f"{title} {season}",
+            f"{title} {ordinal} Season",  # "Title 2nd Season" - Common MAL format
+            f"{title} Season {season}",   # "Title Season 2"
+            f"{title} Part {season}",     # "Title Part 2"
+            f"{title} {season}",          # "Title 2"
         ]
         
     def discover_files(self, input_paths: List[str], excluded_paths: List[str] | None = None,
