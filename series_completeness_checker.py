@@ -3,12 +3,141 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+from enum import Enum
+from dataclasses import dataclass, field, asdict
 import argparse
 import json
 import os
 
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
+
+# Enums for status values
+class SeriesStatus(str, Enum):
+    """Enum for series completeness status values."""
+    COMPLETE = 'complete'
+    INCOMPLETE = 'incomplete'
+    COMPLETE_WITH_EXTRAS = 'complete_with_extras'
+    NO_EPISODE_NUMBERS = 'no_episode_numbers'
+    UNKNOWN_TOTAL_EPISODES = 'unknown_total_episodes'
+    NOT_SERIES = 'not_series'
+    MOVIE = 'movie'
+    NO_METADATA = 'no_metadata'
+    NO_METADATA_MANAGER = 'no_metadata_manager'
+    UNKNOWN = 'unknown'
+
+class MALStatus(str, Enum):
+    """Enum for MyAnimeList status values."""
+    WATCHING = 'Watching'
+    COMPLETED = 'Completed'
+    ON_HOLD = 'On-Hold'
+    DROPPED = 'Dropped'
+    PLAN_TO_WATCH = 'Plan to Watch'
+    COMPLETED_SEASON = 'Completed (Season)'
+
+# Status emoji mapping
+STATUS_EMOJI = {
+    SeriesStatus.COMPLETE: '✅',
+    SeriesStatus.INCOMPLETE: '❌',
+    SeriesStatus.COMPLETE_WITH_EXTRAS: '⚠️',
+    SeriesStatus.NO_EPISODE_NUMBERS: '❓',
+    SeriesStatus.UNKNOWN_TOTAL_EPISODES: '❓',
+    SeriesStatus.NOT_SERIES: 'ℹ️',
+    SeriesStatus.MOVIE: '🎬',
+    SeriesStatus.NO_METADATA: '❓',
+    SeriesStatus.NO_METADATA_MANAGER: '❓',
+    SeriesStatus.UNKNOWN: '❓'
+}
+
+# Dataclasses for complex data structures
+@dataclass
+class WatchStatus:
+    """Watch status information for a series."""
+    watched_episodes: int = 0
+    partially_watched_episodes: int = 0
+    unwatched_episodes: int = 0
+    total_watch_count: int = 0
+    completion_percent: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'WatchStatus':
+        """Create from dictionary."""
+        return cls(
+            watched_episodes=data.get('watched_episodes', 0),
+            partially_watched_episodes=data.get('partially_watched_episodes', 0),
+            unwatched_episodes=data.get('unwatched_episodes', 0),
+            total_watch_count=data.get('total_watch_count', 0),
+            completion_percent=data.get('completion_percent', 0.0)
+        )
+
+@dataclass
+class SeriesAnalysis:
+    """Analysis result for a series or season."""
+    title: str
+    status: SeriesStatus
+    episodes_found: int
+    episodes_expected: int
+    season: Optional[int] = None
+    metadata_id: Optional[str] = None
+    episode_numbers: List[int] = field(default_factory=list)
+    missing_episodes: List[int] = field(default_factory=list)
+    extra_episodes: List[int] = field(default_factory=list)
+    files: List[Dict] = field(default_factory=list)
+    extra_files: List[Dict] = field(default_factory=list)
+    watch_status: Optional[WatchStatus] = None
+    myanimelist_watch_status: Optional[Dict] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            'title': self.title,
+            'season': self.season,
+            'metadata_id': self.metadata_id,
+            'episodes_found': self.episodes_found,
+            'episodes_expected': self.episodes_expected,
+            'status': self.status.value if isinstance(self.status, SeriesStatus) else self.status,
+            'episode_numbers': self.episode_numbers,
+            'missing_episodes': self.missing_episodes,
+            'extra_episodes': self.extra_episodes,
+            'files': self.files,
+            'extra_files': self.extra_files,
+            'watch_status': self.watch_status.to_dict() if isinstance(self.watch_status, WatchStatus) else self.watch_status,
+            'myanimelist_watch_status': self.myanimelist_watch_status
+        }
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'SeriesAnalysis':
+        """Create from dictionary."""
+        watch_status_data = data.get('watch_status')
+        watch_status = WatchStatus.from_dict(watch_status_data) if watch_status_data else None
+        
+        status = data.get('status', 'unknown')
+        if isinstance(status, str):
+            try:
+                status = SeriesStatus(status)
+            except ValueError:
+                status = SeriesStatus.UNKNOWN
+        
+        return cls(
+            title=data.get('title', 'Unknown'),
+            season=data.get('season'),
+            metadata_id=data.get('metadata_id'),
+            episodes_found=data.get('episodes_found', 0),
+            episodes_expected=data.get('episodes_expected', 0),
+            status=status,
+            episode_numbers=data.get('episode_numbers', []),
+            missing_episodes=data.get('missing_episodes', []),
+            extra_episodes=data.get('extra_episodes', []),
+            files=data.get('files', []),
+            extra_files=data.get('extra_files', []),
+            watch_status=watch_status,
+            myanimelist_watch_status=data.get('myanimelist_watch_status')
+        )
 
 try:
     from tqdm import tqdm
@@ -225,7 +354,7 @@ class SeriesCompletenessChecker:
     def _analyze_group_completeness(self, group_key: str, group_files: List[Dict]) -> Dict[str, Any]:
         """Analyze a single group for completeness."""
         if not group_files:
-            return {'status': 'unknown', 'episodes_found': 0}
+            return {'status': SeriesStatus.UNKNOWN.value, 'episodes_found': 0}
         
         # Extract basic info from group
         first_file = group_files[0]
@@ -485,20 +614,20 @@ class SeriesCompletenessChecker:
                     partially_watched_count += 1
         
         episodes_found = len(episode_files)
-        watch_status = {
-            'watched_episodes': watched_count,
-            'partially_watched_episodes': partially_watched_count,
-            'unwatched_episodes': episodes_found - watched_count - partially_watched_count,
-            'total_watch_count': total_watch_count,
-            'completion_percent': (watched_count / episodes_found * 100) if episodes_found > 0 else 0
-        }
+        watch_status = WatchStatus(
+            watched_episodes=watched_count,
+            partially_watched_episodes=partially_watched_count,
+            unwatched_episodes=episodes_found - watched_count - partially_watched_count,
+            total_watch_count=total_watch_count,
+            completion_percent=(watched_count / episodes_found * 100) if episodes_found > 0 else 0
+        )
         
         return watch_status, mal_watch_status
 
     def _build_base_result(self, title: str, season: Optional[int], metadata_id: Optional[str],
                            episodes_found: int, episode_numbers: List[int], 
                            extra_files: List[Dict], group_files: List[Dict],
-                           watch_status: Dict, mal_watch_status: Optional[Dict]) -> Dict[str, Any]:
+                           watch_status: WatchStatus, mal_watch_status: Optional[Dict]) -> Dict[str, Any]:
         """Build the base result dictionary for a group.
         
         Args:
@@ -509,7 +638,7 @@ class SeriesCompletenessChecker:
             episode_numbers: List of episode numbers
             extra_files: List of extra file information dicts
             group_files: All files in the group
-            watch_status: Watch status dictionary
+            watch_status: Watch status dataclass instance
             mal_watch_status: MyAnimeList watch status or None
             
         Returns:
@@ -521,13 +650,13 @@ class SeriesCompletenessChecker:
             'metadata_id': metadata_id,
             'episodes_found': episodes_found,
             'episodes_expected': 0,
-            'status': 'unknown',
+            'status': SeriesStatus.UNKNOWN.value,
             'episode_numbers': episode_numbers,
             'missing_episodes': [],
             'extra_episodes': [],
             'files': group_files,
             'extra_files': extra_files,
-            'watch_status': watch_status,
+            'watch_status': watch_status.to_dict(),
             'myanimelist_watch_status': mal_watch_status
         }
 
@@ -556,7 +685,7 @@ class SeriesCompletenessChecker:
         if "movie" in file_type_str or "movie" in metadata_type_str:
             total_episodes = metadata.get('total_episodes')
             expected_episodes = total_episodes
-            result['status'] = 'movie'
+            result['status'] = SeriesStatus.MOVIE.value
             result['episodes_expected'] = expected_episodes or 1
             return True
         
@@ -621,12 +750,12 @@ class SeriesCompletenessChecker:
             group_files: All files in the group
         """
         if not self.metadata_manager:
-            result['status'] = 'no_metadata_manager'
+            result['status'] = SeriesStatus.NO_METADATA_MANAGER.value
             return
         
         metadata_id = first_file.get('metadata_id')
         if not metadata_id or metadata_id not in self.file_grouper.title_metadata:
-            result['status'] = 'no_metadata'
+            result['status'] = SeriesStatus.NO_METADATA.value
             return
         
         metadata = self.file_grouper.title_metadata[metadata_id]['metadata']
@@ -637,13 +766,13 @@ class SeriesCompletenessChecker:
         
         # Check if it's a series
         if 'series' not in metadata.get('type', '').lower() and 'tv' not in metadata.get('type', '').lower():
-            result['status'] = 'not_series'
+            result['status'] = SeriesStatus.NOT_SERIES.value
             return
         
         # Process series completeness
         total_episodes = metadata.get('total_episodes')
         if not total_episodes:
-            result['status'] = 'unknown_total_episodes'
+            result['status'] = SeriesStatus.UNKNOWN_TOTAL_EPISODES.value
             return
         
         result['episodes_expected'] = total_episodes
@@ -657,7 +786,7 @@ class SeriesCompletenessChecker:
         
         # Check for missing/extra episodes
         if not episode_numbers:
-            result['status'] = 'no_episode_numbers'
+            result['status'] = SeriesStatus.NO_EPISODE_NUMBERS.value
             return
         
         expected_range = list(range(1, int(expected_episodes) + 1))
@@ -668,11 +797,11 @@ class SeriesCompletenessChecker:
         result['extra_episodes'] = extra
         
         if not missing and not extra:
-            result['status'] = 'complete'
+            result['status'] = SeriesStatus.COMPLETE.value
         elif missing:
-            result['status'] = 'incomplete'
+            result['status'] = SeriesStatus.INCOMPLETE.value
         else:
-            result['status'] = 'complete_with_extras'
+            result['status'] = SeriesStatus.COMPLETE_WITH_EXTRAS.value
 
     def _format_episode_ranges(self, episodes: List[int]) -> str:
         """Format episode list as smart ranges (e.g., [1,2,3,5,6,8] -> '[1-3, 5-6, 8]')."""
@@ -876,19 +1005,12 @@ class SeriesCompletenessChecker:
         episodes_expected = analysis.get('episodes_expected', 0)
         watch_status = analysis.get('watch_status', {})
         
-        # Status emoji
-        status_emoji = {
-            'complete': '✅',
-            'incomplete': '❌', 
-            'complete_with_extras': '⚠️',
-            'no_episode_numbers': '❓',
-            'unknown_total_episodes': '❓',
-            'not_series': 'ℹ️',
-            'movie': '🎬',
-            'no_metadata': '❓',
-            'no_metadata_manager': '❓',
-            'unknown': '❓'
-        }.get(status, '❓')
+        # Status emoji - convert string status to enum and get emoji
+        try:
+            status_enum = SeriesStatus(status) if isinstance(status, str) else status
+            status_emoji = STATUS_EMOJI.get(status_enum, '❓')
+        except (ValueError, KeyError):
+            status_emoji = '❓'
         
         # Format title with season
         title_str = title
@@ -1421,8 +1543,7 @@ def _handle_thumbnail_generation(files: List[Path], args, verbosity: int, checke
 
 def _apply_status_filters(results: Dict[str, Any], status_filters: List[str]) -> None:
     """Apply status filters to results and update summary."""
-    all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
-                   'unknown_total_episodes', 'not_series', 'no_metadata', 'no_metadata_manager', 'unknown'}
+    all_statuses = {status.value for status in SeriesStatus}
     
     # Parse include/exclude patterns
     include_statuses = set()
@@ -1464,11 +1585,11 @@ def _apply_status_filters(results: Dict[str, Any], status_filters: List[str]) ->
 def _apply_mal_status_filters(results: Dict[str, Any], mal_status_filters: List[str]) -> None:
     """Apply MyAnimeList status filters to results and update summary."""
     mal_status_map = {
-        'watching': 'Watching',
-        'completed': 'Completed', 
-        'on-hold': 'On-Hold',
-        'dropped': 'Dropped',
-        'plan-to-watch': 'Plan to Watch'
+        'watching': MALStatus.WATCHING.value,
+        'completed': MALStatus.COMPLETED.value, 
+        'on-hold': MALStatus.ON_HOLD.value,
+        'dropped': MALStatus.DROPPED.value,
+        'plan-to-watch': MALStatus.PLAN_TO_WATCH.value
     }
     all_mal_statuses = set(mal_status_map.keys())
     
