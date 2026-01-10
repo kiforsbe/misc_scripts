@@ -231,9 +231,9 @@ class LatestEpisodesApp {
     
     getEpisodeMalStatus(episode) {
         const mal = episode.myanimelist_watch_status;
-        if (!mal) return 'no_mal_data';
+        if (!mal || !mal.my_status) return 'no_mal_data';
         
-        return mal.status.toLowerCase().replace(' ', '_').replace('-', '_');
+        return mal.my_status.toLowerCase().replace(' ', '_').replace('-', '_');
     }
     
     renderEpisodesList() {
@@ -520,9 +520,9 @@ class LatestEpisodesApp {
                         <i class="bi bi-list-check"></i>
                         MyAnimeList Status
                     </h4>
-                    <span class="status-badge status-${mal.status.toLowerCase().replace(' ', '-').replace(' ', '_')}">${mal.status}</span>
-                    <p><strong>Episodes Watched:</strong> ${mal.watched_episodes} / ${mal.total_episodes || '?'}</p>
-                    ${mal.score > 0 ? `<p><strong>Your Score:</strong> ${parseFloat(mal.score).toFixed(1)}/10</p>` : ''}
+                    <span class="status-badge status-${mal.my_status.toLowerCase().replace(' ', '-').replace(' ', '_')}">${mal.my_status}</span>
+                    <p><strong>Episodes Watched:</strong> ${mal.my_watched_episodes} / ${mal.series_episodes || '?'}</p>
+                    ${mal.my_score > 0 ? `<p><strong>Your Score:</strong> ${parseFloat(mal.my_score).toFixed(1)}/10</p>` : ''}
                     ${mal.progress_percent > 0 ? `
                         <div class="progress-container">
                             <div class="progress">
@@ -695,7 +695,7 @@ class LatestEpisodesApp {
     renderRatingInfo(episode, style = 'compact') {
         let ratingHtml = '';
         const hasEpisodeRating = episode.episode_metadata && episode.episode_metadata.rating && episode.episode_metadata.rating > 0;
-        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0;
+        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.my_score && episode.myanimelist_watch_status.my_score > 0;
         
         if (!hasEpisodeRating && !hasUserScore) return '';
         
@@ -706,7 +706,7 @@ class LatestEpisodesApp {
                 ratings.push(`⭐ ${communityScore}/10`);
             }
             if (hasUserScore) {
-                const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+                const userScore = parseFloat(episode.myanimelist_watch_status.my_score).toFixed(1);
                 ratings.push(`👤 ${userScore}/10`);
             }
             if (ratings.length > 0) {
@@ -718,7 +718,7 @@ class LatestEpisodesApp {
                 ratingHtml += `<p><strong>Rating:</strong> <span class="community-score">⭐ ${communityScore}/10</span></p>`;
             }
             if (hasUserScore) {
-                const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+                const userScore = parseFloat(episode.myanimelist_watch_status.my_score).toFixed(1);
                 ratingHtml += `<p><strong>Your Score:</strong> <span class="user-score">👤 ${userScore}/10</span></p>`;
             }
         }
@@ -729,14 +729,14 @@ class LatestEpisodesApp {
     renderSeriesRatingInfo(episode) {
         let ratingHtml = '';
         const hasCommunityRating = episode.series_metadata && episode.series_metadata.rating && episode.series_metadata.rating > 0;
-        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0;
+        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.my_score && episode.myanimelist_watch_status.my_score > 0;
         
         if (hasCommunityRating) {
             const communityScore = parseFloat(episode.series_metadata.rating).toFixed(1);
             ratingHtml += `<p><strong>Rating:</strong> <span class="community-score">⭐ ${communityScore}/10</span></p>`;
         }
         if (hasUserScore) {
-            const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+            const userScore = parseFloat(episode.myanimelist_watch_status.my_score).toFixed(1);
             ratingHtml += `<p><strong>Your Score:</strong> <span class="user-score">👤 ${userScore}/10</span></p>`;
         }
         
@@ -749,8 +749,8 @@ class LatestEpisodesApp {
             const communityScore = parseFloat(episode.series_metadata.rating).toFixed(1);
             ratings.push(`⭐${communityScore}`);
         }
-        if (episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0) {
-            const userScore = parseFloat(episode.myanimelist_watch_status.score).toFixed(1);
+        if (episode.myanimelist_watch_status && episode.myanimelist_watch_status.my_score && episode.myanimelist_watch_status.my_score > 0) {
+            const userScore = parseFloat(episode.myanimelist_watch_status.my_score).toFixed(1);
             ratings.push(`👤${userScore}`);
         }
         return ratings.length > 0 ? ratings.join(' ') : null;
@@ -1228,7 +1228,7 @@ class LatestEpisodesApp {
         // Set ratings
         const ratingsContainer = document.getElementById('popup-ratings');
         const hasEpisodeRating = episode.episode_metadata && episode.episode_metadata.rating && episode.episode_metadata.rating > 0;
-        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.score && episode.myanimelist_watch_status.score > 0;
+        const hasUserScore = episode.myanimelist_watch_status && episode.myanimelist_watch_status.my_score && episode.myanimelist_watch_status.my_score > 0;
         
         if (hasEpisodeRating || hasUserScore) {
             let ratingsHtml = '';
@@ -1236,7 +1236,7 @@ class LatestEpisodesApp {
                 ratingsHtml += `<div class="popup-rating community">★ ${episode.episode_metadata.rating.toFixed(1)}</div>`;
             }
             if (hasUserScore) {
-                ratingsHtml += `<div class="popup-rating user">♥ ${episode.myanimelist_watch_status.score}/10</div>`;
+                ratingsHtml += `<div class="popup-rating user">♥ ${episode.myanimelist_watch_status.my_score}/10</div>`;
             }
             ratingsContainer.innerHTML = ratingsHtml;
             ratingsContainer.style.display = 'flex';

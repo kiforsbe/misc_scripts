@@ -268,10 +268,10 @@ class LatestEpisodesViewer:
                         mal_status = self.myanimelist_provider.get_watch_status(source_url)
                         if mal_status:
                             enhanced['myanimelist_watch_status'] = {
-                                'status': mal_status.my_status,
-                                'watched_episodes': mal_status.my_watched_episodes,
-                                'score': mal_status.my_score,
-                                'total_episodes': mal_status.series_episodes,
+                                'my_status': mal_status.my_status,
+                                'my_watched_episodes': mal_status.my_watched_episodes,
+                                'my_score': mal_status.my_score,
+                                'series_episodes': mal_status.series_episodes,
                                 'progress_percent': mal_status.progress_percent
                             }
                     except Exception as e:
@@ -327,8 +327,11 @@ class LatestEpisodesViewer:
             # MyAnimeList status
             mal_status = episode.get('myanimelist_watch_status')
             if mal_status:
-                status = mal_status['status'].lower().replace(' ', '_')
-                mal_status_counts[status] += 1
+                status = mal_status.get('my_status', '').lower().replace(' ', '_')
+                if status:
+                    mal_status_counts[status] += 1
+                else:
+                    mal_status_counts['no_mal_data'] += 1
             else:
                 mal_status_counts['no_mal_data'] += 1
         

@@ -713,6 +713,34 @@ class SeriesCompletenessChecker:
         
         return result
     
+    def _transform_mal_status_for_group(self, series_mal_status: Dict[str, Any], total_episodes: int = 0) -> Dict[str, Any]:
+        """Transform MAL watch status from title_metadata format to groups format.
+        
+        Args:
+            series_mal_status: MAL status from title_metadata (with my_status, my_watched_episodes, etc.)
+            total_episodes: Total number of episodes for this group
+            
+        Returns:
+            Transformed MAL status dict for groups section (keeping my_* field names)
+        """  
+        if not series_mal_status:
+            return {
+                'my_status': None,
+                'my_score': None,
+                'my_watched_episodes': 0,
+                'series_episodes': total_episodes,
+                'tags': []
+            }
+        
+        # Keep the my_* field names that filtering code expects
+        return {
+            'my_status': series_mal_status.get('my_status'),
+            'my_score': series_mal_status.get('my_score'),
+            'my_watched_episodes': series_mal_status.get('my_watched_episodes', 0),
+            'series_episodes': total_episodes or series_mal_status.get('series_episodes', 0),
+            'tags': []  # Tags are stored at series level, not in MAL status
+        }
+    
     def _calculate_season_specific_mal_status(self, series_mal_status: Dict[str, Any], season: int, episode_files: List[Dict]) -> Optional[Dict[str, Any]]:
         """Calculate season-specific MyAnimeList watch status from series-level status.
         
@@ -743,8 +771,8 @@ class SeriesCompletenessChecker:
         if not season_episode_numbers:
             return None
         
-        # Get watched episode count from series-level status
-        series_watched_count = series_mal_status.get('watched_episodes', 0)
+        # Get watched episode count from series-level status (use my_watched_episodes from title_metadata format)
+        series_watched_count = series_mal_status.get('my_watched_episodes', 0)
         
         # Count how many of this season's episodes have been watched according to MAL
         season_watched_count = 0
@@ -752,22 +780,22 @@ class SeriesCompletenessChecker:
             if ep_num <= series_watched_count:
                 season_watched_count += 1
         
-        # Create season-specific status
+        # Create season-specific status (keeping my_* field names)
         season_status = {
-            'status': series_mal_status.get('status'),
-            'score': series_mal_status.get('score'),
-            'watched_episodes': season_watched_count,
-            'total_episodes': len(season_episode_numbers),
-            'tags': series_mal_status.get('tags', [])
+            'my_status': series_mal_status.get('my_status'),
+            'my_score': series_mal_status.get('my_score'),
+            'my_watched_episodes': season_watched_count,
+            'series_episodes': len(season_episode_numbers),
+            'tags': []  # Tags are stored at series level
         }
         
         # Update status based on completion
         if season_watched_count == len(season_episode_numbers):
-            if season_status['status'] == 'Watching':
-                season_status['status'] = 'Completed (Season)'
+            if season_status['my_status'] == 'Watching':
+                season_status['my_status'] = 'Completed (Season)'
         elif season_watched_count > 0:
-            if season_status['status'] in ['Completed', 'Plan to Watch']:
-                season_status['status'] = 'Watching'
+            if season_status['my_status'] in ['Completed', 'Plan to Watch']:
+                season_status['my_status'] = 'Watching'
         
         return season_status
 
@@ -930,12 +958,17 @@ class SeriesCompletenessChecker:
             title_metadata = getattr(self.file_grouper, 'title_metadata', {})
             if metadata_id in title_metadata:
                 series_mal_status = title_metadata[metadata_id].get('myanimelist_watch_status')
-                if series_mal_status and season:
-                    mal_watch_status = self._calculate_season_specific_mal_status(
-                        series_mal_status, season, episode_files
-                    )
-                else:
-                    mal_watch_status = series_mal_status
+                if series_mal_status:
+                    if season:
+                        # Calculate season-specific status
+                        mal_watch_status = self._calculate_season_specific_mal_status(
+                            series_mal_status, season, episode_files
+                        )
+                    else:
+                        # Transform series-level status to groups format
+                        mal_watch_status = self._transform_mal_status_for_group(
+                            series_mal_status, len(episode_files)
+                        )
         
         # Count partially watched and total watch count from Plex
         for file_info in episode_files:
