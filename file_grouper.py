@@ -368,20 +368,33 @@ class FileGrouper:
                             # No metadata manager - can't look up enhanced metadata
                             pass
                         else:
-                            # For Season 2+, try season-specific title first (e.g., "Title Season 2", "Title Part 2")
-                            # This ensures multi-season series get correct metadata per season
+                            # For Season 2+, try season-specific title first for anime providers only
+                            # (e.g., "Title Season 2", "Title Part 2")
+                            # IMDB and other non-anime providers store all seasons under the same title
                             enhanced_info = None
                             provider = None
                             
-                            if season and season > 1:
-                                # Try common season naming patterns
-                                season_titles = self._generate_season_titles(title, season)
-                                for season_title in season_titles:
-                                    enhanced_info, provider = self.metadata_manager.find_title(season_title, year)
-                                    if enhanced_info:
+                            # For anime: try season-specific titles on ANIME PROVIDER ONLY
+                            # For non-anime: skip season-specific titles entirely
+                            if season and season > 1 and self.metadata_manager:
+                                # Find anime provider if available
+                                anime_provider = None
+                                for p in self.metadata_manager.providers:
+                                    if 'anime' in p.__class__.__name__.lower():
+                                        anime_provider = p
                                         break
+                                
+                                if anime_provider:
+                                    # Try season-specific titles ONLY with anime provider
+                                    season_titles = self._generate_season_titles(title, season)
+                                    for season_title in season_titles:
+                                        anime_result = anime_provider.find_title(season_title, year)
+                                        if anime_result and anime_result.info:
+                                            enhanced_info = anime_result.info
+                                            provider = anime_provider.__class__.__name__
+                                            break
                             
-                            # Fall back to base title if no season-specific match found
+                            # Fall back to base title (searches ALL providers)
                             if not enhanced_info:
                                 enhanced_info, provider = self.metadata_manager.find_title(title, year)
                         
