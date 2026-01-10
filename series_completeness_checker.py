@@ -139,6 +139,382 @@ class SeriesAnalysis:
             myanimelist_watch_status=data.get('myanimelist_watch_status')
         )
 
+
+class ResultsFilter:
+    """Handles filtering of series analysis results."""
+    
+    def __init__(self):
+        """Initialize the results filter."""
+        self.all_statuses = {status.value for status in SeriesStatus}
+        self.mal_status_map = {
+            'watching': MALStatus.WATCHING.value,
+            'completed': MALStatus.COMPLETED.value,
+            'on-hold': MALStatus.ON_HOLD.value,
+            'dropped': MALStatus.DROPPED.value,
+            'plan-to-watch': MALStatus.PLAN_TO_WATCH.value
+        }
+        self.all_mal_status_keys = set(self.mal_status_map.keys())
+    
+    def parse_filter_patterns(self, filter_items: List[str], valid_values: set) -> set:
+        """Parse filter patterns with +/- prefixes.
+        
+        Args:
+            filter_items: List of filter strings (may have +/- prefixes)
+            valid_values: Set of valid values to filter against
+            
+        Returns:
+            Final set of values to filter by
+        """
+        include = set()
+        exclude = set()
+        plain = set()
+        
+        for item in filter_items:
+            if item.startswith('+'):
+                value = item[1:]
+                if value in valid_values:
+                    include.add(value)
+            elif item.startswith('-'):
+                value = item[1:]
+                if value in valid_values:
+                    exclude.add(value)
+            elif item in valid_values:
+                plain.add(item)
+        
+        # Determine final filter set
+        if plain:
+            return plain
+        elif include:
+            return include - exclude
+        elif exclude:
+            return valid_values - exclude
+        else:
+            return valid_values
+    
+    def apply_status_filter(self, results: Dict[str, Any], status_filters: List[str]) -> None:
+        """Apply status filters to results and update summary.
+        
+        Args:
+            results: Results dictionary to filter (modified in place)
+            status_filters: List of status filter strings
+        """
+        final_statuses = self.parse_filter_patterns(status_filters, self.all_statuses)
+        
+        # Apply filtering
+        filtered_groups = {
+            key: analysis
+            for key, analysis in results['groups'].items()
+            if analysis['status'] in final_statuses
+        }
+        results['groups'] = filtered_groups
+        
+        # Recalculate summary
+        self._recalculate_summary(results)
+    
+    def apply_mal_status_filter(self, results: Dict[str, Any], mal_status_filters: List[str]) -> None:
+        """Apply MyAnimeList status filters to results and update summary.
+        
+        Args:
+            results: Results dictionary to filter (modified in place)
+            mal_status_filters: List of MAL status filter strings
+        """
+        final_mal_statuses = self.parse_filter_patterns(mal_status_filters, self.all_mal_status_keys)
+        
+        # Convert to actual MAL status values for filtering
+        final_mal_status_values = {self.mal_status_map[status] for status in final_mal_statuses}
+        
+        # Apply filtering
+        filtered_groups = {}
+        for group_key, analysis in results['groups'].items():
+            mal_status = analysis.get('myanimelist_watch_status')
+            if mal_status and mal_status.get('my_status'):
+                if mal_status['my_status'] in final_mal_status_values:
+                    filtered_groups[group_key] = analysis
+            elif not mal_status:
+                # Series has no MAL status - only include if no positive filters specified
+                has_positive_filter = any(f.startswith('+') for f in mal_status_filters) or \
+                                     any(f in self.all_mal_status_keys and not f.startswith('-') 
+                                         for f in mal_status_filters)
+                if not has_positive_filter:
+                    filtered_groups[group_key] = analysis
+        
+        results['groups'] = filtered_groups
+        
+        # Recalculate summary
+        self._recalculate_summary(results)
+    
+    def _recalculate_summary(self, results: Dict[str, Any]) -> None:
+        """Recalculate summary statistics after filtering.
+        
+        Args:
+            results: Results dictionary to update (modified in place)
+        """
+        filtered_groups = results['groups']
+        total_series = len(filtered_groups)
+        complete_series = sum(1 for a in filtered_groups.values() 
+                            if a['status'] in [SeriesStatus.COMPLETE.value, 
+                                              SeriesStatus.COMPLETE_WITH_EXTRAS.value])
+        incomplete_series = sum(1 for a in filtered_groups.values() 
+                              if a['status'] in [SeriesStatus.INCOMPLETE.value, 
+                                                SeriesStatus.NO_EPISODE_NUMBERS.value])
+        unknown_series = total_series - complete_series - incomplete_series
+        total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
+        total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
+
+        results['completeness_summary'].update({
+            'total_series': total_series,
+            'complete_series': complete_series,
+            'incomplete_series': incomplete_series,
+            'unknown_series': unknown_series,
+            'total_episodes_found': total_episodes_found,
+            'total_episodes_expected': total_episodes_expected
+        })
+
+
+class CommandLineArgumentParser:
+    """Handles command-line argument parsing and validation."""
+    
+    def __init__(self):
+        """Initialize the argument parser."""
+        self.parser = self._create_parser()
+    
+    def _create_parser(self) -> argparse.ArgumentParser:
+        """Create the argument parser with all options.
+        
+        Returns:
+            Configured ArgumentParser instance
+        """
+        parser = argparse.ArgumentParser(
+            description='Check series collection completeness using filename metadata',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=self._get_usage_examples()
+        )
+        
+        self._add_arguments(parser)
+        return parser
+    
+    def _get_usage_examples(self) -> str:
+        """Get usage examples text for help.
+        
+        Returns:
+            Formatted usage examples string
+        """
+        return """
+Common Usage Examples:
+
+Basic completeness analysis (no exports or thumbnails):
+  %(prog)s /path/to/series
+  %(prog)s /path/to/series --recursive --export results.json --verbose 2
+
+Filtered completeness analysis:
+  %(prog)s /path/to/series --status-filter "+complete +complete_with_extras" --show-metadata year rating
+
+MyAnimeList filtered analysis:
+  %(prog)s /path/to/series --status-filter "incomplete" --mal-status-filter "+watching +plan-to-watch" --myanimelist-xml ~/myanimelist.xml
+  %(prog)s /path/to/series --export series.json --webapp-export series.html --generate-thumbnails --myanimelist-xml ~/myanimelist.xml
+  %(prog)s /path/to/series --export-bundle /path/to/output/bundle --recursive
+
+Advanced Options:
+  %(prog)s /path/to/series --exclude-paths /path/to/series/trash --include-patterns "*.mkv" "*.mp4"
+  %(prog)s /path/to/series --status-filter "-unknown -no_metadata" --show-metadata genres director year
+  %(prog)s /path/to/series --mal-status-filter "+completed +on-hold" --status-filter "complete" --myanimelist-xml ~/myanimelist.xml
+
+Refresh Operations:
+  %(prog)s --refresh-bundle /path/to/bundle/dir --myanimelist-xml ~/myanimelist.xml --refresh-bundle-metadata
+  %(prog)s --webapp-refresh /path/to/series.json --webapp-export /path/to/updated.html --myanimelist-xml ~/myanimelist.xml
+        """
+    
+    def _add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """Add all command-line arguments to parser.
+        
+        Args:
+            parser: ArgumentParser instance to add arguments to
+        """
+        # Positional arguments
+        parser.add_argument('input_paths', nargs='*',
+                           help='Input paths to search for series files (not required when using --refresh-bundle or --webapp-refresh)')
+        
+        # Refresh mode arguments
+        parser.add_argument('--refresh-bundle', metavar='BUNDLE_DIR',
+                           help='Regenerate webapp from existing bundle metadata.json. Provide path to bundle root directory. '
+                                'Can be combined with --myanimelist-xml to refresh MAL metadata.')
+        parser.add_argument('--refresh-bundle-metadata', action='store_true',
+                           help='When used with --refresh-bundle, also save the refreshed metadata back to metadata.json. '
+                                'This updates the stored metadata file with any MAL status changes.')
+        parser.add_argument('--webapp-refresh', metavar='JSON_FILE',
+                           help='Regenerate standalone webapp from existing metadata JSON file. '
+                                'Can be combined with --myanimelist-xml to refresh MAL metadata.')
+        
+        # File discovery arguments
+        parser.add_argument('--exclude-paths', nargs='*', default=[],
+                           help='Paths to exclude from search')
+        parser.add_argument('--include-patterns', nargs='*', default=['*.mkv', '*.mp4', '*.avi'],
+                           help='Wildcard patterns for files to include (default: *.mkv *.mp4 *.avi)')
+        parser.add_argument('--exclude-patterns', nargs='*', default=[],
+                           help='Wildcard patterns for files to exclude')
+        
+        # Export arguments
+        parser.add_argument('--export', metavar='FILE',
+                           help='Export results to JSON file')
+        parser.add_argument('--webapp-export', nargs='?', const=True, metavar='FILE',
+                           help='Export results as a standalone HTML webapp. If filename omitted, derives name from --export argument (requires --export).')
+        parser.add_argument('--export-bundle', metavar='DIR',
+                           help='Export complete bundle (webapp + metadata.json + thumbnails) to specified directory. '
+                                'This overrides --export, --webapp-export, and --generate-thumbnails. '
+                                'Cannot be used together with those options.')
+        
+        # Search arguments
+        parser.add_argument('--recursive', '-r', action='store_true',
+                           help='Recursively search subdirectories (default: False)')
+        
+        # Output arguments
+        parser.add_argument('--verbose', '-v', type=int, choices=[0, 1, 2, 3], default=1,
+                           help='Verbosity level: 0=silent, 1=summary, 2=detailed, 3=very detailed (default: 1)')
+        parser.add_argument('--quiet', '-q', action='store_true',
+                           help='Same as --verbose 0')
+        
+        # Filter arguments
+        parser.add_argument('--status-filter', metavar='FILTERS',
+                           help='Filter results by status. Use +status to include only specific statuses, '
+                                '-status to exclude specific statuses, or plain status names for exact match. '
+                                'Available statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
+                                'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
+                                'Examples: "complete incomplete", "+complete +incomplete", "-unknown -no_metadata"')
+        parser.add_argument('--mal-status-filter', metavar='FILTERS',
+                           help='Filter results by MyAnimeList watch status. Use +status to include only specific statuses, '
+                                '-status to exclude specific statuses, or plain status names for exact match. '
+                                'Available MAL statuses: watching, completed, on-hold, dropped, plan-to-watch. '
+                                'Examples: "watching completed", "+completed +on-hold", "-dropped -plan-to-watch"')
+        
+        # Metadata arguments
+        parser.add_argument('--show-metadata', nargs='*', metavar='FIELD',
+                           help='Show metadata fields in summary lines. Available fields depend on metadata source. '
+                                'Common fields: year, rating, genres, director, actors, plot, runtime, imdb_id. '
+                                'Example: --show-metadata year rating genres')
+        parser.add_argument('--myanimelist-xml', metavar='PATH_OR_URL',
+                           help='Path to MyAnimeList XML file (can be .gz) or URL for watch status lookup')
+        
+        # Thumbnail arguments
+        parser.add_argument('--generate-thumbnails', action='store_true',
+                           help='Generate static and animated webp thumbnails for each video file and store in thumbnail dir')
+        parser.add_argument('--thumbnail-dir', default='~/.video_thumbnail_cache',
+                           help='Directory to store video thumbnails (default: ~/.video_thumbnail_cache)')
+    
+    def parse_args(self, args=None):
+        """Parse and validate command-line arguments.
+        
+        Args:
+            args: Optional list of argument strings (defaults to sys.argv)
+            
+        Returns:
+            Parsed arguments namespace with 'refresh_mode' attribute added
+        """
+        parsed = self.parser.parse_args(args)
+        self._validate_args(parsed)
+        # Add refresh_mode attribute for convenience
+        parsed.refresh_mode = self._get_refresh_mode(parsed)
+        return parsed
+    
+    def _validate_args(self, args) -> None:
+        """Validate argument combinations and conflicts.
+        
+        Args:
+            args: Parsed arguments namespace
+            
+        Raises:
+            SystemExit: If validation fails
+        """
+        # Check for refresh modes
+        refresh_mode = self._get_refresh_mode(args)
+        
+        # Validate input_paths requirement (not needed in refresh modes)
+        if not refresh_mode and (not args.input_paths or len(args.input_paths) == 0):
+            self.parser.error('At least one input path is required unless using --refresh-bundle or --webapp-refresh')
+        
+        # Check for incompatible arguments in refresh modes
+        if refresh_mode:
+            self._validate_refresh_mode_args(args, refresh_mode)
+        
+        # Check for conflicts with --export-bundle
+        if hasattr(args, 'export_bundle') and args.export_bundle:
+            self._validate_bundle_export_args(args)
+        
+        # Validate and derive webapp export filename
+        self._validate_webapp_export(args)
+        
+        # Handle quiet flag
+        if args.quiet:
+            args.verbose = 0
+    
+    def _get_refresh_mode(self, args) -> Optional[str]:
+        """Determine which refresh mode is active.
+        
+        Args:
+            args: Parsed arguments namespace
+            
+        Returns:
+            'bundle', 'webapp', or None
+        """
+        if hasattr(args, 'refresh_bundle') and args.refresh_bundle:
+            return 'bundle'
+        elif hasattr(args, 'webapp_refresh') and args.webapp_refresh:
+            return 'webapp'
+        return None
+    
+    def _validate_refresh_mode_args(self, args, refresh_mode: str) -> None:
+        """Validate arguments in refresh mode.
+        
+        Args:
+            args: Parsed arguments namespace
+            refresh_mode: The active refresh mode ('bundle' or 'webapp')
+        """
+        incompatible = []
+        if args.input_paths:
+            incompatible.append('input_paths')
+        if hasattr(args, 'generate_thumbnails') and args.generate_thumbnails:
+            incompatible.append('--generate-thumbnails')
+        if hasattr(args, 'export') and args.export:
+            incompatible.append('--export')
+        if hasattr(args, 'export_bundle') and args.export_bundle:
+            incompatible.append('--export-bundle')
+        
+        if incompatible:
+            mode_flag = '--refresh-bundle' if refresh_mode == 'bundle' else '--webapp-refresh'
+            self.parser.error(f'{mode_flag} cannot be used with: {", ".join(incompatible)}')
+    
+    def _validate_bundle_export_args(self, args) -> None:
+        """Validate bundle export arguments.
+        
+        Args:
+            args: Parsed arguments namespace
+        """
+        conflicts = []
+        if hasattr(args, 'export') and args.export:
+            conflicts.append('--export')
+        if hasattr(args, 'webapp_export') and args.webapp_export:
+            conflicts.append('--webapp-export')
+        if hasattr(args, 'generate_thumbnails') and args.generate_thumbnails:
+            conflicts.append('--generate-thumbnails')
+        
+        if conflicts:
+            self.parser.error(f'--export-bundle cannot be used with: {", ".join(conflicts)}')
+    
+    def _validate_webapp_export(self, args) -> None:
+        """Validate and derive webapp export filename.
+        
+        Args:
+            args: Parsed arguments namespace (modified in place)
+        """
+        if args.webapp_export:
+            if args.webapp_export is True:
+                # Derive filename from --export argument
+                if not args.export:
+                    self.parser.error('--webapp-export without filename requires --export to be specified')
+                args.webapp_export = Path(args.export).with_suffix('.html')
+            else:
+                args.webapp_export = Path(args.webapp_export)
+
+
 try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
@@ -1542,277 +1918,39 @@ def _handle_thumbnail_generation(files: List[Path], args, verbosity: int, checke
     return generator.thumbnail_dir
 
 def _apply_status_filters(results: Dict[str, Any], status_filters: List[str]) -> None:
-    """Apply status filters to results and update summary."""
-    all_statuses = {status.value for status in SeriesStatus}
+    """Apply status filters to results and update summary.
     
-    # Parse include/exclude patterns
-    include_statuses = set()
-    exclude_statuses = set()
-    plain_statuses = set()
-    
-    for filter_item in status_filters:
-        if filter_item.startswith('+'):
-            status = filter_item[1:]
-            if status in all_statuses:
-                include_statuses.add(status)
-        elif filter_item.startswith('-'):
-            status = filter_item[1:]
-            if status in all_statuses:
-                exclude_statuses.add(status)
-        elif filter_item in all_statuses:
-            plain_statuses.add(filter_item)
-    
-    # Determine final filter set
-    if plain_statuses:
-        final_statuses = plain_statuses
-    elif include_statuses:
-        final_statuses = include_statuses - exclude_statuses
-    elif exclude_statuses:
-        final_statuses = all_statuses - exclude_statuses
-    else:
-        final_statuses = all_statuses
-    
-    # Apply filtering
-    filtered_groups = {}
-    for group_key, analysis in results['groups'].items():
-        if analysis['status'] in final_statuses:
-            filtered_groups[group_key] = analysis
-    results['groups'] = filtered_groups
-    
-    # Recalculate summary
-    _recalculate_summary(results)
+    This is a backward compatibility wrapper for ResultsFilter.
+    """
+    filter_handler = ResultsFilter()
+    filter_handler.apply_status_filter(results, status_filters)
 
 def _apply_mal_status_filters(results: Dict[str, Any], mal_status_filters: List[str]) -> None:
-    """Apply MyAnimeList status filters to results and update summary."""
-    mal_status_map = {
-        'watching': MALStatus.WATCHING.value,
-        'completed': MALStatus.COMPLETED.value, 
-        'on-hold': MALStatus.ON_HOLD.value,
-        'dropped': MALStatus.DROPPED.value,
-        'plan-to-watch': MALStatus.PLAN_TO_WATCH.value
-    }
-    all_mal_statuses = set(mal_status_map.keys())
+    """Apply MyAnimeList status filters to results and update summary.
     
-    # Parse include/exclude patterns
-    include_mal_statuses = set()
-    exclude_mal_statuses = set()
-    plain_mal_statuses = set()
-    
-    for filter_item in mal_status_filters:
-        if filter_item.startswith('+'):
-            status = filter_item[1:]
-            if status in all_mal_statuses:
-                include_mal_statuses.add(status)
-        elif filter_item.startswith('-'):
-            status = filter_item[1:]
-            if status in all_mal_statuses:
-                exclude_mal_statuses.add(status)
-        elif filter_item in all_mal_statuses:
-            plain_mal_statuses.add(filter_item)
-    
-    # Determine final filter set
-    if plain_mal_statuses:
-        final_mal_statuses = plain_mal_statuses
-    elif include_mal_statuses:
-        final_mal_statuses = include_mal_statuses - exclude_mal_statuses
-    elif exclude_mal_statuses:
-        final_mal_statuses = all_mal_statuses - exclude_mal_statuses
-    else:
-        final_mal_statuses = all_mal_statuses
-    
-    # Convert to actual MAL status values for filtering
-    final_mal_status_values = {mal_status_map[status] for status in final_mal_statuses}
-    
-    # Apply filtering
-    filtered_groups = {}
-    for group_key, analysis in results['groups'].items():
-        mal_status = analysis.get('myanimelist_watch_status')
-        if mal_status and mal_status.get('my_status'):
-            if mal_status['my_status'] in final_mal_status_values:
-                filtered_groups[group_key] = analysis
-        elif not mal_status:
-            # Series has no MAL status - only include if no positive filters specified
-            if not plain_mal_statuses and not include_mal_statuses:
-                filtered_groups[group_key] = analysis
-    
-    results['groups'] = filtered_groups
-    
-    # Recalculate summary
-    _recalculate_summary(results)
+    This is a backward compatibility wrapper for ResultsFilter.
+    """
+    filter_handler = ResultsFilter()
+    filter_handler.apply_mal_status_filter(results, mal_status_filters)
 
 def _recalculate_summary(results: Dict[str, Any]) -> None:
-    """Recalculate summary statistics after filtering."""
-    filtered_groups = results['groups']
-    total_series = len(filtered_groups)
-    complete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['complete', 'complete_with_extras'])
-    incomplete_series = sum(1 for a in filtered_groups.values() if a['status'] in ['incomplete', 'no_episode_numbers'])
-    unknown_series = total_series - complete_series - incomplete_series
-    total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
-    total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
-
-    results['completeness_summary'].update({
-        'total_series': total_series,
-        'complete_series': complete_series,
-        'incomplete_series': incomplete_series,
-        'unknown_series': unknown_series,
-        'total_episodes_found': total_episodes_found,
-        'total_episodes_expected': total_episodes_expected
-    })
+    """Recalculate summary statistics after filtering.
+    
+    This is a backward compatibility wrapper for ResultsFilter.
+    """
+    filter_handler = ResultsFilter()
+    filter_handler._recalculate_summary(results)
 
 def main():
     """Command-line interface for series completeness checker."""
-    parser = argparse.ArgumentParser(
-        description='Check series collection completeness using filename metadata',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Common Usage Examples:
-
-Basic completeness analysis (no exports or thumbnails):
-  %(prog)s /path/to/series
-  %(prog)s /path/to/series --recursive --export results.json --verbose 2
-
-Filtered completeness analysis:
-  %(prog)s /path/to/series --status-filter "+complete +complete_with_extras" --show-metadata year rating
-
-MyAnimeList filtered analysis:
-  %(prog)s /path/to/series --status-filter "incomplete" --mal-status-filter "+watching +plan-to-watch" --myanimelist-xml ~/myanimelist.xml
-  %(prog)s /path/to/series --export series.json --webapp-export series.html --generate-thumbnails --myanimelist-xml ~/myanimelist.xml
-  %(prog)s /path/to/series --export-bundle /path/to/output/bundle --recursive
-
-Advanced Options:
-  %(prog)s /path/to/series --exclude-paths /path/to/series/trash --include-patterns "*.mkv" "*.mp4"
-  %(prog)s /path/to/series --status-filter "-unknown -no_metadata" --show-metadata genres director year
-  %(prog)s /path/to/series --mal-status-filter "+completed +on-hold" --status-filter "complete" --myanimelist-xml ~/myanimelist.xml
-
-Refresh Operations:
-  %(prog)s --refresh-bundle /path/to/bundle/dir --myanimelist-xml ~/myanimelist.xml --refresh-bundle-metadata
-  %(prog)s --webapp-refresh /path/to/series.json --webapp-export /path/to/updated.html --myanimelist-xml ~/myanimelist.xml
-        """
-    )
-    parser.add_argument('input_paths', nargs='*',
-                       help='Input paths to search for series files (not required when using --refresh-bundle or --webapp-refresh)')
-    parser.add_argument('--refresh-bundle', metavar='BUNDLE_DIR',
-                       help='Regenerate webapp from existing bundle metadata.json. Provide path to bundle root directory. '
-                            'Can be combined with --myanimelist-xml to refresh MAL metadata.')
-    parser.add_argument('--refresh-bundle-metadata', action='store_true',
-                       help='When used with --refresh-bundle, also save the refreshed metadata back to metadata.json. '
-                            'This updates the stored metadata file with any MAL status changes.')
-    parser.add_argument('--webapp-refresh', metavar='JSON_FILE',
-                       help='Regenerate standalone webapp from existing metadata JSON file. '
-                            'Can be combined with --myanimelist-xml to refresh MAL metadata.')
-    parser.add_argument('--exclude-paths', nargs='*', default=[],
-                       help='Paths to exclude from search')
-    parser.add_argument('--include-patterns', nargs='*', default=['*.mkv', '*.mp4', '*.avi'],
-                       help='Wildcard patterns for files to include (default: *.mkv *.mp4 *.avi)')
-    parser.add_argument('--exclude-patterns', nargs='*', default=[],
-                       help='Wildcard patterns for files to exclude')
-    parser.add_argument('--export', metavar='FILE',
-                       help='Export results to JSON file')
-    parser.add_argument('--webapp-export', nargs='?', const=True, metavar='FILE',
-                       help='Export results as a standalone HTML webapp. If filename omitted, derives name from --export argument (requires --export).')
-    parser.add_argument('--export-bundle', metavar='DIR',
-                       help='Export complete bundle (webapp + metadata.json + thumbnails) to specified directory. '
-                            'This overrides --export, --webapp-export, and --generate-thumbnails. '
-                            'Cannot be used together with those options.')
-    parser.add_argument('--recursive', '-r', action='store_true',
-                       help='Recursively search subdirectories (default: False)')
-    parser.add_argument('--verbose', '-v', type=int, choices=[0, 1, 2, 3], default=1,
-                       help='Verbosity level: 0=silent, 1=summary, 2=detailed, 3=very detailed (default: 1)')
-    parser.add_argument('--quiet', '-q', action='store_true',
-                       help='Same as --verbose 0')
-    parser.add_argument('--status-filter', metavar='FILTERS',
-                       help='Filter results by status. Use +status to include only specific statuses, '
-                            '-status to exclude specific statuses, or plain status names for exact match. '
-                            'Available statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
-                            'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
-                            'Examples: "complete incomplete", "+complete +incomplete", "-unknown -no_metadata"')
-    parser.add_argument('--mal-status-filter', metavar='FILTERS',
-                       help='Filter results by MyAnimeList watch status. Use +status to include only specific statuses, '
-                            '-status to exclude specific statuses, or plain status names for exact match. '
-                            'Available MAL statuses: watching, completed, on-hold, dropped, plan-to-watch. '
-                            'Examples: "watching completed", "+completed +on-hold", "-dropped -plan-to-watch"')
-    parser.add_argument('--show-metadata', nargs='*', metavar='FIELD',
-                       help='Show metadata fields in summary lines. Available fields depend on metadata source. '
-                            'Common fields: year, rating, genres, director, actors, plot, runtime, imdb_id. '
-                            'Example: --show-metadata year rating genres')
-    parser.add_argument('--generate-thumbnails', action='store_true',
-                       help='Generate static and animated webp thumbnails for each video file and store in thumbnail dir')
-    parser.add_argument('--thumbnail-dir', default='~/.video_thumbnail_cache',
-                       help='Directory to store video thumbnails (default: ~/.video_thumbnail_cache)')
-    parser.add_argument('--myanimelist-xml', metavar='PATH_OR_URL',
-                       help='Path to MyAnimeList XML file (can be .gz) or URL for watch status lookup')
+    # Parse and validate arguments using CommandLineArgumentParser
+    arg_parser = CommandLineArgumentParser()
+    args = arg_parser.parse_args()
     
-    args = parser.parse_args()
+    verbosity = args.verbose
+    refresh_mode = args.refresh_mode
+    webapp_export_path = args.webapp_export
     
-    # Check for refresh modes
-    refresh_mode = False
-    if hasattr(args, 'refresh_bundle') and args.refresh_bundle:
-        refresh_mode = 'bundle'
-    elif hasattr(args, 'webapp_refresh') and args.webapp_refresh:
-        refresh_mode = 'webapp'
-    
-    # Validate input_paths requirement (not needed in refresh modes)
-    if not refresh_mode and (not args.input_paths or len(args.input_paths) == 0):
-        parser.error('input_paths is required when not using --refresh-bundle or --webapp-refresh')
-    
-    # Check for incompatible arguments in refresh modes
-    if refresh_mode:
-        incompatible_args = []
-        if args.input_paths:
-            incompatible_args.append('input_paths')
-        if args.exclude_paths:
-            incompatible_args.append('--exclude-paths')
-        if args.include_patterns != ['*.mkv', '*.mp4', '*.avi']:  # Check if not default
-            incompatible_args.append('--include-patterns')
-        if args.exclude_patterns:
-            incompatible_args.append('--exclude-patterns')
-        if args.recursive:
-            incompatible_args.append('--recursive')
-        if args.generate_thumbnails:
-            incompatible_args.append('--generate-thumbnails')
-        if args.thumbnail_dir != '~/.video_thumbnail_cache':  # Check if not default
-            incompatible_args.append('--thumbnail-dir')
-        
-        if incompatible_args:
-            mode_name = '--refresh-bundle' if refresh_mode == 'bundle' else '--webapp-refresh'
-            parser.error(f"{mode_name} cannot be used with file discovery arguments: {', '.join(incompatible_args)}. "
-                        f"Use {mode_name} only with --myanimelist-xml to refresh MAL metadata.")
-    
-    # Check for conflicts with --export-bundle
-    if hasattr(args, 'export_bundle') and args.export_bundle:
-        conflicts = []
-        if args.export:
-            conflicts.append('--export')
-        if args.webapp_export:
-            conflicts.append('--webapp-export')
-        if args.generate_thumbnails:
-            conflicts.append('--generate-thumbnails')
-        
-        if conflicts:
-            parser.error(f"--export-bundle cannot be used together with: {', '.join(conflicts)}. "
-                        f"The --export-bundle option automatically enables and configures these features.")
-    
-    # Validate and derive webapp export filename
-    webapp_export_path = None
-    if args.webapp_export:
-        if args.webapp_export is True:
-            # --webapp-export used without filename argument
-            if not args.export:
-                parser.error('--webapp-export without filename requires --export to be specified')
-            # Derive webapp filename from export filename
-            from pathlib import Path
-            export_path = Path(args.export)
-            webapp_export_path = str(export_path.with_suffix('.html'))
-        else:
-            # --webapp-export used with explicit filename
-            webapp_export_path = args.webapp_export
-    
-    # Handle quiet flag
-    if args.quiet:
-        verbosity = 0
-    else:
-        verbosity = args.verbose
-
     # Get metadata manager and plex provider (skip in refresh modes)
     metadata_manager = None
     plex_provider = None
