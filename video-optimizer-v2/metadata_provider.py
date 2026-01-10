@@ -1,14 +1,11 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple, BinaryIO
+from typing import List, Optional, Any, Tuple
 from datetime import datetime, timedelta
+from functools import lru_cache
 import os
 import logging
-from pathlib import Path
-import hashlib
 import requests
-import tempfile
-import shutil
 
 @dataclass
 class TitleInfo:
@@ -158,13 +155,20 @@ class BaseMetadataProvider(ABC):
             return None
 
 class MetadataManager:
-    """Proxy class to handle multiple metadata providers"""
+    """Proxy class to handle multiple metadata providers with caching"""
     
     def __init__(self, providers: List[BaseMetadataProvider]):
         self.providers = providers
+        # Cache for find_title results - key is (title, year)
+        self._title_cache = {}
     
     def find_title(self, title: str, year: Optional[int] = None) -> Tuple[Optional[TitleInfo], Optional[BaseMetadataProvider]]:
-        """Try all providers and return the best match and the provider that found it"""
+        """Try all providers and return the best match and the provider that found it (cached)"""
+        # Check cache first
+        cache_key = (title, year)
+        if cache_key in self._title_cache:
+            return self._title_cache[cache_key]
+        
         best_result: Optional[MatchResult] = None
         best_provider = None
         
@@ -175,7 +179,10 @@ class MetadataManager:
                     best_result = result
                     best_provider = provider
         
-        return (best_result.info if best_result else None, best_provider)
+        # Cache the result (even if None)
+        result_tuple = (best_result.info if best_result else None, best_provider)
+        self._title_cache[cache_key] = result_tuple
+        return result_tuple
     
     def get_episode_info(self, provider: BaseMetadataProvider, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode info from a specific provider"""

@@ -5,6 +5,7 @@ import gzip
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
+from functools import lru_cache
 import logging
 
 @dataclass
@@ -128,9 +129,9 @@ class MyAnimeListWatchStatusProvider:
             progress_percent=progress_percent
         )
 
+    @lru_cache(maxsize=512)
     def get_watch_status(self, source_url: str) -> Optional[MyAnimeListWatchStatus]:
-        """
-        Get watch status for a given MyAnimeList source URL
+        """Get watch status for a given MyAnimeList source URL (cached)
         
         Args:
             source_url: URL containing MyAnimeList anime ID

@@ -5,9 +5,6 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from enum import Enum
 from dataclasses import dataclass, field, asdict
-import argparse
-import json
-import os
 
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
