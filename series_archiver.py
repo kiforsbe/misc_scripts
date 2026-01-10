@@ -5,8 +5,21 @@ import shutil
 import sys
 import re
 import binascii
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Protocol
+
+try:
+    from colorama import Fore, Style, init as colorama_init
+    colorama_init(autoreset=True)
+    COLORAMA_AVAILABLE = True
+except ImportError:
+    COLORAMA_AVAILABLE = False
+    # Fallback to empty strings
+    class Fore:
+        GREEN = CYAN = YELLOW = RED = MAGENTA = BLUE = WHITE = RESET = ""
+    class Style:
+        BRIGHT = DIM = RESET_ALL = ""
 
 try:
     from tqdm import tqdm
@@ -114,16 +127,23 @@ class SeriesArchiver:
     [release_group] show_name (start_ep-last_ep) (resolution)
     """
     
-    def __init__(self, verbose: int = 0, progress_reporter: Optional[ProgressReporter] = None):
+    def __init__(self, verbose: int = 0, progress_reporter: Optional[ProgressReporter] = None, use_colors: bool = True):
         self.data: Optional[Dict] = None
         self.groups: Dict = {}
         self.verbose = verbose
         self.progress_reporter = progress_reporter
+        self.use_colors = use_colors and COLORAMA_AVAILABLE
         
     def _log(self, message: str, level: int = 1):
         """Log message if verbosity level is sufficient."""
         if self.verbose >= level:
             print(message)
+    
+    def _color(self, text: str, color: str = "") -> str:
+        """Apply color to text if colors are enabled."""
+        if self.use_colors and color:
+            return f"{color}{text}{Style.RESET_ALL}"
+        return text
     
     def load_data(self, json_file_path: str) -> bool:
         """Load series data from JSON file."""
@@ -190,56 +210,113 @@ class SeriesArchiver:
         """Get detailed information about a specific group."""
         return self.groups.get(group_key)
     
+    def _format_episode_range(self, episodes: List) -> str:
+        """Format episode numbers as a range string, handling both int and float episodes."""
+        if not episodes:
+            return "00"
+        
+        # Sort episodes, handling both int and float
+        sorted_episodes = sorted(set(episodes))
+        
+        if len(sorted_episodes) == 1:
+            episode = sorted_episodes[0]
+            if isinstance(episode, float):
+                # Format decimal episodes like "12.5" -> "12_5"
+                return f"{episode:04.1f}".replace('.', '_')
+            else:
+                return f"{episode:02d}"
+        else:
+            # For ranges, check if we have decimal episodes
+            has_decimals = any(isinstance(ep, float) for ep in sorted_episodes)
+            start_ep = sorted_episodes[0]
+            end_ep = sorted_episodes[-1]
+            
+            if has_decimals:
+                # If we have decimal episodes, show range with "+" to indicate there are episodes in between
+                start_str = f"{start_ep:04.1f}".replace('.', '_') if isinstance(start_ep, float) else f"{start_ep:02d}"
+                end_str = f"{end_ep:04.1f}".replace('.', '_') if isinstance(end_ep, float) else f"{end_ep:02d}"
+                
+                # Check if there are episodes between start and end
+                if len(sorted_episodes) > 2 or any(isinstance(ep, float) for ep in sorted_episodes[1:-1]):
+                    return f"{start_str}-{end_str}+"
+                else:
+                    return f"{start_str}-{end_str}"
+            else:
+                return f"{start_ep:02d}-{end_ep:02d}"
+    
     def generate_folder_name(self, group_data: Dict) -> str:
-        """Generate folder name following the specified pattern."""
+        """Generate folder name following the pattern: [Release Group] Series Name (YYYY) (xx-yy) (Resolution)"""
         files = group_data.get('files', [])
         if not files:
             return "Unknown"
         
         # Get common attributes from files
-        release_group = files[0].get('release_group', 'Unknown')
+        first_file = files[0]
+        release_group = first_file.get('release_group', 'Unknown')
         title = group_data.get('title', 'Unknown')
+        year = group_data.get('year') or first_file.get('year')
+        season = group_data.get('season') or first_file.get('season')
+        screen_size = first_file.get('screen_size', 'Unknown')
         
         # Determine if this is a movie
         is_movie = False
-        first_file_type = ""
-        if files and isinstance(files, list) and files[0]:
-            first_file_type = str(files[0].get('type', '')).lower()
+        first_file_type = str(first_file.get('type', '')).lower()
         metadata_type = str(group_data.get('type', '')).lower()
         if "movie" in first_file_type or "movie" in metadata_type:
             is_movie = True
 
-        # Get episode range or year/movie
+        # Build the series title with season if applicable
+        series_title = str(title)
+        if season and season > 1:
+            series_title = f"{title} S{season}"
+
+        # Get episode range
         if is_movie:
-            # Try to get year from group_data or files
-            year = group_data.get('year')
-            if not year:
-                # Try to get from files
-                year = files[0].get('year')
             episode_range = str(year) if year else "Movie"
         else:
-            episode_numbers = sorted(group_data.get('episode_numbers', []))
-            if episode_numbers:
-                start_ep = min(episode_numbers)
-                last_ep = max(episode_numbers)
-                episode_range = f"{start_ep:02d}-{last_ep:02d}" if start_ep != last_ep else f"{start_ep:02d}"
-            else:
-                episode_range = "00"
+            # Collect all episode numbers (can be int or float)
+            episodes = []
+            for file_info in files:
+                episode = file_info.get('episode')
+                if isinstance(episode, list):
+                    episodes.extend(episode)
+                elif episode is not None:
+                    episodes.append(episode)
+            
+            episode_range = self._format_episode_range(episodes)
         
-        # Get resolution
-        screen_size = files[0].get('screen_size', 'Unknown')
+        # Clean components for filesystem compatibility
+        clean_title = self._clean_filename(series_title)
+        clean_release_group = self._clean_filename(str(release_group))
         
-        # Clean title for filesystem
-        clean_title = self._clean_filename(title)
+        # Build folder name
+        folder_parts = [f"[{clean_release_group}]", clean_title]
         
-        return f"[{release_group}] {clean_title} ({episode_range}) ({screen_size})"
+        if year:
+            folder_parts.append(f"({year})")
+        
+        folder_parts.append(f"({episode_range})")
+        folder_parts.append(f"({screen_size})")
+        
+        folder_name = " ".join(folder_parts)
+        
+        return folder_name
     
-    def _clean_filename(self, filename: str) -> str:
-        """Clean filename by removing invalid characters."""
-        invalid_chars = '<>:"/\\|?*'
+    def _clean_filename(self, name: str) -> str:
+        """Clean filename/folder name for filesystem compatibility."""
+        # Remove or replace characters that might cause issues
+        invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
         for char in invalid_chars:
-            filename = filename.replace(char, '')
-        return filename.strip()
+            name = name.replace(char, '')
+        
+        # Replace forward slashes with dashes
+        name = name.replace('/', '-')
+        name = name.replace('\\', '-')
+        
+        # Remove multiple spaces and strip
+        name = re.sub(r'\s+', ' ', name).strip()
+        
+        return name
     
     def _extract_crc_from_filename(self, filename: str) -> Optional[str]:
         """Extract CRC32 hash from filename if present. Pattern: [FFFFFFFF] where F is hex."""
@@ -458,16 +535,16 @@ class SeriesArchiver:
         
         # Print summary
         total_files = len(files_to_check)
-        print(f"\nCRC Check Summary:")
-        print(f"  Total files: {total_files}")
-        print(f"  Valid CRC: {valid_count}")
-        print(f"  Invalid CRC: {invalid_count}")
-        print(f"  No CRC in filename: {no_crc_count}")
+        print(f"\n{self._color('CRC Check Summary:', Fore.CYAN + Style.BRIGHT)}")
+        print(f"  Total files: {self._color(str(total_files), Fore.WHITE)}")
+        print(f"  Valid CRC: {self._color(str(valid_count), Fore.GREEN)}")
+        print(f"  Invalid CRC: {self._color(str(invalid_count), Fore.RED if invalid_count > 0 else Fore.GREEN)}")
+        print(f"  No CRC in filename: {self._color(str(no_crc_count), Fore.YELLOW)}")
         
         if invalid_count > 0:
-            print(f"\n⚠️  {invalid_count} files failed CRC validation!")
+            print(f"\n{self._color(f'⚠️  {invalid_count} files failed CRC validation!', Fore.RED + Style.BRIGHT)}")
         elif valid_count > 0:
-            print(f"✅ All {valid_count} files with CRC passed validation!")
+            print(f"\n{self._color(f'✅ All {valid_count} files with CRC passed validation!', Fore.GREEN + Style.BRIGHT)}")
         
         return results
     
@@ -529,13 +606,15 @@ class SeriesArchiver:
             
             action_word = "Would process" if dry_run else "Processing"
             group_title = group_data.get('title', 'Unknown')
-            print(f"\n{action_word} group: {group_title}")
-            self._log(f"Destination folder: {dest_folder}")
+            folder_emoji = "📁"
+            print(f"\n{folder_emoji} {action_word} group: {self._color(group_title, Fore.CYAN + Style.BRIGHT)}")
+            self._log(f"   Destination: {self._color(folder_name, Fore.CYAN)}")
             
             # Process files
             files = group_data.get('files', [])
             success_count = 0
             error_count = 0
+            newest_file_time = None
             
             # Filter valid files for this group
             valid_files = []
@@ -564,7 +643,18 @@ class SeriesArchiver:
                         if TQDM_AVAILABLE:
                             import time
                             time.sleep(0.01)  # Small delay to make progress visible
+                        # Track newest file time even in dry run
+                        if os.path.exists(source_path):
+                            file_mtime = os.path.getmtime(source_path)
+                            if newest_file_time is None or file_mtime > newest_file_time:
+                                newest_file_time = file_mtime
                     else:
+                        # Track newest file time before moving
+                        if os.path.exists(source_path):
+                            file_mtime = os.path.getmtime(source_path)
+                            if newest_file_time is None or file_mtime > newest_file_time:
+                                newest_file_time = file_mtime
+                        
                         if copy_files:
                             shutil.copy2(source_path, dest_path)
                             self._log(f"  Copied: {filename}", 2)
@@ -592,17 +682,30 @@ class SeriesArchiver:
                 if self.progress_reporter:
                     self.progress_reporter.on_file_processed(filename, success, error_msg)
             
+            # Set folder modified date to newest file date
+            if not dry_run and newest_file_time is not None and os.path.exists(dest_folder):
+                try:
+                    os.utime(dest_folder, (newest_file_time, newest_file_time))
+                    date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d')
+                    self._log(f"   📅 Folder date set to: {self._color(date_str, Fore.YELLOW)}", 2)
+                except Exception as e:
+                    self._log(f"   {self._color('⚠️', Fore.YELLOW)} Could not set folder date: {e}", 1)
+            
             # Notify progress reporter of group completion
             if self.progress_reporter:
                 self.progress_reporter.on_group_complete(group_title, success_count, error_count)
             else:
                 # Fallback output if no progress reporter
                 status_word = "Would process" if dry_run else "Processed"
-                print(f"  {status_word} {success_count} files successfully")
+                print(f"   {self._color('✅', Fore.GREEN)} {status_word} {self._color(str(success_count), Fore.GREEN)} files successfully")
                 if error_count > 0:
-                    print(f"  {error_count} files had errors")
+                    print(f"   {self._color('❌', Fore.RED)} {error_count} files had errors")
             
-            results[group_key] = dest_folder
+            # Store folder path and newest file date
+            results[group_key] = {
+                'folder_path': dest_folder,
+                'newest_file_date': datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d') if newest_file_time else None
+            }
         
         # Notify progress reporter of completion
         if self.progress_reporter:
@@ -610,7 +713,7 @@ class SeriesArchiver:
         
         # Verify CRC after operations if requested
         if verify_crc and processed_files and not dry_run:
-            print(f"\n=== CRC VERIFICATION ===")
+            print(f"\n{self._color('=== CRC VERIFICATION ===', Fore.CYAN + Style.BRIGHT)}")
             crc_results = {}
             
             with tqdm(processed_files, desc="Verifying file integrity", unit="file", disable=self.verbose == 0) as pbar:
@@ -633,7 +736,7 @@ class SeriesArchiver:
                         }
                         
                         if not is_valid:
-                            print(f"⚠️  CRC MISMATCH: {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
+                            print(f"   {self._color('⚠️  CRC MISMATCH:', Fore.RED)} {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
             
             # CRC summary
             if crc_results:
@@ -641,15 +744,15 @@ class SeriesArchiver:
                 valid_count = sum(1 for r in crc_results.values() if r['is_valid'])
                 invalid_count = total_checked - valid_count
                 
-                print(f"\nCRC Verification Summary:")
-                print(f"  Files checked: {total_checked}")
-                print(f"  Valid: {valid_count}")
-                print(f"  Invalid: {invalid_count}")
+                print(f"\n{self._color('CRC Verification Summary:', Fore.CYAN)}")
+                print(f"  Files checked: {self._color(str(total_checked), Fore.WHITE)}")
+                print(f"  Valid: {self._color(str(valid_count), Fore.GREEN)}")
+                print(f"  Invalid: {self._color(str(invalid_count), Fore.RED if invalid_count > 0 else Fore.GREEN)}")
                 
                 if invalid_count == 0:
-                    print("✅ All files passed CRC verification!")
+                    print(f"\n{self._color('✅ All files passed CRC verification!', Fore.GREEN + Style.BRIGHT)}")
                 else:
-                    print(f"❌ {invalid_count} files failed CRC verification!")
+                    print(f"\n{self._color(f'❌ {invalid_count} files failed CRC verification!', Fore.RED + Style.BRIGHT)}")
         
         return results
     
@@ -687,7 +790,8 @@ class SeriesArchiver:
 
 def cmd_list(args):
     """Handle the list command."""
-    archiver = SeriesArchiver(verbose=args.verbose)
+    use_colors = not getattr(args, 'no_color', False)
+    archiver = SeriesArchiver(verbose=args.verbose, use_colors=use_colors)
     title_length = 70
     
     if not archiver.load_data(args.input_json):
@@ -886,7 +990,8 @@ def cmd_archive(args):
             use_progress_bars=TQDM_AVAILABLE and not args.dry_run
         )
     
-    archiver = SeriesArchiver(verbose=args.verbose, progress_reporter=progress_reporter)
+    use_colors = not getattr(args, 'no_color', False)
+    archiver = SeriesArchiver(verbose=args.verbose, progress_reporter=progress_reporter, use_colors=use_colors)
     
     if not archiver.load_data(args.input_json):
         return 1
@@ -941,19 +1046,29 @@ def cmd_archive(args):
     )
     
     if results:
-        action_word = "Would complete" if args.dry_run else "Completed"
-        print(f"\n{action_word} archiving {len(results)} series.")
         if args.dry_run:
+            print(f"\n{archiver._color('ℹ️  Dry run completed', Fore.CYAN + Style.BRIGHT)} - would archive {archiver._color(str(len(results)), Fore.MAGENTA)} series.")
             print("Use without --dry-run to actually perform the operation.")
+        else:
+            print(f"\n{archiver._color(f'✅ Successfully archived {len(results)} series!', Fore.GREEN + Style.BRIGHT)}")
+        
+        # Show folder dates if available
+        if not args.dry_run and any(isinstance(v, dict) and v.get('newest_file_date') for v in results.values()):
+            print(f"\n{archiver._color('Folder dates set to newest file:', Fore.YELLOW)}")
+            for group_key, result_info in results.items():
+                if isinstance(result_info, dict) and result_info.get('newest_file_date'):
+                    folder_name = os.path.basename(result_info['folder_path'])
+                    print(f"  📁 {archiver._color(folder_name, Fore.CYAN)}: {archiver._color(result_info['newest_file_date'], Fore.YELLOW)}")
     else:
-        print("No series were processed.")
+        print(f"{archiver._color('⚠️  No series were processed.', Fore.YELLOW)}")
     
     return 0
 
 
 def cmd_check_crc(args):
     """Handle the check-crc command."""
-    archiver = SeriesArchiver(verbose=args.verbose)
+    use_colors = not getattr(args, 'no_color', False)
+    archiver = SeriesArchiver(verbose=args.verbose, use_colors=use_colors)
     
     if args.input_json:
         # Check CRC for files in JSON groups
@@ -1030,6 +1145,8 @@ def main():
                                  'Examples: "complete watched", "+complete +watched", "-unknown -unwatched", "watched -watched_partial"')
     list_parser.add_argument('--sort', action='store_true',
                             help='Sort series alphabetically by title')
+    list_parser.add_argument('--no-color', action='store_true',
+                            help='Disable color formatting in output')
     
     # Archive command
     archive_parser = subparsers.add_parser('archive', 
@@ -1047,6 +1164,8 @@ def main():
                                help='Disable progress bars and use simple text output')
     archive_parser.add_argument('--verify-crc', action='store_true',
                                help='Verify CRC32 of files after archiving (if CRC is present in filename)')
+    archive_parser.add_argument('--no-color', action='store_true',
+                               help='Disable color formatting in output')
     
     # Check CRC command
     crc_parser = subparsers.add_parser('check-crc', aliases=['crc'],
@@ -1058,6 +1177,8 @@ def main():
                           help='Individual files to check')
     crc_parser.add_argument('--select', type=str,
                            help='For JSON input: comma-separated list of group numbers or "all" (e.g., "1,3,5" or "all")')
+    crc_parser.add_argument('--no-color', action='store_true',
+                           help='Disable color formatting in output')
     
     args = parser.parse_args()
     
