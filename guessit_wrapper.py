@@ -7,6 +7,12 @@ def guessit_wrapper(filename, options=None):
     # Common file extension pattern for media types
     ext_pattern = r"(?:\.(?:mkv|mp4|avi|mov|wmv|flv|ts))?"
 
+    # Extract release group from the beginning if present
+    release_group = None
+    group_match = re.match(group_prefix, filename)
+    if group_match:
+        release_group = group_match.group('group')
+
     # Combined patterns, ordered from most specific to most general
     patterns = [
         # [Group] Title - Movie N (Title) [movie files] or [Group] Title - The Movie - Subtitle[.ext]
@@ -174,6 +180,9 @@ def guessit_wrapper(filename, options=None):
             result = guessit.guessit(filename, options=options)
             result.update(fields)
             result.pop('alternative_title', None)
+            # Preserve release_group from beginning of filename if captured
+            if release_group:
+                result['release_group'] = release_group
             return result
 
     # fallback to normal guessit, but forcibly split trailing episode from title if present
@@ -186,6 +195,10 @@ def guessit_wrapper(filename, options=None):
         ep_num = re.match(r"(\d+(?:\.\d+)?)(?:v\d+)?", m.group(2))
         if ep_num and (str(episode) == ep_num.group(1) or float(episode) == float(ep_num.group(1))):
             result['title'] = m.group(1)
+
+    # Preserve release_group from beginning of filename if captured
+    if release_group:
+        result['release_group'] = release_group
 
     return result
 
