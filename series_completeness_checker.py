@@ -231,96 +231,233 @@ class SeriesCompletenessChecker:
         first_file = group_files[0]
         title = first_file.get('title', 'Unknown')
         season = first_file.get('season')
-
-        # Enhanced episode parsing using existing metadata system + direct anime metadata fallback
-        episode_files = []
-        extra_files = []
-        episode_numbers = []
-        enhanced_episode_info = {}  # Store enhanced metadata for each file
-        anime_metadata_available = False
+        metadata_id = first_file.get('metadata_id')
         
-        # Try to get anime metadata system for direct parsing if needed
-        anime_metadata = None
+        # Parse episode files and extract episode information
+        episode_files, extra_files, episode_numbers, enhanced_episode_info = self._parse_episode_files(group_files)
+        
+        episodes_found = len(episode_files)
+        
+        # Calculate watch status
+        watch_status, mal_watch_status = self._calculate_watch_status(episode_files, first_file, season)
+        
+        # Build base result
+        result = self._build_base_result(
+            title, season, metadata_id, episodes_found, episode_numbers,
+            extra_files, group_files, watch_status, mal_watch_status
+        )
+        
+        # Determine completeness status from metadata
+        self._determine_completeness_status(result, first_file, episode_numbers, title, season, group_files)
+        
+        return result
+    
+    def _calculate_season_specific_mal_status(self, series_mal_status: Dict[str, Any], season: int, episode_files: List[Dict]) -> Optional[Dict[str, Any]]:
+        """Calculate season-specific MyAnimeList watch status from series-level status.
+        
+        Args:
+            series_mal_status: The series-level MAL watch status
+            season: The season number to calculate status for
+            episode_files: List of episode file info dicts for this season
+            
+        Returns:
+            Season-specific MAL watch status dict with watched_episodes count
+        """
+        if not series_mal_status or not episode_files:
+            return None
+        
+        # Get the episode numbers for this season
+        season_episode_numbers = []
+        for file_info in episode_files:
+            # Try to get the original absolute episode number
+            original_ep = file_info.get('original_episode')
+            if original_ep:
+                season_episode_numbers.append(original_ep)
+            else:
+                # Fallback to regular episode number
+                ep = file_info.get('episode')
+                if ep:
+                    season_episode_numbers.append(ep)
+        
+        if not season_episode_numbers:
+            return None
+        
+        # Get watched episode count from series-level status
+        series_watched_count = series_mal_status.get('watched_episodes', 0)
+        
+        # Count how many of this season's episodes have been watched according to MAL
+        season_watched_count = 0
+        for ep_num in season_episode_numbers:
+            if ep_num <= series_watched_count:
+                season_watched_count += 1
+        
+        # Create season-specific status
+        season_status = {
+            'status': series_mal_status.get('status'),
+            'score': series_mal_status.get('score'),
+            'watched_episodes': season_watched_count,
+            'total_episodes': len(season_episode_numbers),
+            'tags': series_mal_status.get('tags', [])
+        }
+        
+        # Update status based on completion
+        if season_watched_count == len(season_episode_numbers):
+            if season_status['status'] == 'Watching':
+                season_status['status'] = 'Completed (Season)'
+        elif season_watched_count > 0:
+            if season_status['status'] in ['Completed', 'Plan to Watch']:
+                season_status['status'] = 'Watching'
+        
+        return season_status
+
+    def _get_anime_metadata_provider(self):
+        """Get anime metadata provider from metadata manager.
+        
+        Returns:
+            Anime metadata provider instance or None if not available
+        """
+        if not self.metadata_manager or not hasattr(self.metadata_manager, 'providers'):
+            return None
+        
         try:
-            # Check if we have anime providers in the metadata manager
-            if self.metadata_manager and hasattr(self.metadata_manager, 'providers'):
-                for provider in self.metadata_manager.providers:
-                    if 'anime' in provider.__class__.__name__.lower():
-                        anime_metadata = provider
-                        break
+            for provider in self.metadata_manager.providers:
+                if 'anime' in provider.__class__.__name__.lower():
+                    return provider
         except:
             pass
         
-        for file_info in group_files:
-            # Check if this file already has enhanced episode info from FileGrouper
-            episode_info = file_info.get('episode_info')
-            if episode_info:
-                # File already has enhanced episode information
-                enhanced_episode_info[file_info.get('file_path', '')] = episode_info
-                anime_metadata_available = True
-                
-                # Use the enhanced episode info to classify files
-                if episode_info.get('episode_type') in ['OP', 'ED', 'Special', 'OVA']:
-                    extra_files.append(file_info)
-                else:
-                    episode_files.append(file_info)
-                    ep_num = episode_info.get('episode')  # Fixed: use 'episode' not 'episode_number'
-                    if ep_num:
-                        episode_numbers.append(ep_num)
-            else:
-                # Try direct anime metadata parsing if FileGrouper didn't extract episode info
-                file_path = file_info.get('file_path', '')
-                if isinstance(file_path, Path):
-                    filename = file_path.name
-                else:
-                    filename = str(file_path).split('/')[-1] if '/' in str(file_path) else str(file_path).split('\\')[-1]
-                
-                direct_episode_info = None
-                if anime_metadata and hasattr(anime_metadata, 'get_episode_info'):
-                    try:
-                        direct_episode_info = anime_metadata.get_episode_info(filename)
-                        if direct_episode_info:
-                            enhanced_episode_info[filename] = direct_episode_info
-                            anime_metadata_available = True
-                    except:
-                        pass
-                
-                if direct_episode_info:
-                    # Use direct anime metadata
-                    if direct_episode_info.get('episode_type') in ['OP', 'ED', 'Special', 'OVA']:
-                        extra_files.append(file_info)
-                    else:
-                        episode_files.append(file_info)
-                        ep_num = direct_episode_info.get('episode')  # Fixed: use 'episode' not 'episode_number'
-                        if ep_num:
-                            episode_numbers.append(ep_num)
-                else:
-                    # Fallback to original guessit-based logic
-                    file_type = file_info.get('type')
-                    if isinstance(file_type, list):
-                        if 'extra' in [t.lower() for t in file_type]:
-                            extra_files.append(file_info)
-                        else:
-                            episode_files.append(file_info)
-                            episode = file_info.get('episode')
-                            if isinstance(episode, list):
-                                episode_numbers.extend(episode)
-                            elif episode is not None:
-                                episode_numbers.append(episode)
-                    elif isinstance(file_type, str) and file_type.lower() == 'extra':
-                        extra_files.append(file_info)
-                    else:
-                        episode_files.append(file_info)
-                        episode = file_info.get('episode')
-                        if isinstance(episode, list):
-                            episode_numbers.extend(episode)
-                        elif episode is not None:
-                            episode_numbers.append(episode)
+        return None
 
-        episodes_found = len(episode_files)
-        episode_numbers = sorted(set(episode_numbers)) if episode_numbers else []
+    def _extract_episode_info_from_file(self, file_info: Dict, anime_metadata) -> Optional[Dict]:
+        """Extract enhanced episode information from a file.
         
-        # Calculate watch status for the group using combined episode watch status
+        Args:
+            file_info: File information dictionary
+            anime_metadata: Anime metadata provider instance
+            
+        Returns:
+            Enhanced episode info dict or None
+        """
+        # Check if file already has enhanced episode info from FileGrouper
+        episode_info = file_info.get('episode_info')
+        if episode_info:
+            return episode_info
+        
+        # Try direct anime metadata parsing if FileGrouper didn't extract episode info
+        if not anime_metadata or not hasattr(anime_metadata, 'get_episode_info'):
+            return None
+        
+        file_path = file_info.get('file_path', '')
+        if isinstance(file_path, Path):
+            filename = file_path.name
+        else:
+            filename = str(file_path).split('/')[-1] if '/' in str(file_path) else str(file_path).split('\\')[-1]
+        
+        try:
+            return anime_metadata.get_episode_info(filename)
+        except:
+            return None
+
+    def _classify_file_by_episode_info(self, file_info: Dict, episode_info: Dict, 
+                                       episode_files: List[Dict], extra_files: List[Dict],
+                                       episode_numbers: List[int]) -> None:
+        """Classify a file as episode or extra based on episode info.
+        
+        Args:
+            file_info: File information dictionary
+            episode_info: Enhanced episode information
+            episode_files: List to append episode files to (modified in place)
+            extra_files: List to append extra files to (modified in place)
+            episode_numbers: List to append episode numbers to (modified in place)
+        """
+        if episode_info.get('episode_type') in ['OP', 'ED', 'Special', 'OVA']:
+            extra_files.append(file_info)
+        else:
+            episode_files.append(file_info)
+            ep_num = episode_info.get('episode')
+            if ep_num:
+                episode_numbers.append(ep_num)
+
+    def _classify_file_by_guessit(self, file_info: Dict, episode_files: List[Dict], 
+                                   extra_files: List[Dict], episode_numbers: List[int]) -> None:
+        """Classify a file using fallback guessit-based logic.
+        
+        Args:
+            file_info: File information dictionary
+            episode_files: List to append episode files to (modified in place)
+            extra_files: List to append extra files to (modified in place)
+            episode_numbers: List to append episode numbers to (modified in place)
+        """
+        file_type = file_info.get('type')
+        if isinstance(file_type, list):
+            if 'extra' in [t.lower() for t in file_type]:
+                extra_files.append(file_info)
+            else:
+                episode_files.append(file_info)
+                episode = file_info.get('episode')
+                if isinstance(episode, list):
+                    episode_numbers.extend(episode)
+                elif episode is not None:
+                    episode_numbers.append(episode)
+        elif isinstance(file_type, str) and file_type.lower() == 'extra':
+            extra_files.append(file_info)
+        else:
+            episode_files.append(file_info)
+            episode = file_info.get('episode')
+            if isinstance(episode, list):
+                episode_numbers.extend(episode)
+            elif episode is not None:
+                episode_numbers.append(episode)
+
+    def _parse_episode_files(self, group_files: List[Dict]) -> tuple:
+        """Parse episode files and extract episode information.
+        
+        Args:
+            group_files: List of file information dictionaries
+            
+        Returns:
+            Tuple of (episode_files, extra_files, episode_numbers, enhanced_episode_info)
+        """
+        episode_files = []
+        extra_files = []
+        episode_numbers = []
+        enhanced_episode_info = {}
+        
+        anime_metadata = self._get_anime_metadata_provider()
+        
+        for file_info in group_files:
+            episode_info = self._extract_episode_info_from_file(file_info, anime_metadata)
+            
+            if episode_info:
+                # Store enhanced metadata
+                file_path = file_info.get('file_path', '')
+                enhanced_episode_info[file_path if file_path else ''] = episode_info
+                
+                # Classify file
+                self._classify_file_by_episode_info(
+                    file_info, episode_info, episode_files, extra_files, episode_numbers
+                )
+            else:
+                # Fallback to guessit-based logic
+                self._classify_file_by_guessit(
+                    file_info, episode_files, extra_files, episode_numbers
+                )
+        
+        episode_numbers = sorted(set(episode_numbers)) if episode_numbers else []
+        return episode_files, extra_files, episode_numbers, enhanced_episode_info
+
+    def _calculate_watch_status(self, episode_files: List[Dict], first_file: Dict, 
+                                season: Optional[int]) -> tuple:
+        """Calculate watch status for a group of episodes.
+        
+        Args:
+            episode_files: List of episode file information dicts
+            first_file: First file in the group for metadata lookup
+            season: Season number or None
+            
+        Returns:
+            Tuple of (watch_status_dict, mal_watch_status)
+        """
         watched_count = sum(1 for f in episode_files if f.get('episode_watched', False))
         partially_watched_count = 0
         total_watch_count = 0
@@ -333,7 +470,6 @@ class SeriesCompletenessChecker:
             if metadata_id in title_metadata:
                 series_mal_status = title_metadata[metadata_id].get('myanimelist_watch_status')
                 if series_mal_status and season:
-                    # Calculate season-specific MyAnimeList watch status
                     mal_watch_status = self._calculate_season_specific_mal_status(
                         series_mal_status, season, episode_files
                     )
@@ -348,10 +484,41 @@ class SeriesCompletenessChecker:
                 if not file_info.get('episode_watched', False) and plex_status.get('view_offset', 0) > 0:
                     partially_watched_count += 1
         
-        result = {
+        episodes_found = len(episode_files)
+        watch_status = {
+            'watched_episodes': watched_count,
+            'partially_watched_episodes': partially_watched_count,
+            'unwatched_episodes': episodes_found - watched_count - partially_watched_count,
+            'total_watch_count': total_watch_count,
+            'completion_percent': (watched_count / episodes_found * 100) if episodes_found > 0 else 0
+        }
+        
+        return watch_status, mal_watch_status
+
+    def _build_base_result(self, title: str, season: Optional[int], metadata_id: Optional[str],
+                           episodes_found: int, episode_numbers: List[int], 
+                           extra_files: List[Dict], group_files: List[Dict],
+                           watch_status: Dict, mal_watch_status: Optional[Dict]) -> Dict[str, Any]:
+        """Build the base result dictionary for a group.
+        
+        Args:
+            title: Series title
+            season: Season number or None
+            metadata_id: Metadata ID for the series
+            episodes_found: Number of episode files found
+            episode_numbers: List of episode numbers
+            extra_files: List of extra file information dicts
+            group_files: All files in the group
+            watch_status: Watch status dictionary
+            mal_watch_status: MyAnimeList watch status or None
+            
+        Returns:
+            Base result dictionary
+        """
+        return {
             'title': title,
             'season': season,
-            'metadata_id': metadata_id,  # Add metadata_id to group result
+            'metadata_id': metadata_id,
             'episodes_found': episodes_found,
             'episodes_expected': 0,
             'status': 'unknown',
@@ -360,174 +527,152 @@ class SeriesCompletenessChecker:
             'extra_episodes': [],
             'files': group_files,
             'extra_files': extra_files,
-            'watch_status': {
-                'watched_episodes': watched_count,
-                'partially_watched_episodes': partially_watched_count,
-                'unwatched_episodes': episodes_found - watched_count - partially_watched_count,
-                'total_watch_count': total_watch_count,
-                'completion_percent': (watched_count / episodes_found * 100) if episodes_found > 0 else 0
-            },
+            'watch_status': watch_status,
             'myanimelist_watch_status': mal_watch_status
         }
 
-        # Check metadata for expected episode count
-        if self.metadata_manager:
-            metadata_id = first_file.get('metadata_id')
-            if metadata_id and metadata_id in self.file_grouper.title_metadata:
-                metadata = self.file_grouper.title_metadata[metadata_id]['metadata']
+    def _check_movie_type(self, first_file: Dict, metadata: Dict, result: Dict[str, Any]) -> bool:
+        """Check if the content is a movie and update result accordingly.
+        
+        Args:
+            first_file: First file in the group
+            metadata: Metadata dictionary from provider
+            result: Result dictionary to update
+            
+        Returns:
+            True if it's a movie, False otherwise
+        """
+        file_type = first_file.get('type', '')
+        metadata_type = metadata.get('type', '')
+        
+        file_type_str = ''
+        if isinstance(file_type, list):
+            file_type_str = ' '.join(str(t).lower() for t in file_type)
+        elif isinstance(file_type, str):
+            file_type_str = file_type.lower()
+        
+        metadata_type_str = str(metadata_type).lower()
+        
+        if "movie" in file_type_str or "movie" in metadata_type_str:
+            total_episodes = metadata.get('total_episodes')
+            expected_episodes = total_episodes
+            result['status'] = 'movie'
+            result['episodes_expected'] = expected_episodes or 1
+            return True
+        
+        return False
 
-                # --- Check for "movie" type in file or metadata ---
-                file_type = first_file.get('type', '')
-                metadata_type = metadata.get('type', '')
-                file_type_str = ''
-                if isinstance(file_type, list):
-                    file_type_str = ' '.join(str(t).lower() for t in file_type)
-                elif isinstance(file_type, str):
-                    file_type_str = file_type.lower()
-                metadata_type_str = str(metadata_type).lower()
-                if "movie" in file_type_str or "movie" in metadata_type_str:
-                    total_episodes = metadata.get('total_episodes')
-                    expected_episodes = total_episodes
-                    result['status'] = 'movie'
-                    result['episodes_expected'] = expected_episodes or 1
-                    return result
-                # --- end movie check ---
+    def _determine_expected_episodes(self, title: str, season: Optional[int], 
+                                     total_episodes: int, episode_numbers: List[int],
+                                     group_files: List[Dict]) -> int:
+        """Determine the expected number of episodes for a season.
+        
+        Args:
+            title: Series title
+            season: Season number or None
+            total_episodes: Total episodes from metadata
+            episode_numbers: List of episode numbers found
+            group_files: All files in the group
+            
+        Returns:
+            Expected number of episodes
+        """
+        if not episode_numbers:
+            return total_episodes
+        
+        # Try to use enhanced metadata for season-specific episode count
+        enhanced_info, provider = self.metadata_manager.find_title(title)
+        if not enhanced_info or not provider or not hasattr(provider, 'get_episode_info'):
+            return max(episode_numbers)
+        
+        max_episode_in_season = max(episode_numbers)
+        
+        # Check if there's a next episode after our max to determine season completion
+        next_episode_original = None
+        for file_info in group_files:
+            if file_info.get('episode') == max_episode_in_season:
+                next_episode_original = file_info.get('original_episode', 0) + 1
+                break
+        
+        expected_episodes = max_episode_in_season  # Default to what we have
+        
+        if next_episode_original:
+            # Check if the next episode exists and is in the same season
+            next_episode_info = provider.get_episode_info(enhanced_info.id, None, next_episode_original)
+            if next_episode_info and next_episode_info.season == season:
+                # Only add it as expected if it's within the total episode count for the series
+                series_total_episodes = enhanced_info.total_episodes if enhanced_info else None
+                if series_total_episodes and next_episode_original <= series_total_episodes:
+                    expected_episodes = max_episode_in_season + 1
+        
+        return expected_episodes
 
-                if 'series' or 'tv' in metadata.get('type', '').lower():
-                    # For series series, check total episodes
-                    total_episodes = metadata.get('total_episodes')
-                    if total_episodes:
-                        result['episodes_expected'] = total_episodes
-                        
-                        # Use enhanced metadata to determine expected episodes for this specific season
-                        enhanced_info, provider = self.metadata_manager.find_title(title)
-                        if enhanced_info and provider and hasattr(provider, 'get_episode_info') and episode_numbers:
-                            # Find the total episodes for this specific season by checking if there are more episodes
-                            max_episode_in_season = max(episode_numbers)
-                            
-                            # Check if there's a next episode after our max to determine season completion
-                            # For season-based anime, check if the next episode would be in a different season
-                            next_episode_original = None
-                            # Try to find the original episode number that corresponds to our max in-season episode
-                            for file_info in group_files:
-                                if file_info.get('episode') == max_episode_in_season:
-                                    next_episode_original = file_info.get('original_episode', 0) + 1
-                                    break
-                            
-                            expected_episodes = max_episode_in_season  # Default to what we have
-                            if next_episode_original:
-                                # Check if the next episode exists and is in the same season
-                                next_episode_info = provider.get_episode_info(enhanced_info.id, None, next_episode_original)
-                                if next_episode_info and next_episode_info.season == season:
-                                    # Only add it as expected if it's within the total episode count for the series
-                                    series_total_episodes = enhanced_info.total_episodes if enhanced_info else None
-                                    if series_total_episodes and next_episode_original <= series_total_episodes:
-                                        # Next episode is in same season and within series bounds, so we're missing it
-                                        expected_episodes = max_episode_in_season + 1
-                            
-                            result['enhanced_metadata'] = {
-                                'title': enhanced_info.title,
-                                'total_episodes': expected_episodes,
-                                'provider': provider.__class__.__name__ if provider else None
-                            }
-                        else:
-                            # Fallback: use the maximum episode number we found as expected
-                            expected_episodes = max(episode_numbers) if episode_numbers else total_episodes
-                        
-                        result['episodes_expected'] = expected_episodes
-                        
-                        # Check for missing episodes
-                        if episode_numbers:
-                            max_episode = max(episode_numbers)
-                            expected_range = list(range(1, int(expected_episodes) + 1))
-                            missing = [ep for ep in expected_range if ep not in episode_numbers]
-                            extra = [ep for ep in episode_numbers if ep > expected_episodes]
-                            
-                            result['missing_episodes'] = missing
-                            result['extra_episodes'] = extra
-                            
-                            if not missing and not extra:
-                                result['status'] = 'complete'
-                            elif missing:
-                                result['status'] = 'incomplete'
-                            else:
-                                result['status'] = 'complete_with_extras'
-                        else:
-                            result['status'] = 'no_episode_numbers'
-                    else:
-                        result['status'] = 'unknown_total_episodes'
-                else:
-                    result['status'] = 'not_series'
-            else:
-                result['status'] = 'no_metadata'
-        else:
+    def _determine_completeness_status(self, result: Dict[str, Any], first_file: Dict,
+                                       episode_numbers: List[int], title: str,
+                                       season: Optional[int], group_files: List[Dict]) -> None:
+        """Determine completeness status by checking metadata.
+        
+        Args:
+            result: Result dictionary to update (modified in place)
+            first_file: First file in the group
+            episode_numbers: List of episode numbers
+            title: Series title
+            season: Season number or None
+            group_files: All files in the group
+        """
+        if not self.metadata_manager:
             result['status'] = 'no_metadata_manager'
+            return
         
-        return result
-    
-    def _calculate_season_specific_mal_status(self, series_mal_status: Dict[str, Any], season: int, episode_files: List[Dict]) -> Optional[Dict[str, Any]]:
-        """Calculate season-specific MyAnimeList watch status based on which episodes in this season are watched.
-        Only fills in missing values - does not override existing MAL data."""
-        if not series_mal_status:
-            return None
+        metadata_id = first_file.get('metadata_id')
+        if not metadata_id or metadata_id not in self.file_grouper.title_metadata:
+            result['status'] = 'no_metadata'
+            return
         
-        # Create a copy of the series MAL status to modify
-        season_mal_status = series_mal_status.copy()
+        metadata = self.file_grouper.title_metadata[metadata_id]['metadata']
         
-        # Only calculate and override values if they are missing or blank
-        # Preserve existing MAL data when it exists
-        existing_status = season_mal_status.get('my_status')
-        existing_watched = season_mal_status.get('my_watched_episodes')
-        existing_episodes = season_mal_status.get('series_episodes')
+        # Check for movie type
+        if self._check_movie_type(first_file, metadata, result):
+            return
         
-        # If we already have complete MAL data, don't override it
-        if existing_status and existing_watched is not None and existing_episodes:
-            # Just add metadata about it being season-specific if needed
-            if season and not season_mal_status.get('_season_specific'):
-                season_mal_status['_season_specific'] = True
-                season_mal_status['_original_series_status'] = existing_status
-                season_mal_status['_original_series_watched'] = existing_watched
-            return season_mal_status
+        # Check if it's a series
+        if 'series' not in metadata.get('type', '').lower() and 'tv' not in metadata.get('type', '').lower():
+            result['status'] = 'not_series'
+            return
         
-        # Only calculate values that are missing
-        total_episodes_in_season = len(episode_files)
+        # Process series completeness
+        total_episodes = metadata.get('total_episodes')
+        if not total_episodes:
+            result['status'] = 'unknown_total_episodes'
+            return
         
-        # Count how many episodes in this season are watched according to MAL
-        mal_watched_in_season = 0
-        for file_info in episode_files:
-            if file_info.get('episode_watched', False):
-                watch_source = file_info.get('watch_source', [])
-                if 'myanimelist' in watch_source:
-                    mal_watched_in_season += 1
+        result['episodes_expected'] = total_episodes
         
-        # Only fill in missing values
-        if not existing_status:
-            # Calculate season-specific status
-            if mal_watched_in_season == 0:
-                season_mal_status['my_status'] = 'Plan to Watch'
-            elif mal_watched_in_season == total_episodes_in_season:
-                season_mal_status['my_status'] = 'Completed'
-            else:
-                season_mal_status['my_status'] = 'Watching'
+        # Determine expected episodes for this season
+        expected_episodes = self._determine_expected_episodes(
+            title, season, total_episodes, episode_numbers, group_files
+        )
         
-        if existing_watched is None:
-            season_mal_status['my_watched_episodes'] = mal_watched_in_season
+        result['episodes_expected'] = expected_episodes
         
-        if not existing_episodes:
-            season_mal_status['series_episodes'] = total_episodes_in_season
+        # Check for missing/extra episodes
+        if not episode_numbers:
+            result['status'] = 'no_episode_numbers'
+            return
         
-        # Calculate progress percentage if missing
-        if 'progress_percent' not in season_mal_status:
-            watched = season_mal_status.get('my_watched_episodes', 0)
-            total = season_mal_status.get('series_episodes', total_episodes_in_season)
-            season_mal_status['progress_percent'] = (watched / total * 100) if total > 0 else 0
+        expected_range = list(range(1, int(expected_episodes) + 1))
+        missing = [ep for ep in expected_range if ep not in episode_numbers]
+        extra = [ep for ep in episode_numbers if ep > expected_episodes]
         
-        # Add a note indicating this is season-specific vs series-wide
-        season_mal_status['_season_specific'] = True
-        season_mal_status['_original_series_status'] = series_mal_status.get('my_status')
-        season_mal_status['_original_series_watched'] = series_mal_status.get('my_watched_episodes')
+        result['missing_episodes'] = missing
+        result['extra_episodes'] = extra
         
-        return season_mal_status
+        if not missing and not extra:
+            result['status'] = 'complete'
+        elif missing:
+            result['status'] = 'incomplete'
+        else:
+            result['status'] = 'complete_with_extras'
 
     def _format_episode_ranges(self, episodes: List[int]) -> str:
         """Format episode list as smart ranges (e.g., [1,2,3,5,6,8] -> '[1-3, 5-6, 8]')."""
@@ -825,6 +970,73 @@ class SeriesCompletenessChecker:
         line = f"{status_emoji} {title_str:<{title_length}} {episodes_found:>4}/{episodes_expected_str:<4}{extra_info_str}"
         
         print(line)
+
+    def _copy_thumbnails_from_global_cache(self, target_dir: str, files: List[Path], verbosity: int) -> int:
+        """Copy existing thumbnails from global cache to target directory.
+        
+        Args:
+            target_dir: Target directory for thumbnails
+            files: List of video file paths
+            verbosity: Verbosity level for logging
+            
+        Returns:
+            Number of thumbnail pairs copied
+        """
+        import shutil
+        global_cache_dir = os.path.expanduser('~/.video_thumbnail_cache')
+        
+        if not os.path.exists(global_cache_dir):
+            return 0
+        
+        if verbosity >= 1:
+            print(f"Checking global cache at {global_cache_dir} for existing thumbnails...")
+        
+        os.makedirs(target_dir, exist_ok=True)
+        
+        global_generator = VideoThumbnailGenerator(global_cache_dir, max_height=480)
+        copied_from_cache = 0
+        
+        for file_info in files:
+            file_path = file_info if isinstance(file_info, (str, Path)) else file_info.get('path')
+            existing = global_generator.get_thumbnail_for_video(str(file_path))
+            
+            # If thumbnails exist in cache, copy them to target
+            if existing.get('static_thumbnail') and existing.get('animated_thumbnail'):
+                try:
+                    static_dest = os.path.join(target_dir, os.path.basename(existing['static_thumbnail']))
+                    animated_dest = os.path.join(target_dir, os.path.basename(existing['animated_thumbnail']))
+                    
+                    shutil.copy2(existing['static_thumbnail'], static_dest)
+                    shutil.copy2(existing['animated_thumbnail'], animated_dest)
+                    copied_from_cache += 1
+                except Exception as e:
+                    if verbosity >= 2:
+                        print(f"Could not copy cached thumbnails for {file_path}: {e}")
+        
+        if verbosity >= 1 and copied_from_cache > 0:
+            print(f"Copied {copied_from_cache} thumbnail pairs from global cache")
+        
+        return copied_from_cache
+
+    def _setup_thumbnail_generator(self, thumbnail_dir: str, files: List[Path] = None, 
+                                   use_global_cache: bool = False, verbosity: int = 1) -> VideoThumbnailGenerator:
+        """Set up thumbnail generator with optional global cache copying.
+        
+        Args:
+            thumbnail_dir: Target directory for thumbnails
+            files: List of video file paths (required if use_global_cache is True)
+            use_global_cache: Whether to copy from global cache first
+            verbosity: Verbosity level for logging
+            
+        Returns:
+            VideoThumbnailGenerator instance
+        """
+        thumbnail_dir_expanded = os.path.expanduser(thumbnail_dir)
+        
+        if use_global_cache and files:
+            self._copy_thumbnails_from_global_cache(thumbnail_dir_expanded, files, verbosity)
+        
+        return VideoThumbnailGenerator(thumbnail_dir_expanded, max_height=480)
 
 def _refresh_myanimelist_metadata(results: Dict[str, Any], myanimelist_xml_path: str, verbosity: int) -> None:
     """Refresh MyAnimeList metadata in loaded results.
@@ -1164,8 +1376,18 @@ def _handle_refresh_webapp_mode(checker: 'SeriesCompletenessChecker', json_path:
     if verbosity >= 1:
         print(f"✓ Webapp regenerated: {output_file}")
 
-def _handle_thumbnail_generation(files: List[Path], args, verbosity: int) -> Optional[str]:
-    """Handle thumbnail generation and return the thumbnail directory path."""
+def _handle_thumbnail_generation(files: List[Path], args, verbosity: int, checker: SeriesCompletenessChecker = None) -> Optional[str]:
+    """Handle thumbnail generation and return the thumbnail directory path.
+    
+    Args:
+        files: List of video file paths
+        args: Command-line arguments
+        verbosity: Verbosity level for logging
+        checker: SeriesCompletenessChecker instance (optional, for using helper methods)
+        
+    Returns:
+        Path to thumbnail directory or None
+    """
     should_generate_thumbnails = args.generate_thumbnails
     thumbnail_dir = args.thumbnail_dir
     
@@ -1178,50 +1400,24 @@ def _handle_thumbnail_generation(files: List[Path], args, verbosity: int) -> Opt
     if not should_generate_thumbnails:
         return None
     
-    thumbnail_dir_expanded = os.path.expanduser(thumbnail_dir)
-    
-    # If using bundle mode, check global cache first
-    if hasattr(args, 'export_bundle') and args.export_bundle:
-        import shutil
-        global_cache_dir = os.path.expanduser('~/.video_thumbnail_cache')
-        if verbosity >= 1:
-            print(f"Checking global cache at {global_cache_dir} for existing thumbnails...")
-        
-        # Create the bundle thumbnails directory
-        os.makedirs(thumbnail_dir_expanded, exist_ok=True)
-        
-        # Check global cache and copy existing thumbnails
-        global_generator = VideoThumbnailGenerator(global_cache_dir, max_height=480)
-        copied_from_cache = 0
-        
-        for file_info in files:
-            file_path = file_info if isinstance(file_info, (str, Path)) else file_info.get('path')
-            existing = global_generator.get_thumbnail_for_video(str(file_path))
-            
-            # If thumbnails exist in cache, copy them to bundle
-            if existing.get('static_thumbnail') and existing.get('animated_thumbnail'):
-                try:
-                    static_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['static_thumbnail']))
-                    animated_dest = os.path.join(thumbnail_dir_expanded, os.path.basename(existing['animated_thumbnail']))
-                    
-                    shutil.copy2(existing['static_thumbnail'], static_dest)
-                    shutil.copy2(existing['animated_thumbnail'], animated_dest)
-                    copied_from_cache += 1
-                except Exception as e:
-                    if verbosity >= 2:
-                        print(f"Could not copy cached thumbnails for {file_path}: {e}")
-        
-        if verbosity >= 1 and copied_from_cache > 0:
-            print(f"Copied {copied_from_cache} thumbnail pairs from global cache")
+    # Use helper method if checker instance is available
+    use_global_cache = hasattr(args, 'export_bundle') and args.export_bundle
+    if checker:
+        generator = checker._setup_thumbnail_generator(
+            thumbnail_dir, files=files, use_global_cache=use_global_cache, verbosity=verbosity
+        )
+    else:
+        # Fallback to direct implementation if no checker instance
+        thumbnail_dir_expanded = os.path.expanduser(thumbnail_dir)
+        generator = VideoThumbnailGenerator(thumbnail_dir_expanded, max_height=480)
     
     # Generate thumbnails (will skip files that already have thumbnails in target dir)
-    generator = VideoThumbnailGenerator(thumbnail_dir_expanded, max_height=480)
     thumbnail_index = generator.generate_thumbnails_for_videos(
         files, verbose=verbosity, force_regenerate=False, show_progress=(verbosity >= 1)
     )
     generator.save_thumbnail_index(thumbnail_index, verbose=verbosity)
     
-    return thumbnail_dir_expanded
+    return generator.thumbnail_dir
 
 def _apply_status_filters(results: Dict[str, Any], status_filters: List[str]) -> None:
     """Apply status filters to results and update summary."""
