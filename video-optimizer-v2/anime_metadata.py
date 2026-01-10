@@ -773,7 +773,12 @@ class AnimeDataProvider(BaseMetadataProvider):
                     """,
                     (fts_query,)
                 )
-                candidates = cursor.fetchmany(50)
+                candidates = cursor.fetchall()  # Get all candidates for post-filtering
+                
+                # Post-filter candidates to prefer better matches
+                if candidates:
+                    candidates = self._rank_candidates(title, candidates)
+                    
             # 3. The first candidate is the top scorer, much better results than fuzzer
             if candidates and len(candidates) > 0:
                 top_candidate = candidates[0]
@@ -924,6 +929,59 @@ class AnimeDataProvider(BaseMetadataProvider):
             self._return_connection(conn)
         return None
 
+    def _rank_candidates(self, query_title: str, candidates: list) -> list:
+        """
+        Re-rank candidates based on title similarity to prefer better matches.
+        Prioritizes:
+        1. Exact matches
+        2. Longer title matches (more words in common)
+        3. Higher proportion of query words present
+        """
+        if not candidates:
+            return candidates
+            
+        # Normalize query for comparison
+        query_normalized = query_title.lower()
+        query_normalized = re.sub(r'[^\w\s]', ' ', query_normalized)
+        query_words = set(query_normalized.split())
+        
+        scored_candidates = []
+        for candidate in candidates:
+            candidate_title = candidate['title'].lower() if 'title' in candidate else ''
+            candidate_normalized = re.sub(r'[^\w\s]', ' ', candidate_title)
+            candidate_words = set(candidate_normalized.split())
+            
+            # Calculate matching score
+            common_words = query_words & candidate_words
+            if not query_words:
+                word_coverage = 0
+            else:
+                word_coverage = len(common_words) / len(query_words)
+            
+            # Bonus for exact match
+            exact_match_bonus = 10 if candidate_title == query_normalized else 0
+            
+            # Bonus for having all query words present
+            all_words_bonus = 5 if len(common_words) == len(query_words) else 0
+            
+            # Penalty for very short candidate titles (likely abbreviations)
+            length_penalty = -2 if len(candidate_words) < len(query_words) / 2 else 0
+            
+            # Combined score (BM25 score is negative, so we negate it for ranking)
+            combined_score = (
+                -candidate['score'] +  # BM25 score (negated because lower BM25 is better)
+                (word_coverage * 20) +  # Word coverage is very important
+                exact_match_bonus +
+                all_words_bonus +
+                length_penalty
+            )
+            
+            scored_candidates.append((combined_score, candidate))
+        
+        # Sort by combined score (descending) and return candidates only
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        return [candidate for score, candidate in scored_candidates]
+
     def _build_fts_query(self, title: str) -> str:
         """Build FTS5 query from title for fuzzy search"""
         # Normalize and tokenize
@@ -933,14 +991,21 @@ class AnimeDataProvider(BaseMetadataProvider):
         # Remove punctuation and special characters
         normalized = re.sub(r'[^\w\s]', ' ', normalized)
 
-        # Remove words like "the", "a", "an" and other common stop words
+        # Remove words like "the", "a", "an" and other common English stop words
         normalized = re.sub(r'\b(the|a|an|and|of|in|to|for|with)\b', '', normalized)
 
-        # Remove common japanese stop words in romaji
-        normalized = re.sub(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
+        # DO NOT remove "no" as it's semantically important in Japanese titles
+        # Only remove other less important Japanese particles
+        normalized = re.sub(r'\b(wa|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
 
         # Split into words and build FTS5 query
-        words = normalized.split()
-        normalized = ' OR '.join([f'{word}*' for word in words])
+        words = [w for w in normalized.split() if w]  # Filter empty strings
+        
+        if not words:
+            return title.lower()
+        
+        # Use simple space-separated words with wildcards
+        # FTS5 will treat consecutive words as a phrase match by default
+        normalized = ' '.join([f'{word}*' for word in words])
 
         return normalized
