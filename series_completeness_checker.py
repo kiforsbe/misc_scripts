@@ -645,25 +645,25 @@ class SeriesCompletenessChecker:
         with tqdm(groups.items(), desc="Analyzing completeness", unit="series", disable=not show_progress) as pbar:
             for group_key, group_files in pbar:
                 analysis = self._analyze_group_completeness(group_key, group_files)
-                results['groups'][group_key] = analysis
+                results['groups'][group_key] = analysis.to_dict()
                 
                 # Update summary
                 results['completeness_summary']['total_series'] += 1
-                if analysis['status'] == 'complete':
+                if analysis.status in [SeriesStatus.COMPLETE, SeriesStatus.COMPLETE_WITH_EXTRAS]:
                     results['completeness_summary']['complete_series'] += 1
-                elif analysis['status'] == 'incomplete':
+                elif analysis.status in [SeriesStatus.INCOMPLETE, SeriesStatus.NO_EPISODE_NUMBERS]:
                     results['completeness_summary']['incomplete_series'] += 1
                 else:
                     results['completeness_summary']['unknown_series'] += 1
 
-                results['completeness_summary']['total_episodes_found'] += analysis['episodes_found']
-                results['completeness_summary']['total_episodes_expected'] += analysis.get('episodes_expected', 0)
+                results['completeness_summary']['total_episodes_found'] += analysis.episodes_found
+                results['completeness_summary']['total_episodes_expected'] += analysis.episodes_expected
                 
                 # Update progress with current series name
-                title = analysis.get('title', 'Unknown')[:30]
-                if len(analysis.get('title', '')) > 30:
-                    title += "..."
-                pbar.set_postfix(current=title)
+                display_title = analysis.title[:30]
+                if len(analysis.title) > 30:
+                    display_title += "..."
+                pbar.set_postfix(current=display_title)
         
         # Find proper season-specific metadata IDs from the database
         for group_key, analysis in results['groups'].items():
@@ -724,10 +724,19 @@ class SeriesCompletenessChecker:
         
         return results
     
-    def _analyze_group_completeness(self, group_key: str, group_files: List[Dict]) -> Dict[str, Any]:
-        """Analyze a single group for completeness."""
+    def _analyze_group_completeness(self, group_key: str, group_files: List[Dict]) -> SeriesAnalysis:
+        """Analyze a single group for completeness.
+        
+        Returns:
+            SeriesAnalysis instance
+        """
         if not group_files:
-            return {'status': SeriesStatus.UNKNOWN.value, 'episodes_found': 0}
+            return SeriesAnalysis(
+                title='Unknown',
+                status=SeriesStatus.UNKNOWN,
+                episodes_found=0,
+                episodes_expected=0
+            )
         
         # Extract basic info from group
         first_file = group_files[0]
@@ -1000,8 +1009,8 @@ class SeriesCompletenessChecker:
     def _build_base_result(self, title: str, season: Optional[int], metadata_id: Optional[str],
                            episodes_found: int, episode_numbers: List[int], 
                            extra_files: List[Dict], group_files: List[Dict],
-                           watch_status: WatchStatus, mal_watch_status: Optional[Dict]) -> Dict[str, Any]:
-        """Build the base result dictionary for a group.
+                           watch_status: WatchStatus, mal_watch_status: Optional[Dict]) -> SeriesAnalysis:
+        """Build the base SeriesAnalysis for a group.
         
         Args:
             title: Series title
@@ -1015,31 +1024,31 @@ class SeriesCompletenessChecker:
             mal_watch_status: MyAnimeList watch status or None
             
         Returns:
-            Base result dictionary
+            SeriesAnalysis instance
         """
-        return {
-            'title': title,
-            'season': season,
-            'metadata_id': metadata_id,
-            'episodes_found': episodes_found,
-            'episodes_expected': 0,
-            'status': SeriesStatus.UNKNOWN.value,
-            'episode_numbers': episode_numbers,
-            'missing_episodes': [],
-            'extra_episodes': [],
-            'files': group_files,
-            'extra_files': extra_files,
-            'watch_status': watch_status.to_dict(),
-            'myanimelist_watch_status': mal_watch_status
-        }
+        return SeriesAnalysis(
+            title=title,
+            season=season,
+            metadata_id=metadata_id,
+            episodes_found=episodes_found,
+            episodes_expected=0,
+            status=SeriesStatus.UNKNOWN,
+            episode_numbers=episode_numbers,
+            missing_episodes=[],
+            extra_episodes=[],
+            files=group_files,
+            extra_files=extra_files,
+            watch_status=watch_status,
+            myanimelist_watch_status=mal_watch_status
+        )
 
-    def _check_movie_type(self, first_file: Dict, metadata: Dict, result: Dict[str, Any]) -> bool:
+    def _check_movie_type(self, first_file: Dict, metadata: Dict, result: SeriesAnalysis) -> bool:
         """Check if the content is a movie and update result accordingly.
         
         Args:
             first_file: First file in the group
             metadata: Metadata dictionary from provider
-            result: Result dictionary to update
+            result: SeriesAnalysis instance to update
             
         Returns:
             True if it's a movie, False otherwise
@@ -1058,8 +1067,8 @@ class SeriesCompletenessChecker:
         if "movie" in file_type_str or "movie" in metadata_type_str:
             total_episodes = metadata.get('total_episodes')
             expected_episodes = total_episodes
-            result['status'] = SeriesStatus.MOVIE.value
-            result['episodes_expected'] = expected_episodes or 1
+            result.status = SeriesStatus.MOVIE
+            result.episodes_expected = expected_episodes or 1
             return True
         
         return False
@@ -1109,13 +1118,13 @@ class SeriesCompletenessChecker:
         
         return expected_episodes
 
-    def _determine_completeness_status(self, result: Dict[str, Any], first_file: Dict,
+    def _determine_completeness_status(self, result: SeriesAnalysis, first_file: Dict,
                                        episode_numbers: List[int], title: str,
                                        season: Optional[int], group_files: List[Dict]) -> None:
         """Determine completeness status by checking metadata.
         
         Args:
-            result: Result dictionary to update (modified in place)
+            result: SeriesAnalysis instance to update (modified in place)
             first_file: First file in the group
             episode_numbers: List of episode numbers
             title: Series title
@@ -1139,42 +1148,42 @@ class SeriesCompletenessChecker:
         
         # Check if it's a series
         if 'series' not in metadata.get('type', '').lower() and 'tv' not in metadata.get('type', '').lower():
-            result['status'] = SeriesStatus.NOT_SERIES.value
+            result.status = SeriesStatus.NOT_SERIES
             return
         
         # Process series completeness
         total_episodes = metadata.get('total_episodes')
         if not total_episodes:
-            result['status'] = SeriesStatus.UNKNOWN_TOTAL_EPISODES.value
+            result.status = SeriesStatus.UNKNOWN_TOTAL_EPISODES
             return
         
-        result['episodes_expected'] = total_episodes
+        result.episodes_expected = total_episodes
         
         # Determine expected episodes for this season
         expected_episodes = self._determine_expected_episodes(
             title, season, total_episodes, episode_numbers, group_files
         )
         
-        result['episodes_expected'] = expected_episodes
+        result.episodes_expected = expected_episodes
         
         # Check for missing/extra episodes
         if not episode_numbers:
-            result['status'] = SeriesStatus.NO_EPISODE_NUMBERS.value
+            result.status = SeriesStatus.NO_EPISODE_NUMBERS
             return
         
         expected_range = list(range(1, int(expected_episodes) + 1))
         missing = [ep for ep in expected_range if ep not in episode_numbers]
         extra = [ep for ep in episode_numbers if ep > expected_episodes]
         
-        result['missing_episodes'] = missing
-        result['extra_episodes'] = extra
+        result.missing_episodes = missing
+        result.extra_episodes = extra
         
         if not missing and not extra:
-            result['status'] = SeriesStatus.COMPLETE.value
+            result.status = SeriesStatus.COMPLETE
         elif missing:
-            result['status'] = SeriesStatus.INCOMPLETE.value
+            result.status = SeriesStatus.INCOMPLETE
         else:
-            result['status'] = SeriesStatus.COMPLETE_WITH_EXTRAS.value
+            result.status = SeriesStatus.COMPLETE_WITH_EXTRAS
 
     def _format_episode_ranges(self, episodes: List[int]) -> str:
         """Format episode list as smart ranges (e.g., [1,2,3,5,6,8] -> '[1-3, 5-6, 8]')."""
