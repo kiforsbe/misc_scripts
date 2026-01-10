@@ -1348,27 +1348,28 @@ def main():
         description='Check series collection completeness using filename metadata',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+Common Usage Examples:
+
+Basic completeness analysis (no exports or thumbnails):
   %(prog)s /path/to/series
-  %(prog)s /path/to/series --exclude-paths /path/to/series/trash
-  %(prog)s /path/to/series --include-patterns "*.mkv" "*.mp4" --recursive
-  %(prog)s /path/to/series --export series_completeness.json -v 3
-  %(prog)s /path/to/series --status-filter "incomplete no_episode_numbers"
-  %(prog)s /path/to/series --status-filter "+complete +complete_with_extras"
-  %(prog)s /path/to/series --status-filter "-unknown -no_metadata"
-  %(prog)s /path/to/series --status-filter "+incomplete -complete_with_extras"
-  %(prog)s /path/to/series --mal-status-filter "watching completed"
-  %(prog)s /path/to/series --mal-status-filter "+completed +on-hold"
-  %(prog)s /path/to/series --mal-status-filter "-dropped -plan-to-watch"
-  %(prog)s /path/to/series --show-metadata year rating
-  %(prog)s /path/to/series --show-metadata genres director --status-filter "complete"
-  %(prog)s /path/to/series --generate-thumbnails --thumbnail-dir ~/.video_thumbnail_cache
-  %(prog)s --refresh-bundle /path/to/bundle/dir
-  %(prog)s --refresh-bundle /path/to/bundle/dir --myanimelist-xml ~/myanimelist.xml
+  %(prog)s /path/to/series --recursive --export results.json --verbose 2
+
+Filtered completeness analysis:
+  %(prog)s /path/to/series --status-filter "+complete +complete_with_extras" --show-metadata year rating
+
+MyAnimeList filtered analysis:
+  %(prog)s /path/to/series --status-filter "incomplete" --mal-status-filter "+watching +plan-to-watch" --myanimelist-xml ~/myanimelist.xml
+  %(prog)s /path/to/series --export series.json --webapp-export series.html --generate-thumbnails --myanimelist-xml ~/myanimelist.xml
+  %(prog)s /path/to/series --export-bundle /path/to/output/bundle --recursive
+
+Advanced Options:
+  %(prog)s /path/to/series --exclude-paths /path/to/series/trash --include-patterns "*.mkv" "*.mp4"
+  %(prog)s /path/to/series --status-filter "-unknown -no_metadata" --show-metadata genres director year
+  %(prog)s /path/to/series --mal-status-filter "+completed +on-hold" --status-filter "complete" --myanimelist-xml ~/myanimelist.xml
+
+Refresh Operations:
   %(prog)s --refresh-bundle /path/to/bundle/dir --myanimelist-xml ~/myanimelist.xml --refresh-bundle-metadata
-  %(prog)s --webapp-refresh /path/to/series_completeness.json
-  %(prog)s --webapp-refresh /path/to/series.json --webapp-export /path/to/output.html
-  %(prog)s --webapp-refresh /path/to/series.json --myanimelist-xml ~/myanimelist.xml
+  %(prog)s --webapp-refresh /path/to/series.json --webapp-export /path/to/updated.html --myanimelist-xml ~/myanimelist.xml
         """
     )
     parser.add_argument('input_paths', nargs='*',
@@ -1390,8 +1391,8 @@ Examples:
                        help='Wildcard patterns for files to exclude')
     parser.add_argument('--export', metavar='FILE',
                        help='Export results to JSON file')
-    parser.add_argument('--webapp-export', metavar='FILE',
-                       help='Export results as a standalone HTML webapp')
+    parser.add_argument('--webapp-export', nargs='?', const=True, metavar='FILE',
+                       help='Export results as a standalone HTML webapp. If filename omitted, derives name from --export argument (requires --export).')
     parser.add_argument('--export-bundle', metavar='DIR',
                        help='Export complete bundle (webapp + metadata.json + thumbnails) to specified directory. '
                             'This overrides --export, --webapp-export, and --generate-thumbnails. '
@@ -1473,6 +1474,21 @@ Examples:
         if conflicts:
             parser.error(f"--export-bundle cannot be used together with: {', '.join(conflicts)}. "
                         f"The --export-bundle option automatically enables and configures these features.")
+    
+    # Validate and derive webapp export filename
+    webapp_export_path = None
+    if args.webapp_export:
+        if args.webapp_export is True:
+            # --webapp-export used without filename argument
+            if not args.export:
+                parser.error('--webapp-export without filename requires --export to be specified')
+            # Derive webapp filename from export filename
+            from pathlib import Path
+            export_path = Path(args.export)
+            webapp_export_path = str(export_path.with_suffix('.html'))
+        else:
+            # --webapp-export used with explicit filename
+            webapp_export_path = args.webapp_export
     
     # Handle quiet flag
     if args.quiet:
@@ -1571,10 +1587,10 @@ Examples:
             checker.export_results(results, args.export)
             if verbosity >= 1:
                 print(f"\nExported results to: {args.export}")
-        if args.webapp_export:
-            checker.export_webapp(results, args.webapp_export)
+        if webapp_export_path:
+            checker.export_webapp(results, webapp_export_path)
             if verbosity >= 1:
-                print(f"\nExported webapp to: {args.webapp_export}")
+                print(f"\nExported webapp to: {webapp_export_path}")
 
 if __name__ == '__main__':
     main()
