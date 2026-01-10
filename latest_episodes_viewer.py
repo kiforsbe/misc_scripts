@@ -177,7 +177,7 @@ class LatestEpisodesViewer:
             try:
                 # Prefer using metadata from FileGrouper's cache if available (ensures correct season-specific metadata)
                 series_metadata = None
-                myanimelist_url = None
+                source_url = None
                 provider = None
                 title_info_id = None
                 
@@ -204,12 +204,12 @@ class LatestEpisodesViewer:
                                 'plot': metadata_dict.get('plot')
                             }
                             
-                            # Get MyAnimeList source URL for linking
+                            # Get source URL for linking (prefer MyAnimeList, then IMDB)
                             sources = metadata_dict.get('sources', [])
                             if sources:
                                 mal_sources = [src for src in sources if 'myanimelist.net' in src]
-                                if mal_sources:
-                                    myanimelist_url = mal_sources[0]
+                                imdb_sources = [src for src in sources if 'imdb.com' in src]
+                                source_url = mal_sources[0] if mal_sources else (imdb_sources[0] if imdb_sources else None)
                             
                             # Get the provider for episode metadata lookup
                             provider_name = cached_metadata.get('provider')
@@ -236,17 +236,17 @@ class LatestEpisodesViewer:
                             'plot': title_info.plot
                         }
                         
-                        # Get MyAnimeList source URL for linking
+                        # Get source URL for linking (prefer MyAnimeList, then IMDB)
                         if title_info.sources:
                             mal_sources = [src for src in title_info.sources if 'myanimelist.net' in src]
-                            if mal_sources:
-                                myanimelist_url = mal_sources[0]
+                            imdb_sources = [src for src in title_info.sources if 'imdb.com' in src]
+                            source_url = mal_sources[0] if mal_sources else (imdb_sources[0] if imdb_sources else None)
                 
                 if series_metadata:
                     enhanced['series_metadata'] = series_metadata
                     
-                if myanimelist_url:
-                    enhanced['myanimelist_url'] = myanimelist_url
+                if source_url:
+                    enhanced['source_url'] = source_url
                     
                 # Get episode-specific metadata if available
                 if episode_num and provider and title_info_id:
@@ -263,9 +263,9 @@ class LatestEpisodesViewer:
                         logging.debug(f"Could not get episode metadata for {title} S{season}E{episode_num}: {e}")
                 
                 # Get MyAnimeList watch status
-                if self.myanimelist_provider and myanimelist_url:
+                if self.myanimelist_provider and source_url and 'myanimelist.net' in source_url:
                     try:
-                        mal_status = self.myanimelist_provider.get_watch_status(myanimelist_url)
+                        mal_status = self.myanimelist_provider.get_watch_status(source_url)
                         if mal_status:
                             enhanced['myanimelist_watch_status'] = {
                                 'status': mal_status.my_status,

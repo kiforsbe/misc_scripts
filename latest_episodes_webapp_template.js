@@ -490,13 +490,19 @@ class LatestEpisodesApp {
                     ${series.plot ? `<p><strong>Plot:</strong> ${this.escapeHtml(series.plot)}</p>` : ''}
             `;
             
-            // MyAnimeList link
-            if (episode.myanimelist_url) {
+            // External link section
+            if (episode.source_url) {
+                // Determine the source type from URL
+                const isMAL = episode.source_url.includes('myanimelist.net');
+                const isIMDB = episode.source_url.includes('imdb.com');
+                const linkClass = isMAL ? 'mal-link' : (isIMDB ? 'imdb-link' : 'external-link');
+                const linkText = isMAL ? 'MyAnimeList' : (isIMDB ? 'IMDb' : 'View Source');
+                
                 detailsHtml += `
-                    <div class="mal-info">
-                        <a href="${episode.myanimelist_url}" target="_blank" class="mal-link">
+                    <div class="external-links">
+                        <a href="${episode.source_url}" target="_blank" class="external-link ${linkClass}">
                             <i class="bi bi-box-arrow-up-right"></i>
-                            View on MyAnimeList
+                            ${linkText}
                         </a>
                     </div>
                 `;

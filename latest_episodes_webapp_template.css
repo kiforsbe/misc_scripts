@@ -319,8 +319,44 @@ body {
   gap: 0.5rem;
 }
 
-.mal-info {
+.external-links {
   margin-top: 1rem;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.external-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.mal-link {
+  background: linear-gradient(135deg, #2e51a2 0%, #2e51a2 100%);
+  color: white;
+}
+
+.mal-link:hover {
+  background: linear-gradient(135deg, #1e3a7a 0%, #1e3a7a 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(46, 81, 162, 0.3);
+}
+
+.imdb-link {
+  background: linear-gradient(135deg, #f5c518 0%, #e6b800 100%);
+  color: #000;
+}
+
+.imdb-link:hover {
+  background: linear-gradient(135deg, #e6b800 0%, #d4a900 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(245, 197, 24, 0.3);
 }
 
 .mal-status {
@@ -330,16 +366,6 @@ body {
   font-size: 0.8rem;
   font-weight: 500;
   margin-bottom: 0.5rem;
-}
-
-.mal-link {
-  color: var(--primary-color);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.mal-link:hover {
-  text-decoration: underline;
 }
 
 .progress-container {
