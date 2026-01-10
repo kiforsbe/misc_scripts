@@ -818,7 +818,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             status=status,
             total_episodes=total_episodes,
             total_seasons=total_seasons,
-            sources=["imdb"],  # Always IMDb as source
+            sources=[f"https://www.imdb.com/title/{tconst}/"],
             plot=None,  # Plot not available in basic dataset
         )
 
