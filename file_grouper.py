@@ -417,25 +417,25 @@ class FileGrouper:
                                 # Only store metadata once per unique ID
                                 self._store_title_metadata(metadata_id, enhanced_info, provider)
                             
-                                # Add reference to title metadata by ID
-                                result['metadata_id'] = metadata_id
+                                # Don't set metadata_id yet - wait until after episode lookup
+                                # to ensure we have the correct season-specific metadata
                             # Add episode info if it's a TV show
-                            if metadata_id in self.title_metadata:
-                                enhanced_info_dict = self.title_metadata[metadata_id]['metadata']
-                                provider = self.title_metadata[metadata_id]['provider']
-                                if enhanced_info_dict.get('type') in ['tv', 'anime_series']:
+                            if enhanced_info:
+                                # Check type from the enhanced_info object directly
+                                if enhanced_info.type in ['tv', 'anime_series']:
                                     season = result.get('season')
                                     episode = result.get('episode')
                                     
                                     # For anime series, try to get episode info even without explicit season
-                                    if episode and provider and ('anime' in provider.lower() or enhanced_info_dict.get('type') == 'anime_series'):
+                                    provider_name = provider if isinstance(provider, str) else provider.__class__.__name__
+                                    if episode and provider_name and ('anime' in provider_name.lower() or enhanced_info.type == 'anime_series'):
                                         try:
                                             # Store original episode number from filename parsing
                                             original_episode = result.get('episode')
                                             original_season = result.get('season') 
                                             
                                             # Get anime provider for episode info lookup
-                                            anime_provider = next((p for p in self.metadata_manager.providers if p.__class__.__name__ == provider), None)
+                                            anime_provider = next((p for p in self.metadata_manager.providers if p.__class__.__name__ == provider_name), None)
                                             if anime_provider and hasattr(anime_provider, 'get_episode_info'):
                                                 # Find title in anime provider to get the anime ID, if the result does not come with a title, then use the title from filename
                                                 original_title = result.get('title', title)
@@ -481,6 +481,10 @@ class FileGrouper:
                                                                 
                                                                 # Update the file's metadata_id reference
                                                                 result['metadata_id'] = metadata_id
+                                            
+                                            # If episode lookup succeeded but didn't update metadata_id, set it now
+                                            if 'metadata_id' not in result and metadata_id:
+                                                result['metadata_id'] = metadata_id
                                         except Exception as anime_error:
                                             # Fallback: if anime-specific parsing fails, continue without episode info
                                             pass
@@ -499,6 +503,10 @@ class FileGrouper:
                                             )
                                             if episode_info:
                                                 result['episode_info'] = self._serialize_episode_info(episode_info)
+                            
+                            # Set metadata_id if not already set by episode lookup logic
+                            if enhanced_info and 'metadata_id' not in result:
+                                result['metadata_id'] = metadata_id
                     except Exception as metadata_error:
                         print(f"Warning: Enhanced metadata lookup failed for {file_path.name}: {metadata_error}")
             
