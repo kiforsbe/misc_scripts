@@ -455,7 +455,33 @@ class SeriesBundler:
         # Add total episodes to range if incomplete
         found_episodes = len(set(episodes))
         if total_episodes and total_episodes > 0:
-            if found_episodes < total_episodes:
+            # For multi-season anime using original episodes, check if THIS season is complete
+            season_is_complete = False
+            if using_original_episodes and season and season > 1:
+                # Calculate the expected episode count for this season only
+                season_episodes_dict = {}
+                base_title = title.lower()
+                
+                for tid, tmeta in self.file_grouper.title_metadata.items():
+                    tmal = tmeta.get('myanimelist_watch_status')
+                    if tmal:
+                        tmal_title = tmal.get('series_title', '').lower()
+                        if base_title in tmal_title or tmal_title in base_title:
+                            tmal_season = tmal.get('season_number', 1)
+                            tmal_eps = tmal.get('series_episodes', 0)
+                            if tmal_season not in season_episodes_dict or tmal_eps > season_episodes_dict[tmal_season]:
+                                season_episodes_dict[tmal_season] = tmal_eps
+                
+                # Get this season's episode count
+                current_season_episodes = season_episodes_dict.get(season, 0)
+                if current_season_episodes > 0 and found_episodes >= current_season_episodes:
+                    season_is_complete = True
+            else:
+                # For single season or season-specific numbering
+                if found_episodes >= total_episodes:
+                    season_is_complete = True
+            
+            if not season_is_complete:
                 # Incomplete: show "(01-03 of 25, missing X-Y)"
                 episode_range = f"{episode_range} of {total_episodes}"
                 
