@@ -83,6 +83,16 @@ class BaseMetadataProvider(ABC):
     def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode information if the title is a TV show"""
         pass
+    
+    @abstractmethod
+    def invalidate_cache(self) -> None:
+        """Invalidate the current cache, forcing a refresh on next access"""
+        pass
+    
+    @abstractmethod
+    def refresh_data(self) -> None:
+        """Invalidate cache and immediately reload/refresh the data"""
+        pass
 
     def _download_with_resume(self, url: str, target_file: str, temp_suffix: str = '.download') -> bool:
         """

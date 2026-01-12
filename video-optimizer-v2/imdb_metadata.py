@@ -41,7 +41,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     }
     
     # Configurable filtering options - set to None to disable specific filters
-    MIN_VOTES_THRESHOLD = 100    # Only keep titles with this many+ votes (None = no filter)
+    MIN_VOTES_THRESHOLD = 1000    # Only keep titles with this many+ votes (None = no filter)
     RECENT_YEAR_CUTOFF = 1900    # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = False  # Filter out adult content keywords (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
@@ -175,11 +175,13 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Check if the database contains current data"""
         try:
             with sqlite3.connect(self._db_path) as conn:
+                # Use cache_duration from base class
+                cache_days = int(self.cache_duration.days)
                 cursor = conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM data_version 
                     WHERE dataset IN ('title.basics', 'title.ratings', 'title.episode')
-                    AND updated > strftime('%s', 'now', '-7 days')
+                    AND updated > strftime('%s', 'now', '-{cache_days} days')
                 """
                 )
                 count = cursor.fetchone()[0]
@@ -254,12 +256,12 @@ class IMDbDataProvider(BaseMetadataProvider):
         url = self.DATASETS[dataset_name]
         gz_cache = os.path.join(self.cache_dir, f"{dataset_name}.tsv.gz")
 
-        # Only download if file is missing or older than 7 days
+        # Only download if file is missing or older than cache_duration
         need_download = True
         if os.path.exists(gz_cache):
             mtime = os.path.getmtime(gz_cache)
-            age_days = (time.time() - mtime) / 86400
-            if age_days < 7:
+            age_days = (time.time() - mtime) / (24 * 60 * 60)  # Convert seconds to days
+            if age_days < self.cache_duration.days:
                 need_download = False
 
         if need_download:
@@ -911,4 +913,28 @@ class IMDbDataProvider(BaseMetadataProvider):
         normalized = ' OR '.join([f'{word}*' for word in words])
 
         return normalized
+    
+    def invalidate_cache(self) -> None:
+        """Invalidate the current cache, forcing a refresh on next access"""
+        logging.info("Invalidating IMDb database cache...")
+        try:
+            # Clear the data_version table to force reload
+            with sqlite3.connect(self._db_path) as conn:
+                conn.execute("DELETE FROM data_version")
+                conn.commit()
+            
+            # Clear in-memory caches
+            self._search_cache.clear()
+            self._title_cache.clear()
+            
+            logging.info("IMDb cache invalidated successfully")
+        except Exception as e:
+            logging.error(f"Failed to invalidate IMDb cache: {str(e)}")
+    
+    def refresh_data(self) -> None:
+        """Invalidate cache and immediately reload/refresh the data"""
+        logging.info("Refreshing IMDb database...")
+        self.invalidate_cache()
+        self._ensure_data_loaded()
+        logging.info("IMDb database refreshed successfully")
 

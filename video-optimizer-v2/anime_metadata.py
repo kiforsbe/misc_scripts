@@ -475,11 +475,13 @@ class AnimeDataProvider(BaseMetadataProvider):
                     logging.info("Database schema is outdated, needs recreation")
                     return False
                 
+                # Use cache_duration from base class
+                cache_days = int(self.cache_duration.days)
                 cursor = conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM data_version 
                     WHERE dataset = 'anime_offline_database'
-                    AND updated > strftime('%s', 'now', '-7 days')
+                    AND updated > strftime('%s', 'now', '-{cache_days} days')
                     """
                 )
                 count = cursor.fetchone()[0]
@@ -501,14 +503,14 @@ class AnimeDataProvider(BaseMetadataProvider):
         logging.info("Loading anime database...")
 
         zst_path = os.path.join(self.cache_dir, "anime-offline-database-minified.json.zst")
-        cache_expiry_days = 7
+        cache_expiry_days = self.cache_duration.days
 
         try:
             # Check if cached zst file exists and is fresh
             need_download = True
             if os.path.exists(zst_path):
                 mtime = os.path.getmtime(zst_path)
-                age_days = (time.time() - mtime) / 86400
+                age_days = (time.time() - mtime) / (24 * 60 * 60)  # Convert seconds to days
                 if age_days < cache_expiry_days:
                     need_download = False
 
@@ -1009,3 +1011,26 @@ class AnimeDataProvider(BaseMetadataProvider):
         normalized = ' '.join([f'{word}*' for word in words])
 
         return normalized
+    
+    def invalidate_cache(self) -> None:
+        """Invalidate the current cache, forcing a refresh on next access"""
+        logging.info("Invalidating anime database cache...")
+        try:
+            # Clear the data_version table to force reload
+            with sqlite3.connect(self._db_path) as conn:
+                conn.execute("DELETE FROM data_version WHERE dataset = 'anime_offline_database'")
+                conn.commit()
+            
+            # Clear in-memory cache
+            self._search_cache.clear()
+            
+            logging.info("Anime cache invalidated successfully")
+        except Exception as e:
+            logging.error(f"Failed to invalidate anime cache: {str(e)}")
+    
+    def refresh_data(self) -> None:
+        """Invalidate cache and immediately reload/refresh the data"""
+        logging.info("Refreshing anime database...")
+        self.invalidate_cache()
+        self.load_database()
+        logging.info("Anime database refreshed successfully")
