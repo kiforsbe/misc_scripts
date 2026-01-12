@@ -633,6 +633,7 @@ class SeriesCompletenessApp {
     renderSeriesInfo(series) {
         const metadata_id = series.title_id || (series.files && series.files[0] && series.files[0].metadata_id) || '';
         const title_metadata = this.data.title_metadata[metadata_id] || {};
+        const group_metadata = series.group_metadata || {};
         
         // Check if we have any metadata to show
         const hasYear = title_metadata.year;
@@ -641,8 +642,29 @@ class SeriesCompletenessApp {
         const hasPlot = title_metadata.plot;
         const hasType = title_metadata.type;
         
-        if (!hasYear && !hasGenres && !hasTags && !hasPlot && !hasType) {
+        // Check for timestamps
+        const hasCreated = group_metadata.avg_created_time;
+        const hasModified = group_metadata.avg_modified_time;
+        const hasAccess = group_metadata.avg_access_time;
+        
+        if (!hasYear && !hasGenres && !hasTags && !hasPlot && !hasType && !hasCreated && !hasModified && !hasAccess) {
             return ''; // Don't show the card if no metadata available
+        }
+        
+        // Format timestamps
+        let timestampHtml = '';
+        if (hasCreated || hasModified || hasAccess) {
+            timestampHtml = '<div class="mt-3"><strong>Average File Dates:</strong><br>';
+            if (hasCreated) {
+                timestampHtml += `<span class="text-muted">Created:</span> ${this.formatTimestamp(group_metadata.avg_created_time)}<br>`;
+            }
+            if (hasModified) {
+                timestampHtml += `<span class="text-muted">Modified:</span> ${this.formatTimestamp(group_metadata.avg_modified_time)}<br>`;
+            }
+            if (hasAccess) {
+                timestampHtml += `<span style="color: #999;">Accessed:</span> <span style="color: #999;">${this.formatTimestamp(group_metadata.avg_access_time)}</span><br>`;
+            }
+            timestampHtml += '</div>';
         }
         
         return `
@@ -656,6 +678,7 @@ class SeriesCompletenessApp {
                 ${hasGenres ? `<p><strong>Genres:</strong> ${title_metadata.genres.map(g => this.escapeHtml(g)).join(', ')}</p>` : ''}
                 ${hasTags ? this.renderTagsWithPopup(title_metadata.tags) : ''}
                 ${hasPlot ? `<p><strong>Plot:</strong> ${this.escapeHtml(title_metadata.plot)}</p>` : ''}
+                ${timestampHtml}
             </div>
         `;
     }
@@ -831,7 +854,24 @@ class SeriesCompletenessApp {
         // Get all thumbnails in parallel
         const episodeHtmlArray = await Promise.all(episodes.map(async ({i, className, title, file}) => {
             let thumbBg = '';
+            let enhancedTitle = title;
+            
             if (file) {
+                // Add timestamp info to tooltip
+                const timestamps = [];
+                if (file.created_time) {
+                    timestamps.push(`Created: ${this.formatTimestamp(file.created_time)}`);
+                }
+                if (file.modified_time) {
+                    timestamps.push(`Modified: ${this.formatTimestamp(file.modified_time)}`);
+                }
+                if (file.access_time) {
+                    timestamps.push(`Accessed: ${this.formatTimestamp(file.access_time)}`);
+                }
+                if (timestamps.length > 0) {
+                    enhancedTitle += '&#10;' + timestamps.join('&#10;');
+                }
+                
                 const thumb = await this.getThumbnailData(file);
                 const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
                 const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
@@ -861,7 +901,7 @@ class SeriesCompletenessApp {
                 icon = statusIcons.missing;
             }
             
-            return `<div class="${className}" title="${title}">${thumbBg}<span class="ep-corner ep-num-corner">${i}</span><span class="ep-corner ep-status-corner">${icon}</span></div>`;
+            return `<div class="${className}" title="${enhancedTitle}">${thumbBg}<span class="ep-corner ep-num-corner">${i}</span><span class="ep-corner ep-status-corner">${icon}</span></div>`;
         }));
         
         grid += episodeHtmlArray.join('');
@@ -924,6 +964,11 @@ class SeriesCompletenessApp {
                             ${file.size ? `<span><i class="bi bi-hdd"></i>${this.formatFileSize(file.size)}</span>` : ''}
                             ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
                             ${this.renderRatingInfo(file, 'compact')}
+                        </div>
+                        <div class="file-meta" style="margin-top: 4px; font-size: 0.85em;">
+                            ${file.created_time ? `<span title="Created"><i class="bi bi-calendar-plus"></i>${this.formatTimestamp(file.created_time)}</span>` : ''}
+                            ${file.modified_time ? `<span title="Modified"><i class="bi bi-pencil"></i>${this.formatTimestamp(file.modified_time)}</span>` : ''}
+                            ${file.access_time ? `<span title="Accessed" style="color: #999;"><i class="bi bi-clock-history"></i>${this.formatTimestamp(file.access_time)}</span>` : ''}
                         </div>
                     </div>
                 </div>
@@ -1296,6 +1341,17 @@ class SeriesCompletenessApp {
         } else {
             return `${minutes}m`;
         }
+    }
+    
+    formatTimestamp(timestamp) {
+        if (!timestamp) return '';
+        const date = new Date(timestamp * 1000); // Convert from Unix timestamp
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}`;
     }
     
     escapeHtml(text) {

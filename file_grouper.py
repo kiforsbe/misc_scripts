@@ -354,7 +354,19 @@ class FileGrouper:
             result = dict(metadata)
             result['filepath'] = str(file_path)
             result['filename'] = file_path.name
-            result['file_size'] = file_path.stat().st_size if file_path.exists() else 0
+            
+            # Add file stats including timestamps
+            if file_path.exists():
+                stat_info = file_path.stat()
+                result['file_size'] = stat_info.st_size
+                result['created_time'] = stat_info.st_ctime  # Creation time
+                result['modified_time'] = stat_info.st_mtime  # Modification time
+                result['access_time'] = stat_info.st_atime  # Access time
+            else:
+                result['file_size'] = 0
+                result['created_time'] = None
+                result['modified_time'] = None
+                result['access_time'] = None
 
             # Add enhanced metadata reference if available
             if self.metadata_manager and MetadataManager:
@@ -753,15 +765,29 @@ class FileGrouper:
         """Get metadata for a group based on the first file's metadata or title metadata if grouping by title"""
         if not group_files:
             return {}
-            
+        
+        metadata = {}
+        
         # If grouping by title, add title metadata directly to the group
         if 'title' in group_by and self.metadata_manager:
             first_file = group_files[0]
             metadata_id = first_file.get('metadata_id')
             if metadata_id and metadata_id in self.title_metadata:
-                return self.title_metadata[metadata_id]['metadata']
+                metadata = self.title_metadata[metadata_id]['metadata'].copy()
         
-        return {}
+        # Calculate average timestamps for the group
+        created_times = [f.get('created_time') for f in group_files if f.get('created_time') is not None]
+        modified_times = [f.get('modified_time') for f in group_files if f.get('modified_time') is not None]
+        access_times = [f.get('access_time') for f in group_files if f.get('access_time') is not None]
+        
+        if created_times:
+            metadata['avg_created_time'] = sum(created_times) / len(created_times)  # type: ignore
+        if modified_times:
+            metadata['avg_modified_time'] = sum(modified_times) / len(modified_times)  # type: ignore
+        if access_times:
+            metadata['avg_access_time'] = sum(access_times) / len(access_times)  # type: ignore
+        
+        return metadata
 
     @staticmethod
     def _sanitize_group_key(key: str) -> str:

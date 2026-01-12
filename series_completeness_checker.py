@@ -9,6 +9,39 @@ from dataclasses import dataclass, field, asdict
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
 
+# ANSI Color codes for terminal output
+class Colors:
+    """ANSI color codes for terminal output."""
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    
+    # Standard colors
+    BLACK = '\033[30m'
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    BLUE = '\033[34m'
+    MAGENTA = '\033[35m'
+    CYAN = '\033[36m'
+    WHITE = '\033[37m'
+    
+    # Bright colors
+    BRIGHT_BLACK = '\033[90m'
+    BRIGHT_RED = '\033[91m'
+    BRIGHT_GREEN = '\033[92m'
+    BRIGHT_YELLOW = '\033[93m'
+    BRIGHT_BLUE = '\033[94m'
+    BRIGHT_MAGENTA = '\033[95m'
+    BRIGHT_CYAN = '\033[96m'
+    BRIGHT_WHITE = '\033[97m'
+    
+    @staticmethod
+    def strip(text: str) -> str:
+        """Remove all ANSI color codes from text."""
+        import re
+        return re.sub(r'\033\[[0-9;]+m', '', text)
+
 # Enums for status values
 class SeriesStatus(str, Enum):
     """Enum for series completeness status values."""
@@ -87,6 +120,7 @@ class SeriesAnalysis:
     extra_files: List[Dict] = field(default_factory=list)
     watch_status: Optional[WatchStatus] = None
     myanimelist_watch_status: Optional[Dict] = None
+    group_metadata: Optional[Dict] = None  # Group-level metadata including average timestamps
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -103,7 +137,8 @@ class SeriesAnalysis:
             'files': self.files,
             'extra_files': self.extra_files,
             'watch_status': self.watch_status.to_dict() if isinstance(self.watch_status, WatchStatus) else self.watch_status,
-            'myanimelist_watch_status': self.myanimelist_watch_status
+            'myanimelist_watch_status': self.myanimelist_watch_status,
+            'group_metadata': self.group_metadata
         }
         return result
     
@@ -133,7 +168,8 @@ class SeriesAnalysis:
             files=data.get('files', []),
             extra_files=data.get('extra_files', []),
             watch_status=watch_status,
-            myanimelist_watch_status=data.get('myanimelist_watch_status')
+            myanimelist_watch_status=data.get('myanimelist_watch_status'),
+            group_metadata=data.get('group_metadata')
         )
 
 
@@ -694,6 +730,9 @@ class SeriesCompletenessChecker:
         season = first_file.get('season')
         metadata_id = first_file.get('metadata_id')
         
+        # Get group metadata (includes average timestamps)
+        group_metadata = self.file_grouper.group_metadata.get(group_key, {})
+        
         # Parse episode files and extract episode information
         episode_files, extra_files, episode_numbers, enhanced_episode_info = self._parse_episode_files(group_files)
         
@@ -705,7 +744,7 @@ class SeriesCompletenessChecker:
         # Build base result
         result = self._build_base_result(
             title, season, metadata_id, episodes_found, episode_numbers,
-            extra_files, group_files, watch_status, mal_watch_status
+            extra_files, group_files, watch_status, mal_watch_status, group_metadata
         )
         
         # Determine completeness status from metadata
@@ -992,7 +1031,8 @@ class SeriesCompletenessChecker:
     def _build_base_result(self, title: str, season: Optional[int], metadata_id: Optional[str],
                            episodes_found: int, episode_numbers: List[int], 
                            extra_files: List[Dict], group_files: List[Dict],
-                           watch_status: WatchStatus, mal_watch_status: Optional[Dict]) -> SeriesAnalysis:
+                           watch_status: WatchStatus, mal_watch_status: Optional[Dict],
+                           group_metadata: Optional[Dict] = None) -> SeriesAnalysis:
         """Build the base SeriesAnalysis for a group.
         
         Args:
@@ -1005,6 +1045,7 @@ class SeriesCompletenessChecker:
             group_files: All files in the group
             watch_status: Watch status dataclass instance
             mal_watch_status: MyAnimeList watch status or None
+            group_metadata: Group-level metadata including average timestamps
             
         Returns:
             SeriesAnalysis instance
@@ -1022,7 +1063,8 @@ class SeriesCompletenessChecker:
             files=group_files,
             extra_files=extra_files,
             watch_status=watch_status,
-            myanimelist_watch_status=mal_watch_status
+            myanimelist_watch_status=mal_watch_status,
+            group_metadata=group_metadata
         )
 
     def _check_movie_type(self, first_file: Dict, metadata: Dict, result: SeriesAnalysis) -> bool:
@@ -1321,17 +1363,18 @@ class SeriesCompletenessChecker:
         """Print completeness summary."""
         summary = results['completeness_summary']
 
-        print(f"\n=== Series Collection Completeness Summary ===")
-        print(f"Total series titles: {summary['total_series']}")
-        print(f"Complete: {summary['complete_series']}")
-        print(f"Incomplete: {summary['incomplete_series']}")
-        print(f"Unknown status: {summary['unknown_series']}")
-        print(f"Episodes found: {summary['total_episodes_found']}")
-        print(f"Episodes expected: {summary['total_episodes_expected']}")
+        print(f"\n{Colors.BOLD}{Colors.CYAN}=== Series Collection Completeness Summary ==={Colors.RESET}")
+        print(f"{Colors.BRIGHT_BLACK}Total series titles:{Colors.RESET} {Colors.BOLD}{summary['total_series']}{Colors.RESET}")
+        print(f"{Colors.GREEN}Complete:{Colors.RESET} {summary['complete_series']}")
+        print(f"{Colors.RED}Incomplete:{Colors.RESET} {summary['incomplete_series']}")
+        print(f"{Colors.BRIGHT_BLACK}Unknown status:{Colors.RESET} {summary['unknown_series']}")
+        print(f"{Colors.BRIGHT_BLACK}Episodes found:{Colors.RESET} {summary['total_episodes_found']}")
+        print(f"{Colors.BRIGHT_BLACK}Episodes expected:{Colors.RESET} {summary['total_episodes_expected']}")
         
         if summary['total_episodes_expected'] > 0:
             completion_rate = (summary['total_episodes_found'] / summary['total_episodes_expected']) * 100
-            print(f"Collection completion rate: {completion_rate:.1f}%")
+            rate_color = Colors.GREEN if completion_rate >= 90 else Colors.YELLOW if completion_rate >= 70 else Colors.RED
+            print(f"{Colors.BRIGHT_BLACK}Collection completion rate:{Colors.RESET} {rate_color}{completion_rate:.1f}%{Colors.RESET}")
         
         # Add combined watch status summary (Plex + MAL)
         total_watched = 0
@@ -1348,16 +1391,19 @@ class SeriesCompletenessChecker:
                 mal_series_count += 1
         
         if total_watched > 0 or total_partially_watched > 0:
-            print(f"\n=== Watch Status Summary ===")
-            print(f"Watched episodes: {total_watched}/{total_episodes} ({total_watched/total_episodes*100:.1f}%)")
-            print(f"Partially watched: {total_partially_watched}")
-            print(f"Unwatched episodes: {total_episodes - total_watched - total_partially_watched}")
+            print(f"\n{Colors.BOLD}{Colors.CYAN}=== Watch Status Summary ==={Colors.RESET}")
+            watch_percentage = total_watched/total_episodes*100 if total_episodes > 0 else 0
+            watch_color = Colors.GREEN if watch_percentage >= 70 else Colors.YELLOW if watch_percentage >= 40 else Colors.BRIGHT_BLACK
+            print(f"{Colors.BRIGHT_BLACK}Watched episodes:{Colors.RESET} {watch_color}{total_watched}/{total_episodes} ({watch_percentage:.1f}%){Colors.RESET}")
+            if total_partially_watched > 0:
+                print(f"{Colors.YELLOW}Partially watched:{Colors.RESET} {total_partially_watched}")
+            print(f"{Colors.BRIGHT_BLACK}Unwatched episodes:{Colors.RESET} {total_episodes - total_watched - total_partially_watched}")
             if mal_series_count > 0:
-                print(f"Series with MyAnimeList data: {mal_series_count}")
+                print(f"{Colors.BRIGHT_BLACK}Series with MyAnimeList data:{Colors.RESET} {mal_series_count}")
         
         # One-line summary for each series
         if verbosity >= 1:
-            print(f"\n=== Series ===")
+            print(f"\n{Colors.BOLD}{Colors.CYAN}=== Series ==={Colors.RESET}")
             for group_key, analysis in sorted(results['groups'].items()):
                 self._print_one_line_summary(analysis, show_metadata_fields)
     
@@ -1377,10 +1423,21 @@ class SeriesCompletenessChecker:
         except (ValueError, KeyError):
             status_emoji = '❓'
         
+        # Determine status color
+        status_color = Colors.RESET
+        if status_enum == SeriesStatus.COMPLETE:
+            status_color = Colors.GREEN
+        elif status_enum == SeriesStatus.INCOMPLETE:
+            status_color = Colors.RED
+        elif status_enum == SeriesStatus.COMPLETE_WITH_EXTRAS:
+            status_color = Colors.YELLOW
+        else:
+            status_color = Colors.BRIGHT_BLACK
+        
         # Format title with season
         title_str = title
         if season:
-            title_str += f" S{season:02d}"
+            title_str += f" {Colors.DIM}S{season:02d}{Colors.RESET}"
 
         # Adjust title length based on whether metadata will be shown
         base_title_length = 60  # Reduced to make room for watch status
@@ -1394,8 +1451,12 @@ class SeriesCompletenessChecker:
             title_length = base_title_length
 
         # Truncate title to maximum title_length characters with ellipsis
-        if len(title_str) > title_length:
-            title_str = title_str[:title_length - 3] + "..."
+        # Need to account for color codes in length calculation
+        title_display = title if season is None else title
+        if len(title_display) > title_length:
+            title_str = title_display[:title_length - 3] + "..."
+            if season:
+                title_str += f" {Colors.DIM}S{season:02d}{Colors.RESET}"
         
         # Add episode info (watched, missing, extra) using combined watch status
         extra_info = []
@@ -1418,17 +1479,17 @@ class SeriesCompletenessChecker:
                 watched_range = self._format_episode_ranges(sorted(set(watched_episode_nums)))
                 mal_status = analysis.get('myanimelist_watch_status')
                 if mal_status:
-                    extra_info.append(f"Watched: {watched_range} (Combined)")
+                    extra_info.append(f"{Colors.CYAN}Watched: {watched_range} (Combined){Colors.RESET}")
                 else:
-                    extra_info.append(f"Watched: {watched_range}")
+                    extra_info.append(f"{Colors.CYAN}Watched: {watched_range}{Colors.RESET}")
 
         if analysis.get('missing_episodes'):
             missing_range = self._format_episode_ranges(analysis['missing_episodes'])
-            extra_info.append(f"Missing: {missing_range}")
+            extra_info.append(f"{Colors.RED}Missing: {missing_range}{Colors.RESET}")
         
         if analysis.get('extra_episodes'):
             extra_range = self._format_episode_ranges(analysis['extra_episodes'])
-            extra_info.append(f"Extra: {extra_range}")
+            extra_info.append(f"{Colors.YELLOW}Extra: {extra_range}{Colors.RESET}")
         
         # Add metadata fields if requested
         metadata_info = []
@@ -1445,16 +1506,30 @@ class SeriesCompletenessChecker:
                     for field in show_metadata_fields:
                         value = metadata.get(field)
                         formatted_value = self._format_metadata_value(value, max_length=12)
-                        metadata_info.append(f"{field.capitalize()}: {formatted_value}")
+                        metadata_info.append(f"{Colors.BRIGHT_BLACK}{field.capitalize()}: {formatted_value}{Colors.RESET}")
         
         # Build the complete line
         episodes_expected_str = str(episodes_expected) if episodes_expected else '?'
+        
+        # Add average modification time if available (muted color)
+        group_metadata = analysis.get('group_metadata', {})
+        avg_modified_time = group_metadata.get('avg_modified_time')
+        timestamp_str = ""
+        if avg_modified_time:
+            import datetime
+            timestamp = datetime.datetime.fromtimestamp(avg_modified_time)
+            timestamp_str = f" {Colors.DIM}| Modified: {timestamp.strftime('%Y-%m-%d %H:%M')}{Colors.RESET}"
         
         # Combine all info parts
         all_info = metadata_info + extra_info # join lists
         extra_info_str = f" | {', '.join(all_info)}" if all_info else ""
         
-        line = f"{status_emoji} {title_str:<{title_length}} {episodes_found:>4}/{episodes_expected_str:<4}{extra_info_str}"
+        # Build line with colors
+        # Use the plain title for padding calculation
+        title_padding = title if season is None else title
+        padding_needed = title_length - len(title_padding)
+        
+        line = f"{status_color}{status_emoji}{Colors.RESET} {Colors.BOLD}{title_str}{Colors.RESET}{' ' * max(0, padding_needed)} {Colors.BRIGHT_BLUE}{episodes_found:>4}{Colors.RESET}/{Colors.BRIGHT_BLACK}{episodes_expected_str:<4}{Colors.RESET}{extra_info_str}{timestamp_str}"
         
         print(line)
 
