@@ -75,19 +75,24 @@ def _select_providers(all_providers: ProviderMap, selection: List[str]) -> Itera
 
 
 def _parse_relative_text(text: str) -> int:
-    """Parse free-text duration like "2 months and 3 days" into total days."""
+    """Parse free-text duration like "2 months and 3 days" or short form like "7d", "2m7d" into total days."""
     units = {"day": 0, "week": 0, "month": 0}
-    for value, unit in re.findall(r"(\d+)\s*(day|days|week|weeks|month|months)", text, flags=re.IGNORECASE):
+    
+    # Single regex for both short form (7d, 2m, 2m7d) and long form (3 days, 2 months)
+    for value, unit in re.findall(r"(\d+)\s*([dwm]|days?|weeks?|months?)", text.lower()):
         n = int(value)
-        unit_key = unit.lower()
-        if unit_key.startswith("day"):
+        unit_lower = unit.lower()
+        
+        # Map short and long forms to unit keys
+        if unit_lower in ('d', 'day', 'days'):
             units["day"] += n
-        elif unit_key.startswith("week"):
+        elif unit_lower in ('w', 'week', 'weeks'):
             units["week"] += n
-        elif unit_key.startswith("month"):
+        elif unit_lower in ('m', 'month', 'months'):
             units["month"] += n
+    
     if not any(units.values()):
-        raise SystemExit("Could not parse relative duration. Examples: '3 days', '2 months and 3 days'.")
+        raise SystemExit("Could not parse relative duration. Examples: '7d', '2m', '2m7d' or '3 days', '2 months and 3 days'.")
     return units["day"] + units["week"] * 7 + units["month"] * 30
 
 
