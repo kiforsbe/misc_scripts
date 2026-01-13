@@ -281,7 +281,7 @@ The webservice exposes the following interfaces:
 | Interface | Methods | Functions | Parameters |
 | --- | --- | --- | --- |
 | stream_info | GET | stream_info | url |
-| convert  | POST & GET | convert_m3u8_to_mp4 | url, alt_url, title, video_id, description |
+| convert | POST & GET | convert_m3u8_to_mp4 | url, alt_url, title, video_id, description |
 
 ### stream_info
 Returns a JSON structure describing the overall metadata of the base stream, and the contained audio and video streams.
