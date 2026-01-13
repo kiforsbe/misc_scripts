@@ -1,15 +1,17 @@
+import argparse
+import re
+from pathlib import Path
+
 import mistletoe
 from mistletoe import HTMLRenderer
 from bs4 import BeautifulSoup, Tag
 from bs4.element import PageElement, NavigableString
 from docx import Document
-from docx.text.paragraph import Paragraph
-from docx.table import Table
-from docx.shared import Length
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-
-import re
+from docx.shared import Length
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 class Pct(Length):
     """
@@ -29,30 +31,70 @@ class Pct(Length):
 
 
 class MarkdownToDocxConverter:
-    def __init__(self, markdown_file, docx_file):
-        self.markdown_file = markdown_file
-        self.docx_file = docx_file
+    def __init__(self, markdown_file: str | Path, docx_file: str | Path,
+                 css_path: str | Path | None = None, embed_css_path: str | Path | None = None):
+        self.markdown_file = Path(markdown_file)
+        self.docx_file = Path(docx_file)
+        self.css_path = Path(css_path) if css_path else None
+        self.embed_css_path = Path(embed_css_path) if embed_css_path else None
         self.document = Document()
 
     def convert(self):
+        self._validate_css_sources()
+
         with open(self.markdown_file, 'r', encoding='utf-8') as file:
             markdown_text = file.read()
 
         # Convert Markdown to HTML using mistletoe
         html_content = mistletoe.markdown(markdown_text, HTMLRenderer)
 
-        # Parse the HTML using BeautifulSoup
-        soup = BeautifulSoup(html_content, 'html.parser')
+        soup = self._build_html_document(html_content)
 
         # Save the document as a HTML file for debugging purposes
-        with open(self.docx_file.replace('.docx', '.html'), 'w', encoding='utf-8') as debug_file:
-            debug_file.write(str(soup.prettify()))
+        self._write_debug_html(soup)
 
         # Process the HTML elements and add them to the DOCX document
-        self._parse_html(soup)
+        parse_root = soup.body if soup.body else soup
+        self._parse_html(parse_root)
 
         # Save the DOCX file
-        self.document.save(self.docx_file)
+        self.document.save(str(self.docx_file))
+
+    def _validate_css_sources(self):
+        for css_source in (self.css_path, self.embed_css_path):
+            if css_source and not css_source.is_file():
+                raise FileNotFoundError(f"CSS file not found: {css_source}")
+
+    def _build_html_document(self, html_fragment: str) -> BeautifulSoup:
+        """Wrap raw HTML in a full document and inject optional CSS."""
+        soup = BeautifulSoup('', 'html.parser')
+        html_tag = soup.new_tag('html')
+        head_tag = soup.new_tag('head')
+        body_tag = soup.new_tag('body')
+
+        fragment_soup = BeautifulSoup(html_fragment, 'html.parser')
+        for child in fragment_soup.contents:
+            body_tag.append(child)
+
+        self._apply_css_to_head(soup, head_tag)
+
+        html_tag.append(head_tag)
+        html_tag.append(body_tag)
+        soup.append(html_tag)
+        return soup
+
+    def _apply_css_to_head(self, soup: BeautifulSoup, head_tag: Tag):
+        if self.css_path:
+            link_tag = soup.new_tag('link', rel='stylesheet', href=self.css_path.as_posix())
+            head_tag.append(link_tag)
+        elif self.embed_css_path:
+            style_tag = soup.new_tag('style')
+            style_tag.string = self.embed_css_path.read_text(encoding='utf-8')
+            head_tag.append(style_tag)
+
+    def _write_debug_html(self, soup: BeautifulSoup):
+        debug_html_path = self.docx_file.with_suffix('.html')
+        debug_html_path.write_text(soup.prettify(), encoding='utf-8')
 
     def _parse_html(self, soup: BeautifulSoup):
         """Traverse all elements in the HTML DOM recursively"""
@@ -337,22 +379,26 @@ class MarkdownToDocxConverter:
         tblPr.append(tblW)
 
 if __name__ == "__main__":
-    import sys
-    import os
-    if len(sys.argv) < 2:
-        print("Usage: md_to_docx.py <input_markdown_file> (<output_docx_file>)")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Convert Markdown files to DOCX.")
+    parser.add_argument("markdown_file", help="Input Markdown file")
+    parser.add_argument("docx_file", nargs="?", help="Output DOCX file (defaults to <input>.docx)")
 
-    markdown_file = sys.argv[1]
-    if len(sys.argv) == 3:
-        docx_file = sys.argv[2]
+    css_group = parser.add_mutually_exclusive_group()
+    css_group.add_argument("--css", dest="css_path", help="Path to a CSS file to link in the debug HTML output.")
+    css_group.add_argument("--embed-css", dest="embed_css_path", help="Path to a CSS file to embed directly into the debug HTML output.")
+
+    args = parser.parse_args()
+
+    markdown_path = Path(args.markdown_file)
+    if args.docx_file:
+        docx_path = Path(args.docx_file)
     else:
-        base, _ = os.path.splitext(markdown_file)
-        docx_file = base + ".docx"
+        base = markdown_path.with_suffix('')
+        docx_path = base.with_suffix('.docx')
         count = 1
-        while os.path.exists(docx_file):
-            docx_file = f"{base}_{count}.docx"
+        while docx_path.exists():
+            docx_path = base.with_name(f"{base.name}_{count}").with_suffix('.docx')
             count += 1
 
-    converter = MarkdownToDocxConverter(markdown_file, docx_file)
+    converter = MarkdownToDocxConverter(markdown_path, docx_path, css_path=args.css_path, embed_css_path=args.embed_css_path)
     converter.convert()
