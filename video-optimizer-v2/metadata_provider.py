@@ -65,16 +65,16 @@ class BaseMetadataProvider(ABC):
 
     def set_cache_duration(self, duration: timedelta) -> datetime:
         """Set cache TTL using a timedelta; returns the new expiry timestamp."""
-        if duration <= timedelta(0):
-            raise ValueError("cache duration must be positive")
+        if duration < timedelta(0):
+            raise ValueError("cache duration must be non-negative")
         self.cache_duration = duration
         self._persist_cache_duration()
         return self.get_cache_expiry()
 
     def set_cache_expiry(self, days: int) -> datetime:
         """Set cache TTL using a whole number of days; returns new expiry timestamp."""
-        if days is None or days <= 0:
-            raise ValueError("days must be a positive integer")
+        if days is None or days < 0:
+            raise ValueError("days must be a non-negative integer")
         return self.set_cache_duration(timedelta(days=days))
 
     def get_cache_expiry(self) -> datetime:

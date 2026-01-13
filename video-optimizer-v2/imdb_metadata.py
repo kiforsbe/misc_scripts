@@ -180,9 +180,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                     "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
                 )
                 row = cursor.fetchone()
-                if row and row[0]:
+                if row is not None and row[0] is not None:
                     days = int(row[0])
-                    if days > 0:
+                    if days >= 0:
                         self.cache_duration = timedelta(days=days)
         except Exception as e:
             logging.debug(f"Could not load cache duration for IMDb provider: {e}")

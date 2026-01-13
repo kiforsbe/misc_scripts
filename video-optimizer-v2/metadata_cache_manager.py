@@ -163,6 +163,8 @@ def cmd_invalidate(providers: Iterable[object]) -> None:
         name = provider.__class__.__name__
         logging.info("Invalidating %s", name)
         provider.invalidate_cache()
+        # Set TTL to 0 days so cache is immediately stale
+        provider.set_cache_expiry(0)
         logging.info("Invalidated %s", name)
 
 
