@@ -394,6 +394,9 @@ It now also supports lookup of meta data from common anime databases and imdb. I
 
 Check out branch mediaoptimizer_v1 for the old version.
 
+### metadata_cache_manager.py
+CLI helper for the video-optimizer providers to inspect and control cache TTLs. Supports `status`, `refresh`, `invalidate`, and `set-expiry` (accepts long form like "3 days" or short form like `2m7d`). TTL is persisted per provider (IMDb, Anime) and `invalidate` forces TTL to 0 so cache refreshes on next access. Optional `--no-color` disables colored output.
+
 ### metadata_provider.py
 Base metadata provider class that defines the interface for metadata retrieval services. This abstract class provides a common structure for implementing different metadata sources, handling search functionality, and managing metadata formatting for video files.
 
