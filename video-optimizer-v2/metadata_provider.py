@@ -62,6 +62,39 @@ class BaseMetadataProvider(ABC):
         self.cache_duration = cache_duration
         self.provider_weight = provider_weight
         self.ensure_cache_dir()
+
+    def set_cache_duration(self, duration: timedelta) -> datetime:
+        """Set cache TTL using a timedelta; returns the new expiry timestamp."""
+        if duration <= timedelta(0):
+            raise ValueError("cache duration must be positive")
+        self.cache_duration = duration
+        self._persist_cache_duration()
+        return self.get_cache_expiry()
+
+    def set_cache_expiry(self, days: int) -> datetime:
+        """Set cache TTL using a whole number of days; returns new expiry timestamp."""
+        if days is None or days <= 0:
+            raise ValueError("days must be a positive integer")
+        return self.set_cache_duration(timedelta(days=days))
+
+    def get_cache_expiry(self) -> datetime:
+        """Return the timestamp when the cache should be considered stale."""
+        return datetime.now() + self.cache_duration
+
+    def cache_summary(self) -> dict:
+        """Lightweight cache metadata for UIs/CLI."""
+        return {
+            "cache_dir": self.cache_dir,
+            "cache_duration_seconds": self.cache_duration.total_seconds(),
+            "cache_expiry": self.get_cache_expiry(),
+        }
+    
+    # Hooks for subclasses to persist/load cache duration using their storage (e.g., SQLite)
+    def _persist_cache_duration(self) -> None:  # pragma: no cover - override in subclasses
+        return
+
+    def _load_cache_duration(self) -> None:  # pragma: no cover - override in subclasses
+        return
     
     def ensure_cache_dir(self):
         """Create cache directory if it doesn't exist"""

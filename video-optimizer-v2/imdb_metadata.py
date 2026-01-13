@@ -5,6 +5,7 @@ import requests
 import sqlite3
 import time
 import re
+from datetime import timedelta
 from typing import Optional, Dict, List, Tuple
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
@@ -56,6 +57,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._connection_pool = []  # Connection pool for better performance
         self._pool_size = 3
         self._init_database()
+        self._load_cache_duration()
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a connection from the pool or create a new one"""
@@ -171,11 +173,36 @@ class IMDbDataProvider(BaseMetadataProvider):
             logging.error(f"Failed to initialize database: {str(e)}")
             raise
 
+    def _load_cache_duration(self) -> None:
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                cursor = conn.execute(
+                    "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    days = int(row[0])
+                    if days > 0:
+                        self.cache_duration = timedelta(days=days)
+        except Exception as e:
+            logging.debug(f"Could not load cache duration for IMDb provider: {e}")
+
+    def _persist_cache_duration(self) -> None:
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES ('cache_duration', ?)",
+                    (int(self.cache_duration.days),),
+                )
+                conn.commit()
+        except Exception:
+            logging.debug("Could not persist cache duration for IMDb provider")
+
     def _is_data_current(self) -> bool:
         """Check if the database contains current data"""
         try:
             with sqlite3.connect(self._db_path) as conn:
-                # Use cache_duration from base class
+                # Use cache_duration from base class (day granularity)
                 cache_days = int(self.cache_duration.days)
                 cursor = conn.execute(
                     f"""
@@ -260,7 +287,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         need_download = True
         if os.path.exists(gz_cache):
             mtime = os.path.getmtime(gz_cache)
-            age_days = (time.time() - mtime) / (24 * 60 * 60)  # Convert seconds to days
+            age_days = (time.time() - mtime) / (24 * 60 * 60)
             if age_days < self.cache_duration.days:
                 need_download = False
 

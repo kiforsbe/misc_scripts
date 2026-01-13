@@ -6,6 +6,7 @@ import requests
 import sqlite3
 import zstandard as zstd
 import time
+from datetime import timedelta
 from typing import Optional
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
@@ -86,6 +87,7 @@ class AnimeDataProvider(BaseMetadataProvider):
         self._connection_pool = []  # Connection pool for better performance
         self._pool_size = 3
         self._init_database()
+        self._load_cache_duration()
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a connection from the pool or create a new one"""
@@ -434,6 +436,30 @@ class AnimeDataProvider(BaseMetadataProvider):
             logging.error(f"Failed to initialize anime database: {str(e)}")
             raise
 
+    def _load_cache_duration(self) -> None:
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                cursor = conn.execute(
+                    "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    days = int(row[0])
+                    if days > 0:
+                        self.cache_duration = timedelta(days=days)
+        except Exception:
+            logging.debug("Could not load cache duration for anime provider")
+
+    def _persist_cache_duration(self) -> None:
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES ('cache_duration', ?)",
+                    (int(self.cache_duration.days),),
+                )
+                conn.commit()
+        except Exception:
+            logging.debug("Could not persist cache duration for anime provider")
     def _get_type_id(self, type_str: str) -> int:
         """Map type string to AnimeType enum value"""
         if not type_str:
@@ -475,7 +501,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                     logging.info("Database schema is outdated, needs recreation")
                     return False
                 
-                # Use cache_duration from base class
+                # Use cache_duration from base class (day granularity)
                 cache_days = int(self.cache_duration.days)
                 cursor = conn.execute(
                     f"""
@@ -510,7 +536,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             need_download = True
             if os.path.exists(zst_path):
                 mtime = os.path.getmtime(zst_path)
-                age_days = (time.time() - mtime) / (24 * 60 * 60)  # Convert seconds to days
+                age_days = (time.time() - mtime) / (24 * 60 * 60)
                 if age_days < cache_expiry_days:
                     need_download = False
 
