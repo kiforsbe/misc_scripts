@@ -335,6 +335,25 @@ def test_anime_metadata(verbosity=0):
                 "episode": 3,
                 "mal_id": 61128,
             }
+        },
+        {
+            "filename": "[SubsPlease] 29-sai Dokushin Chuuken Boukensha no Nichijou - 02 (720p) [AA24C21D].mkv",
+            "expected": {
+                "title": "29-sai Dokushin Chuuken Boukensha no Nichijou",
+                "season": 1,
+                "episode": 2,
+                "mal_id": 61637,
+            }
+        },
+        {
+            "filename": "[SubsPlease] Maou no Musume wa Yasashi Sugiru!! - 03v2 (720p) [0F465B77].mkv",
+            "expected": {
+                "title": "Maou no Musume wa Yasashi Sugiru!!",
+                "season": 1,
+                "episode": 3,
+                "version": 2,
+                "mal_id": 61884,
+            }
         }
     ]
 

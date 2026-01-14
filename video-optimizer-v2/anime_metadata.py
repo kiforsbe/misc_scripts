@@ -902,7 +902,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                 # Find all seasons of this anime ordered by season number
                 cursor = conn.execute(
                     """
-                    SELECT id, title, episodes, season_number, year
+                    SELECT id, title, episodes, season_number, year, status
                     FROM anime_title 
                     WHERE base_title = ?
                     ORDER BY season_number, year
@@ -922,8 +922,19 @@ class AnimeDataProvider(BaseMetadataProvider):
                     for season_row in all_seasons:
                         season_episodes = season_row['episodes'] or 12  # Default to 12 if unknown
                         season_num = season_row['season_number']
+                        season_status = season_row['status']
                         
-                        if episode <= episode_counter + season_episodes:
+                        # For ongoing or upcoming series with low episode counts, be more lenient
+                        # and assume episodes belong to the current season
+                        if season_status in (AnimeStatus.ONGOING, AnimeStatus.UPCOMING) and season_episodes < 12:
+                            # For ongoing/upcoming series with less than 12 episodes registered,
+                            # assume this is the current season and accept higher episode numbers
+                            if episode <= episode_counter + 50:  # Reasonable limit for a single season
+                                calculated_season = season_num
+                                calculated_episode = episode - episode_counter
+                                found = True
+                                break
+                        elif episode <= episode_counter + season_episodes:
                             # Episode falls within this season
                             calculated_season = season_num
                             calculated_episode = episode - episode_counter
