@@ -1244,6 +1244,30 @@ class LatestEpisodesApp {
             ratingsContainer.style.display = 'none';
         }
         
+        // Set tags
+        const tagsContainer = document.getElementById('popup-tags');
+        const seriesTags = episode.series_metadata && episode.series_metadata.tags;
+        
+        if (seriesTags && seriesTags.length > 0) {
+            const maxVisibleTags = 8;
+            const visibleTags = seriesTags.slice(0, maxVisibleTags);
+            const remainingCount = seriesTags.length - maxVisibleTags;
+            
+            let tagsHtml = '<div class="popup-tags-label">Tags:</div><div class="popup-tags-list">';
+            visibleTags.forEach(tag => {
+                tagsHtml += `<span class="popup-tag">${this.escapeHtml(tag)}</span>`;
+            });
+            if (remainingCount > 0) {
+                tagsHtml += `<span class="popup-tag popup-tag-more">+${remainingCount}</span>`;
+            }
+            tagsHtml += '</div>';
+            
+            tagsContainer.innerHTML = tagsHtml;
+            tagsContainer.style.display = 'flex';
+        } else {
+            tagsContainer.style.display = 'none';
+        }
+        
         // Position popup
         const episodeItem = event.currentTarget;
         const episodeRect = episodeItem.getBoundingClientRect();

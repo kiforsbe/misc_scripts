@@ -876,6 +876,49 @@ body {
   color: #28a745;
 }
 
+.popup-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.popup-tags-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  width: 100%;
+  margin-bottom: -0.25rem;
+}
+
+.popup-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.popup-tag {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  background: rgba(0, 123, 255, 0.1);
+  color: #007bff;
+  border-radius: 12px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.popup-tag-more {
+  background: rgba(108, 117, 125, 0.1);
+  color: #6c757d;
+  font-weight: 600;
+}
+
 .popup-arrow {
   position: absolute;
   width: 0;
