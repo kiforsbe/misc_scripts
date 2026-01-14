@@ -51,7 +51,11 @@ try:
     from anime_metadata import AnimeDataProvider
     from imdb_metadata import IMDbDataProvider
     from plex_metadata import PlexMetadataProvider, PlexWatchStatus
-    from myanimelist_watch_status import MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
+    from myanimelist_watch_status import (
+        MyAnimeListWatchStatusProvider,
+        MyAnimeListWatchStatus,
+        resolve_myanimelist_xml_path,
+    )
 except ImportError:
     print("Warning: video-optimizer-v2 metadata providers not found. Enhanced metadata features will be disabled.")
     MetadataManager = None
@@ -61,22 +65,33 @@ except ImportError:
     PlexWatchStatus = None
     MyAnimeListWatchStatusProvider = None
     MyAnimeListWatchStatus = None
+    resolve_myanimelist_xml_path = None
 
 
 class LatestEpisodesViewer:
     """Generates a web interface showing the latest episodes by download date."""
     
     def __init__(self, metadata_manager=None, plex_provider=None, myanimelist_xml_path=None):
-        self.file_grouper = FileGrouper(metadata_manager, plex_provider, myanimelist_xml_path)
+        resolved_mal_path = (
+            resolve_myanimelist_xml_path(myanimelist_xml_path)
+            if myanimelist_xml_path and resolve_myanimelist_xml_path
+            else myanimelist_xml_path
+        )
+
+        if myanimelist_xml_path and not resolved_mal_path:
+            print(f"Warning: No MyAnimeList XML found matching: {myanimelist_xml_path}")
+
+        self.file_grouper = FileGrouper(metadata_manager, plex_provider, resolved_mal_path)
         self.metadata_manager = metadata_manager
         self.plex_provider = plex_provider
         self.myanimelist_provider = None
+        self.myanimelist_xml_path = resolved_mal_path
         
-        if myanimelist_xml_path and MyAnimeListWatchStatusProvider is not None:
+        if resolved_mal_path and MyAnimeListWatchStatusProvider is not None:
             try:
-                self.myanimelist_provider = MyAnimeListWatchStatusProvider(myanimelist_xml_path)
+                self.myanimelist_provider = MyAnimeListWatchStatusProvider(resolved_mal_path)
             except Exception as e:
-                print(f"Warning: Could not load MyAnimeList data from {myanimelist_xml_path}: {e}")
+                print(f"Warning: Could not load MyAnimeList data from {resolved_mal_path}: {e}")
         elif myanimelist_xml_path and MyAnimeListWatchStatusProvider is None:
             print("Warning: MyAnimeList functionality not available (video-optimizer-v2 not found)")
     
@@ -468,13 +483,21 @@ Examples:
     parser.add_argument('--quiet', '-q', action='store_true',
                        help='Same as --verbose 0')
     parser.add_argument('--myanimelist-xml', metavar='PATH_OR_URL',
-                       help='Path to MyAnimeList XML file or URL for watch status lookup')
+                       help='Path/dir (uses newest animelist_*.xml.gz), wildcard, or URL for MyAnimeList XML watch status')
     parser.add_argument('--generate-thumbnails', action='store_true',
                        help='Generate thumbnails for episodes (requires ffmpeg)')
     parser.add_argument('--thumbnail-dir', metavar='PATH', 
                        help='Directory to store thumbnails (default: ~/.video_thumbnail_cache)')
     
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
+    
+    # Validate that at least one input path is provided
+    if not args.input_paths:
+        parser.error('At least one input path is required')
+    
+    # Validate that --export is provided
+    if not args.export:
+        parser.error('--export is required')
     
     # Handle quiet flag
     if args.quiet:
@@ -532,10 +555,18 @@ Examples:
         return 1
     
     # Initialize the viewer
+    resolved_mal_path = args.myanimelist_xml
+    if args.myanimelist_xml and resolve_myanimelist_xml_path:
+        resolved_mal_path = resolve_myanimelist_xml_path(args.myanimelist_xml)
+        if resolved_mal_path is None:
+            print(f"Warning: No MyAnimeList XML found matching: {args.myanimelist_xml}")
+        elif resolved_mal_path != args.myanimelist_xml and args.verbose >= 1:
+            print(f"Using MyAnimeList XML: {resolved_mal_path}")
+
     viewer = LatestEpisodesViewer(
         metadata_manager=metadata_manager,
         plex_provider=plex_provider,
-        myanimelist_xml_path=args.myanimelist_xml
+        myanimelist_xml_path=resolved_mal_path
     )
     
     try:

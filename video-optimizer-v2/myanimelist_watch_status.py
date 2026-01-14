@@ -1,12 +1,16 @@
-import xml.etree.ElementTree as ET
+import glob
+import logging
+import os
 import re
-import requests
+import xml.etree.ElementTree as ET
 import gzip
+import requests
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
 from functools import lru_cache
-import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class MyAnimeListWatchStatus:
@@ -22,6 +26,49 @@ class MyAnimeListWatchStatus:
     my_rewatching: bool = False
     series_episodes: int = 0
     progress_percent: float = 0.0
+
+
+def resolve_myanimelist_xml_path(path_pattern: str) -> Optional[str]:
+    """Resolve a MyAnimeList XML path, supporting wildcards, folders, and URLs.
+
+    If a directory is provided, defaults to newest file matching "animelist_*.xml.gz".
+    """
+    if not path_pattern:
+        return None
+
+    # Pass through URLs untouched
+    if path_pattern.startswith(('http://', 'https://')):
+        return path_pattern
+
+    expanded_pattern = os.path.expanduser(path_pattern)
+    # Normalize path by removing trailing slashes
+    expanded_pattern = expanded_pattern.rstrip(os.sep)
+
+    # If the user points to a directory, use the default filename pattern
+    if os.path.isdir(expanded_pattern):
+        expanded_pattern = os.path.join(expanded_pattern, "animelist_*.xml.gz")
+
+    # Direct file path without wildcards
+    if '*' not in expanded_pattern and '?' not in expanded_pattern:
+        return expanded_pattern if os.path.isfile(expanded_pattern) else None
+
+    # Wildcard pattern: pick the newest matching file
+    matching_files = [f for f in glob.glob(expanded_pattern) if os.path.isfile(f)]
+    if not matching_files:
+        return None
+
+    latest_file = max(matching_files, key=os.path.getctime)
+
+    if len(matching_files) > 1:
+        created_at = datetime.fromtimestamp(os.path.getctime(latest_file)).strftime('%Y-%m-%d %H:%M:%S')
+        logger.debug(
+            "Using latest MyAnimeList XML match %s (created %s) from pattern %s",
+            latest_file,
+            created_at,
+            path_pattern,
+        )
+
+    return latest_file
 
 class MyAnimeListWatchStatusProvider:
     """Provider for querying MyAnimeList XML for watch status"""

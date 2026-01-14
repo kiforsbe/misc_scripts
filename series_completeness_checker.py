@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from enum import Enum
@@ -8,6 +9,11 @@ from dataclasses import dataclass, field, asdict
 
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
+try:
+    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
+    from myanimelist_watch_status import resolve_myanimelist_xml_path
+except ImportError:
+    resolve_myanimelist_xml_path = None
 
 # ANSI Color codes for terminal output
 class Colors:
@@ -425,7 +431,7 @@ Refresh Operations:
                                 'Common fields: year, rating, genres, director, actors, plot, runtime, imdb_id. '
                                 'Example: --show-metadata year rating genres')
         parser.add_argument('--myanimelist-xml', metavar='PATH_OR_URL',
-                           help='Path to MyAnimeList XML file (can be .gz) or URL for watch status lookup')
+                           help='Path/dir (uses newest animelist_*.xml.gz), wildcard, or URL for MyAnimeList XML')
         
         # Thumbnail arguments
         parser.add_argument('--generate-thumbnails', action='store_true',
@@ -442,7 +448,7 @@ Refresh Operations:
         Returns:
             Parsed arguments namespace with 'refresh_mode' attribute added
         """
-        parsed = self.parser.parse_args(args)
+        parsed = self.parser.parse_intermixed_args(args)
         self._validate_args(parsed)
         # Add refresh_mode attribute for convenience
         parsed.refresh_mode = self._get_refresh_mode(parsed)
@@ -620,14 +626,23 @@ class SeriesCompletenessChecker:
             myanimelist_xml_path: Path to MyAnimeList XML file
             metadata_only: If True, skip FileGrouper initialization (for loading from JSON)
         """
+        resolved_mal_path = (
+            resolve_myanimelist_xml_path(myanimelist_xml_path)
+            if myanimelist_xml_path and resolve_myanimelist_xml_path
+            else myanimelist_xml_path
+        )
+
+        if myanimelist_xml_path and not resolved_mal_path:
+            print(f"Warning: No MyAnimeList XML found matching: {myanimelist_xml_path}")
+
         self.metadata_only = metadata_only
         if not metadata_only:
-            self.file_grouper = FileGrouper(metadata_manager, plex_provider, myanimelist_xml_path)
+            self.file_grouper = FileGrouper(metadata_manager, plex_provider, resolved_mal_path)
         else:
             self.file_grouper = None
         self.metadata_manager = metadata_manager
         self.plex_provider = plex_provider
-        self.myanimelist_xml_path = myanimelist_xml_path
+        self.myanimelist_xml_path = resolved_mal_path
         self.completeness_results = {}
     
     def load_results(self, input_path: str) -> Dict[str, Any]:
@@ -2038,10 +2053,21 @@ def main():
     
     # Create checker instance with MyAnimeList support
     # Use metadata_only mode when in refresh mode to skip FileGrouper initialization
+    resolved_mal_path = args.myanimelist_xml if hasattr(args, 'myanimelist_xml') else None
+    if resolved_mal_path and resolve_myanimelist_xml_path:
+        resolved_candidate = resolve_myanimelist_xml_path(resolved_mal_path)
+        if resolved_candidate is None:
+            if verbosity >= 1:
+                print(f"Warning: No MyAnimeList XML found matching: {resolved_mal_path}")
+        else:
+            if resolved_candidate != resolved_mal_path and verbosity >= 1:
+                print(f"Using MyAnimeList XML: {resolved_candidate}")
+            resolved_mal_path = resolved_candidate
+
     checker = SeriesCompletenessChecker(
         metadata_manager, 
         plex_provider,
-        args.myanimelist_xml if hasattr(args, 'myanimelist_xml') else None,
+        resolved_mal_path,
         metadata_only=bool(refresh_mode)
     )
 

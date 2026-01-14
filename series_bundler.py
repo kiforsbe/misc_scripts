@@ -1,5 +1,4 @@
 import argparse
-import glob
 import os
 import shutil
 import sys
@@ -108,6 +107,11 @@ except ImportError:
 
 from guessit_wrapper import guessit_wrapper
 from file_grouper import FileGrouper
+try:
+    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
+    from myanimelist_watch_status import resolve_myanimelist_xml_path
+except ImportError:
+    resolve_myanimelist_xml_path = None
 
 
 class SeriesBundler:
@@ -132,21 +136,22 @@ class SeriesBundler:
         self.verbose = verbose
         self.use_colors = use_colors and COLORAMA_AVAILABLE
         
-        # Resolve wildcards if MAL path is provided
-        if myanimelist_xml_path:
-            # Resolve wildcards if present
-            resolved_path = self._resolve_wildcard_path(myanimelist_xml_path)
-            if resolved_path:
-                myanimelist_xml_path = resolved_path
-            else:
-                self._log(f"Warning: No files found matching pattern: {myanimelist_xml_path}", 1)
-                myanimelist_xml_path = None
+        resolved_mal_path = (
+            resolve_myanimelist_xml_path(myanimelist_xml_path)
+            if myanimelist_xml_path and resolve_myanimelist_xml_path
+            else myanimelist_xml_path
+        )
+
+        if myanimelist_xml_path and not resolved_mal_path:
+            self._log(f"Warning: No MyAnimeList XML found matching: {myanimelist_xml_path}", 1)
+        elif resolved_mal_path and resolved_mal_path != myanimelist_xml_path:
+            self._log(f"Using MyAnimeList XML: {resolved_mal_path}", 1)
         
         # Initialize FileGrouper with metadata support
         self.file_grouper = FileGrouper(
             metadata_manager=metadata_manager,
             plex_provider=None,  # Not using Plex in series bundler
-            myanimelist_xml_path=myanimelist_xml_path
+            myanimelist_xml_path=resolved_mal_path
         )
         
         # Log metadata manager availability
@@ -179,46 +184,6 @@ class SeriesBundler:
         }
         return emoji_map.get(emoji_type.lower(), '')
         
-    def _resolve_wildcard_path(self, path_pattern: str) -> Optional[str]:
-        """Resolve wildcard path pattern to the latest matching file.
-        
-        Args:
-            path_pattern: File path pattern, may contain wildcards (* or ?)
-            
-        Returns:
-            Path to the latest file matching the pattern, or None if no matches
-        """
-        # Expand user home directory
-        expanded_pattern = os.path.expanduser(path_pattern)
-        
-        # Check if pattern contains wildcards
-        if '*' not in expanded_pattern and '?' not in expanded_pattern:
-            # No wildcard, return as-is if file exists
-            return expanded_pattern if os.path.isfile(expanded_pattern) else None
-        
-        # Find all matching files
-        matching_files = glob.glob(expanded_pattern)
-        
-        if not matching_files:
-            return None
-        
-        # Filter to only files (not directories)
-        matching_files = [f for f in matching_files if os.path.isfile(f)]
-        
-        if not matching_files:
-            return None
-        
-        # Find the file with the latest creation time
-        latest_file = max(matching_files, key=lambda f: os.path.getctime(f))
-        
-        # Log which file was selected
-        if len(matching_files) > 1:
-            latest_date = datetime.fromtimestamp(os.path.getctime(latest_file)).strftime('%Y-%m-%d %H:%M:%S')
-            self._log(f"Found {len(matching_files)} files matching pattern '{path_pattern}'", 1)
-            self._log(f"Using latest file: {latest_file} (created: {latest_date})", 1)
-        
-        return latest_file
-    
     def _log(self, message: str, level: int = 1):
         """Log message if verbosity level is sufficient."""
         if self.verbose >= level:
@@ -1254,7 +1219,7 @@ Examples:
     
     parser.add_argument(
         'paths',
-        nargs='+',
+        nargs='*',
         help='Paths to files or directories to process'
     )
     
@@ -1313,7 +1278,11 @@ Examples:
              'Supports wildcards (* and ?) - will use the latest file by creation time if multiple matches found.'
     )
     
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
+    
+    # Validate that at least one path is provided
+    if not args.paths:
+        parser.error('At least one path is required')
     
     # Check for drag-and-drop mode
     is_drag_drop = detect_drag_drop_mode(args) and not args.no_interactive
