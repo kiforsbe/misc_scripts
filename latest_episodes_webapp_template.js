@@ -394,16 +394,7 @@ class LatestEpisodesApp {
         const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
 
-        // Plex link logic
-        let plexLinkHtml = '';
-        const plex = episode.plex_watch_status;
-        if (plex && plex.server_hash && plex.metadata_item_id) {
-            const plexUrl = `http://127.0.0.1:32400/web/index.html#!/server/${plex.server_hash}/details?key=%2Flibrary%2Fmetadata%2F${plex.metadata_item_id}`;
-            plexLinkHtml = `<a class="plex-link external-link" href="${plexUrl}" target="_blank" rel="noopener" title="Open in Plex">
-                <span class="plex-icon"><svg width="1em" height="1em" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;"><circle cx="16" cy="16" r="16" fill="#282a2d"/><path d="M12.5 8v16l10-8-10-8z" fill="#e5a00d"/></svg></span>
-                Plex
-            </a>`;
-        }
+        // (Plex button moved to Watch Status section)
 
         let detailsHtml = `
             <div class="details-header" style="position: relative;">
@@ -422,7 +413,6 @@ class LatestEpisodesApp {
                 <h2 class="details-title">${this.escapeHtml(seriesTitle)}</h2>
                 <p class="details-subtitle">Season ${episode.metadata.season || 1}, Episode ${episode.metadata.episode}</p>
                 ${episodeTitle !== `Episode ${episode.metadata.episode}` ? `<p class="episode-subtitle">${this.escapeHtml(episodeTitle)}</p>` : ''}
-                ${plexLinkHtml}
             </div>
             
             <div class="details-grid">
