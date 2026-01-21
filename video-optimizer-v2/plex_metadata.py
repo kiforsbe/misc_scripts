@@ -8,6 +8,8 @@ from datetime import datetime
 import threading
 import time
 import weakref
+import requests
+import xml.etree.ElementTree as ET
 
 @dataclass
 class PlexWatchStatus:
@@ -22,6 +24,22 @@ class PlexWatchStatus:
     plex_title: Optional[str] = None
     plex_year: Optional[int] = None
     library_section: Optional[str] = None
+    server_hash: Optional[str] = None  # Plex server hash
+    queried_id: Optional[str] = None   # The id or title used for the query
+    metadata_item_id: Optional[int] = None  # Plex metadata_items.id
+
+    def get_plex_url(self, server_host: str = "localhost", server_port: int = 32400) -> Optional[str]:
+        """
+        Construct a Plex web URL to this media item.
+        Args:
+            server_host: Hostname or IP of the Plex server (default: localhost)
+            server_port: Port of the Plex server (default: 32400)
+        Returns:
+            URL string or None if required info is missing
+        """
+        if self.server_hash and self.metadata_item_id:
+            return f"http://{server_host}:{server_port}/web/index.html#!/server/{self.server_hash}/details?key=%2Flibrary%2Fmetadata%2F{self.metadata_item_id}"
+        return None
 
 class PlexConnectionPool:
     """Connection pool for Plex database with automatic cleanup"""
@@ -173,20 +191,25 @@ class PlexConnectionPool:
 
 class PlexMetadataProvider:
     """Provider for querying Plex database for watch status"""
-    
-    def __init__(self, plex_data_dir: Optional[str] = None, pool_size: int = 3, connection_timeout: float = 30.0):
+
+    def __init__(self, plex_data_dir: Optional[str] = None, pool_size: int = 3, connection_timeout: float = 30.0, plex_host: str = "127.0.0.1", plex_port: int = 32400):
         """
         Initialize Plex metadata provider
-        
+
         Args:
             plex_data_dir: Path to Plex data directory. If None, will try to auto-detect.
             pool_size: Maximum number of connections to keep in pool
             connection_timeout: Seconds to keep idle connections open
+            plex_host: Hostname or IP of Plex server for API calls
+            plex_port: Port of Plex server for API calls
         """
         self.plex_data_dir = plex_data_dir or self._find_plex_data_dir()
         self.db_path = None
         self.connection_pool = None
-        
+        self.plex_host = plex_host
+        self.plex_port = plex_port
+        self._server_hash = None
+
         if self.plex_data_dir:
             self.db_path = os.path.join(self.plex_data_dir, "Plug-in Support", "Databases", "com.plexapp.plugins.library.db")
             if os.path.exists(self.db_path):
@@ -216,6 +239,26 @@ class PlexMetadataProvider:
         
         return os.path.exists(self.db_path) and self.connection_pool is not None
     
+    def get_server_hash(self, conn=None) -> Optional[str]:
+        """
+        Get the server hash (machineIdentifier) from Plex API /identity endpoint.
+        Caches the result for future calls.
+        """
+        if self._server_hash:
+            return self._server_hash
+        try:
+            url = f"http://{self.plex_host}:{self.plex_port}/identity"
+            response = requests.get(url, timeout=2)
+            if response.status_code == 200:
+                root = ET.fromstring(response.text)
+                machine_id = root.attrib.get("machineIdentifier")
+                if machine_id:
+                    self._server_hash = machine_id
+                    return machine_id
+        except Exception as e:
+            logging.warning(f"Could not retrieve server hash from Plex API: {e}")
+        return None
+
     def get_watch_status(self, file_path: str) -> Optional[PlexWatchStatus]:
         """
         Get watch status for a specific file path
@@ -234,10 +277,13 @@ class PlexMetadataProvider:
             # Normalize path for comparison
             normalized_path = Path(file_path).resolve().as_posix()
             filename = os.path.basename(normalized_path)
-            
+
             conn = self.connection_pool.get_connection()
             cursor = conn.cursor()
-            
+
+            # Get server hash
+            server_hash = self.get_server_hash(conn)
+
             # Updated query to match by filename as well as full path
             media_query = """
             SELECT 
@@ -293,7 +339,9 @@ class PlexMetadataProvider:
                     progress_percent=0.0,  # Cannot calculate without view_offset
                     plex_title=media_result['title'],
                     plex_year=media_result['year'],
-                    library_section=media_result['library_section']
+                    library_section=media_result['library_section'],
+                    server_hash=server_hash,
+                    metadata_item_id=media_result['metadata_item_id']
                 )
                 
         except Exception as e:
@@ -323,7 +371,10 @@ class PlexMetadataProvider:
         try:
             conn = self.connection_pool.get_connection()
             cursor = conn.cursor()
-            
+
+            # Get server hash
+            server_hash = self.get_server_hash(conn)
+
             # Updated query to use correct Plex database schema
             media_query = """
             SELECT 
@@ -378,7 +429,10 @@ class PlexMetadataProvider:
                     progress_percent=0.0,  # Cannot calculate without view_offset
                     plex_title=media_row['title'],
                     plex_year=media_row['year'],
-                    library_section=media_row['library_section']
+                    library_section=media_row['library_section'],
+                    server_hash=server_hash,
+                    queried_id=title,
+                    metadata_item_id=media_row['metadata_item_id']
                 ))
                 
         except Exception as e:

@@ -304,7 +304,15 @@ class LatestEpisodesViewer:
                         'watched': plex_status.watched,
                         'watch_count': plex_status.watch_count,
                         'progress_percent': plex_status.progress_percent,
-                        'last_watched': plex_status.last_watched.isoformat() if plex_status.last_watched else None
+                        'last_watched': plex_status.last_watched.isoformat() if plex_status.last_watched else None,
+                        'server_hash': plex_status.server_hash,
+                        'metadata_item_id': plex_status.metadata_item_id,
+                        'plex_title': plex_status.plex_title,
+                        'plex_year': plex_status.plex_year,
+                        'library_section': plex_status.library_section,
+                        'duration': plex_status.duration,
+                        'view_offset': plex_status.view_offset,
+                        'queried_id': plex_status.queried_id
                     }
             except Exception as e:
                 logging.debug(f"Could not get Plex status for {episode['file_path']}: {e}")

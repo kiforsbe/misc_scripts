@@ -1,3 +1,48 @@
+.plex-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  font-weight: 600;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  background: #e5a00d; /* Plex orange */
+  color: #111; /* dark text */
+  box-shadow: 0 1px 0 rgba(0,0,0,0.08) inset;
+}
+
+.plex-link:hover {
+  background: #f0b31a;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+}
+
+.plex-link .plex-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: rgba(0,0,0,0.12);
+  color: #111;
+  border-radius: 6px;
+  padding: 0;
+}
+
+.plex-link .plex-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.plex-link .plex-icon svg circle {
+  display: none; /* hide circle if SVG contains one */
+}
+
+.plex-link .plex-icon svg path {
+  fill: currentColor !important; /* make triangle use icon color */
+}
 :root {
   --primary-color: #6f42c1;
   --secondary-color: #495057;
