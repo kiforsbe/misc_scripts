@@ -1053,3 +1053,37 @@ body {
   padding: 0.375rem 0.75rem;
   font-size: 0.8rem;
 }
+
+/* Mobile-specific behavior: hide heavy hover popups, collapsible filters, and exclusive list/main views */
+#filter-toggle { display: none; }
+#back-to-list-btn { display: none; }
+
+@media (max-width: 768px) {
+  /* Hide hover popup entirely on small screens */
+  #episode-hover-popup { display: none !important; }
+
+  /* Make the filter controls toggleable */
+  #filter-toggle { display: inline-flex; margin-top: 0.5rem; }
+  .filter-controls { display: block; }
+  .filter-controls.collapsed { display: none; }
+
+  /* Make sidebar and main-content mutually exclusive on mobile
+     Default: show sidebar (list). When .mobile-show-main is added
+     to .content-container, show main-content instead. */
+  .content-container { flex-direction: column; }
+  .content-container .sidebar { width: 100%; height: auto; max-height: 100vh; overflow: auto; }
+  .content-container .main-content { display: none; width: 100%; height: calc(100vh - 120px); padding: 1rem; overflow-y: auto; }
+  .content-container.mobile-show-main .sidebar { display: none; }
+  .content-container.mobile-show-main .main-content { display: block; }
+
+  /* Show back button when viewing main content on mobile */
+  /* back-to-list inside main-content is kept hidden; header button is used instead */
+  #back-to-list-btn { display: none; }
+
+  /* Header mobile back button (shown when header has mobile-showing-main) */
+  .header.mobile-showing-main .mobile-back-btn { display: inline-flex; margin-right: 0.75rem; }
+  .mobile-back-btn { display: none; align-items: center; justify-content: center; }
+
+  /* Slightly reduce header padding on mobile */
+  .header { padding: 0.75rem; }
+}

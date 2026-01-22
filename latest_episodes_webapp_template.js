@@ -25,7 +25,21 @@ class LatestEpisodesApp {
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
         this.isNavigating = false; // Flag to prevent infinite loops during navigation
+        this.mobileBreakpoint = 768;
         this.init();
+    }
+
+    buildUrl(staticUrl) {
+        if (!staticUrl) return '';
+        const fileUrl = 'file:///' + staticUrl;
+        try {
+            if (location && location.protocol === 'file:') {
+                return fileUrl;
+            }
+        } catch (e) {
+            // ignore
+        }
+        return `/file-proxy?target=${encodeURIComponent(fileUrl)}`;
     }
     
     selectEpisodeByPath(filePath) {
@@ -86,6 +100,13 @@ class LatestEpisodesApp {
         this.populateSeriesFilter();
         this.filterAndDisplayEpisodes();
         this.handleInitialNavigation();
+        // Prepare mobile initial state: collapse filters and ensure list is shown
+        if (this.isMobile()) {
+            const controls = document.getElementById('filter-controls');
+            if (controls) controls.classList.add('collapsed');
+            const cc = document.querySelector('.content-container');
+            if (cc) cc.classList.remove('mobile-show-main');
+        }
     }
     
     setupEventListeners() {
@@ -131,6 +152,114 @@ class LatestEpisodesApp {
                 this.navigateList(e.key === 'ArrowDown' ? 1 : -1);
             }
         });
+
+        // Mobile: filter toggle button
+        const filterToggle = document.getElementById('filter-toggle');
+        if (filterToggle) {
+            filterToggle.addEventListener('click', () => {
+                const controls = document.getElementById('filter-controls');
+                if (!controls) return;
+                controls.classList.toggle('collapsed');
+                const expanded = !controls.classList.contains('collapsed');
+                filterToggle.setAttribute('aria-expanded', expanded);
+            });
+        }
+
+        // Back to list button (mobile)
+        const backBtn = document.getElementById('back-to-list-btn');
+        if (backBtn) {
+            backBtn.addEventListener('click', () => {
+                this.showListOnMobile();
+            });
+        }
+
+        // Header mobile back button
+        const mobileHeaderBack = document.getElementById('mobile-back-btn');
+        if (mobileHeaderBack) {
+            mobileHeaderBack.addEventListener('click', () => {
+                this.showListOnMobile();
+            });
+        }
+
+        // Window resize: ensure popups hidden on mobile and clear mobile classes when switching to desktop
+        window.addEventListener('resize', () => {
+            if (this.isMobile()) {
+                this.hideEpisodePopup();
+            } else {
+                const cc = document.querySelector('.content-container');
+                if (cc && cc.classList.contains('mobile-show-main')) {
+                    cc.classList.remove('mobile-show-main');
+                }
+                const controls = document.getElementById('filter-controls');
+                if (controls) controls.classList.remove('collapsed');
+            }
+        });
+
+        // Simple swipe detection for mobile to swipe-right -> show list
+        let touchStartX = 0;
+        let touchStartY = 0;
+        document.addEventListener('touchstart', (e) => {
+            if (!e.touches || e.touches.length === 0) return;
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+        }, { passive: true });
+
+        document.addEventListener('touchend', (e) => {
+            if (!e.changedTouches || e.changedTouches.length === 0) return;
+            const dx = e.changedTouches[0].clientX - touchStartX;
+            const dy = e.changedTouches[0].clientY - touchStartY;
+            // horizontal swipe with sufficient distance and not much vertical movement
+            if (Math.abs(dx) > 100 && Math.abs(dy) < 80) {
+                if (dx > 0) {
+                    // swipe right -> go back to list on mobile
+                    if (this.isMobile()) {
+                        this.showListOnMobile();
+                        // push a list state so back/forward reflect the change
+                        if (this.selectedEpisode) this.updateUrlForList(this.selectedEpisode);
+                    }
+                }
+            }
+        }, { passive: true });
+    }
+
+    isMobile() {
+        return window.innerWidth <= this.mobileBreakpoint;
+    }
+
+    showMainOnMobile() {
+        const cc = document.querySelector('.content-container');
+        if (cc) cc.classList.add('mobile-show-main');
+        // Show header back button and mark header state
+        const header = document.querySelector('.header');
+        if (header) header.classList.add('mobile-showing-main');
+        const mobileBack = document.getElementById('mobile-back-btn');
+        if (mobileBack) mobileBack.style.display = 'inline-flex';
+        // hide in-content back button if present
+        const backBtn = document.getElementById('back-to-list-btn');
+        if (backBtn) backBtn.style.display = 'none';
+    }
+
+    showListOnMobile() {
+        const cc = document.querySelector('.content-container');
+        if (cc) cc.classList.remove('mobile-show-main');
+        // If an episode was selected, ensure it is visible in the list
+        setTimeout(() => {
+            if (!this.selectedEpisode) return;
+            const idx = this.filteredEpisodes.findIndex(ep => ep.file_path === this.selectedEpisode.file_path);
+            if (idx !== -1) {
+                const el = document.querySelector(`[data-index="${idx}"]`);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }, 120);
+        // Hide header back button and clear header state
+        const header = document.querySelector('.header');
+        if (header) header.classList.remove('mobile-showing-main');
+        const mobileBack = document.getElementById('mobile-back-btn');
+        if (mobileBack) mobileBack.style.display = 'none';
+        // Push a list state so URL reflects list view (avoid when navigating programmatically)
+        if (!this.isNavigating) {
+            this.updateUrlForList(this.selectedEpisode);
+        }
     }
 
     setupNavigation() {
@@ -332,13 +461,15 @@ class LatestEpisodesApp {
         const thumbnailData = this.getThumbnailData(episode);
         const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
-        
+        const imgSrc = staticUrl ? this.buildUrl(staticUrl) : '';
+        const imgAnim = animUrl ? this.buildUrl(animUrl) : '';
+
         return `
             <div class="episode-item ${watchStatus}" onclick="app.selectEpisode(${index})" data-index="${index}"
                  onmouseenter="app.showEpisodePopup(event, ${index})" onmouseleave="app.hideEpisodePopup()">
                 <div class="episode-thumbnail">
                     ${staticUrl ? 
-                        `<img src="file:///${staticUrl}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src='file:///${animUrl}'" onmouseleave="if(this.dataset.animUrl) this.src='file:///${staticUrl}'" data-anim-url="${animUrl || ''}">` : 
+                        `<img src="${imgSrc}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">` : 
                         ''}
                     <div style="${staticUrl ? 'display: none;' : 'display: flex;'} width: 100%; height: 100%; align-items: center; justify-content: center;">
                         ${episode.metadata.episode || '?'}
@@ -362,7 +493,7 @@ class LatestEpisodesApp {
         `;
     }
     
-    selectEpisode(index, updateUrl = true) {
+    selectEpisode(index, updateUrl = true, suppressMobileToggle = false) {
         // Update visual selection
         document.querySelectorAll('.episode-item').forEach(item => {
             item.classList.remove('selected');
@@ -377,6 +508,11 @@ class LatestEpisodesApp {
             // Update URL and browser history
             if (updateUrl && !this.isNavigating) {
                 this.updateUrlForEpisode(this.selectedEpisode);
+            }
+            // On mobile show the main content (details) and hide list unless suppressed
+            if (this.isMobile() && !suppressMobileToggle) {
+                this.showMainOnMobile();
+                this.hideEpisodePopup();
             }
         }
     }
@@ -393,6 +529,8 @@ class LatestEpisodesApp {
         const thumbnailData = this.getThumbnailData(episode);
         const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
+        const imgSrc = staticUrl ? this.buildUrl(staticUrl) : '';
+        const imgAnim = animUrl ? this.buildUrl(animUrl) : '';
 
         // (Plex button moved to Watch Status section)
 
@@ -400,11 +538,11 @@ class LatestEpisodesApp {
             <div class="details-header" style="position: relative;">
                 ${staticUrl ? `
                     <div class="episode-detail-thumbnail">
-                        <img src="file:///${staticUrl}" alt="Episode thumbnail" 
+                        <img src="${imgSrc}" alt="Episode thumbnail" 
                              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" 
-                             onmouseenter="if(this.dataset.animUrl) this.src='file:///${animUrl}'" 
-                             onmouseleave="if(this.dataset.animUrl) this.src='file:///${staticUrl}'" 
-                             data-anim-url="${animUrl || ''}">
+                             onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" 
+                             onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" 
+                             data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">
                         <div style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center;">
                             ${episode.metadata.episode || '?'}
                         </div>
@@ -552,12 +690,14 @@ class LatestEpisodesApp {
                     <div class="series-episodes-grid">
             `;
             
-            seriesEpisodes.forEach(ep => {
+                seriesEpisodes.forEach(ep => {
                 const isCurrentEpisode = ep.file_path === episode.file_path;
                 const epWatchStatus = this.getEpisodeWatchStatus(ep);
                 const epThumbnailData = this.getThumbnailData(ep);
                 const epStaticUrl = epThumbnailData && epThumbnailData.static_thumbnail ? epThumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
                 const epAnimUrl = epThumbnailData && epThumbnailData.animated_thumbnail ? epThumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
+                const epImgSrc = epStaticUrl ? this.buildUrl(epStaticUrl) : '';
+                const epImgAnim = epAnimUrl ? this.buildUrl(epAnimUrl) : '';
                 const epTitle = ep.metadata.episode_title || `Episode ${ep.metadata.episode}`;
                 const epDownloadDate = new Date(ep.download_date);
                 
@@ -567,7 +707,7 @@ class LatestEpisodesApp {
                          style="${isCurrentEpisode ? '' : 'cursor: pointer;'}">
                         <div class="series-episode-thumbnail">
                             ${epStaticUrl ? 
-                                `<img src="file:///${epStaticUrl}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.25rem;" onmouseenter="if(this.dataset.animUrl) this.src='file:///${epAnimUrl}'" onmouseleave="if(this.dataset.animUrl) this.src='file:///${epStaticUrl}'" data-anim-url="${epAnimUrl || ''}">` : 
+                                `<img src="${epImgSrc}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.25rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${epImgAnim || ''}" data-static-url="${epImgSrc}">` : 
                                 ''}
                             <div style="${epStaticUrl ? 'display: none;' : 'display: flex;'} width: 100%; height: 100%; align-items: center; justify-content: center;">
                                 ${ep.metadata.episode || '?'}
@@ -798,19 +938,79 @@ class LatestEpisodesApp {
         history.pushState(state, '', newUrl);
         this.isNavigating = false;
     }
+
+    updateUrlForList(episode) {
+        // Push a URL that uses the `list` parameter instead of `series`.
+        const urlParams = new URLSearchParams();
+        if (episode && episode.metadata && episode.metadata.title) {
+            urlParams.set('list', encodeURIComponent(episode.metadata.title));
+            urlParams.set('season', episode.metadata.season || 1);
+            urlParams.set('episode', episode.metadata.episode);
+        }
+
+        if (this.searchTerm) urlParams.set('search', this.searchTerm);
+        if (this.watchStatusFilter !== 'all') urlParams.set('watchStatus', this.watchStatusFilter);
+        if (this.malStatusFilter !== 'all') urlParams.set('malStatus', this.malStatusFilter);
+        if (this.seriesFilter !== 'all') urlParams.set('seriesFilter', this.seriesFilter);
+        if (this.groupBy !== 'none') urlParams.set('groupBy', this.groupBy);
+
+        const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
+        const state = {
+            list: episode && episode.metadata ? episode.metadata.title : null,
+            season: episode && episode.metadata ? (episode.metadata.season || 1) : null,
+            episode: episode && episode.metadata ? episode.metadata.episode : null,
+            filters: {
+                search: this.searchTerm,
+                watchStatus: this.watchStatusFilter,
+                malStatus: this.malStatusFilter,
+                seriesFilter: this.seriesFilter,
+                groupBy: this.groupBy
+            }
+        };
+
+        this.isNavigating = true;
+        history.pushState(state, '', newUrl);
+        this.isNavigating = false;
+    }
     
     handleInitialNavigation() {
         const urlParams = new URLSearchParams(window.location.search);
         const hash = window.location.hash;
-        
-        // Handle URL parameters
-        if (urlParams.has('series') && urlParams.has('episode')) {
+        // Apply any filters present in the URL
+        if (urlParams && Array.from(urlParams.keys()).length > 0) {
             this.applyFiltersFromUrl(urlParams);
-            this.navigateToEpisodeFromUrl(urlParams);
+        }
+
+        // Handle URL parameters (support both `series` and `list`)
+        if (urlParams.has('list') || urlParams.has('series')) {
+            if (urlParams.has('episode')) {
+                this.navigateUsingUrlParams(urlParams);
+            } else {
+                // `list` present with no episode -> show list view and no selection
+                // `series` present with no episode also defaults to list view
+                if (this.isMobile()) this.showListOnMobile();
+                // Clear any selection and show default welcome/details
+                this.selectedEpisode = null;
+                const container = document.getElementById('episode-details');
+                if (container) {
+                    container.innerHTML = `
+                        <div class="welcome-message">
+                            <i class="bi bi-play-circle display-1 text-muted"></i>
+                            <h3 class="text-muted">Select an episode to view details</h3>
+                            <p class="text-muted">Choose an episode from the list on the left to see detailed information about the episode and series.</p>
+                        </div>
+                    `;
+                }
+            }
         }
         // Handle hash-based navigation (legacy support)
         else if (hash) {
             this.handleHashNavigation();
+        }
+        // No query params -> default to list view
+        else {
+            if (this.isMobile()) this.showListOnMobile();
+            this.resetToDefaultView();
         }
     }
     
@@ -828,9 +1028,51 @@ class LatestEpisodesApp {
             this.applyFilters(state.filters);
         }
         
-        // Navigate to specific episode
-        if (state.series && state.episode) {
-            this.navigateToEpisode(state.series, state.season || 1, state.episode);
+        // Navigate to specific episode or show list-only states
+        if (state.list) {
+            // If state has an episode, navigate to it; otherwise show list only
+            if (state.episode) {
+                if (this.isMobile()) this.showListOnMobile();
+                // When URL uses `list`, on mobile we want to keep the list view visible
+                this.navigateToEpisode(state.list, state.season || 1, state.episode, this.isMobile());
+            } else {
+                // list-only: apply filters and clear selection
+                this.applyFilters(state.filters || {});
+                this.selectedEpisode = null;
+                document.querySelectorAll('.episode-item').forEach(item => item.classList.remove('selected'));
+                const container = document.getElementById('episode-details');
+                if (container) {
+                    container.innerHTML = `
+                        <div class="welcome-message">
+                            <i class="bi bi-play-circle display-1 text-muted"></i>
+                            <h3 class="text-muted">Select an episode to view details</h3>
+                            <p class="text-muted">Choose an episode from the list on the left to see detailed information about the episode and series.</p>
+                        </div>
+                    `;
+                }
+                if (this.isMobile()) this.showListOnMobile();
+            }
+        } else if (state.series) {
+            if (state.episode) {
+                if (this.isMobile()) this.showMainOnMobile();
+                this.navigateToEpisode(state.series, state.season || 1, state.episode);
+            } else {
+                // series-only without episode -> treat as list view default
+                this.applyFilters(state.filters || {});
+                this.selectedEpisode = null;
+                document.querySelectorAll('.episode-item').forEach(item => item.classList.remove('selected'));
+                const container = document.getElementById('episode-details');
+                if (container) {
+                    container.innerHTML = `
+                        <div class="welcome-message">
+                            <i class="bi bi-play-circle display-1 text-muted"></i>
+                            <h3 class="text-muted">Select an episode to view details</h3>
+                            <p class="text-muted">Choose an episode from the list on the left to see detailed information about the episode and series.</p>
+                        </div>
+                    `;
+                }
+                if (this.isMobile()) this.showListOnMobile();
+            }
         }
         
         this.isNavigating = false;
@@ -897,14 +1139,46 @@ class LatestEpisodesApp {
     }
     
     navigateToEpisodeFromUrl(urlParams) {
-        const series = decodeURIComponent(urlParams.get('series'));
+        // Backwards-compatible: if `series` param exists use it, otherwise use `list` param
+        const paramName = urlParams.has('series') ? 'series' : (urlParams.has('list') ? 'list' : null);
+        if (!paramName) return;
+        const series = decodeURIComponent(urlParams.get(paramName));
         const season = parseInt(urlParams.get('season')) || 1;
         const episode = parseInt(urlParams.get('episode'));
-        
+
+        // On mobile, `list` indicates we should show the list view instead
+        if (this.isMobile() && paramName === 'list') {
+            this.showListOnMobile();
+        } else if (this.isMobile() && paramName === 'series') {
+            this.showMainOnMobile();
+        }
+
         this.navigateToEpisode(series, season, episode);
     }
+
+    navigateUsingUrlParams(urlParams) {
+        // Decides whether the URL is `series` or `list` and navigates accordingly
+        const isList = urlParams.has('list');
+        const param = isList ? 'list' : 'series';
+        const title = decodeURIComponent(urlParams.get(param));
+        const season = parseInt(urlParams.get('season')) || 1;
+        const episode = parseInt(urlParams.get('episode'));
+
+        if (this.isMobile()) {
+            if (isList) {
+                this.applyFiltersFromUrl(urlParams);
+                this.showListOnMobile();
+            } else {
+                this.applyFiltersFromUrl(urlParams);
+                this.showMainOnMobile();
+            }
+        }
+
+        // If this is a `list` URL on mobile, suppress switching to main view when selecting the episode
+        this.navigateToEpisode(title, season, episode, (isList && this.isMobile()));
+    }
     
-    navigateToEpisode(seriesTitle, season, episodeNumber) {
+    navigateToEpisode(seriesTitle, season, episodeNumber, suppressMobileToggle = false) {
         // Find the episode in filtered results
         const episodeIndex = this.filteredEpisodes.findIndex(ep => 
             ep.metadata.title === seriesTitle && 
@@ -914,7 +1188,7 @@ class LatestEpisodesApp {
         
         if (episodeIndex !== -1) {
             // Episode found in filtered results
-            this.selectEpisode(episodeIndex, false); // Don't update URL again
+            this.selectEpisode(episodeIndex, false, suppressMobileToggle); // Don't update URL again
             this.scrollToEpisode(episodeIndex);
         } else {
             // Episode not found, might be filtered out
@@ -938,7 +1212,7 @@ class LatestEpisodesApp {
                 );
                 
                 if (newIndex !== -1) {
-                    this.selectEpisode(newIndex, false);
+                    this.selectEpisode(newIndex, false, suppressMobileToggle);
                     this.scrollToEpisode(newIndex);
                 }
             }
@@ -1164,6 +1438,9 @@ class LatestEpisodesApp {
         if (this.popupTimeout) {
             clearTimeout(this.popupTimeout);
         }
+
+        // Do not show hover popups on small/mobile screens
+        if (this.isMobile()) return;
         
         const episode = this.filteredEpisodes[index];
         if (!episode) return;
@@ -1215,9 +1492,25 @@ class LatestEpisodesApp {
         // Set thumbnail
         const thumbnailData = this.getThumbnailData(episode);
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
-        
+        const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
+
+        const popupStatic = staticUrl ? this.buildUrl(staticUrl) : '';
+        const popupAnim = animUrl ? this.buildUrl(animUrl) : '';
+
         if (animUrl) {
-            thumbnailImg.src = `file:///${animUrl}`;
+            thumbnailImg.src = popupAnim;
+            thumbnailImg.dataset.animUrl = popupAnim;
+            thumbnailImg.dataset.staticUrl = popupStatic;
+            thumbnailImg.style.display = 'block';
+            thumbnailPlaceholder.style.display = 'none';
+            thumbnailImg.onerror = () => {
+                thumbnailImg.style.display = 'none';
+                thumbnailPlaceholder.style.display = 'flex';
+                thumbnailPlaceholder.textContent = episode.metadata.episode || '?';
+            };
+        } else if (staticUrl) {
+            thumbnailImg.src = popupStatic;
+            thumbnailImg.dataset.staticUrl = popupStatic;
             thumbnailImg.style.display = 'block';
             thumbnailPlaceholder.style.display = 'none';
             thumbnailImg.onerror = () => {
