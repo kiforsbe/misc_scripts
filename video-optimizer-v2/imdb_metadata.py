@@ -638,7 +638,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 CREATE INDEX IF NOT EXISTS idx_title_covering ON title_basics(title_lower, year, type, title, genres);
 
                 -- Prefix index for fuzzy search optimization
-                CREATE INDEX IF NOT EXISTS idx_title_prefix ON title_basics(substr(title_lower, 1, 2), votes);
+                CREATE INDEX IF NOT EXISTS idx_title_prefix ON title_basics(substr(title_lower, 1, 2));
 
                 -- Indexes for title_ratings
                 CREATE INDEX IF NOT EXISTS idx_ratings_votes ON title_ratings(votes DESC);
