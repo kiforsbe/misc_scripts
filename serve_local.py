@@ -156,7 +156,7 @@ class CustomHandler(SimpleHTTPRequestHandler):
 
             # Log sandbox escape if serving from home_dir
             if os.name == 'nt' and os.path.commonpath([abs_path, home_dir]) == home_dir and os.path.commonpath([abs_path, webroot]) != webroot:
-                logger.warning('Approved sandbox escape: %s', abs_path)
+                logger.debug('Approved sandbox escape: %s', abs_path)
 
             if os.path.isdir(abs_path):
                 self.send_error(HTTPStatus.NOT_FOUND, 'not a file')
@@ -413,6 +413,7 @@ def main(argv=None):
     parser.add_argument("-p", "--port", type=int, default=8000, help="Port to listen on (default 8000)")
     parser.add_argument("-l", "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Logging level (default INFO)")
     parser.add_argument("--live", action="store_true", help="Enable live-reload (SSE) for forced index file")
+    parser.add_argument("--qrcode", action="store_true", help=("Print a camera-scannable QR for the server URL in the terminal. Requires qrcode-terminal package."))
     args = parser.parse_args(argv)
 
     # Configure logging early
@@ -444,7 +445,7 @@ def main(argv=None):
         # home directory; such escapes will be logged when they occur.
         try:
             if is_windows and os.path.commonpath([os.path.abspath(path), home_dir]) == os.path.abspath(home_dir):
-                logger.info("Provided file is inside user's home directory; /file-proxy?target= requests under %s will be allowed and logged (no web-root expansion).", home_dir)
+                logger.info("Provided file is inside user's home directory; /file-proxy?target= requests under '%s' will be allowed and logged (no web-root expansion).", home_dir)
         except Exception:
             pass
     else:
@@ -460,7 +461,7 @@ def main(argv=None):
         # We will allow explicit `file:///` requests into the user's home and log them.
         try:
             if is_windows and os.path.commonpath([os.path.abspath(root_dir), home_dir]) == os.path.abspath(home_dir):
-                logger.info("Provided folder is inside user's home directory; file:/// requests under %s will be allowed and logged (no web-root expansion).", home_dir)
+                logger.info("Provided folder is inside user's home directory; file:/// requests under '%s' will be allowed and logged (no web-root expansion).", home_dir)
         except Exception:
             pass
 
@@ -489,8 +490,16 @@ def main(argv=None):
 
     with ThreadedTCPServer(("", port), handler_factory) as httpd:
         sa = httpd.socket.getsockname()
-        logger.info("Serving HTTP on 0.0.0.0 port %s (http://%s:%s/)", sa[1], host_ip, sa[1])
-        logger.info("Also try http://127.0.0.1:%s/", sa[1])
+        url = f"http://{host_ip}:{sa[1]}/"
+        logger.info("Serving HTTP on 0.0.0.0 port %s (%s)", sa[1], url)
+        # Optionally generate a QR code for the served URL (terminal-only)
+        if args.qrcode:
+            try:
+                import qrcode_terminal
+                qrcode_terminal.draw(url)
+            except ImportError:
+                logger.warning("'qrcode-terminal' not installed; run 'pip install qrcode-terminal' to print QR in terminal")
+
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
