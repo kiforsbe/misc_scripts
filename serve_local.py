@@ -477,7 +477,7 @@ def main(argv=None):
             import sys
             logger = logging.getLogger('serve_local')
             exc_type, exc_value, exc_tb = sys.exc_info()
-            if isinstance(exc_value, (ConnectionAbortedError, BrokenPipeError)):
+            if isinstance(exc_value, (ConnectionAbortedError, BrokenPipeError, ConnectionResetError)):
                 logger.debug('Ignored client disconnect from %s: %s', client_address, exc_value)
             else:
                 logger.exception('Unhandled exception processing request from %s', client_address)
