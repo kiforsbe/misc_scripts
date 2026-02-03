@@ -16,7 +16,7 @@ import os
 import re
 import sys
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Iterable, List
 
 try:
@@ -75,46 +75,72 @@ def _select_providers(all_providers: ProviderMap, selection: List[str]) -> Itera
 
 
 def _parse_relative_text(text: str) -> int:
-    """Parse free-text duration like "2 months and 3 days" or short form like "7d", "2m7d" into total days."""
-    units = {"day": 0, "week": 0, "month": 0}
-    
-    # Single regex for both short form (7d, 2m, 2m7d) and long form (3 days, 2 months)
-    for value, unit in re.findall(r"(\d+)\s*([dwm]|days?|weeks?|months?)", text.lower()):
+    """Parse free-text duration like '1h 30m', '2 days', or short form '7d','2m7d'.
+
+    Returns total seconds represented by the input string. Accepts both
+    short forms and long forms. For clarity use 'min' for minutes (e.g.
+    '1min30s'). For backwards compatibility `m` and 'month(s)' still map
+    to months. Examples: '7d', '2m' (2 months), '90min', '1min30s'.
+    """
+    s = text.lower()
+    # Find all number+unit tokens (handles combined short forms like '1h30m')
+    tokens = re.findall(r"(\d+)\s*([a-zA-Z]+)", s)
+    if not tokens:
+        raise SystemExit("Could not parse relative duration. Examples: '7d', '2m', '1h30m', or '3 days'.")
+
+    total_seconds = 0
+    for value, unit in tokens:
         n = int(value)
-        unit_lower = unit.lower()
-        
-        # Map short and long forms to unit keys
-        if unit_lower in ('d', 'day', 'days'):
-            units["day"] += n
-        elif unit_lower in ('w', 'week', 'weeks'):
-            units["week"] += n
-        elif unit_lower in ('m', 'month', 'months'):
-            units["month"] += n
-    
-    if not any(units.values()):
-        raise SystemExit("Could not parse relative duration. Examples: '7d', '2m', '2m7d' or '3 days', '2 months and 3 days'.")
-    return units["day"] + units["week"] * 7 + units["month"] * 30
+        u = unit.lower()
+        # seconds
+        if u in ('s', 'sec', 'secs', 'second', 'seconds'):
+            total_seconds += n
+        # minutes
+        elif u in ('min', 'mins', 'minute', 'minutes'):
+            total_seconds += n * 60
+        # hours
+        elif u in ('h', 'hr', 'hrs', 'hour', 'hours'):
+            total_seconds += n * 3600
+        # days
+        elif u in ('d', 'day', 'days'):
+            total_seconds += n * 86400
+        # weeks
+        elif u in ('w', 'week', 'weeks'):
+            total_seconds += n * 7 * 86400
+        # months (approximate as 30 days) - preserve short 'm' as months for backwards compatibility
+        elif u in ('m', 'mo', 'mon', 'month', 'months'):
+            total_seconds += n * 30 * 86400
+        # years (approximate as 365 days)
+        elif u in ('y', 'yr', 'yrs', 'year', 'years'):
+            total_seconds += n * 365 * 86400
+        else:
+            raise SystemExit(f"Unknown time unit in duration: '{unit}'")
+
+    return int(total_seconds)
 
 
 def _parse_expiry_args(args: argparse.Namespace) -> int:
-    """Return desired TTL in whole days."""
+    """Return desired TTL in seconds.
+
+    Accepts absolute `--date` or relative `--in` / positional duration.
+    """
     if args.date:
         try:
             expires_at = datetime.fromisoformat(args.date)
         except ValueError as exc:
             raise SystemExit(f"Invalid date format for --date: {exc}")
         delta = expires_at - datetime.now()
-        days = math.ceil(delta.total_seconds() / 86400)
-        if days <= 0:
+        secs = math.ceil(delta.total_seconds())
+        if secs <= 0:
             raise SystemExit("Expiry date must be in the future")
-        return days
+        return int(secs)
 
     relative_text = args.relative or " ".join(args.relative_positional or []).strip()
     if relative_text:
-        rel = _parse_relative_text(relative_text)
-        return rel
+        secs = _parse_relative_text(relative_text)
+        return secs
 
-    raise SystemExit("Specify either --date or --in '<duration>' (e.g. '3 days' or '2 months and 1 week')")
+    raise SystemExit("Specify either --date or --in '<duration>' (e.g. '3 days' or '1h30m')")
 
 
 def _format_timedelta(seconds: float) -> str:
@@ -143,11 +169,27 @@ def cmd_status(providers: Iterable[object]) -> None:
     for provider in providers:
         name = provider.__class__.__name__
         summary = provider.cache_summary()
-        ttl_seconds = summary["cache_duration_seconds"]
+        ttl_seconds = summary.get("cache_time_to_expiry_seconds", summary.get("cache_duration_seconds", 0))
         expiry = summary["cache_expiry"].isoformat(timespec="seconds")
         cache_dir = summary["cache_dir"]
         db_path = getattr(provider, "_db_path", None)
-        last_mtime = _last_modified(db_path) if db_path else "n/a"
+        last_mtime = "n/a"
+        if db_path and os.path.exists(db_path):
+            try:
+                import sqlite3 as _sqlite
+                conn = _sqlite.connect(db_path)
+                cur = conn.execute("SELECT MAX(last_modified) FROM data_version")
+                row = cur.fetchone()
+                conn.close()
+                if row and row[0]:
+                    try:
+                        last_mtime = datetime.fromtimestamp(int(row[0])).isoformat(timespec="seconds")
+                    except Exception:
+                        last_mtime = _last_modified(db_path)
+                else:
+                    last_mtime = _last_modified(db_path)
+            except Exception:
+                last_mtime = _last_modified(db_path)
         
         provider_name = _colorize_provider(name)
         print(f"[{provider_name}] cache_dir={_colorize_value(cache_dir)}")
@@ -173,15 +215,17 @@ def cmd_invalidate(providers: Iterable[object]) -> None:
         logging.info("Invalidated %s", name)
 
 
-def cmd_set_expiry(providers: Iterable[object], days: int) -> None:
+def cmd_set_expiry(providers: Iterable[object], seconds: int) -> None:
     for provider in providers:
         name = provider.__class__.__name__
         try:
-            new_expiry = provider.set_cache_expiry(days)
+            new_expiry = provider.set_cache_duration(timedelta(seconds=seconds))
         except ValueError as exc:
             raise SystemExit(f"[{_colorize_provider(name)}] {exc}")
         logging.info("Updated %s cache expiry to %s", name, new_expiry.isoformat(timespec="seconds"))
-        ttl_str = _format_timedelta(provider.cache_duration.total_seconds())
+        # Show remaining time until expiry (counts down)
+        summary = provider.cache_summary()
+        ttl_str = _format_timedelta(summary.get("cache_time_to_expiry_seconds", provider.cache_duration.total_seconds()))
         print(f"[{_colorize_provider(name)}] new expiry at {_colorize_value(new_expiry.isoformat(timespec='seconds'))} (ttl {_colorize_value(ttl_str)})")
 
 
@@ -199,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     expiry = sub.add_parser("set-expiry", help="Adjust cache expiry")
     expiry.add_argument("--date", help="Absolute expiry (ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS])")
-    expiry.add_argument("--in", dest="relative", help="Relative duration (e.g. '3 days', '2 months and 1 week')")
+    expiry.add_argument("--in", dest="relative", help="Relative duration (e.g. '3 days', '1min30s')")
     expiry.add_argument("relative_positional", nargs="*", help="Relative duration without flag (e.g. '14 days')")
 
     return parser

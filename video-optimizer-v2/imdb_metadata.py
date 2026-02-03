@@ -18,6 +18,8 @@ class IMDbDataProvider(BaseMetadataProvider):
         "title.ratings": "https://datasets.imdbws.com/title.ratings.tsv.gz",
         "title.akas": "https://datasets.imdbws.com/title.akas.tsv.gz",
     }
+    # Persist expiry for all IMDb datasets so provider expiry is DB-authoritative
+    CACHE_EXPIRY_DATASETS = list(DATASETS.keys())
     # Define columns we actually need from each dataset - minimal set only
     # Removed columns for space efficiency:
     #   title.basics: (none removed - all columns included for completeness)
@@ -54,6 +56,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._search_cache = {}  # Cache recent search results
         self._title_cache = {}   # Cache for title info objects
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
+        # Provider-level default TTL is provided via BaseMetadataProvider.cache_duration
         self._connection_pool = []  # Connection pool for better performance
         self._pool_size = 3
         self._init_database()
@@ -174,27 +177,16 @@ class IMDbDataProvider(BaseMetadataProvider):
             raise
 
     def _load_cache_duration(self) -> None:
+        # Use base-class settings persistence (file-based). Avoid storing days in
+        # the DB's `data_version.updated` field which is an epoch timestamp.
         try:
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                cursor = conn.execute(
-                    "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
-                )
-                row = cursor.fetchone()
-                if row is not None and row[0] is not None:
-                    days = int(row[0])
-                    if days >= 0:
-                        self.cache_duration = timedelta(days=days)
+            super()._load_cache_duration()
         except Exception as e:
             logging.debug(f"Could not load cache duration for IMDb provider: {e}")
 
     def _persist_cache_duration(self) -> None:
         try:
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES ('cache_duration', ?)",
-                    (int(self.cache_duration.days),),
-                )
-                conn.commit()
+            super()._persist_cache_duration()
         except Exception:
             logging.debug("Could not persist cache duration for IMDb provider")
 
@@ -202,22 +194,48 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Check if the database contains current data"""
         try:
             with sqlite3.connect(self._db_path) as conn:
-                # Use cache_duration from base class (day granularity)
-                cache_days = int(self.cache_duration.days)
-                cursor = conn.execute(
-                    f"""
-                    SELECT COUNT(*) FROM data_version 
-                    WHERE dataset IN ('title.basics', 'title.ratings', 'title.episode')
-                    AND updated > strftime('%s', 'now', '-{cache_days} days')
-                """
-                )
-                count = cursor.fetchone()[0]
+                datasets = list(self.DATASETS.keys())
+                now_ts = int(time.time())
+                count_current = 0
+
+                if datasets:
+                    placeholders = ','.join('?' for _ in datasets)
+                    cur = conn.execute(
+                        f"SELECT dataset, expires_at, updated FROM data_version WHERE dataset IN ({placeholders})",
+                        tuple(datasets),
+                    )
+                    rows = {r[0]: r for r in cur.fetchall()}
+
+                    for ds in datasets:
+                        row = rows.get(ds)
+                        if not row:
+                            continue
+                        expires_at = row[1]
+                        updated = row[2]
+
+                        # `expires_at` is authoritative when present
+                        if expires_at is not None:
+                            try:
+                                if int(expires_at) > now_ts:
+                                    count_current += 1
+                                # if expired, treat as stale regardless of `updated`
+                                continue
+                            except Exception:
+                                pass
+
+                        # Legacy fallback: compute expiry from `updated` + cache_duration
+                        if updated is not None:
+                            try:
+                                if int(updated) + int(self.cache_duration.total_seconds()) > now_ts:
+                                    count_current += 1
+                            except Exception:
+                                pass
 
                 # Also check if we have data in title_basics (main table)
                 cursor = conn.execute("SELECT COUNT(*) FROM title_basics LIMIT 1")
                 has_data = cursor.fetchone()[0] > 0
 
-                return count >= 3 and has_data
+                return count_current >= len(datasets) and has_data
         except Exception:
             return False
 
@@ -422,14 +440,41 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                     pbar.close()
 
-                # Update version info
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO data_version (dataset, updated)
-                    VALUES (?, ?)
-                """,
-                    (dataset_name, int(time.time())),
-                )
+                # Update version info: write expires_at, last_modified and updated
+                # Do not overwrite `default_ttl` here; keep provider/default values
+                # unless an explicit set-expiry operation updates them.
+                now_ts = int(time.time())
+                expiry_ts = now_ts + int(self.cache_duration.total_seconds())
+                try:
+                    # If a data_version row exists, preserve its `default_ttl`
+                    # value (including 0). Only initialize `default_ttl` when no
+                    # row exists, using provider DEFAULT_TTL_DAYS.
+                    try:
+                        cur = conn.execute("SELECT default_ttl FROM data_version WHERE dataset = ? LIMIT 1", (dataset_name,))
+                        row = cur.fetchone()
+                        if row:
+                            try:
+                                db_val = int(row[0]) if row[0] is not None else None
+                            except Exception:
+                                db_val = None
+                            ttl_val = db_val if db_val and db_val > 0 else int(self.cache_duration.days)
+                        else:
+                            ttl_val = int(self.cache_duration.days)
+                    except Exception:
+                        ttl_val = int(self.cache_duration.days)
+
+                    conn.execute(
+                        "INSERT OR REPLACE INTO data_version (dataset, expires_at, default_ttl, last_modified, updated) VALUES (?, ?, ?, ?, ?)",
+                        (dataset_name, expiry_ts, ttl_val, now_ts, now_ts),
+                    )
+                except Exception:
+                    try:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES (?, ?)",
+                            (dataset_name, now_ts),
+                        )
+                    except Exception:
+                        pass
 
                 # After all akas are inserted, rebuild the FTS table from the content table (like anime_metadata.py)
                 conn.execute("INSERT INTO title_fts(title_fts) VALUES('rebuild')")

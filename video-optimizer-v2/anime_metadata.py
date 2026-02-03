@@ -82,8 +82,11 @@ class AnimeDataProvider(BaseMetadataProvider):
     
     def __init__(self):
         super().__init__('anime', provider_weight=1.0)
+        # Provider-level default TTL is provided via BaseMetadataProvider.cache_duration
         self._search_cache = {}  # Cache recent search results
         self._db_path = os.path.join(self.cache_dir, "anime_data.db")
+        # Which data_version.dataset rows represent this provider's sources
+        self.CACHE_EXPIRY_DATASETS = ['anime_offline_database']
         self._connection_pool = []  # Connection pool for better performance
         self._pool_size = 3
         self._init_database()
@@ -437,29 +440,20 @@ class AnimeDataProvider(BaseMetadataProvider):
             raise
 
     def _load_cache_duration(self) -> None:
+        # Use base-class settings persistence (file-based). Avoid storing days in
+        # the DB's `data_version.updated` field which is an epoch timestamp.
         try:
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                cursor = conn.execute(
-                    "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
-                )
-                row = cursor.fetchone()
-                if row is not None and row[0] is not None:
-                    days = int(row[0])
-                    if days >= 0:
-                        self.cache_duration = timedelta(days=days)
-        except Exception:
-            logging.debug("Could not load cache duration for anime provider")
+            super()._load_cache_duration()
+        except Exception as e:
+            logging.debug(f"Could not load cache duration for Anime provider: {e}")
 
     def _persist_cache_duration(self) -> None:
+        # Defer to base class JSON-backed persistence to avoid polluting
+        # `data_version.updated` which stores epoch timestamps for datasets.
         try:
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES ('cache_duration', ?)",
-                    (int(self.cache_duration.days),),
-                )
-                conn.commit()
+            super()._persist_cache_duration()
         except Exception:
-            logging.debug("Could not persist cache duration for anime provider")
+            logging.debug("Could not persist cache duration for Anime provider")
     def _get_type_id(self, type_str: str) -> int:
         """Map type string to AnimeType enum value"""
         if not type_str:
@@ -494,29 +488,48 @@ class AnimeDataProvider(BaseMetadataProvider):
         """Check if the database contains current data"""
         try:
             with sqlite3.connect(self._db_path) as conn:
-                # First check if the database has the new schema
-                cursor = conn.execute("PRAGMA table_info(anime_title)")
-                columns = [row[1] for row in cursor.fetchall()]
-                if 'season_number' not in columns or 'base_title' not in columns:
-                    logging.info("Database schema is outdated, needs recreation")
-                    return False
-                
-                # Use cache_duration from base class (day granularity)
-                cache_days = int(self.cache_duration.days)
-                cursor = conn.execute(
-                    f"""
-                    SELECT COUNT(*) FROM data_version 
-                    WHERE dataset = 'anime_offline_database'
-                    AND updated > strftime('%s', 'now', '-{cache_days} days')
-                    """
-                )
-                count = cursor.fetchone()[0]
+                datasets = getattr(self, 'CACHE_EXPIRY_DATASETS', [])
+                now_ts = int(time.time())
+                count_current = 0
 
-                # Also check if we have data in anime_title
+                if datasets:
+                    placeholders = ','.join('?' for _ in datasets)
+                    cur = conn.execute(
+                        f"SELECT dataset, expires_at, updated FROM data_version WHERE dataset IN ({placeholders})",
+                        tuple(datasets),
+                    )
+                    rows = {r[0]: r for r in cur.fetchall()}
+
+                    for ds in datasets:
+                        row = rows.get(ds)
+                        if not row:
+                            continue
+                        expires_at = row[1]
+                        updated = row[2]
+
+                        # `expires_at` is authoritative when present
+                        if expires_at is not None:
+                            try:
+                                if int(expires_at) > now_ts:
+                                    count_current += 1
+                                # if expired, treat as stale regardless of `updated`
+                                continue
+                            except Exception:
+                                pass
+
+                        # Legacy fallback: compute expiry from `updated` + cache_duration
+                        if updated is not None:
+                            try:
+                                if int(updated) + int(self.cache_duration.total_seconds()) > now_ts:
+                                    count_current += 1
+                            except Exception:
+                                pass
+
+                # Also check if we have data in anime_title (main table)
                 cursor = conn.execute("SELECT COUNT(*) FROM anime_title LIMIT 1")
                 has_data = cursor.fetchone()[0] > 0
 
-                return count >= 1 and has_data
+                return count_current >= len(datasets) and has_data
         except Exception:
             return False
 
@@ -676,7 +689,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                                     except Exception:
                                         continue
                             if not mal_id:
-                                print(f"Skipping entry without valid MAL id: {entry.get('title', 'Unknown')}")
+                                logging.debug(f"Skipping entry without valid MAL id: {entry.get('title', 'Unknown')}")
                                 continue
 
                             title = entry['title']
@@ -755,11 +768,45 @@ class AnimeDataProvider(BaseMetadataProvider):
                             related_batch
                         )
 
-                # Update version info
-                conn.execute(
-                    """INSERT OR REPLACE INTO data_version (dataset, updated) VALUES (?, ?)""",
-                    ('anime_offline_database', int(time.time())),
-                )
+                # Update version info: write expires_at, last_modified and updated
+                # Do not overwrite `default_ttl` here; that value should be
+                # controlled by explicit user `set-expiry` operations or the
+                # provider's initial schema defaults. Avoid setting it to 0
+                # when cache_duration is sub-day.
+                now_ts = int(time.time())
+                expiry_ts = now_ts + int(self.cache_duration.total_seconds())
+                try:
+                    # If a data_version row exists, preserve its `default_ttl` value
+                    # (even if zero). Only initialize `default_ttl` when no row
+                    # exists at all by using provider DEFAULT_TTL_DAYS.
+                    try:
+                        cur = conn.execute("SELECT default_ttl FROM data_version WHERE dataset = ? LIMIT 1", ('anime_offline_database',))
+                        row = cur.fetchone()
+                        if row:
+                            # Use DB value only if it's a positive, non-blank integer
+                            try:
+                                db_val = int(row[0]) if row[0] is not None else None
+                            except Exception:
+                                db_val = None
+                            ttl_val = db_val if db_val and db_val > 0 else int(self.cache_duration.days)
+                        else:
+                            # No existing row: initialize default_ttl from configured cache_duration days
+                            ttl_val = int(self.cache_duration.days)
+                    except Exception:
+                        ttl_val = int(self.cache_duration.days)
+
+                    conn.execute(
+                        "INSERT OR REPLACE INTO data_version (dataset, expires_at, default_ttl, last_modified, updated) VALUES (?, ?, ?, ?, ?)",
+                        ('anime_offline_database', expiry_ts, ttl_val, now_ts, now_ts),
+                    )
+                except Exception:
+                    try:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES (?, ?)",
+                            ('anime_offline_database', now_ts),
+                        )
+                    except Exception:
+                        pass
                 conn.commit()
                 logging.info(f"Loaded {len(anime_batch)} anime entries and {len(synonyms_batch)} synonyms")
 
@@ -822,15 +869,15 @@ class AnimeDataProvider(BaseMetadataProvider):
             )
             self._search_cache[cache_key] = result
             if len(self._search_cache) > 1000:
-                oldest_keys = list(self._search_cache.keys())[:500]
-                for key in oldest_keys:
-                    del self._search_cache[key]
+                try:
+                    oldest = next(iter(self._search_cache))
+                    del self._search_cache[oldest]
+                except Exception:
+                    self._search_cache.clear()
             return result
-        return None
 
     def _create_title_info_from_row(self, row) -> TitleInfo:
-        """Create TitleInfo object from database row"""
-        # Use the already joined type and status text from the view if present
+        """Create TitleInfo object from a database row for anime."""
         type_text = row['type'] if 'type' in row.keys() else "UNKNOWN"
         # Look up the AnimeType enum
         type_enum = AnimeType.__members__.get(type_text.upper(), AnimeType.UNKNOWN)
