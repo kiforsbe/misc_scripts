@@ -190,11 +190,44 @@ def cmd_status(providers: Iterable[object]) -> None:
                     last_mtime = _last_modified(db_path)
             except Exception:
                 last_mtime = _last_modified(db_path)
+        # Read default_ttl (calendar days) from data_version if available
+        default_ttl_display = None
+        try:
+            datasets = getattr(provider, "CACHE_EXPIRY_DATASETS", None)
+            if db_path and os.path.exists(db_path) and datasets:
+                import sqlite3 as _sqlite
+                conn = _sqlite.connect(db_path)
+                ttl_map = {}
+                for ds in datasets:
+                    try:
+                        cur = conn.execute("SELECT default_ttl FROM data_version WHERE dataset = ? LIMIT 1", (ds,))
+                        r = cur.fetchone()
+                        if r and r[0] is not None:
+                            ttl_map[ds] = int(r[0])
+                    except Exception:
+                        continue
+                conn.close()
+                if ttl_map:
+                    # If all datasets have same ttl, show single value; otherwise list per-dataset
+                    vals = set(ttl_map.values())
+                    if len(vals) == 1:
+                        default_ttl_display = f"{next(iter(vals))}d"
+                    else:
+                        default_ttl_display = ",".join(f"{k}={v}d" for k, v in ttl_map.items())
+        except Exception:
+            default_ttl_display = None
         
         provider_name = _colorize_provider(name)
         print(f"[{provider_name}] cache_dir={_colorize_value(cache_dir)}")
         print(f"  ttl={_colorize_value(_format_timedelta(ttl_seconds))} expires_at={_colorize_value(expiry)}")
-        print(f"  data_file={_colorize_value(db_path or 'n/a')} last_modified={_colorize_value(last_mtime)}")
+        line_parts = []
+        if default_ttl_display:
+            line_parts.append(f"default_ttl={_colorize_value(default_ttl_display)}")
+        line_parts.append(f"last_modified={_colorize_value(last_mtime)}")
+        if line_parts:
+            print("  " + " ".join(line_parts))
+        # Always print data_file on its own line for clarity
+        print(f"  data_file={_colorize_value(db_path or 'n/a')}")
 
 
 def cmd_refresh(providers: Iterable[object]) -> None:
@@ -229,6 +262,46 @@ def cmd_set_expiry(providers: Iterable[object], seconds: int) -> None:
         print(f"[{_colorize_provider(name)}] new expiry at {_colorize_value(new_expiry.isoformat(timespec='seconds'))} (ttl {_colorize_value(ttl_str)})")
 
 
+def cmd_set_default_ttl(providers: Iterable[object], seconds: int) -> None:
+    """Set `default_ttl` (in calendar days) on `data_version` rows for each provider's datasets.
+
+    Updates existing rows (preferred) or inserts minimal rows when missing,
+    and adds the `default_ttl` column if the schema lacks it.
+    """
+    days = int(seconds)
+    for provider in providers:
+        name = provider.__class__.__name__
+        db_path = getattr(provider, "_db_path", None)
+        datasets = getattr(provider, "CACHE_EXPIRY_DATASETS", None)
+        if not db_path or not datasets:
+            logging.warning("[%s] No DB path or CACHE_EXPIRY_DATASETS defined; skipping", name)
+            continue
+        if not os.path.exists(db_path):
+            logging.warning("[%s] DB file %s does not exist; skipping", name, db_path)
+            continue
+        try:
+            import sqlite3 as _sqlite
+            conn = _sqlite.connect(db_path, timeout=5.0)
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(data_version)").fetchall()]
+            if 'default_ttl' not in cols:
+                try:
+                    conn.execute("ALTER TABLE data_version ADD COLUMN default_ttl INTEGER")
+                except Exception:
+                    pass
+
+            for ds in datasets:
+                cur = conn.execute("SELECT 1 FROM data_version WHERE dataset = ? LIMIT 1", (ds,)).fetchone()
+                if cur:
+                    conn.execute("UPDATE data_version SET default_ttl = ? WHERE dataset = ?", (days, ds))
+                else:
+                    conn.execute("INSERT INTO data_version (dataset, default_ttl) VALUES (?, ?)", (ds, days))
+            conn.commit()
+            conn.close()
+            logging.info("[%s] Set default_ttl=%d days for datasets: %s", name, days, ",".join(datasets))
+        except Exception as exc:
+            logging.error("[%s] Failed to set default_ttl: %s", name, exc)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Metadata cache manager")
     parser.add_argument("--provider", "-p", nargs="+", default=["all"], choices=["imdb", "anime", "all"], help="Target provider(s)")
@@ -245,6 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
     expiry.add_argument("--date", help="Absolute expiry (ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM[:SS])")
     expiry.add_argument("--in", dest="relative", help="Relative duration (e.g. '3 days', '1min30s')")
     expiry.add_argument("relative_positional", nargs="*", help="Relative duration without flag (e.g. '14 days')")
+
+    # Set provider DB `data_version.default_ttl` for datasets (calendar days)
+    default_ttl = sub.add_parser("set-default-ttl", help="Set default_ttl (days) for provider datasets in data_version")
+    default_ttl.add_argument("days", type=int, help="Number of calendar days to set as default_ttl for provider datasets")
 
     return parser
 
@@ -279,6 +356,8 @@ def main(argv: List[str] | None = None) -> int:
     elif args.command == "set-expiry":
         days = _parse_expiry_args(args)
         cmd_set_expiry(selected, days)
+    elif args.command == "set-default-ttl":
+        cmd_set_default_ttl(selected, int(args.days))
     else:
         parser.error(f"Unknown command: {args.command}")
 
