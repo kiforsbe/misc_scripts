@@ -51,6 +51,22 @@ else:
 # --- Flask App and Logging Setup ---
 app = Flask(__name__)
 
+# Allow Tampermonkey (https) to call local Flask (http) by adding CORS headers.
+# Keep this permissive for local-only usage.
+CORS_ALLOW_ORIGIN = "*"
+CORS_ALLOW_HEADERS = "Content-Type, Authorization, X-Requested-With"
+CORS_EXPOSE_HEADERS = "Content-Disposition, Content-Length, Content-Type"
+CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
+
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
+    response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+    response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+    response.headers["Access-Control-Expose-Headers"] = CORS_EXPOSE_HEADERS
+    return response
+
 # Logger will be configured in __main__
 log = logging.getLogger(__name__)  # Use a specific logger for the app
 
@@ -377,9 +393,11 @@ def index():
     )
 
 
-@app.route("/download", methods=["GET", "POST"])
+@app.route("/download", methods=["GET", "POST", "OPTIONS"])
 def download():
     """Handles the download request, calls async processing, and sends the file."""
+    if request.method == "OPTIONS":
+        return ("", 204)
     if request.method == "POST":
         # Prefer JSON body for POST, fallback to form
         data = request.json if request.is_json else request.form
@@ -512,9 +530,11 @@ def download():
         pass
 
 
-@app.route("/list_formats", methods=["GET"])
+@app.route("/list_formats", methods=["GET", "OPTIONS"])
 def list_formats():
     """(Experimental) Fetches and lists available formats for a URL."""
+    if request.method == "OPTIONS":
+        return ("", 204)
     url = request.args.get("url")
     if not url:
         return jsonify({"error": "Missing 'url' parameter"}), 400
