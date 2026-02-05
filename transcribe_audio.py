@@ -3,13 +3,39 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import inspect
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
 import numpy as np
 import torch
+
+
+def _ensure_torchaudio_compat() -> None:
+    try:
+        import torchaudio
+    except Exception:
+        return
+
+    if not hasattr(torchaudio, "list_audio_backends"):
+        torchaudio.list_audio_backends = lambda: ["soundfile"]
+    if not hasattr(torchaudio, "set_audio_backend"):
+        torchaudio.set_audio_backend = lambda _backend: None
+
+
+_ensure_torchaudio_compat()
+
 import whisperx
+try:
+    import whisperx.vad as whisperx_vad
+except Exception:
+    try:
+        from whisperx import vad as whisperx_vad
+    except Exception:
+        whisperx_vad = None
 from faster_whisper import WhisperModel
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
@@ -73,23 +99,37 @@ class WhisperTranscriber:
             num_workers=config.num_workers,
         )
 
-    def transcribe(self, audio_path: Path) -> tuple[list[dict], str]:
-        segments, info = self._model.transcribe(
-            str(audio_path),
-            language=self._config.language,
-            task="transcribe",
-            batch_size=self._config.batch_size,
-            beam_size=self._config.beam_size,
-            vad_filter=self._config.asr_vad_filter,
-            vad_parameters={
+    def transcribe(self, audio_input: str | np.ndarray, duration_s: float) -> tuple[list[dict], str]:
+        start_time = time.perf_counter()
+        kwargs = {
+            "language": self._config.language,
+            "task": "transcribe",
+            "beam_size": self._config.beam_size,
+            "vad_filter": self._config.asr_vad_filter,
+            "vad_parameters": {
                 "min_silence_duration_ms": self._config.asr_vad_min_silence_ms,
                 "max_speech_duration_s": self._config.asr_vad_max_speech_s,
             },
-        )
-        segment_list = [
-            {"start": seg.start, "end": seg.end, "text": seg.text}
-            for seg in segments
-        ]
+        }
+        if "batch_size" in inspect.signature(self._model.transcribe).parameters:
+            kwargs["batch_size"] = self._config.batch_size
+
+        segments, info = self._model.transcribe(audio_input, **kwargs)
+        segment_list = []
+        next_log = _progress_interval(duration_s)
+        for segment in segments:
+            segment_list.append({"start": segment.start, "end": segment.end, "text": segment.text})
+            if next_log and segment.end >= next_log:
+                elapsed = time.perf_counter() - start_time
+                percent = min(100.0, (segment.end / duration_s) * 100.0)
+                LOGGER.info(
+                    "ASR progress: %.1f%% (%s / %s), elapsed %s",
+                    percent,
+                    format_duration(segment.end),
+                    format_duration(duration_s),
+                    format_duration(elapsed),
+                )
+                next_log += _progress_interval(duration_s)
         return segment_list, info.language
 
 
@@ -116,23 +156,84 @@ class WhisperXVadSegmenter:
         self._device = device
 
     def segment(self, audio: np.ndarray, sample_rate: int) -> list[Segment]:
-        try:
-            vad_model = whisperx.vad.load_vad_model(device=self._device)
-            vad_options = whisperx.vad.VadOptions(
-                onset=self._config.vad_onset,
-                offset=self._config.vad_offset,
-                min_speech_duration=self._config.vad_min_speech_s,
-                max_speech_duration=self._config.vad_max_speech_s,
-            )
-            speech_timestamps = whisperx.vad.get_speech_timestamps(
-                audio, vad_model, sample_rate=sample_rate, vad_options=vad_options
-            )
-        except AttributeError as exc:
+        if whisperx_vad is None:
             raise RuntimeError(
-                "WhisperX VAD API not found. Ensure whisperx==3.7.6 is installed."
-            ) from exc
+                "WhisperX VAD module not found. Ensure whisperx==3.7.6 is installed."
+            )
+
+        vad_model = whisperx_vad.load_vad_model(device=self._device)
+        vad_options = whisperx_vad.VadOptions(
+            onset=self._config.vad_onset,
+            offset=self._config.vad_offset,
+            min_speech_duration=self._config.vad_min_speech_s,
+            max_speech_duration=self._config.vad_max_speech_s,
+        )
+        speech_timestamps = whisperx_vad.get_speech_timestamps(
+            audio, vad_model, sample_rate=sample_rate, vad_options=vad_options
+        )
 
         segments = self._normalize_segments(speech_timestamps, audio, sample_rate)
+        return segments
+
+    def _energy_vad(self, audio: np.ndarray, sample_rate: int) -> list[dict]:
+        if audio.size == 0:
+            return []
+
+        frame_ms = 30
+        frame_size = int(sample_rate * frame_ms / 1000)
+        hop_size = frame_size // 2
+        if frame_size <= 0 or hop_size <= 0:
+            return []
+
+        frames = []
+        for start in range(0, len(audio) - frame_size + 1, hop_size):
+            frame = audio[start : start + frame_size]
+            energy = float(np.mean(frame * frame))
+            frames.append((start, start + frame_size, energy))
+
+        if not frames:
+            return []
+
+        energies = np.array([e for _, _, e in frames])
+        threshold = max(1e-7, float(np.percentile(energies, 60)))
+
+        speech_timestamps: list[dict] = []
+        in_speech = False
+        seg_start = 0
+        for start, end, energy in frames:
+            is_speech = energy >= threshold
+            if is_speech and not in_speech:
+                in_speech = True
+                seg_start = start
+            elif not is_speech and in_speech:
+                in_speech = False
+                speech_timestamps.append({"start": seg_start, "end": end})
+
+        if in_speech:
+            speech_timestamps.append({"start": seg_start, "end": frames[-1][1]})
+
+        min_len = int(self._config.vad_min_speech_s * sample_rate)
+        max_len = int(self._config.vad_max_speech_s * sample_rate)
+        filtered: list[dict] = []
+        for ts in speech_timestamps:
+            length = ts["end"] - ts["start"]
+            if length < min_len:
+                continue
+            if max_len > 0 and length > max_len:
+                segments = self._split_segment(ts, max_len)
+                filtered.extend(segments)
+            else:
+                filtered.append(ts)
+        return filtered
+
+    def _split_segment(self, ts: dict, max_len: int) -> list[dict]:
+        segments: list[dict] = []
+        start = ts["start"]
+        end = ts["end"]
+        while start < end:
+            split_end = min(start + max_len, end)
+            segments.append({"start": start, "end": split_end})
+            start = split_end
         return segments
 
     def _normalize_segments(
@@ -402,15 +503,25 @@ class AudioTranscriber:
         self._language = transcription_config.language
         self._diarization_enabled = diarization_config.enabled
         self._aligner = WhisperAligner(transcription_config.device)
-        self._segmenter = WhisperXVadSegmenter(diarization_config, transcription_config.device)
-        self._embedder = SpeakerEmbedder(transcription_config.device)
-        self._clusterer = SpeakerClusterer(diarization_config)
-        self._assembler = SegmentAssembler(diarization_config)
+        if self._diarization_enabled:
+            self._segmenter = WhisperXVadSegmenter(
+                diarization_config, transcription_config.device
+            )
+            self._embedder = SpeakerEmbedder(transcription_config.device)
+            self._clusterer = SpeakerClusterer(diarization_config)
+            self._assembler = SegmentAssembler(diarization_config)
+        else:
+            self._segmenter = None
+            self._embedder = None
+            self._clusterer = None
+            self._assembler = None
 
     def transcribe(self, audio_path: Path) -> list[Segment]:
-        segments, detected_language = self._transcriber.transcribe(audio_path)
-        language = detected_language or self._language or "en"
         audio = whisperx.load_audio(str(audio_path))
+        duration_s = audio.shape[0] / 16000
+        LOGGER.info("Loaded audio: %s (%s)", audio_path.name, format_duration(duration_s))
+        segments, detected_language = self._transcriber.transcribe(audio, duration_s)
+        language = detected_language or self._language or "en"
         aligned_segments = self._aligner.align(segments, audio, language)
 
         if not self._diarization_enabled:
@@ -450,6 +561,22 @@ def format_vtt_time(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
+def format_duration(seconds: float) -> str:
+    total_seconds = int(round(seconds))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    secs = total_seconds % 60
+    if hours > 0:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:d}:{secs:02d}"
+
+
+def _progress_interval(duration_s: float) -> float:
+    if duration_s <= 0:
+        return 0.0
+    return max(10.0, min(60.0, duration_s * 0.05))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Transcribe meeting audio with WhisperX alignment and ECAPA diarization."
@@ -481,8 +608,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compute-type", default="int8", help="Compute type for faster-whisper.")
     parser.add_argument("--batch-size", type=int, default=8, help="Transcription batch size.")
     parser.add_argument("--beam-size", type=int, default=5, help="Beam size for decoding.")
-    parser.add_argument("--cpu-threads", type=int, default=4, help="CPU threads to use.")
-    parser.add_argument("--num-workers", type=int, default=1, help="Worker threads for decoding.")
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=0,
+        help="CPU threads to use (0 = auto).",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="Worker threads for decoding (0 = auto).",
+    )
     parser.add_argument(
         "--asr-vad",
         action=argparse.BooleanOptionalAction,
@@ -531,6 +668,19 @@ def build_transcriber(args: argparse.Namespace) -> AudioTranscriber:
     return AudioTranscriber(transcription_config, diarization_config)
 
 
+def resolve_cpu_threads(value: int) -> int:
+    if value > 0:
+        return value
+    cpu_count = os.cpu_count() or 4
+    return max(1, min(cpu_count, 8))
+
+
+def resolve_num_workers(value: int, cpu_threads: int) -> int:
+    if value > 0:
+        return value
+    return max(1, min(cpu_threads, 2))
+
+
 def write_outputs(
     segments: list[Segment],
     output_dir: Path,
@@ -555,6 +705,11 @@ def main() -> None:
     args = parse_args()
     logging.basicConfig(level=args.log_level.upper(), format="%(levelname)s: %(message)s")
 
+    start_time = time.perf_counter()
+
+    args.cpu_threads = resolve_cpu_threads(args.cpu_threads)
+    args.num_workers = resolve_num_workers(args.num_workers, args.cpu_threads)
+
     audio_path = args.input
     if not audio_path.exists():
         raise FileNotFoundError(f"Input not found: {audio_path}")
@@ -566,6 +721,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     torch.set_num_threads(args.cpu_threads)
+    torch.set_num_interop_threads(min(4, args.cpu_threads))
 
     transcriber = build_transcriber(args)
     segments = transcriber.transcribe(audio_path)
@@ -577,6 +733,9 @@ def main() -> None:
         args.outputs,
         srt_speaker_tags=args.srt_speaker_tags,
     )
+
+    elapsed = time.perf_counter() - start_time
+    LOGGER.info("Elapsed time: %s", format_duration(elapsed))
 
 
 if __name__ == "__main__":
