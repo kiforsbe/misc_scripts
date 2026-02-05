@@ -167,6 +167,29 @@ The model should automatically download and install when the script is run.
 #### Recommended
 Torch with CUDA support is highly recommended if you have a CUDA capable machine. For SubsAI with `torch-2.0.1` requirement, install `torch-2.0.1+cu118` per instruction <https://pytorch.org/get-started/previous-versions/#v201> instead of default one in SubsAI "`requirements.txt`" file.
 
+### transcribe_audio.py
+Object-oriented CLI to transcribe meeting audio with faster-whisper, WhisperX 3.7.6 alignment, lightweight WhisperX VAD segmentation, and ECAPA-TDNN speaker clustering. Produces SRT, VTT, JSON, and TXT outputs with optional SRT speaker tags. Designed for Python 3.11 and 3.13 and optimized for CPU.
+
+#### Usage Examples
+```bash
+# Transcribe with default outputs (SRT, JSON, TXT)
+python transcribe_audio.py meeting.wav
+
+# Add WebVTT output
+python transcribe_audio.py meeting.wav --outputs srt vtt json txt
+
+# Disable speaker tags in SRT output
+python transcribe_audio.py meeting.wav --no-srt-speaker-tags
+```
+
+#### Requires
+- faster-whisper
+- whisperx==3.7.6
+- torch
+- speechbrain
+- scikit-learn
+- numpy
+
 ### insanely-fast-whisper.py
 Minimalistic script to generate transcription using Whisper.
 
