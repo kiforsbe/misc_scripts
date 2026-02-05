@@ -574,18 +574,46 @@ def list_formats():
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Configure logging with force=True to ensure it takes effect
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        #stream=sys.stdout,
-        force=True,  # Force reconfiguration if already configured
-    )
-    
-    # Also ensure root logger is set to DEBUG
-    #logging.getLogger().setLevel(logging.DEBUG)
+    def setup_logging():
+        """Configure logging: console ERROR by default, optional file logging."""
+        log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+        log_to_file = os.environ.get("LOG_TO_FILE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        log_file_path = os.environ.get("LOG_FILE", "server.log")
 
-    # Log what version of pythong this process was started with and what path to the python environment, log this to debug
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()
+        root_logger.setLevel(logging.DEBUG)
+
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.ERROR)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+
+        if log_to_file:
+            file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+            file_handler.setLevel(getattr(logging, log_level, logging.INFO))
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+
+            # Route Flask/Werkzeug access logs to INFO
+            logging.getLogger("werkzeug").setLevel(logging.INFO)
+
+            # Send warnings through logging at WARNING level
+            logging.captureWarnings(True)
+            logging.getLogger("py.warnings").setLevel(logging.WARNING)
+
+    setup_logging()
+
+    # Log python version and executable location to debug
     log.debug(f"Starting server with Python {sys.version} at {sys.executable}")
 
     # Start the background deletion task in a separate thread
