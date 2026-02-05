@@ -86,6 +86,24 @@ python cbr_to_cbz_converter.py /path/to/comics --keep-original -j 4 -v
   - libarchive-c requires libarchive DLL installed on system
   - rarfile requires UnRAR tool installed and on PATH
 
+### compare_package_versions.py
+Compares proposed package versions against installed versions. Useful for inspecting pip output or a list of package-version pairs and highlighting downgrades, upgrades, and local version changes.
+
+#### Usage Examples
+```bash
+# Compare from pip output
+pip install -r requirements.txt | python compare_package_versions.py
+
+# Compare from a string argument
+python compare_package_versions.py "requests==2.31.0 urllib3==2.2.1"
+
+# Disable ANSI colors
+python compare_package_versions.py --no-color "requests==2.31.0"
+```
+
+#### Requires
+- packaging
+
 ### series_info_tool.py
 A comprehensive tool to extract and display series information for video files, with MyAnimeList integration. Groups video files by series title, retrieves metadata from anime and movie databases, and provides convenient ways to access online information. Designed for Windows shell:sendto and drag-drop operations.
 
