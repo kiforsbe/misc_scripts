@@ -8,6 +8,23 @@ import sys
 from flask import Flask, request, send_file, jsonify, render_template_string
 import yt_dlp  # For exceptions
 import yt_dlp.utils  # For exceptions
+try:
+    from rich.progress import (
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        BarColumn,
+        TimeRemainingColumn,
+    )
+
+    RICH_AVAILABLE = True
+except ImportError:
+    Progress = None
+    SpinnerColumn = None
+    TextColumn = None
+    BarColumn = None
+    TimeRemainingColumn = None
+    RICH_AVAILABLE = False
 
 # --- Add ytdl_helper to Python path ---
 # This assumes the script is run from the 'youtube-video-downloader' directory
@@ -145,6 +162,7 @@ async def _process_download(
     target_format: str | None,
     target_audio_params: str | None,
     target_video_params: str | None,
+    progress_hook=None,
 ) -> pathlib.Path:
     """
     Fetches info, selects formats, downloads the item into TEMP_DIR,
@@ -157,6 +175,8 @@ async def _process_download(
         log.info(f"Fetching info for URL: {url}")
         item = await ytdl_core.fetch_info(url)
         log.info(f"Successfully fetched info for '{item.title}'")
+        if progress_hook:
+            progress_hook(20, f"{item.title} - info fetched")
 
         selected_audio_id = audio_format_id
         selected_video_id = video_format_id
@@ -240,6 +260,11 @@ async def _process_download(
             if progress_data["status"] == "downloading":
                 percent = progress_data.get("percentage")
                 if percent is not None:
+                    if progress_hook:
+                        progress_hook(
+                            20 + (percent * 0.7),
+                            f"{cb_item.title} - downloading {percent:.1f}%",
+                        )
                     # Log progress every ~10%
                     # Use getattr to safely access the attribute, providing a default
                     last_logged = getattr(progress_callback, 'last_logged_percent', -10)
@@ -254,6 +279,8 @@ async def _process_download(
                 log.info(
                     f"Item '{cb_item.title}': Download part finished, may start processing."
                 )
+                if progress_hook:
+                    progress_hook(90, f"{cb_item.title} - processing")
 
         # Now initialize the attribute on the defined function object
         progress_callback.last_logged_percent = -10
@@ -425,6 +452,21 @@ def download():
         log.warning(f"Download request with invalid URL format: {url}")
         return jsonify({"error": "Invalid 'url' parameter format"}), 400
 
+    progress = None
+    progress_task_id = None
+
+    def progress_hook(percent, message=None):
+        if progress:
+            if message:
+                progress.update(progress_task_id, completed=percent, description=message)
+            else:
+                progress.update(progress_task_id, completed=percent)
+        else:
+            if message:
+                log.info(f"Progress {percent:.0f}% - {message}")
+            else:
+                log.info(f"Progress {percent:.0f}%")
+
     # Check if FFmpeg is needed but unavailable
     needs_ffmpeg = bool(target_format) or (
         audio_format_id and video_format_id and audio_format_id != video_format_id
@@ -445,18 +487,40 @@ def download():
 
     final_filepath = None
     try:
+        if RICH_AVAILABLE:
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                BarColumn(bar_width=None),
+                TextColumn("{task.completed:>3.0f}%"),
+                TimeRemainingColumn(),
+            )
+            progress.start()
+            progress_task_id = progress.add_task("Preparing", total=100)
+
+        progress_hook(5, "Request validated")
         # Run the async download process using asyncio.run()
         # Note: This blocks the current Flask worker thread until completion.
         # For production, consider async Flask routes or a task queue (Celery).
         log.info(
             f"Processing download request for URL: {url} (A_ID: {audio_format_id}, V_ID: {video_format_id}, Target: {target_format}), TargetAudioParams: {target_audio_params}), TargetVideoParams: {target_video_params})"
         )
+        progress_hook(10, "Download task started")
         final_filepath = asyncio.run(
-            _process_download(url, audio_format_id, video_format_id, target_format, target_audio_params, target_video_params)
+            _process_download(
+                url,
+                audio_format_id,
+                video_format_id,
+                target_format,
+                target_audio_params,
+                target_video_params,
+                progress_hook=progress_hook,
+            )
         )
 
         if final_filepath and final_filepath.exists():
             log.info(f"File ready for sending: {final_filepath}")
+            progress_hook(95, f"{final_filepath.name} - file prepared")
 
             # Add to delete queue *before* sending the file
             with queue_lock:
@@ -466,6 +530,7 @@ def download():
                 )
 
             # Send the file back to the client
+            progress_hook(100, f"{final_filepath.name} - completed")
             return send_file(
                 str(final_filepath),
                 as_attachment=True,
@@ -523,6 +588,8 @@ def download():
         )
         return jsonify({"error": "An unexpected server error occurred."}), 500
     finally:
+        if progress:
+            progress.stop()
         # Ensure the file is queued for deletion even if send_file fails?
         # No, send_file failure means the client didn't get it, maybe don't delete yet?
         # The current logic queues *before* send_file, which seems reasonable.
@@ -598,18 +665,33 @@ if __name__ == "__main__":
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
+        # Route Flask/Werkzeug access logs to INFO and avoid their own handlers
+        werkzeug_logger = logging.getLogger("werkzeug")
+        werkzeug_logger.handlers.clear()
+        werkzeug_logger.propagate = False
+        werkzeug_logger.setLevel(logging.INFO)
+        werkzeug_logger.addHandler(logging.NullHandler())
+
+        flask_logger = logging.getLogger("flask.app")
+        flask_logger.handlers.clear()
+        flask_logger.propagate = False
+        flask_logger.addHandler(logging.NullHandler())
+
         if log_to_file:
             file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
             file_handler.setLevel(getattr(logging, log_level, logging.INFO))
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
 
-            # Route Flask/Werkzeug access logs to INFO
-            logging.getLogger("werkzeug").setLevel(logging.INFO)
+            # Send Werkzeug/Flask access logs to file only
+            werkzeug_logger.handlers.clear()
+            werkzeug_logger.addHandler(file_handler)
+            flask_logger.handlers.clear()
+            flask_logger.addHandler(file_handler)
 
-            # Send warnings through logging at WARNING level
-            logging.captureWarnings(True)
-            logging.getLogger("py.warnings").setLevel(logging.WARNING)
+        # Send warnings through logging at WARNING level
+        logging.captureWarnings(True)
+        logging.getLogger("py.warnings").setLevel(logging.WARNING)
 
     setup_logging()
 
