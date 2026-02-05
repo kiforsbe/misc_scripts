@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional, Any, Tuple
+from typing import List, Optional, Any, Tuple, Iterable, Callable
 from datetime import datetime, timedelta
 from functools import lru_cache
 import os
@@ -280,6 +280,143 @@ class BaseMetadataProvider(ABC):
     def ensure_cache_dir(self):
         """Create cache directory if it doesn't exist"""
         os.makedirs(self.cache_dir, exist_ok=True)
+
+    def _init_connection_pool(self, pool_size: int = 3) -> None:
+        """Initialize a simple SQLite connection pool."""
+        self._connection_pool = []
+        self._pool_size = max(0, int(pool_size))
+
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
+        """Apply common read-optimized settings to a SQLite connection."""
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA cache_size=50000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=268435456")
+        conn.row_factory = sqlite3.Row
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get a pooled SQLite connection or create a new one."""
+        pool = getattr(self, "_connection_pool", None)
+        if pool:
+            return pool.pop()
+
+        db_path = getattr(self, "_db_path", None)
+        if not db_path:
+            raise ValueError("_db_path is not set on provider")
+
+        conn = sqlite3.connect(db_path, timeout=30.0)
+        self._configure_connection(conn)
+        return conn
+
+    def _return_connection(self, conn: sqlite3.Connection) -> None:
+        """Return a connection to the pool or close it."""
+        pool = getattr(self, "_connection_pool", None)
+        pool_size = getattr(self, "_pool_size", 0)
+
+        if pool is None or pool_size <= 0:
+            conn.close()
+            return
+
+        if len(pool) < pool_size:
+            pool.append(conn)
+        else:
+            conn.close()
+
+    def _should_download_file(self, path: str, ttl: Optional[timedelta] = None) -> bool:
+        """Return True when the file is missing or older than TTL."""
+        if not os.path.exists(path):
+            return True
+        ttl = ttl or self.cache_duration
+        try:
+            age_seconds = time.time() - os.path.getmtime(path)
+            return age_seconds > ttl.total_seconds()
+        except Exception:
+            return True
+
+    def _is_data_current_in_db(self, main_table: str, datasets: Optional[Iterable[str]] = None) -> bool:
+        """Check data_version expiry and main table presence for freshness."""
+        try:
+            db_path = getattr(self, "_db_path", None)
+            if not db_path:
+                return False
+
+            with sqlite3.connect(db_path) as conn:
+                ds_list = list(datasets) if datasets is not None else list(getattr(self, "CACHE_EXPIRY_DATASETS", []) or [])
+                now_ts = int(time.time())
+                count_current = 0
+
+                if ds_list:
+                    placeholders = ','.join('?' for _ in ds_list)
+                    cur = conn.execute(
+                        f"SELECT dataset, expires_at, updated FROM data_version WHERE dataset IN ({placeholders})",
+                        tuple(ds_list),
+                    )
+                    rows = {r[0]: r for r in cur.fetchall()}
+
+                    for ds in ds_list:
+                        row = rows.get(ds)
+                        if not row:
+                            continue
+                        expires_at = row[1]
+                        updated = row[2]
+
+                        if expires_at is not None:
+                            try:
+                                if int(expires_at) > now_ts:
+                                    count_current += 1
+                                continue
+                            except Exception:
+                                pass
+
+                        if updated is not None:
+                            try:
+                                if int(updated) + int(self.cache_duration.total_seconds()) > now_ts:
+                                    count_current += 1
+                            except Exception:
+                                pass
+
+                cursor = conn.execute(f"SELECT COUNT(*) FROM {main_table} LIMIT 1")
+                has_data = cursor.fetchone()[0] > 0
+
+                return count_current >= len(ds_list) and has_data
+        except Exception:
+            return False
+
+    def _invalidate_cache_core(
+        self,
+        datasets: Optional[Iterable[str]] = None,
+        cache_attrs: Optional[Iterable[str]] = None,
+        db_path: Optional[str] = None,
+    ) -> None:
+        """Clear data_version rows and in-memory caches for a provider."""
+        db_path = db_path or getattr(self, "_db_path", None)
+        ds_list = list(datasets) if datasets is not None else None
+
+        if db_path:
+            try:
+                with sqlite3.connect(db_path) as conn:
+                    if ds_list is None:
+                        conn.execute("DELETE FROM data_version")
+                    elif ds_list:
+                        placeholders = ','.join('?' for _ in ds_list)
+                        conn.execute(
+                            f"DELETE FROM data_version WHERE dataset IN ({placeholders})",
+                            tuple(ds_list),
+                        )
+                    conn.commit()
+            except Exception as e:
+                logging.debug(f"Failed to clear data_version: {e}")
+
+        if cache_attrs:
+            for attr in cache_attrs:
+                cache_obj = getattr(self, attr, None)
+                try:
+                    if hasattr(cache_obj, "clear"):
+                        cache_obj.clear()
+                    elif cache_obj is not None:
+                        setattr(self, attr, {})
+                except Exception:
+                    pass
     
     def is_cache_valid(self, cache_file: str) -> bool:
         """Check if cached data is still valid"""

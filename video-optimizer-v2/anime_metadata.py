@@ -87,31 +87,9 @@ class AnimeDataProvider(BaseMetadataProvider):
         self._db_path = os.path.join(self.cache_dir, "anime_data.db")
         # Which data_version.dataset rows represent this provider's sources
         self.CACHE_EXPIRY_DATASETS = ['anime_offline_database']
-        self._connection_pool = []  # Connection pool for better performance
-        self._pool_size = 3
+        self._init_connection_pool(pool_size=3)
         self._init_database()
         self._load_cache_duration()
-    
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get a connection from the pool or create a new one"""
-        if self._connection_pool:
-            return self._connection_pool.pop()
-        
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        # Optimize for read operations
-        conn.execute("PRAGMA query_only=ON")
-        conn.execute("PRAGMA cache_size=50000")  # Large cache
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
-        conn.row_factory = sqlite3.Row
-        return conn
-    
-    def _return_connection(self, conn: sqlite3.Connection) -> None:
-        """Return a connection to the pool"""
-        if len(self._connection_pool) < self._pool_size:
-            self._connection_pool.append(conn)
-        else:
-            conn.close()
 
     def _parse_season_from_title(self, title: str) -> tuple[Optional[int], str]:
         """
@@ -486,52 +464,10 @@ class AnimeDataProvider(BaseMetadataProvider):
 
     def _is_data_current(self) -> bool:
         """Check if the database contains current data"""
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                datasets = getattr(self, 'CACHE_EXPIRY_DATASETS', [])
-                now_ts = int(time.time())
-                count_current = 0
-
-                if datasets:
-                    placeholders = ','.join('?' for _ in datasets)
-                    cur = conn.execute(
-                        f"SELECT dataset, expires_at, updated FROM data_version WHERE dataset IN ({placeholders})",
-                        tuple(datasets),
-                    )
-                    rows = {r[0]: r for r in cur.fetchall()}
-
-                    for ds in datasets:
-                        row = rows.get(ds)
-                        if not row:
-                            continue
-                        expires_at = row[1]
-                        updated = row[2]
-
-                        # `expires_at` is authoritative when present
-                        if expires_at is not None:
-                            try:
-                                if int(expires_at) > now_ts:
-                                    count_current += 1
-                                # if expired, treat as stale regardless of `updated`
-                                continue
-                            except Exception:
-                                pass
-
-                        # Legacy fallback: compute expiry from `updated` + cache_duration
-                        if updated is not None:
-                            try:
-                                if int(updated) + int(self.cache_duration.total_seconds()) > now_ts:
-                                    count_current += 1
-                            except Exception:
-                                pass
-
-                # Also check if we have data in anime_title (main table)
-                cursor = conn.execute("SELECT COUNT(*) FROM anime_title LIMIT 1")
-                has_data = cursor.fetchone()[0] > 0
-
-                return count_current >= len(datasets) and has_data
-        except Exception:
-            return False
+        return self._is_data_current_in_db(
+            main_table="anime_title",
+            datasets=getattr(self, "CACHE_EXPIRY_DATASETS", None),
+        )
 
     def load_database(self) -> None:
         """Load the anime database into SQLite, downloading if needed"""
@@ -542,18 +478,10 @@ class AnimeDataProvider(BaseMetadataProvider):
         logging.info("Loading anime database...")
 
         zst_path = os.path.join(self.cache_dir, "anime-offline-database-minified.json.zst")
-        cache_expiry_days = self.cache_duration.days
 
         try:
             # Check if cached zst file exists and is fresh
-            need_download = True
-            if os.path.exists(zst_path):
-                mtime = os.path.getmtime(zst_path)
-                age_days = (time.time() - mtime) / (24 * 60 * 60)
-                if age_days < cache_expiry_days:
-                    need_download = False
-
-            if need_download:
+            if self._should_download_file(zst_path):
                 logging.info("Downloading anime database from remote server...")
                 try:
                     response = requests.get(self.ANIME_DB_URL, stream=True)
@@ -1100,13 +1028,10 @@ class AnimeDataProvider(BaseMetadataProvider):
         """Invalidate the current cache, forcing a refresh on next access"""
         logging.info("Invalidating anime database cache...")
         try:
-            # Clear the data_version table to force reload
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute("DELETE FROM data_version WHERE dataset = 'anime_offline_database'")
-                conn.commit()
-            
-            # Clear in-memory cache
-            self._search_cache.clear()
+            self._invalidate_cache_core(
+                datasets=["anime_offline_database"],
+                cache_attrs=["_search_cache"],
+            )
             
             logging.info("Anime cache invalidated successfully")
         except Exception as e:

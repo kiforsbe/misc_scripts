@@ -57,31 +57,9 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._title_cache = {}   # Cache for title info objects
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
         # Provider-level default TTL is provided via BaseMetadataProvider.cache_duration
-        self._connection_pool = []  # Connection pool for better performance
-        self._pool_size = 3
+        self._init_connection_pool(pool_size=3)
         self._init_database()
         self._load_cache_duration()
-    
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get a connection from the pool or create a new one"""
-        if self._connection_pool:
-            return self._connection_pool.pop()
-        
-        conn = sqlite3.connect(self._db_path, timeout=30.0)
-        # Optimize for read operations
-        conn.execute("PRAGMA query_only=ON")
-        conn.execute("PRAGMA cache_size=50000")  # Large cache
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
-        conn.row_factory = sqlite3.Row
-        return conn
-    
-    def _return_connection(self, conn: sqlite3.Connection) -> None:
-        """Return a connection to the pool"""
-        if len(self._connection_pool) < self._pool_size:
-            self._connection_pool.append(conn)
-        else:
-            conn.close()
 
     def _init_database(self) -> None:
         """Initialize SQLite database with optimized schema"""
@@ -192,52 +170,10 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _is_data_current(self) -> bool:
         """Check if the database contains current data"""
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                datasets = list(self.DATASETS.keys())
-                now_ts = int(time.time())
-                count_current = 0
-
-                if datasets:
-                    placeholders = ','.join('?' for _ in datasets)
-                    cur = conn.execute(
-                        f"SELECT dataset, expires_at, updated FROM data_version WHERE dataset IN ({placeholders})",
-                        tuple(datasets),
-                    )
-                    rows = {r[0]: r for r in cur.fetchall()}
-
-                    for ds in datasets:
-                        row = rows.get(ds)
-                        if not row:
-                            continue
-                        expires_at = row[1]
-                        updated = row[2]
-
-                        # `expires_at` is authoritative when present
-                        if expires_at is not None:
-                            try:
-                                if int(expires_at) > now_ts:
-                                    count_current += 1
-                                # if expired, treat as stale regardless of `updated`
-                                continue
-                            except Exception:
-                                pass
-
-                        # Legacy fallback: compute expiry from `updated` + cache_duration
-                        if updated is not None:
-                            try:
-                                if int(updated) + int(self.cache_duration.total_seconds()) > now_ts:
-                                    count_current += 1
-                            except Exception:
-                                pass
-
-                # Also check if we have data in title_basics (main table)
-                cursor = conn.execute("SELECT COUNT(*) FROM title_basics LIMIT 1")
-                has_data = cursor.fetchone()[0] > 0
-
-                return count_current >= len(datasets) and has_data
-        except Exception:
-            return False
+        return self._is_data_current_in_db(
+            main_table="title_basics",
+            datasets=list(self.DATASETS.keys()),
+        )
 
     def _verify_data_integrity(self) -> None:
         """Verify that all datasets are properly linked"""
@@ -302,14 +238,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         gz_cache = os.path.join(self.cache_dir, f"{dataset_name}.tsv.gz")
 
         # Only download if file is missing or older than cache_duration
-        need_download = True
-        if os.path.exists(gz_cache):
-            mtime = os.path.getmtime(gz_cache)
-            age_days = (time.time() - mtime) / (24 * 60 * 60)
-            if age_days < self.cache_duration.days:
-                need_download = False
-
-        if need_download:
+        if self._should_download_file(gz_cache):
             for attempt in range(self.MAX_RETRIES):
                 try:
                     response = requests.get(url, stream=True)
@@ -990,14 +919,10 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Invalidate the current cache, forcing a refresh on next access"""
         logging.info("Invalidating IMDb database cache...")
         try:
-            # Clear the data_version table to force reload
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute("DELETE FROM data_version")
-                conn.commit()
-            
-            # Clear in-memory caches
-            self._search_cache.clear()
-            self._title_cache.clear()
+            self._invalidate_cache_core(
+                datasets=None,
+                cache_attrs=["_search_cache", "_title_cache"],
+            )
             
             logging.info("IMDb cache invalidated successfully")
         except Exception as e:
