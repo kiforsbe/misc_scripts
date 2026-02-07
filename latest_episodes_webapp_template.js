@@ -175,6 +175,13 @@ class LatestEpisodesApp {
         
         // Keyboard navigation
         document.addEventListener('keydown', (e) => {
+            const searchInput = document.getElementById('search-input');
+            const suggestions = document.getElementById('series-suggestions');
+            const searchFocused = searchInput && document.activeElement === searchInput;
+            const suggestionsOpen = suggestions && suggestions.style.display !== 'none';
+            if (searchFocused || suggestionsOpen) {
+                return;
+            }
             if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
                 e.preventDefault();
                 this.navigateList(e.key === 'ArrowDown' ? 1 : -1);
