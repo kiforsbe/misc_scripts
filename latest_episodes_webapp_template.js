@@ -24,6 +24,8 @@ class LatestEpisodesApp {
         this.combinedQuery = '';
         this.seriesTitles = [];
         this.seriesTitleMap = new Map();
+        this.seriesSuggestionMax = 500;
+        this.activeSuggestionIndex = -1;
         this.popupTimeout = null;
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
@@ -101,6 +103,7 @@ class LatestEpisodesApp {
         this.populateSeriesFilter();
         this.filterAndDisplayEpisodes();
         this.handleInitialNavigation();
+        this.updateSearchIndicator();
         // Prepare mobile initial state: collapse filters and ensure list is shown
         if (this.isMobile()) {
             const controls = document.getElementById('filter-controls');
@@ -116,7 +119,38 @@ class LatestEpisodesApp {
         searchInput.addEventListener('input', (e) => {
             this.setCombinedQuery(e.target.value);
             this.filterAndDisplayEpisodes();
+            this.renderSeriesSuggestions(e.target.value);
+            this.updateSearchIndicator(e.target.value);
         });
+
+        searchInput.addEventListener('focus', (e) => {
+            this.renderSeriesSuggestions(e.target.value);
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                this.moveSuggestionSelection(e.key === 'ArrowDown' ? 1 : -1);
+                e.preventDefault();
+            } else if (e.key === 'Enter') {
+                if (this.selectActiveSuggestion()) {
+                    e.preventDefault();
+                }
+            } else if (e.key === 'Escape') {
+                this.hideSeriesSuggestions();
+            }
+        });
+
+        const clearBtn = document.getElementById('search-clear-btn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                const input = document.getElementById('search-input');
+                if (input) input.value = '';
+                this.setCombinedQuery('');
+                this.filterAndDisplayEpisodes();
+                this.hideSeriesSuggestions();
+                this.updateSearchIndicator('');
+            });
+        }
         
         // Watch status filter
         const watchStatusFilter = document.getElementById('watch-status-filter');
@@ -214,6 +248,13 @@ class LatestEpisodesApp {
                 }
             }
         }, { passive: true });
+
+        document.addEventListener('click', (e) => {
+            const container = document.querySelector('.search-container');
+            if (container && !container.contains(e.target)) {
+                this.hideSeriesSuggestions();
+            }
+        });
     }
 
     isMobile() {
@@ -280,10 +321,6 @@ class LatestEpisodesApp {
     }
     
     populateSeriesFilter() {
-        const seriesList = document.getElementById('series-options');
-        if (!seriesList) return;
-
-        seriesList.innerHTML = '';
         const seriesSet = new Set();
         
         this.data.episodes.forEach(episode => {
@@ -296,11 +333,122 @@ class LatestEpisodesApp {
         const sortedSeries = Array.from(seriesSet).sort();
         this.seriesTitles = sortedSeries;
         this.seriesTitleMap = new Map(sortedSeries.map(series => [series.toLowerCase(), series]));
-        sortedSeries.forEach(series => {
-            const option = document.createElement('option');
-            option.value = series;
-            seriesList.appendChild(option);
+        this.hideSeriesSuggestions();
+    }
+
+    renderSeriesSuggestions(rawValue) {
+        const container = document.getElementById('series-suggestions');
+        if (!container) return;
+
+        const inputValue = (rawValue || '').trim().toLowerCase();
+        if (!this.seriesTitles.length) {
+            this.hideSeriesSuggestions();
+            return;
+        }
+
+        const matches = this.seriesTitles.filter(title => {
+            if (!inputValue) return true;
+            return title.toLowerCase().includes(inputValue);
+        }).slice(0, this.seriesSuggestionMax);
+
+        if (matches.length === 0 || (inputValue && this.seriesTitleMap.get(inputValue))) {
+            this.hideSeriesSuggestions();
+            return;
+        }
+
+        container.innerHTML = matches.map((title, index) => {
+            const highlightedTitle = this.getHighlightedSeriesTitle(title, inputValue);
+            return `
+                <div class="series-suggestion-item" role="option" data-index="${index}" data-value="${this.escapeHtml(title)}">
+                    <span>${highlightedTitle}</span>
+                    ${inputValue ? '<span class="match-hint">Series</span>' : ''}
+                </div>
+            `;
+        }).join('');
+
+        container.style.display = 'block';
+        this.activeSuggestionIndex = -1;
+
+        container.querySelectorAll('.series-suggestion-item').forEach(item => {
+            item.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                const value = item.getAttribute('data-value');
+                this.applySuggestion(value || '');
+            });
         });
+    }
+
+    updateSearchIndicator(rawValue) {
+        const container = document.querySelector('.search-container');
+        const input = document.getElementById('search-input');
+        if (!container || !input) return;
+        const value = rawValue !== undefined ? rawValue : input.value;
+        const hasValue = value && value.trim().length > 0;
+        container.classList.toggle('has-value', hasValue);
+    }
+
+    getHighlightedSeriesTitle(title, inputValue) {
+        if (!inputValue) return this.escapeHtml(title);
+
+        const lowerTitle = title.toLowerCase();
+        const matchIndex = lowerTitle.indexOf(inputValue);
+        if (matchIndex === -1) return this.escapeHtml(title);
+
+        const before = title.slice(0, matchIndex);
+        const match = title.slice(matchIndex, matchIndex + inputValue.length);
+        const after = title.slice(matchIndex + inputValue.length);
+
+        return `${this.escapeHtml(before)}<span class="match-highlight">${this.escapeHtml(match)}</span>${this.escapeHtml(after)}`;
+    }
+
+    hideSeriesSuggestions() {
+        const container = document.getElementById('series-suggestions');
+        if (!container) return;
+        container.style.display = 'none';
+        container.innerHTML = '';
+        this.activeSuggestionIndex = -1;
+    }
+
+    moveSuggestionSelection(delta) {
+        const container = document.getElementById('series-suggestions');
+        if (!container || container.style.display === 'none') return;
+        const items = Array.from(container.querySelectorAll('.series-suggestion-item'));
+        if (!items.length) return;
+
+        const nextIndex = Math.max(0, Math.min(items.length - 1, this.activeSuggestionIndex + delta));
+        this.activeSuggestionIndex = nextIndex;
+
+        items.forEach((item, index) => {
+            item.classList.toggle('active', index === nextIndex);
+        });
+
+        const activeItem = items[nextIndex];
+        if (activeItem) {
+            activeItem.scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    selectActiveSuggestion() {
+        const container = document.getElementById('series-suggestions');
+        if (!container || container.style.display === 'none') return false;
+        const items = Array.from(container.querySelectorAll('.series-suggestion-item'));
+        if (!items.length || this.activeSuggestionIndex < 0) return false;
+
+        const activeItem = items[this.activeSuggestionIndex];
+        const value = activeItem.getAttribute('data-value') || '';
+        this.applySuggestion(value);
+        return true;
+    }
+
+    applySuggestion(value) {
+        const searchInput = document.getElementById('search-input');
+        if (searchInput) {
+            searchInput.value = value;
+        }
+        this.setCombinedQuery(value);
+        this.filterAndDisplayEpisodes();
+        this.hideSeriesSuggestions();
+        this.updateSearchIndicator(value);
     }
 
     setCombinedQuery(value) {
@@ -1159,6 +1307,8 @@ class LatestEpisodesApp {
             this.seriesFilter = exactSeries || seriesValue;
         }
         document.getElementById('search-input').value = this.combinedQuery;
+        this.hideSeriesSuggestions();
+        this.updateSearchIndicator(this.combinedQuery);
         if (urlParams.has('watchStatus')) {
             this.watchStatusFilter = urlParams.get('watchStatus');
             document.getElementById('watch-status-filter').value = this.watchStatusFilter;
@@ -1191,6 +1341,8 @@ class LatestEpisodesApp {
         
         // Update UI controls
         document.getElementById('search-input').value = this.combinedQuery;
+        this.hideSeriesSuggestions();
+        this.updateSearchIndicator(this.combinedQuery);
         document.getElementById('watch-status-filter').value = this.watchStatusFilter;
         document.getElementById('mal-status-filter').value = this.malStatusFilter;
         document.getElementById('group-by-select').value = this.groupBy;
@@ -1311,6 +1463,8 @@ class LatestEpisodesApp {
         document.getElementById('watch-status-filter').value = 'all';
         document.getElementById('mal-status-filter').value = 'all';
         document.getElementById('group-by-select').value = 'none';
+        this.hideSeriesSuggestions();
+        this.updateSearchIndicator('');
     }
     
     resetToDefaultView() {

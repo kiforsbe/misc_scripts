@@ -45,8 +45,14 @@
                 <div class="sidebar-header">
                     <div class="search-container">
                         <i class="bi bi-search search-icon"></i>
-                        <input type="text" id="search-input" class="search-input" placeholder="Search episodes or pick a series..." list="series-options">
-                        <datalist id="series-options"></datalist>
+                        <input type="text" id="search-input" class="search-input" placeholder="Search episodes or pick a series...">
+                        <span class="search-dropdown-indicator" aria-hidden="true">
+                            <i class="bi bi-chevron-down"></i>
+                        </span>
+                        <button type="button" id="search-clear-btn" class="search-clear-btn" aria-label="Clear search" style="display: none;">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                        <div id="series-suggestions" class="series-suggestions" aria-label="Series suggestions" role="listbox" style="display: none;"></div>
                     </div>
                     <button id="filter-toggle" class="btn btn-sm btn-outline-primary" aria-expanded="true" style="display:none;">Filters</button>
                     <div id="filter-controls" class="filter-controls">
