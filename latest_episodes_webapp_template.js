@@ -522,7 +522,6 @@ class LatestEpisodesApp {
                     </div> --->
                     <div class="episode-meta">
                         <span>Episode ${episode.metadata.episode}${this.getEpisodeCountDisplay(episode, episodeCount)}</span>
-                        <span>${this.formatFileSize(episode.file_size)}</span>
                     </div>
                     ${this.renderRatingInfo(episode, 'compact')}
                     <div class="episode-date">${downloadDate.toLocaleDateString()}</div>
