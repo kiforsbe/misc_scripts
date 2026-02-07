@@ -21,6 +21,9 @@ class LatestEpisodesApp {
         this.malStatusFilter = 'all';
         this.seriesFilter = 'all';
         this.groupBy = 'none';
+        this.combinedQuery = '';
+        this.seriesTitles = [];
+        this.seriesTitleMap = new Map();
         this.popupTimeout = null;
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
@@ -58,16 +61,14 @@ class LatestEpisodesApp {
             const fullEpisodeIndex = this.data.episodes.findIndex(ep => ep.file_path === filePath);
             if (fullEpisodeIndex !== -1) {
                 // Clear filters to show the episode
-                this.searchTerm = '';
+                this.setCombinedQuery('');
                 this.watchStatusFilter = 'all';
                 this.malStatusFilter = 'all';
-                this.seriesFilter = 'all';
                 
                 // Update UI
                 document.getElementById('search-input').value = '';
                 document.getElementById('watch-status-filter').value = 'all';
                 document.getElementById('mal-status-filter').value = 'all';
-                document.getElementById('series-filter').value = 'all';
                 
                 // Re-filter and find the episode
                 this.filterAndDisplayEpisodes();
@@ -113,7 +114,7 @@ class LatestEpisodesApp {
         // Search functionality
         const searchInput = document.getElementById('search-input');
         searchInput.addEventListener('input', (e) => {
-            this.searchTerm = e.target.value.toLowerCase();
+            this.setCombinedQuery(e.target.value);
             this.filterAndDisplayEpisodes();
         });
         
@@ -128,13 +129,6 @@ class LatestEpisodesApp {
         const malStatusFilter = document.getElementById('mal-status-filter');
         malStatusFilter.addEventListener('change', (e) => {
             this.malStatusFilter = e.target.value;
-            this.filterAndDisplayEpisodes();
-        });
-        
-        // Series filter
-        const seriesFilter = document.getElementById('series-filter');
-        seriesFilter.addEventListener('change', (e) => {
-            this.seriesFilter = e.target.value;
             this.filterAndDisplayEpisodes();
         });
         
@@ -286,7 +280,10 @@ class LatestEpisodesApp {
     }
     
     populateSeriesFilter() {
-        const seriesFilter = document.getElementById('series-filter');
+        const seriesList = document.getElementById('series-options');
+        if (!seriesList) return;
+
+        seriesList.innerHTML = '';
         const seriesSet = new Set();
         
         this.data.episodes.forEach(episode => {
@@ -297,12 +294,31 @@ class LatestEpisodesApp {
         });
         
         const sortedSeries = Array.from(seriesSet).sort();
+        this.seriesTitles = sortedSeries;
+        this.seriesTitleMap = new Map(sortedSeries.map(series => [series.toLowerCase(), series]));
         sortedSeries.forEach(series => {
             const option = document.createElement('option');
             option.value = series;
-            option.textContent = series;
-            seriesFilter.appendChild(option);
+            seriesList.appendChild(option);
         });
+    }
+
+    setCombinedQuery(value) {
+        const raw = (value || '').trim();
+        const lowered = raw.toLowerCase();
+
+        this.combinedQuery = raw;
+        this.searchTerm = lowered;
+        this.seriesFilter = 'all';
+
+        if (!raw) {
+            return;
+        }
+
+        const exactSeries = this.seriesTitleMap.get(lowered);
+        if (exactSeries) {
+            this.seriesFilter = exactSeries;
+        }
     }
     
     filterAndDisplayEpisodes() {
@@ -953,7 +969,7 @@ class LatestEpisodesApp {
         urlParams.set('episode', episode.metadata.episode);
         
         // Add current filters to maintain state
-        if (this.searchTerm) urlParams.set('search', this.searchTerm);
+        if (this.combinedQuery) urlParams.set('search', this.combinedQuery);
         if (this.watchStatusFilter !== 'all') urlParams.set('watchStatus', this.watchStatusFilter);
         if (this.malStatusFilter !== 'all') urlParams.set('malStatus', this.malStatusFilter);
         if (this.seriesFilter !== 'all') urlParams.set('seriesFilter', this.seriesFilter);
@@ -965,7 +981,7 @@ class LatestEpisodesApp {
             season: episode.metadata.season || 1,
             episode: episode.metadata.episode,
             filters: {
-                search: this.searchTerm,
+                search: this.combinedQuery,
                 watchStatus: this.watchStatusFilter,
                 malStatus: this.malStatusFilter,
                 seriesFilter: this.seriesFilter,
@@ -987,7 +1003,7 @@ class LatestEpisodesApp {
             urlParams.set('episode', episode.metadata.episode);
         }
 
-        if (this.searchTerm) urlParams.set('search', this.searchTerm);
+        if (this.combinedQuery) urlParams.set('search', this.combinedQuery);
         if (this.watchStatusFilter !== 'all') urlParams.set('watchStatus', this.watchStatusFilter);
         if (this.malStatusFilter !== 'all') urlParams.set('malStatus', this.malStatusFilter);
         if (this.seriesFilter !== 'all') urlParams.set('seriesFilter', this.seriesFilter);
@@ -999,7 +1015,7 @@ class LatestEpisodesApp {
             season: episode && episode.metadata ? (episode.metadata.season || 1) : null,
             episode: episode && episode.metadata ? episode.metadata.episode : null,
             filters: {
-                search: this.searchTerm,
+                search: this.combinedQuery,
                 watchStatus: this.watchStatusFilter,
                 malStatus: this.malStatusFilter,
                 seriesFilter: this.seriesFilter,
@@ -1134,10 +1150,15 @@ class LatestEpisodesApp {
     
     applyFiltersFromUrl(urlParams) {
         // Apply filters from URL parameters
-        if (urlParams.has('search')) {
-            this.searchTerm = urlParams.get('search');
-            document.getElementById('search-input').value = this.searchTerm;
+        const searchValue = urlParams.has('search') ? urlParams.get('search') : '';
+        const seriesValue = urlParams.has('seriesFilter') ? urlParams.get('seriesFilter') : '';
+        const combinedValue = searchValue || seriesValue;
+        this.setCombinedQuery(combinedValue);
+        if (seriesValue) {
+            const exactSeries = this.seriesTitleMap.get(seriesValue.toLowerCase());
+            this.seriesFilter = exactSeries || seriesValue;
         }
+        document.getElementById('search-input').value = this.combinedQuery;
         if (urlParams.has('watchStatus')) {
             this.watchStatusFilter = urlParams.get('watchStatus');
             document.getElementById('watch-status-filter').value = this.watchStatusFilter;
@@ -1145,10 +1166,6 @@ class LatestEpisodesApp {
         if (urlParams.has('malStatus')) {
             this.malStatusFilter = urlParams.get('malStatus');
             document.getElementById('mal-status-filter').value = this.malStatusFilter;
-        }
-        if (urlParams.has('seriesFilter')) {
-            this.seriesFilter = urlParams.get('seriesFilter');
-            document.getElementById('series-filter').value = this.seriesFilter;
         }
         if (urlParams.has('groupBy')) {
             this.groupBy = urlParams.get('groupBy');
@@ -1160,17 +1177,22 @@ class LatestEpisodesApp {
     }
     
     applyFilters(filters) {
-        this.searchTerm = filters.search || '';
+        const searchValue = filters.search || '';
+        const seriesValue = filters.seriesFilter || '';
+        const combinedValue = searchValue || seriesValue;
+        this.setCombinedQuery(combinedValue);
+        if (seriesValue) {
+            const exactSeries = this.seriesTitleMap.get(seriesValue.toLowerCase());
+            this.seriesFilter = exactSeries || seriesValue;
+        }
         this.watchStatusFilter = filters.watchStatus || 'all';
         this.malStatusFilter = filters.malStatus || 'all';
-        this.seriesFilter = filters.seriesFilter || 'all';
         this.groupBy = filters.groupBy || 'none';
         
         // Update UI controls
-        document.getElementById('search-input').value = this.searchTerm;
+        document.getElementById('search-input').value = this.combinedQuery;
         document.getElementById('watch-status-filter').value = this.watchStatusFilter;
         document.getElementById('mal-status-filter').value = this.malStatusFilter;
-        document.getElementById('series-filter').value = this.seriesFilter;
         document.getElementById('group-by-select').value = this.groupBy;
         
         // Re-filter episodes
@@ -1279,17 +1301,15 @@ class LatestEpisodesApp {
     }
     
     resetFilters() {
-        this.searchTerm = '';
+        this.setCombinedQuery('');
         this.watchStatusFilter = 'all';
         this.malStatusFilter = 'all';
-        this.seriesFilter = 'all';
         this.groupBy = 'none';
         
         // Update UI
         document.getElementById('search-input').value = '';
         document.getElementById('watch-status-filter').value = 'all';
         document.getElementById('mal-status-filter').value = 'all';
-        document.getElementById('series-filter').value = 'all';
         document.getElementById('group-by-select').value = 'none';
     }
     

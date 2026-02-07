@@ -45,7 +45,8 @@
                 <div class="sidebar-header">
                     <div class="search-container">
                         <i class="bi bi-search search-icon"></i>
-                        <input type="text" id="search-input" class="search-input" placeholder="Search episodes...">
+                        <input type="text" id="search-input" class="search-input" placeholder="Search episodes or pick a series..." list="series-options">
+                        <datalist id="series-options"></datalist>
                     </div>
                     <button id="filter-toggle" class="btn btn-sm btn-outline-primary" aria-expanded="true" style="display:none;">Filters</button>
                     <div id="filter-controls" class="filter-controls">
@@ -67,11 +68,6 @@
                               <option value="no_mal_data">No MAL Data</option>
                           </select>
                       </div>
-                    </div>
-                    <div class="filter-container">
-                        <select id="series-filter" class="filter-select">
-                            <option value="all">All Series</option>
-                        </select>
                     </div>
                     <div class="group-by-controls">
                         <select id="group-by-select" class="group-by-select">
