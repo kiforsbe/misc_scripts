@@ -331,7 +331,8 @@ class LatestEpisodesApp {
             // MAL status filter
             if (this.malStatusFilter !== 'all') {
                 const malStatus = this.getEpisodeMalStatus(episode);
-                if (malStatus !== this.malStatusFilter) {
+                const normalizedFilter = this.normalizeStatusValue(this.malStatusFilter);
+                if (malStatus !== normalizedFilter) {
                     return false;
                 }
             }
@@ -357,12 +358,45 @@ class LatestEpisodesApp {
         if (plex.progress_percent > 0) return 'partially_watched';
         return 'not_watched';
     }
+
+    normalizeStatusValue(value) {
+        if (!value) return value;
+        return value.toLowerCase().replace(/[\s-]+/g, '_');
+    }
+
+    toStatusClass(value) {
+        if (!value) return value;
+        return value.replace(/_/g, '-');
+    }
     
     getEpisodeMalStatus(episode) {
         const mal = episode.myanimelist_watch_status;
         if (!mal || !mal.my_status) return 'no_mal_data';
-        
-        return mal.my_status.toLowerCase().replace(' ', '_').replace('-', '_');
+
+        return this.normalizeStatusValue(mal.my_status);
+    }
+
+    getSeriesMalStatus(episodes) {
+        for (const episode of episodes) {
+            const status = this.getEpisodeMalStatus(episode);
+            if (status && status !== 'no_mal_data') {
+                return status;
+            }
+        }
+
+        return 'no_mal_data';
+    }
+
+    getCombinedEpisodeStatusClass(watchStatus, malStatus) {
+        if (watchStatus && watchStatus !== 'unknown' && watchStatus !== 'not_watched') {
+            return `status-${this.toStatusClass(watchStatus)}`;
+        }
+
+        if (malStatus && malStatus !== 'no_mal_data') {
+            return `status-${this.toStatusClass(malStatus)}`;
+        }
+
+        return '';
     }
     
     renderEpisodesList() {
@@ -417,12 +451,14 @@ class LatestEpisodesApp {
             const episodes = groupedEpisodes[seriesTitle];
             const firstEpisode = episodes[0].episode;
             const seriesRating = this.getSeriesGroupRating(firstEpisode);
+            const seriesMalStatus = this.getSeriesMalStatus(episodes.map(item => item.episode));
+            const seriesMalStatusClass = seriesMalStatus === 'no_mal_data' ? '' : this.toStatusClass(seriesMalStatus);
             const totalEpisodes = firstEpisode.series_metadata && firstEpisode.series_metadata.total_episodes;
             const episodeCountText = totalEpisodes ? `${episodes.length}/${totalEpisodes} episodes` : `${episodes.length} episode${episodes.length !== 1 ? 's' : ''}`;
             const seriesTags = firstEpisode.series_metadata && firstEpisode.series_metadata.tags && firstEpisode.series_metadata.tags.length > 0 ? firstEpisode.series_metadata.tags : null;
             
             html += `
-                <div class="series-group">
+                <div class="series-group ${seriesMalStatusClass ? `mal-${seriesMalStatusClass}` : ''}">
                     <div class="series-group-header">
                         <div class="series-group-main">
                             <div class="series-group-title">
@@ -454,6 +490,8 @@ class LatestEpisodesApp {
     
     renderEpisodeItem(episode, index) {
         const watchStatus = this.getEpisodeWatchStatus(episode);
+        const malStatus = this.getEpisodeMalStatus(episode);
+        const combinedStatusClass = this.getCombinedEpisodeStatusClass(watchStatus, malStatus);
         const downloadDate = new Date(episode.download_date);
         const episodeTitle = episode.metadata.episode_title || `Episode ${episode.metadata.episode}`;
         const seriesEpisodes = this.getSeriesEpisodes(episode.metadata.title);
@@ -465,7 +503,7 @@ class LatestEpisodesApp {
         const imgAnim = animUrl ? this.buildUrl(animUrl) : '';
 
         return `
-            <div class="episode-item ${watchStatus}" onclick="app.selectEpisode(${index})" data-index="${index}"
+                  <div class="episode-item ${combinedStatusClass}" onclick="app.selectEpisode(${index})" data-index="${index}"
                  onmouseenter="app.showEpisodePopup(event, ${index})" onmouseleave="app.hideEpisodePopup()">
                 <div class="episode-thumbnail">
                     ${staticUrl ? 
@@ -664,7 +702,7 @@ class LatestEpisodesApp {
                         <i class="bi bi-list-check"></i>
                         MyAnimeList Status
                     </h4>
-                    <span class="status-badge status-${mal.my_status.toLowerCase().replace(' ', '-').replace(' ', '_')}">${mal.my_status}</span>
+                    <span class="status-badge status-${this.toStatusClass(this.getEpisodeMalStatus(episode))}">${mal.my_status}</span>
                     <p><strong>Episodes Watched:</strong> ${mal.my_watched_episodes} / ${mal.series_episodes || '?'}</p>
                     ${mal.my_score > 0 ? `<p><strong>Your Score:</strong> ${parseFloat(mal.my_score).toFixed(1)}/10</p>` : ''}
                     ${mal.progress_percent > 0 ? `
@@ -693,6 +731,8 @@ class LatestEpisodesApp {
                 seriesEpisodes.forEach(ep => {
                 const isCurrentEpisode = ep.file_path === episode.file_path;
                 const epWatchStatus = this.getEpisodeWatchStatus(ep);
+                const epMalStatus = this.getEpisodeMalStatus(ep);
+                const epCombinedStatusClass = this.getCombinedEpisodeStatusClass(epWatchStatus, epMalStatus);
                 const epThumbnailData = this.getThumbnailData(ep);
                 const epStaticUrl = epThumbnailData && epThumbnailData.static_thumbnail ? epThumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
                 const epAnimUrl = epThumbnailData && epThumbnailData.animated_thumbnail ? epThumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
@@ -702,7 +742,7 @@ class LatestEpisodesApp {
                 const epDownloadDate = new Date(ep.download_date);
                 
                 detailsHtml += `
-                    <div class="series-episode-card ${isCurrentEpisode ? 'current' : ''}" 
+                    <div class="series-episode-card ${isCurrentEpisode ? 'current' : ''} mal-${this.toStatusClass(epMalStatus)}" 
                          onclick="${isCurrentEpisode ? '' : `app.selectEpisodeByPath('${ep.file_path.replace(/'/g, "\\\'")}'); event.stopPropagation();`}" 
                          style="${isCurrentEpisode ? '' : 'cursor: pointer;'}">
                         <div class="series-episode-thumbnail">
@@ -715,7 +755,7 @@ class LatestEpisodesApp {
                         </div>
                         <div class="series-episode-info">
                             <div class="series-episode-title">
-                                <span class="watch-indicator ${epWatchStatus}" style="margin-right: 0.25rem;"></span>
+                                <span class="watch-indicator ${epCombinedStatusClass}" style="margin-right: 0.25rem;"></span>
                                 ${this.escapeHtml(epTitle)}
                             </div>
                             <div class="series-episode-meta">
@@ -1477,17 +1517,25 @@ class LatestEpisodesApp {
         
         // Set watch status
         const watchStatus = this.getEpisodeWatchStatus(episode);
+        const malStatus = this.getEpisodeMalStatus(episode);
+        const combinedStatusClass = this.getCombinedEpisodeStatusClass(watchStatus, malStatus);
         const statusIndicator = document.getElementById('popup-status-indicator');
         const statusText = document.getElementById('popup-status-text');
+        const combinedStatusKey = combinedStatusClass ? combinedStatusClass.replace('status-', '') : '';
         
-        statusIndicator.className = `popup-status-indicator ${watchStatus}`;
+        statusIndicator.className = combinedStatusClass ? `popup-status-indicator ${combinedStatusClass}` : 'popup-status-indicator';
+        statusIndicator.style.display = combinedStatusClass ? 'inline-block' : 'none';
         const statusLabels = {
             watched: 'Watched',
             partially_watched: 'Partially Watched',
-            not_watched: 'Not Watched',
+            watching: 'Watching',
+            completed: 'Completed',
+            on_hold: 'On Hold',
+            dropped: 'Dropped',
+            plan_to_watch: 'Plan to Watch',
             unknown: 'Unknown Status'
         };
-        statusText.textContent = statusLabels[watchStatus] || 'Unknown';
+        statusText.textContent = combinedStatusKey ? (statusLabels[combinedStatusKey.replace(/-/g, '_')] || 'Unknown') : 'No Status';
         
         // Set thumbnail
         const thumbnailData = this.getThumbnailData(episode);
