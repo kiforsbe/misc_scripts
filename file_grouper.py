@@ -395,15 +395,15 @@ class FileGrouper:
                                     if 'anime' in p.__class__.__name__.lower():
                                         anime_provider = p
                                         break
-                                
+
+                                # Try season-specific titles ONLY with anime provider
                                 if anime_provider:
-                                    # Try season-specific titles ONLY with anime provider
                                     season_titles = self._generate_season_titles(title, season)
                                     for season_title in season_titles:
                                         anime_result = anime_provider.find_title(season_title, year)
                                         if anime_result and anime_result.info:
                                             enhanced_info = anime_result.info
-                                            provider = anime_provider.__class__.__name__
+                                            provider = anime_provider
                                             break
                             
                             # Fall back to base title (searches ALL providers)
@@ -496,11 +496,21 @@ class FileGrouper:
                                             enhanced_info, _ = self.metadata_manager.find_title(season_title, year)
                                             if enhanced_info:
                                                 break
-                                        if enhanced_info:                                            
-                                            episode_info = self.metadata_manager.get_episode_info(
-                                                next(p for p in self.metadata_manager.providers if p.__class__.__name__ == provider),
-                                                enhanced_info.id, season, episode
-                                            )
+                                        if enhanced_info:
+                                            # Resolve provider to an object; callers may have stored either
+                                            # a provider object or a provider class-name string in `provider`.
+                                            if isinstance(provider, str):
+                                                provider_obj = next((p for p in self.metadata_manager.providers if p.__class__.__name__ == provider), None)
+                                            else:
+                                                provider_obj = provider
+
+                                            if provider_obj:
+                                                episode_info = self.metadata_manager.get_episode_info(
+                                                    provider_obj,
+                                                    enhanced_info.id, season, episode
+                                                )
+                                            else:
+                                                episode_info = None
                                             if episode_info:
                                                 result['episode_info'] = self._serialize_episode_info(episode_info)
                             
