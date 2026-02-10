@@ -1,3 +1,4 @@
+import math
 import os
 import gzip
 import logging
@@ -42,8 +43,11 @@ class IMDbDataProvider(BaseMetadataProvider):
     }
     
     # Configurable filtering options - set to None to disable specific filters
-    MIN_VOTES_THRESHOLD = 1000    # Only keep titles with this many+ votes (None = no filter)
-    RECENT_YEAR_CUTOFF = 1900    # Only keep titles from this year onwards (None = no filter)
+    # IMPORTANT: Titles with fewer than MIN_VOTES_THRESHOLD votes are excluded from the
+    # database entirely (both during ratings import and via post-load cleanup of title_basics).
+    # This keeps the DB small and searches fast by only including well-known titles.
+    MIN_VOTES_THRESHOLD = 1000     # Minimum votes required to store a title in the DB (None = no filter)
+    RECENT_YEAR_CUTOFF = 1900     # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = False  # Filter out adult content keywords (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
 
@@ -266,9 +270,25 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         logging.info("Loading IMDb datasets into database...")
         
-        # Load datasets in order of dependency
+        # Load datasets in order of dependency:
+        # 1. title.basics first (filtered by type/year/adult)
+        # 2. title.ratings second (filtered by MIN_VOTES_THRESHOLD)
+        # 3. Then purge basics entries that didn't meet the vote threshold
+        # 4. title.episode and title.akas last (only for surviving titles)
+        #
+        # Note: episodes and akas are implicitly filtered by the vote threshold
+        # because they load processed_tconst_ints from the already-purged
+        # title_basics table. _compress_row checks parent IDs against this set,
+        # so episodes/akas for low-vote titles are never inserted.
         self._load_dataset_to_db("title.basics")
         self._load_dataset_to_db("title.ratings")
+        
+        # Remove titles from title_basics that have no matching rating entry.
+        # Since title.ratings already filters out titles below MIN_VOTES_THRESHOLD,
+        # this ensures the entire database only contains titles with enough votes.
+        if self.MIN_VOTES_THRESHOLD is not None:
+            self._purge_low_vote_titles()
+        
         self._load_dataset_to_db("title.episode")
         self._load_dataset_to_db("title.akas")
         
@@ -277,6 +297,31 @@ class IMDbDataProvider(BaseMetadataProvider):
         
         # Optimize database for read operations
         self._optimize_database_for_reads()
+
+    def _purge_low_vote_titles(self) -> None:
+        """Remove titles from title_basics that don't have a matching entry in title_ratings.
+        
+        Since title_ratings is already filtered by MIN_VOTES_THRESHOLD during import,
+        any title_basics entry without a rating row is guaranteed to have fewer than
+        MIN_VOTES_THRESHOLD votes. This keeps the entire database clean.
+        """
+        logging.info(f"Purging titles with fewer than {self.MIN_VOTES_THRESHOLD} votes from title_basics...")
+        with sqlite3.connect(self._db_path, timeout=60.0) as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
+            before_count = cursor.fetchone()[0]
+            
+            # Delete basics entries that have no corresponding rating
+            # (i.e. they were filtered out due to low vote count)
+            conn.execute("""
+                DELETE FROM title_basics
+                WHERE id NOT IN (SELECT id FROM title_ratings)
+            """)
+            conn.commit()
+            
+            cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
+            after_count = cursor.fetchone()[0]
+            removed = before_count - after_count
+            logging.info(f"Purged {removed} low-vote titles ({before_count} -> {after_count} remaining)")
 
     def _load_dataset_to_db(self, dataset_name: str) -> None:
         """Load a dataset into the database"""
@@ -484,7 +529,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                     return False
                     
         elif dataset_name == "title.ratings":
-            # Filter by minimum votes threshold (if configured)
+            # Filter by minimum votes threshold (if configured).
+            # Titles that don't meet this threshold won't have a rating row,
+            # and will subsequently be purged from title_basics too (see _purge_low_vote_titles).
             if self.MIN_VOTES_THRESHOLD is not None:
                 data_dict = dict(zip(required_cols, row_data))
                 votes = data_dict.get('numVotes', 0)
@@ -731,9 +778,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                         elif abs(row["year"] - year) <= 1:
                             total_score += 100
 
-                    # Add popularity bonus
+                    # Add popularity bonus (log-scaled, heavier weight)
                     if row["votes"]:
-                        vote_bonus = min(50, (row["votes"] / 250))
+                        vote_bonus = min(150, 30 * math.log10(max(1, row["votes"])))
                         total_score += vote_bonus
 
                     row["score"] = total_score
@@ -776,7 +823,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
                     AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
-                    ORDER BY score
+                    AND s.votes >= 1000
+                    ORDER BY score, s.votes DESC
                     LIMIT 200
                     """,
                     (fts_query, year - 2, year + 2),
@@ -789,8 +837,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
-                    AND s.votes > 50
-                    ORDER BY score
+                    AND s.votes >= 1000
+                    ORDER BY score, s.votes DESC
                     LIMIT 300
                     """,
                     (fts_query,),
@@ -930,10 +978,10 @@ class IMDbDataProvider(BaseMetadataProvider):
         normalized = re.sub(r'[^\w\s]', ' ', normalized)
 
         # Remove words like "the", "a", "an" and other common stop words
-        normalized = re.sub(r'\b(the|a|an|and|of|in|to|for|with)\b', '', normalized)
+        #normalized = re.sub(r'\b(the|a|an|and|of|in|to|for|with)\b', '', normalized)
 
         # Remove common japanese stop words in romaji
-        normalized = re.sub(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
+        #normalized = re.sub(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
 
         # Split into words and build FTS5 query
         words = normalized.split()
