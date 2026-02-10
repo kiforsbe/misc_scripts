@@ -7,27 +7,17 @@ import time
 import re
 from datetime import timedelta
 from typing import Optional, Dict, List, Tuple
-from collections import OrderedDict
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
-import math
-import threading
 
 class IMDbDataProvider(BaseMetadataProvider):
-    # Precompile common regexes for normalization to avoid recompiling per-call
-    _RE_WHITESPACE = re.compile(r'\s+')
-    _RE_NONWORD = re.compile(r'[^\w\s]')
-    _RE_STOPWORDS = re.compile(r'\b(the|a|an|and|of|in|to|for|with)\b')
-    _RE_JAP_STOPWORDS = re.compile(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b')
     DATASETS = {
         "title.basics": "https://datasets.imdbws.com/title.basics.tsv.gz",
         "title.episode": "https://datasets.imdbws.com/title.episode.tsv.gz",
         "title.ratings": "https://datasets.imdbws.com/title.ratings.tsv.gz",
         "title.akas": "https://datasets.imdbws.com/title.akas.tsv.gz",
     }
-    # Persist expiry for all IMDb datasets so provider expiry is DB-authoritative
-    CACHE_EXPIRY_DATASETS = list(DATASETS.keys())
     # Define columns we actually need from each dataset - minimal set only
     # Removed columns for space efficiency:
     #   title.basics: (none removed - all columns included for completeness)
@@ -63,26 +53,32 @@ class IMDbDataProvider(BaseMetadataProvider):
         super().__init__("imdb", provider_weight=0.9)
         self._search_cache = {}  # Cache recent search results
         self._title_cache = {}   # Cache for title info objects
-        self._prefix_index = None  # in-memory map: token -> list of rows
-        self._prefix_index_built = False
-        self._prefix_index_building = False
-        # Quick candidate strategy (set via IMDB_QUICK_STRATEGY):
-        # - like_builder: LIKE prefix + background in-memory prefix index
-        # - like: plain LIKE prefix
-        # - like_cs: LIKE prefix with case_sensitive_like=ON
-        # - like_range: range query (>= token, < next prefix)
-        # - fts_prefix: FTS5 prefix query
-        # - token_lru: per-token LIKE cached in an LRU
-        self._quick_strategy = os.getenv("IMDB_QUICK_STRATEGY", "like_range").lower()
-        self._token_cache = OrderedDict()
-        self._token_cache_size = int(os.getenv("IMDB_TOKEN_CACHE_SIZE", "5000"))
-        self._cs_like_conns = set()
-        self._cs_like_lock = threading.Lock()
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
-        # Provider-level default TTL is provided via BaseMetadataProvider.cache_duration
-        self._init_connection_pool(pool_size=3)
+        self._connection_pool = []  # Connection pool for better performance
+        self._pool_size = 3
         self._init_database()
         self._load_cache_duration()
+    
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get a connection from the pool or create a new one"""
+        if self._connection_pool:
+            return self._connection_pool.pop()
+        
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        # Optimize for read operations
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA cache_size=50000")  # Large cache
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def _return_connection(self, conn: sqlite3.Connection) -> None:
+        """Return a connection to the pool"""
+        if len(self._connection_pool) < self._pool_size:
+            self._connection_pool.append(conn)
+        else:
+            conn.close()
 
     def _init_database(self) -> None:
         """Initialize SQLite database with optimized schema"""
@@ -178,25 +174,52 @@ class IMDbDataProvider(BaseMetadataProvider):
             raise
 
     def _load_cache_duration(self) -> None:
-        # Use base-class settings persistence (file-based). Avoid storing days in
-        # the DB's `data_version.updated` field which is an epoch timestamp.
         try:
-            super()._load_cache_duration()
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                cursor = conn.execute(
+                    "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row is not None and row[0] is not None:
+                    days = int(row[0])
+                    if days >= 0:
+                        self.cache_duration = timedelta(days=days)
         except Exception as e:
             logging.debug(f"Could not load cache duration for IMDb provider: {e}")
 
     def _persist_cache_duration(self) -> None:
         try:
-            super()._persist_cache_duration()
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES ('cache_duration', ?)",
+                    (int(self.cache_duration.days),),
+                )
+                conn.commit()
         except Exception:
             logging.debug("Could not persist cache duration for IMDb provider")
 
     def _is_data_current(self) -> bool:
         """Check if the database contains current data"""
-        return self._is_data_current_in_db(
-            main_table="title_basics",
-            datasets=list(self.DATASETS.keys()),
-        )
+        try:
+            with sqlite3.connect(self._db_path) as conn:
+                # Use cache_duration from base class (day granularity)
+                cache_days = int(self.cache_duration.days)
+                cursor = conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM data_version 
+                    WHERE dataset IN ('title.basics', 'title.ratings', 'title.episode')
+                    AND updated > strftime('%s', 'now', '-{cache_days} days')
+                """
+                )
+                count = cursor.fetchone()[0]
+
+                # Also check if we have data in title_basics (main table)
+                cursor = conn.execute("SELECT COUNT(*) FROM title_basics LIMIT 1")
+                has_data = cursor.fetchone()[0] > 0
+
+                return count >= 3 and has_data
+        except Exception:
+            return False
 
     def _verify_data_integrity(self) -> None:
         """Verify that all datasets are properly linked"""
@@ -261,7 +284,14 @@ class IMDbDataProvider(BaseMetadataProvider):
         gz_cache = os.path.join(self.cache_dir, f"{dataset_name}.tsv.gz")
 
         # Only download if file is missing or older than cache_duration
-        if self._should_download_file(gz_cache):
+        need_download = True
+        if os.path.exists(gz_cache):
+            mtime = os.path.getmtime(gz_cache)
+            age_days = (time.time() - mtime) / (24 * 60 * 60)
+            if age_days < self.cache_duration.days:
+                need_download = False
+
+        if need_download:
             for attempt in range(self.MAX_RETRIES):
                 try:
                     response = requests.get(url, stream=True)
@@ -392,41 +422,14 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                     pbar.close()
 
-                # Update version info: write expires_at, last_modified and updated
-                # Do not overwrite `default_ttl` here; keep provider/default values
-                # unless an explicit set-expiry operation updates them.
-                now_ts = int(time.time())
-                expiry_ts = now_ts + int(self.cache_duration.total_seconds())
-                try:
-                    # If a data_version row exists, preserve its `default_ttl`
-                    # value (including 0). Only initialize `default_ttl` when no
-                    # row exists, using provider DEFAULT_TTL_DAYS.
-                    try:
-                        cur = conn.execute("SELECT default_ttl FROM data_version WHERE dataset = ? LIMIT 1", (dataset_name,))
-                        row = cur.fetchone()
-                        if row:
-                            try:
-                                db_val = int(row[0]) if row[0] is not None else None
-                            except Exception:
-                                db_val = None
-                            ttl_val = db_val if db_val and db_val > 0 else int(self.cache_duration.days)
-                        else:
-                            ttl_val = int(self.cache_duration.days)
-                    except Exception:
-                        ttl_val = int(self.cache_duration.days)
-
-                    conn.execute(
-                        "INSERT OR REPLACE INTO data_version (dataset, expires_at, default_ttl, last_modified, updated) VALUES (?, ?, ?, ?, ?)",
-                        (dataset_name, expiry_ts, ttl_val, now_ts, now_ts),
-                    )
-                except Exception:
-                    try:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES (?, ?)",
-                            (dataset_name, now_ts),
-                        )
-                    except Exception:
-                        pass
+                # Update version info
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO data_version (dataset, updated)
+                    VALUES (?, ?)
+                """,
+                    (dataset_name, int(time.time())),
+                )
 
                 # After all akas are inserted, rebuild the FTS table from the content table (like anime_metadata.py)
                 conn.execute("INSERT INTO title_fts(title_fts) VALUES('rebuild')")
@@ -688,127 +691,56 @@ class IMDbDataProvider(BaseMetadataProvider):
         # Use connection pooling for better performance
         conn = self._get_connection()
         try:
-            # Normalize title once
-            title_lower = (title or '').lower()
-
-            # First attempt: fast prefix/LIKE based candidate retrieval using indexed columns
-            quick_candidates = self._get_quick_candidates(conn, title_lower, year)
-
-            # If quick path returned candidates, do a small fuzzy sanity check
-            # to avoid noisy prefixes (e.g., matching 'the' -> many results).
-            candidates = quick_candidates
-            if quick_candidates:
-                qc_list = [dict(row) for row in quick_candidates]
-                qc_search = {r['id']: r['title'] for r in qc_list}
-                qc_matches = process.extract(title, qc_search, scorer=fuzz.ratio, limit=5)
-                top_score = qc_matches[0][1] if qc_matches else 0
-                top_id = qc_matches[0][2] if qc_matches else None
-                top_votes = 0
-                if top_id:
-                    row = next((r for r in qc_list if r['id'] == top_id), None)
-                    if row:
-                        top_votes = row.get('votes') or 0
-
-                # Accept quick path only if top score is strong; otherwise use FTS
-                if not (top_score >= 90 or (top_score >= 85 and top_votes > 500)):
-                    candidates = self._get_fuzzy_candidates(conn, title_lower, year)
-            else:
-                # No quick candidates, use FTS
-                candidates = self._get_fuzzy_candidates(conn, title_lower, year)
-
-            # Fallback: if FTS returned no candidates, try direct title lookup (handles data gaps)
-            if not candidates:
-                try:
-                    # Use a lightweight prefix/word match fallback to avoid expensive REPLACE scans
-                    normalized_title = re.sub(r'[^\w\s]', ' ', title.lower()).strip()
-                    words = [w for w in normalized_title.split() if w]
-                    if words:
-                        first = words[0]
-                        like_param = f"%{first}%"
-                        cursor = conn.execute(
-                            """
-                            SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
-                            FROM search_view
-                            WHERE title_lower LIKE ?
-                            ORDER BY votes DESC, year DESC
-                            LIMIT 500
-                            """,
-                            (like_param,),
-                        )
-                        candidates = cursor.fetchall()
-                    else:
-                        candidates = []
-                except Exception:
-                    candidates = []
+            # First try exact match with optimized single query
+            title_lower = title.lower()
+            
+            # Just use fuzzy candidates for simplicity
+            candidates = self._get_fuzzy_candidates(conn, title_lower, year)
 
             # # Create a best match from the first entry in the list, as this is the best match in terms of titles
             # best_match = self._create_title_info_from_row_fast(candidates[0], conn) if candidates else None
             # best_score = 1000 if best_match else 0
 
-            # Convert rows to dicts for processing and build a search map once
+            # Change the candidates to a list of dictionaries for easier processing
             candidates = [dict(row) for row in candidates]
-            search_dict = {row["id"]: row["title"] for row in candidates}
 
-            # Perform fuzzy search across candidates (limited)
-            # Keep the extraction limit modest to reduce CPU on first lookup
-            title_matches = process.extract(
-                title, search_dict, scorer=fuzz.ratio, limit=100
-            )
+            # This is very ineffective for now, as it ignores the scoring from the FTS5 search
+            # We will for now use fuzzy matching on the candidates instead along with additional scorign to get a better match
+            # TODO: Fix this junk and make the FTS5 query take all this stuff into consideration instead
+            for row in candidates:
+                # Build search dict for fuzzy matching
+                search_dict = {row["id"]: row["title"] for row in candidates}
 
-            for matched_title, fuzzy_score, row_id in title_matches:
-                # Find the full row data
-                row = next((r for r in candidates if r["id"] == row_id), None)
-                if not row:
-                    continue
+                # Perform fuzzy search with limited candidates
+                title_matches = process.extract(
+                    title, search_dict, scorer=fuzz.ratio, limit=200  # Reduced from 20
+                )
 
-                # Base score scaled from fuzzy ratio (0-100 -> 0-1000)
-                total_score = fuzzy_score * 10
+                for matched_title, fuzzy_score, row_id in title_matches:
+                    # Find the full row data
+                    row = next((r for r in candidates if r["id"] == row_id), None)
+                    if not row:
+                        continue
 
-                # FTS score (lower is better) -> convert to bonus
-                fts_score = row.get("fts_score") or row.get("score") or 0
-                try:
-                    fts_bonus = max(0, 200 - int(float(fts_score) * 40))
-                except Exception:
-                    fts_bonus = 0
-                total_score += fts_bonus
+                    total_score = fuzzy_score
 
-                # Prefer original-language titles (from AKAs) strongly
-                if row.get("is_original"):
-                    total_score += 150
+                    # Add year match bonus
+                    if year and row["year"]:
+                        if row["year"] == year:
+                            total_score += 200
+                        elif abs(row["year"] - year) <= 1:
+                            total_score += 100
 
-                # Year match bonus (exact > near)
-                if year and row.get("year"):
-                    if row["year"] == year:
-                        total_score += 300
-                    elif abs(row["year"] - year) <= 1:
-                        total_score += 150
+                    # Add popularity bonus
+                    if row["votes"]:
+                        vote_bonus = min(50, (row["votes"] / 250))
+                        total_score += vote_bonus
 
-                # Popularity bonus (diminishing returns)
-                votes = row.get("votes") or 0
-                if votes:
-                    vote_bonus = min(300, math.log10(votes + 1) * 60)
-                    total_score += vote_bonus
+                    row["score"] = total_score
 
-                # Prefer newer titles when names collide
-                if row.get("year"):
-                    # newer => small bonus proportional to recency
-                    age = max(0, (2026 - int(row.get("year") or 2026)))
-                    recency_bonus = max(0, 100 - min(80, age))
-                    total_score += recency_bonus
-
-                row["combined_score"] = total_score
-
-                if total_score > best_score:
-                    best_score = total_score
-                    # Defer expensive TitleInfo creation until after scoring
-                    best_row = row
-
-            # After scoring completes, create TitleInfo once (if we have a best row)
-            if best_score > 0 and 'best_row' in locals():
-                try:
-                    best_match = self._create_title_info_from_row_fast(best_row, conn)
-                except Exception:
-                    best_match = None
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_match = self._create_title_info_from_row_fast(row, conn)
 
         finally:
             self._return_connection(conn)
@@ -835,23 +767,17 @@ class IMDbDataProvider(BaseMetadataProvider):
         candidates = []
         try:
             fts_query = self._build_fts_query(title_lower)
-            min_votes = self.MIN_VOTES_THRESHOLD if self.MIN_VOTES_THRESHOLD is not None else 50
-
-            # Aggregate FTS rows (from AKAs) per title to prefer original titles and best bm25
             if year:
                 cursor = conn.execute(
                     """
                     SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           MIN(bm25(title_fts, 10.0)) AS fts_score,
-                           MAX(a.isOriginalTitle) AS is_original
+                           bm25(title_fts, 10.0) AS score
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
-                    LEFT JOIN title_akas a ON a.titleId = s.id
                     WHERE title_fts MATCH ?
                     AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
-                    GROUP BY s.id
-                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
-                    LIMIT 300
+                    ORDER BY score
+                    LIMIT 200
                     """,
                     (fts_query, year - 2, year + 2),
                 )
@@ -859,297 +785,20 @@ class IMDbDataProvider(BaseMetadataProvider):
                 cursor = conn.execute(
                     """
                     SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           MIN(bm25(title_fts, 10.0)) AS fts_score,
-                           MAX(a.isOriginalTitle) AS is_original
+                           bm25(title_fts, 10.0) AS score
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
-                    LEFT JOIN title_akas a ON a.titleId = s.id
                     WHERE title_fts MATCH ?
-                    AND (s.votes IS NULL OR s.votes > ?)
-                    GROUP BY s.id
-                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
-                    LIMIT 500
+                    AND s.votes > 50
+                    ORDER BY score
+                    LIMIT 300
                     """,
-                    (fts_query, min_votes),
+                    (fts_query,),
                 )
             candidates = cursor.fetchall()
         except Exception as e:
             logging.debug(f"FTS search failed: {e}")
         return candidates[:1000]  # Limit total candidates
-
-    def _get_quick_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[sqlite3.Row]:
-        """Fast candidate path using indexed LIKE on `title_lower`.
-
-        This is much faster than FTS for common titles and returns a
-        limited set ordered by popularity. Falls back to empty list on error.
-        """
-        try:
-            words = self._normalize_title_tokens(title_lower)
-            if not words:
-                return []
-
-            token = self._first_significant_token(words)
-
-            # Strategy switch
-            strategy = self._quick_strategy
-            if strategy == "like_builder":
-                # Hybrid: one LIKE query per token until background index is built,
-                # then serve from in-memory prefix index for low-latency lookups.
-                # If full prefix index already built, use it. Otherwise, do a
-                # single quick DB LIKE query for this token and kick off a
-                # background task to build the full in-memory index.
-                if not self._prefix_index_built:
-                    qrows = self._query_like(conn, token, year)
-
-                    # Kick off background builder only once
-                    if not self._prefix_index_building:
-                        self._prefix_index_building = True
-                        def _bg_build():
-                            try:
-                                # Delay background build slightly to avoid competing
-                                # with the immediate request; reduces latency spikes.
-                                time.sleep(2.0)
-                                import sqlite3 as _sqlite
-                                with _sqlite.connect(self._db_path, timeout=30.0) as bg_conn:
-                                    self._build_prefix_index(bg_conn)
-                            finally:
-                                self._prefix_index_building = False
-
-                        t = threading.Thread(target=_bg_build, daemon=True)
-                        t.start()
-
-                    return self._rows_to_dicts(qrows)
-
-                candidates = self._prefix_index.get(token, []) if self._prefix_index else []
-                return self._filter_by_year(candidates, year)[:300]
-
-            if strategy == "like_cs":
-                # Enable case-sensitive LIKE to improve index usage.
-                self._ensure_case_sensitive_like(conn)
-                return self._query_like(conn, token, year)
-
-            if strategy == "like_range":
-                # Index-friendly prefix range: title_lower >= token and < next prefix.
-                return self._query_range(conn, token, year)
-
-            if strategy == "fts_prefix":
-                # FTS5 prefix search against title_akas content.
-                return self._query_fts_prefix(conn, token, year)
-
-            if strategy == "token_lru":
-                # Cache per-token LIKE results in an LRU to avoid repeated DB hits.
-                key = f"{token}"
-                if key in self._token_cache:
-                    self._token_cache.move_to_end(key)
-                    cached = self._token_cache[key]
-                else:
-                    cached = self._rows_to_dicts(self._query_like(conn, token, None))
-                    self._token_cache[key] = cached
-                    self._token_cache.move_to_end(key)
-                    if len(self._token_cache) > self._token_cache_size:
-                        self._token_cache.popitem(last=False)
-                return self._filter_by_year(cached, year)[:300]
-
-            # Default fallback to like_builder behavior
-            return self._query_like(conn, token, year)
-
-        except Exception as e:
-            logging.debug(f"Quick candidate search failed: {e}")
-            return []
-
-    def _normalize_title_tokens(self, title_lower: str) -> List[str]:
-        normalized = self._RE_NONWORD.sub(' ', title_lower)
-        normalized = self._RE_WHITESPACE.sub(' ', normalized).strip()
-        return [w for w in normalized.split() if w]
-
-    def _first_significant_token(self, words: List[str]) -> str:
-        for w in words:
-            if len(w) > 2 and not self._RE_STOPWORDS.match(w):
-                return w
-        return words[0]
-
-    def _next_prefix(self, prefix: str) -> str:
-        alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
-        for i in range(len(prefix) - 1, -1, -1):
-            c = prefix[i]
-            if c in alphabet:
-                idx = alphabet.index(c)
-                if idx + 1 < len(alphabet):
-                    return prefix[:i] + alphabet[idx + 1]
-        return prefix + "{"
-
-    def _ensure_case_sensitive_like(self, conn: sqlite3.Connection) -> None:
-        conn_id = id(conn)
-        with self._cs_like_lock:
-            if conn_id not in self._cs_like_conns:
-                try:
-                    conn.execute("PRAGMA case_sensitive_like=ON")
-                except Exception:
-                    pass
-                self._cs_like_conns.add(conn_id)
-
-    def _query_like(self, conn: sqlite3.Connection, token: str, year: Optional[int]) -> List[sqlite3.Row]:
-        try:
-            like_param = f"{token}%"
-            if year:
-                cursor = conn.execute(
-                    """
-                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
-                    FROM search_view
-                    WHERE title_lower LIKE ?
-                    AND (year BETWEEN ? AND ? OR year IS NULL)
-                    ORDER BY votes DESC, year DESC
-                    LIMIT 300
-                    """,
-                    (like_param, year - 2, year + 2),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
-                    FROM search_view
-                    WHERE title_lower LIKE ?
-                    ORDER BY votes DESC, year DESC
-                    LIMIT 300
-                    """,
-                    (like_param,)
-                )
-            return cursor.fetchall()
-        except Exception:
-            return []
-
-    def _query_range(self, conn: sqlite3.Connection, token: str, year: Optional[int]) -> List[sqlite3.Row]:
-        try:
-            low = token
-            high = self._next_prefix(token)
-            if year:
-                cursor = conn.execute(
-                    """
-                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
-                    FROM search_view
-                    WHERE title_lower >= ? AND title_lower < ?
-                    AND (year BETWEEN ? AND ? OR year IS NULL)
-                    ORDER BY votes DESC, year DESC
-                    LIMIT 300
-                    """,
-                    (low, high, year - 2, year + 2),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
-                    FROM search_view
-                    WHERE title_lower >= ? AND title_lower < ?
-                    ORDER BY votes DESC, year DESC
-                    LIMIT 300
-                    """,
-                    (low, high),
-                )
-            return cursor.fetchall()
-        except Exception:
-            return []
-
-    def _query_fts_prefix(self, conn: sqlite3.Connection, token: str, year: Optional[int]) -> List[sqlite3.Row]:
-        try:
-            fts_query = f"{token}*"
-            if year:
-                cursor = conn.execute(
-                    """
-                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           MIN(bm25(title_fts, 10.0)) AS fts_score,
-                           MAX(a.isOriginalTitle) AS is_original
-                    FROM title_fts f
-                    JOIN search_view s ON f.rowid = s.id
-                    LEFT JOIN title_akas a ON a.titleId = s.id
-                    WHERE title_fts MATCH ?
-                    AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
-                    GROUP BY s.id
-                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
-                    LIMIT 300
-                    """,
-                    (fts_query, year - 2, year + 2),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           MIN(bm25(title_fts, 10.0)) AS fts_score,
-                           MAX(a.isOriginalTitle) AS is_original
-                    FROM title_fts f
-                    JOIN search_view s ON f.rowid = s.id
-                    LEFT JOIN title_akas a ON a.titleId = s.id
-                    WHERE title_fts MATCH ?
-                    GROUP BY s.id
-                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
-                    LIMIT 300
-                    """,
-                    (fts_query,),
-                )
-            return cursor.fetchall()
-        except Exception:
-            return []
-
-    def _rows_to_dicts(self, qrows: List[sqlite3.Row]) -> List[dict]:
-        try:
-            return [dict(r) for r in qrows]
-        except Exception:
-            out = []
-            for r in qrows:
-                out.append({
-                    'id': r[0], 'title': r[1], 'type': r[2], 'year': r[3],
-                    'end_year': r[4], 'genres': r[5], 'rating': r[6], 'votes': r[7]
-                })
-            return out
-
-    def _filter_by_year(self, candidates: List[dict], year: Optional[int]) -> List[dict]:
-        if not year or not candidates:
-            return candidates
-        out = []
-        for row in candidates:
-            ry = row.get('year')
-            if ry is None or (year - 2 <= ry <= year + 2):
-                out.append(row)
-        return out
-
-    def _build_prefix_index(self, conn: sqlite3.Connection) -> None:
-        """Build a lightweight in-memory index mapping first significant token -> top rows.
-
-        We limit stored rows per token to avoid excessive memory usage.
-        """
-        try:
-            idx = {}
-            cursor = conn.execute(
-                "SELECT id, title, title_lower, type, year, end_year, genres, rating, votes FROM search_view ORDER BY votes DESC"
-            )
-            max_per_key = 500
-            for r in cursor.fetchall():
-                try:
-                    row = dict(r)
-                except Exception:
-                    # fallback for tuple rows
-                    # columns order as selected above
-                    row = {
-                        'id': r[0], 'title': r[1], 'title_lower': r[2], 'type': r[3],
-                        'year': r[4], 'end_year': r[5], 'genres': r[6], 'rating': r[7], 'votes': r[8]
-                    }
-                title_l = (row.get('title_lower') or '').lower()
-                title_l = self._RE_WHITESPACE.sub(' ', self._RE_NONWORD.sub(' ', title_l)).strip()
-                if not title_l:
-                    continue
-                tokens = title_l.split()
-                if not tokens:
-                    continue
-                # pick first significant token
-                key = next((w for w in tokens if len(w) > 2 and not self._RE_STOPWORDS.match(w)), tokens[0])
-                lst = idx.setdefault(key, [])
-                if len(lst) < max_per_key:
-                    lst.append(row)
-            self._prefix_index = idx
-            self._prefix_index_built = True
-        except Exception as e:
-            logging.debug(f"Failed to build prefix index: {e}")
-            self._prefix_index = {}
-            self._prefix_index_built = True
 
     def _create_title_info_from_row_fast(self, row: sqlite3.Row | dict, conn: sqlite3.Connection) -> TitleInfo:
         """Fast version of _create_title_info_from_row using existing connection"""
@@ -1162,82 +811,35 @@ class IMDbDataProvider(BaseMetadataProvider):
         total_episodes = None
         total_seasons = None
         if media_type == "tv":
-            # Compute total episodes as sum of per-season max episode numbers (ignore season 0 specials)
-            try:
-                cursor = conn.execute(
-                    """
-                    SELECT season, MAX(episode) as max_ep
-                    FROM title_episodes
-                    WHERE parent_id = ? AND season IS NOT NULL AND season != 0 AND episode IS NOT NULL
-                    GROUP BY season
-                    """,
-                    (row["id"],),
-                )
-                per_season = cursor.fetchall()
-                if per_season:
-                    total_episodes = sum([r[1] or 0 for r in per_season])
-                    total_seasons = len(per_season)
-                else:
-                    total_episodes = None
-                    total_seasons = None
-            except Exception:
-                total_episodes = None
-                total_seasons = None
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) as episode_count, MAX(season) as max_season
+                FROM title_episodes 
+                WHERE parent_id = ?
+            """,
+                (row["id"],),
+            )
+            result = cursor.fetchone()
+            if result:
+                total_episodes = result[0] if result[0] > 0 else None
+                total_seasons = result[1]
 
-        genres = row["genres"].split(",") if row["genres"] else []
-        # Reconstruct tconst from ID (ID is the tconst integer)
-        tconst = f"tt{row['id']:07d}"
-
-        # Prefer original_title if it contains punctuation like ':' and primary title lacks it
-        title_val = row["title"]
-        try:
-            cur = conn.execute("SELECT original_title FROM title_basics WHERE id = ? LIMIT 1", (row["id"],))
-            orig = cur.fetchone()
-            if orig and orig[0]:
-                orig_title = orig[0]
-                if ':' in orig_title and ':' not in title_val:
-                    title_val = orig_title
-        except Exception:
-            pass
-
-        # Additional heuristics: insert ':' for common franchise/subtitle patterns
-        try:
-            # Dexter: New Blood, Avengers: Endgame, The Lord of the Rings: ...
-            patterns = [
-                (r'^(Dexter) (New Blood)$', r"\1: \2"),
-                (r'^(Avengers) (Endgame)$', r"\1: \2"),
-                (r'^(The Lord of the Rings) (The .+)$', r"\1: \2"),
-            ]
-            for pat, repl in patterns:
-                if re.match(pat, title_val):
-                    title_val = re.sub(pat, repl, title_val)
-                    break
-        except Exception:
-            pass
-
-# Derive status for TV series based on end_year
+        genres = row["genres"].split(",") if row["genres"] else []        # Reconstruct tconst from ID (ID is the tconst integer)
+        tconst = f"tt{row['id']:07d}"# Derive status for TV series based on end_year
         status = None
-        import datetime
-        current_year = datetime.datetime.now().year
-        final_end_year = None
         if media_type == "tv":
-            # Normalize end_year: ignore unrealistic future or current-year end_years (treat as continuing)
-            end_year_val = row.get("end_year") if "end_year" in row.keys() else None
-            if end_year_val and isinstance(end_year_val, int) and end_year_val >= current_year:
-                end_year_val = None
-
-            final_end_year = end_year_val
-            if end_year_val:
+            if "end_year" in row.keys() and row["end_year"]:
                 status = "Ended"
             else:
-                status = "Continuing"
+                status = "Continuing"  # or "Unknown" - could be either continuing or just no end year data
+
         return TitleInfo(
             id=tconst or str(row["id"]),
-            title=title_val,
+            title=row["title"],
             type=media_type,
             year=row["year"],
             start_year=row["year"],
-            end_year=final_end_year if media_type == "tv" else (row["end_year"] if "end_year" in row.keys() else None),
+            end_year=row["end_year"] if "end_year" in row.keys() else None,
             rating=float(row["rating"]) if row["rating"] else None,
             votes=row["votes"],
             genres=genres,
@@ -1333,33 +935,24 @@ class IMDbDataProvider(BaseMetadataProvider):
         # Remove common japanese stop words in romaji
         normalized = re.sub(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
 
-        # Split into words and build FTS5 query with phrase boosting
-        words = [w for w in normalized.split() if w]
-        if not words:
-            return ''
+        # Split into words and build FTS5 query
+        words = normalized.split()
+        normalized = ' OR '.join([f'{word}*' for word in words])
 
-        # Exact phrase (boosting) and prefix tokens
-        phrase = ' '.join(words)
-        # Escape double quotes in phrase
-        phrase_escaped = phrase.replace('"', ' ')
-
-        token_parts = [f'{word}*' for word in words if len(word) > 1]
-        # Combine: prefer exact phrase matches, then prefix matches
-        parts = []
-        if len(phrase_escaped) > 1:
-            parts.append(f'"{phrase_escaped}"')
-        parts.extend(token_parts)
-
-        return ' OR '.join(parts)
+        return normalized
     
     def invalidate_cache(self) -> None:
         """Invalidate the current cache, forcing a refresh on next access"""
         logging.info("Invalidating IMDb database cache...")
         try:
-            self._invalidate_cache_core(
-                datasets=None,
-                cache_attrs=["_search_cache", "_title_cache"],
-            )
+            # Clear the data_version table to force reload
+            with sqlite3.connect(self._db_path) as conn:
+                conn.execute("DELETE FROM data_version")
+                conn.commit()
+            
+            # Clear in-memory caches
+            self._search_cache.clear()
+            self._title_cache.clear()
             
             logging.info("IMDb cache invalidated successfully")
         except Exception as e:
