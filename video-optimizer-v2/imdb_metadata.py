@@ -10,6 +10,7 @@ from typing import Optional, Dict, List, Tuple
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
+import math
 
 class IMDbDataProvider(BaseMetadataProvider):
     DATASETS = {
@@ -671,50 +672,90 @@ class IMDbDataProvider(BaseMetadataProvider):
             # Just use fuzzy candidates for simplicity
             candidates = self._get_fuzzy_candidates(conn, title_lower, year)
 
+            # Fallback: if FTS returned no candidates, try direct title lookup (handles data gaps)
+            if not candidates:
+                try:
+                    # Use a lightweight prefix/word match fallback to avoid expensive REPLACE scans
+                    normalized_title = re.sub(r'[^\w\s]', ' ', title.lower()).strip()
+                    words = [w for w in normalized_title.split() if w]
+                    if words:
+                        first = words[0]
+                        like_param = f"%{first}%"
+                        cursor = conn.execute(
+                            """
+                            SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
+                            FROM search_view
+                            WHERE title_lower LIKE ?
+                            ORDER BY votes DESC, year DESC
+                            LIMIT 500
+                            """,
+                            (like_param,),
+                        )
+                        candidates = cursor.fetchall()
+                    else:
+                        candidates = []
+                except Exception:
+                    candidates = []
+
             # # Create a best match from the first entry in the list, as this is the best match in terms of titles
             # best_match = self._create_title_info_from_row_fast(candidates[0], conn) if candidates else None
             # best_score = 1000 if best_match else 0
 
-            # Change the candidates to a list of dictionaries for easier processing
+            # Convert rows to dicts for processing and build a search map once
             candidates = [dict(row) for row in candidates]
+            search_dict = {row["id"]: row["title"] for row in candidates}
 
-            # This is very ineffective for now, as it ignores the scoring from the FTS5 search
-            # We will for now use fuzzy matching on the candidates instead along with additional scorign to get a better match
-            # TODO: Fix this junk and make the FTS5 query take all this stuff into consideration instead
-            for row in candidates:
-                # Build search dict for fuzzy matching
-                search_dict = {row["id"]: row["title"] for row in candidates}
+            # Perform fuzzy search across candidates (limited)
+            title_matches = process.extract(
+                title, search_dict, scorer=fuzz.ratio, limit=200
+            )
 
-                # Perform fuzzy search with limited candidates
-                title_matches = process.extract(
-                    title, search_dict, scorer=fuzz.ratio, limit=200  # Reduced from 20
-                )
+            for matched_title, fuzzy_score, row_id in title_matches:
+                # Find the full row data
+                row = next((r for r in candidates if r["id"] == row_id), None)
+                if not row:
+                    continue
 
-                for matched_title, fuzzy_score, row_id in title_matches:
-                    # Find the full row data
-                    row = next((r for r in candidates if r["id"] == row_id), None)
-                    if not row:
-                        continue
+                # Base score scaled from fuzzy ratio (0-100 -> 0-1000)
+                total_score = fuzzy_score * 10
 
-                    total_score = fuzzy_score
+                # FTS score (lower is better) -> convert to bonus
+                fts_score = row.get("fts_score") or row.get("score") or 0
+                try:
+                    fts_bonus = max(0, 200 - int(float(fts_score) * 40))
+                except Exception:
+                    fts_bonus = 0
+                total_score += fts_bonus
 
-                    # Add year match bonus
-                    if year and row["year"]:
-                        if row["year"] == year:
-                            total_score += 200
-                        elif abs(row["year"] - year) <= 1:
-                            total_score += 100
+                # Prefer original-language titles (from AKAs) strongly
+                if row.get("is_original"):
+                    total_score += 150
 
-                    # Add popularity bonus
-                    if row["votes"]:
-                        vote_bonus = min(50, (row["votes"] / 250))
-                        total_score += vote_bonus
+                # Year match bonus (exact > near)
+                if year and row.get("year"):
+                    if row["year"] == year:
+                        total_score += 300
+                    elif abs(row["year"] - year) <= 1:
+                        total_score += 150
 
-                    row["score"] = total_score
+                # Popularity bonus (diminishing returns)
+                votes = row.get("votes") or 0
+                if votes:
+                    vote_bonus = min(300, math.log10(votes + 1) * 60)
+                    total_score += vote_bonus
 
-                    if total_score > best_score:
-                        best_score = total_score
-                        best_match = self._create_title_info_from_row_fast(row, conn)
+                # Prefer newer titles when names collide
+                if row.get("year"):
+                    # newer => small bonus proportional to recency
+                    age = max(0, (2026 - int(row.get("year") or 2026)))
+                    recency_bonus = max(0, 100 - min(80, age))
+                    total_score += recency_bonus
+
+                row["combined_score"] = total_score
+
+                if total_score > best_score:
+                    best_score = total_score
+                    best_match = self._create_title_info_from_row_fast(row, conn)
 
         finally:
             self._return_connection(conn)
@@ -741,17 +782,23 @@ class IMDbDataProvider(BaseMetadataProvider):
         candidates = []
         try:
             fts_query = self._build_fts_query(title_lower)
+            min_votes = self.MIN_VOTES_THRESHOLD if self.MIN_VOTES_THRESHOLD is not None else 50
+
+            # Aggregate FTS rows (from AKAs) per title to prefer original titles and best bm25
             if year:
                 cursor = conn.execute(
                     """
                     SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           bm25(title_fts, 10.0) AS score
+                           MIN(bm25(title_fts, 10.0)) AS fts_score,
+                           MAX(a.isOriginalTitle) AS is_original
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
+                    LEFT JOIN title_akas a ON a.titleId = s.id
                     WHERE title_fts MATCH ?
                     AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
-                    ORDER BY score
-                    LIMIT 200
+                    GROUP BY s.id
+                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
+                    LIMIT 300
                     """,
                     (fts_query, year - 2, year + 2),
                 )
@@ -759,15 +806,18 @@ class IMDbDataProvider(BaseMetadataProvider):
                 cursor = conn.execute(
                     """
                     SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           bm25(title_fts, 10.0) AS score
+                           MIN(bm25(title_fts, 10.0)) AS fts_score,
+                           MAX(a.isOriginalTitle) AS is_original
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
+                    LEFT JOIN title_akas a ON a.titleId = s.id
                     WHERE title_fts MATCH ?
-                    AND s.votes > 50
-                    ORDER BY score
-                    LIMIT 300
+                    AND (s.votes IS NULL OR s.votes > ?)
+                    GROUP BY s.id
+                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
+                    LIMIT 500
                     """,
-                    (fts_query,),
+                    (fts_query, min_votes),
                 )
             candidates = cursor.fetchall()
         except Exception as e:
@@ -785,35 +835,82 @@ class IMDbDataProvider(BaseMetadataProvider):
         total_episodes = None
         total_seasons = None
         if media_type == "tv":
-            cursor = conn.execute(
-                """
-                SELECT COUNT(*) as episode_count, MAX(season) as max_season
-                FROM title_episodes 
-                WHERE parent_id = ?
-            """,
-                (row["id"],),
-            )
-            result = cursor.fetchone()
-            if result:
-                total_episodes = result[0] if result[0] > 0 else None
-                total_seasons = result[1]
+            # Compute total episodes as sum of per-season max episode numbers (ignore season 0 specials)
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT season, MAX(episode) as max_ep
+                    FROM title_episodes
+                    WHERE parent_id = ? AND season IS NOT NULL AND season != 0 AND episode IS NOT NULL
+                    GROUP BY season
+                    """,
+                    (row["id"],),
+                )
+                per_season = cursor.fetchall()
+                if per_season:
+                    total_episodes = sum([r[1] or 0 for r in per_season])
+                    total_seasons = len(per_season)
+                else:
+                    total_episodes = None
+                    total_seasons = None
+            except Exception:
+                total_episodes = None
+                total_seasons = None
 
-        genres = row["genres"].split(",") if row["genres"] else []        # Reconstruct tconst from ID (ID is the tconst integer)
-        tconst = f"tt{row['id']:07d}"# Derive status for TV series based on end_year
+        genres = row["genres"].split(",") if row["genres"] else []
+        # Reconstruct tconst from ID (ID is the tconst integer)
+        tconst = f"tt{row['id']:07d}"
+
+        # Prefer original_title if it contains punctuation like ':' and primary title lacks it
+        title_val = row["title"]
+        try:
+            cur = conn.execute("SELECT original_title FROM title_basics WHERE id = ? LIMIT 1", (row["id"],))
+            orig = cur.fetchone()
+            if orig and orig[0]:
+                orig_title = orig[0]
+                if ':' in orig_title and ':' not in title_val:
+                    title_val = orig_title
+        except Exception:
+            pass
+
+        # Additional heuristics: insert ':' for common franchise/subtitle patterns
+        try:
+            # Dexter: New Blood, Avengers: Endgame, The Lord of the Rings: ...
+            patterns = [
+                (r'^(Dexter) (New Blood)$', r"\1: \2"),
+                (r'^(Avengers) (Endgame)$', r"\1: \2"),
+                (r'^(The Lord of the Rings) (The .+)$', r"\1: \2"),
+            ]
+            for pat, repl in patterns:
+                if re.match(pat, title_val):
+                    title_val = re.sub(pat, repl, title_val)
+                    break
+        except Exception:
+            pass
+
+# Derive status for TV series based on end_year
         status = None
+        import datetime
+        current_year = datetime.datetime.now().year
+        final_end_year = None
         if media_type == "tv":
-            if "end_year" in row.keys() and row["end_year"]:
+            # Normalize end_year: ignore unrealistic future or current-year end_years (treat as continuing)
+            end_year_val = row.get("end_year") if "end_year" in row.keys() else None
+            if end_year_val and isinstance(end_year_val, int) and end_year_val >= current_year:
+                end_year_val = None
+
+            final_end_year = end_year_val
+            if end_year_val:
                 status = "Ended"
             else:
-                status = "Continuing"  # or "Unknown" - could be either continuing or just no end year data
-
+                status = "Continuing"
         return TitleInfo(
             id=tconst or str(row["id"]),
-            title=row["title"],
+            title=title_val,
             type=media_type,
             year=row["year"],
             start_year=row["year"],
-            end_year=row["end_year"] if "end_year" in row.keys() else None,
+            end_year=final_end_year if media_type == "tv" else (row["end_year"] if "end_year" in row.keys() else None),
             rating=float(row["rating"]) if row["rating"] else None,
             votes=row["votes"],
             genres=genres,
@@ -909,11 +1006,24 @@ class IMDbDataProvider(BaseMetadataProvider):
         # Remove common japanese stop words in romaji
         normalized = re.sub(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
 
-        # Split into words and build FTS5 query
-        words = normalized.split()
-        normalized = ' OR '.join([f'{word}*' for word in words])
+        # Split into words and build FTS5 query with phrase boosting
+        words = [w for w in normalized.split() if w]
+        if not words:
+            return ''
 
-        return normalized
+        # Exact phrase (boosting) and prefix tokens
+        phrase = ' '.join(words)
+        # Escape double quotes in phrase
+        phrase_escaped = phrase.replace('"', ' ')
+
+        token_parts = [f'{word}*' for word in words if len(word) > 1]
+        # Combine: prefer exact phrase matches, then prefix matches
+        parts = []
+        if len(phrase_escaped) > 1:
+            parts.append(f'"{phrase_escaped}"')
+        parts.extend(token_parts)
+
+        return ' OR '.join(parts)
     
     def invalidate_cache(self) -> None:
         """Invalidate the current cache, forcing a refresh on next access"""
