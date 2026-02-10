@@ -7,6 +7,7 @@ import time
 import re
 from datetime import timedelta
 from typing import Optional, Dict, List, Tuple
+from collections import OrderedDict
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
@@ -65,6 +66,18 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._prefix_index = None  # in-memory map: token -> list of rows
         self._prefix_index_built = False
         self._prefix_index_building = False
+        # Quick candidate strategy (set via IMDB_QUICK_STRATEGY):
+        # - like_builder: LIKE prefix + background in-memory prefix index
+        # - like: plain LIKE prefix
+        # - like_cs: LIKE prefix with case_sensitive_like=ON
+        # - like_range: range query (>= token, < next prefix)
+        # - fts_prefix: FTS5 prefix query
+        # - token_lru: per-token LIKE cached in an LRU
+        self._quick_strategy = os.getenv("IMDB_QUICK_STRATEGY", "like_range").lower()
+        self._token_cache = OrderedDict()
+        self._token_cache_size = int(os.getenv("IMDB_TOKEN_CACHE_SIZE", "5000"))
+        self._cs_like_conns = set()
+        self._cs_like_lock = threading.Lock()
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
         # Provider-level default TTL is provided via BaseMetadataProvider.cache_duration
         self._init_connection_pool(pool_size=3)
@@ -871,114 +884,232 @@ class IMDbDataProvider(BaseMetadataProvider):
         limited set ordered by popularity. Falls back to empty list on error.
         """
         try:
-            # If full prefix index already built, use it. Otherwise, do a
-            # single quick DB LIKE query for this token and kick off a
-            # background task to build the full in-memory index.
-            if not self._prefix_index_built:
-                # Quick fallback: small LIKE query limited to top results
-                try:
-                    # same normalization for the token
-                    normalized_temp = self._RE_NONWORD.sub(' ', title_lower)
-                    normalized_temp = self._RE_WHITESPACE.sub(' ', normalized_temp).strip()
-                    words_temp = [w for w in normalized_temp.split() if w]
-                    if not words_temp:
-                        return []
-                    first_temp = None
-                    for w in words_temp:
-                        if len(w) > 2 and not self._RE_STOPWORDS.match(w):
-                            first_temp = w
-                            break
-                    if not first_temp:
-                        first_temp = words_temp[0]
-                    like_param = f"{first_temp}%"
-                    if year:
-                        q = conn.execute(
-                            """
-                            SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
-                            FROM search_view
-                            WHERE title_lower LIKE ?
-                            AND (year BETWEEN ? AND ? OR year IS NULL)
-                            ORDER BY votes DESC, year DESC
-                            LIMIT 300
-                            """,
-                            (like_param, year - 2, year + 2),
-                        )
-                    else:
-                        q = conn.execute(
-                            """
-                            SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
-                            FROM search_view
-                            WHERE title_lower LIKE ?
-                            ORDER BY votes DESC, year DESC
-                            LIMIT 300
-                            """,
-                            (like_param,)
-                        )
-                    qrows = q.fetchall()
-                except Exception:
-                    qrows = []
-
-                # Kick off background builder only once
-                if not self._prefix_index_building:
-                    self._prefix_index_building = True
-                    def _bg_build():
-                        try:
-                            # Delay background build slightly to avoid competing
-                            # with the immediate request; reduces latency spikes.
-                            time.sleep(2.0)
-                            import sqlite3 as _sqlite
-                            with _sqlite.connect(self._db_path, timeout=30.0) as bg_conn:
-                                self._build_prefix_index(bg_conn)
-                        finally:
-                            self._prefix_index_building = False
-
-                    t = threading.Thread(target=_bg_build, daemon=True)
-                    t.start()
-
-                # Return the quick query results (converted to dicts)
-                try:
-                    return [dict(r) for r in qrows]
-                except Exception:
-                    # fallback to tuples -> map manually
-                    out = []
-                    for r in qrows:
-                        out.append({
-                            'id': r[0], 'title': r[1], 'type': r[2], 'year': r[3],
-                            'end_year': r[4], 'genres': r[5], 'rating': r[6], 'votes': r[7]
-                        })
-                    return out
-
-            normalized = self._RE_NONWORD.sub(' ', title_lower)
-            normalized = self._RE_WHITESPACE.sub(' ', normalized).strip()
-            words = [w for w in normalized.split() if w]
+            words = self._normalize_title_tokens(title_lower)
             if not words:
                 return []
 
-            # Choose first significant token (avoid common stopwords like 'the')
-            first = None
-            for w in words:
-                if len(w) > 2 and not self._RE_STOPWORDS.match(w):
-                    first = w
-                    break
-            if not first:
-                first = words[0]
+            token = self._first_significant_token(words)
 
-            candidates = self._prefix_index.get(first, []) if self._prefix_index else []
+            # Strategy switch
+            strategy = self._quick_strategy
+            if strategy == "like_builder":
+                # Hybrid: one LIKE query per token until background index is built,
+                # then serve from in-memory prefix index for low-latency lookups.
+                # If full prefix index already built, use it. Otherwise, do a
+                # single quick DB LIKE query for this token and kick off a
+                # background task to build the full in-memory index.
+                if not self._prefix_index_built:
+                    qrows = self._query_like(conn, token, year)
 
-            # Filter by year if requested
-            if year and candidates:
-                out = []
-                for row in candidates:
-                    ry = row.get('year')
-                    if ry is None or (year - 2 <= ry <= year + 2):
-                        out.append(row)
-                candidates = out
+                    # Kick off background builder only once
+                    if not self._prefix_index_building:
+                        self._prefix_index_building = True
+                        def _bg_build():
+                            try:
+                                # Delay background build slightly to avoid competing
+                                # with the immediate request; reduces latency spikes.
+                                time.sleep(2.0)
+                                import sqlite3 as _sqlite
+                                with _sqlite.connect(self._db_path, timeout=30.0) as bg_conn:
+                                    self._build_prefix_index(bg_conn)
+                            finally:
+                                self._prefix_index_building = False
 
-            # Limit result size
-            return candidates[:300]
+                        t = threading.Thread(target=_bg_build, daemon=True)
+                        t.start()
+
+                    return self._rows_to_dicts(qrows)
+
+                candidates = self._prefix_index.get(token, []) if self._prefix_index else []
+                return self._filter_by_year(candidates, year)[:300]
+
+            if strategy == "like_cs":
+                # Enable case-sensitive LIKE to improve index usage.
+                self._ensure_case_sensitive_like(conn)
+                return self._query_like(conn, token, year)
+
+            if strategy == "like_range":
+                # Index-friendly prefix range: title_lower >= token and < next prefix.
+                return self._query_range(conn, token, year)
+
+            if strategy == "fts_prefix":
+                # FTS5 prefix search against title_akas content.
+                return self._query_fts_prefix(conn, token, year)
+
+            if strategy == "token_lru":
+                # Cache per-token LIKE results in an LRU to avoid repeated DB hits.
+                key = f"{token}"
+                if key in self._token_cache:
+                    self._token_cache.move_to_end(key)
+                    cached = self._token_cache[key]
+                else:
+                    cached = self._rows_to_dicts(self._query_like(conn, token, None))
+                    self._token_cache[key] = cached
+                    self._token_cache.move_to_end(key)
+                    if len(self._token_cache) > self._token_cache_size:
+                        self._token_cache.popitem(last=False)
+                return self._filter_by_year(cached, year)[:300]
+
+            # Default fallback to like_builder behavior
+            return self._query_like(conn, token, year)
+
         except Exception as e:
             logging.debug(f"Quick candidate search failed: {e}")
             return []
+
+    def _normalize_title_tokens(self, title_lower: str) -> List[str]:
+        normalized = self._RE_NONWORD.sub(' ', title_lower)
+        normalized = self._RE_WHITESPACE.sub(' ', normalized).strip()
+        return [w for w in normalized.split() if w]
+
+    def _first_significant_token(self, words: List[str]) -> str:
+        for w in words:
+            if len(w) > 2 and not self._RE_STOPWORDS.match(w):
+                return w
+        return words[0]
+
+    def _next_prefix(self, prefix: str) -> str:
+        alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+        for i in range(len(prefix) - 1, -1, -1):
+            c = prefix[i]
+            if c in alphabet:
+                idx = alphabet.index(c)
+                if idx + 1 < len(alphabet):
+                    return prefix[:i] + alphabet[idx + 1]
+        return prefix + "{"
+
+    def _ensure_case_sensitive_like(self, conn: sqlite3.Connection) -> None:
+        conn_id = id(conn)
+        with self._cs_like_lock:
+            if conn_id not in self._cs_like_conns:
+                try:
+                    conn.execute("PRAGMA case_sensitive_like=ON")
+                except Exception:
+                    pass
+                self._cs_like_conns.add(conn_id)
+
+    def _query_like(self, conn: sqlite3.Connection, token: str, year: Optional[int]) -> List[sqlite3.Row]:
+        try:
+            like_param = f"{token}%"
+            if year:
+                cursor = conn.execute(
+                    """
+                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
+                    FROM search_view
+                    WHERE title_lower LIKE ?
+                    AND (year BETWEEN ? AND ? OR year IS NULL)
+                    ORDER BY votes DESC, year DESC
+                    LIMIT 300
+                    """,
+                    (like_param, year - 2, year + 2),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
+                    FROM search_view
+                    WHERE title_lower LIKE ?
+                    ORDER BY votes DESC, year DESC
+                    LIMIT 300
+                    """,
+                    (like_param,)
+                )
+            return cursor.fetchall()
+        except Exception:
+            return []
+
+    def _query_range(self, conn: sqlite3.Connection, token: str, year: Optional[int]) -> List[sqlite3.Row]:
+        try:
+            low = token
+            high = self._next_prefix(token)
+            if year:
+                cursor = conn.execute(
+                    """
+                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
+                    FROM search_view
+                    WHERE title_lower >= ? AND title_lower < ?
+                    AND (year BETWEEN ? AND ? OR year IS NULL)
+                    ORDER BY votes DESC, year DESC
+                    LIMIT 300
+                    """,
+                    (low, high, year - 2, year + 2),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
+                    FROM search_view
+                    WHERE title_lower >= ? AND title_lower < ?
+                    ORDER BY votes DESC, year DESC
+                    LIMIT 300
+                    """,
+                    (low, high),
+                )
+            return cursor.fetchall()
+        except Exception:
+            return []
+
+    def _query_fts_prefix(self, conn: sqlite3.Connection, token: str, year: Optional[int]) -> List[sqlite3.Row]:
+        try:
+            fts_query = f"{token}*"
+            if year:
+                cursor = conn.execute(
+                    """
+                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                           MIN(bm25(title_fts, 10.0)) AS fts_score,
+                           MAX(a.isOriginalTitle) AS is_original
+                    FROM title_fts f
+                    JOIN search_view s ON f.rowid = s.id
+                    LEFT JOIN title_akas a ON a.titleId = s.id
+                    WHERE title_fts MATCH ?
+                    AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
+                    GROUP BY s.id
+                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
+                    LIMIT 300
+                    """,
+                    (fts_query, year - 2, year + 2),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                           MIN(bm25(title_fts, 10.0)) AS fts_score,
+                           MAX(a.isOriginalTitle) AS is_original
+                    FROM title_fts f
+                    JOIN search_view s ON f.rowid = s.id
+                    LEFT JOIN title_akas a ON a.titleId = s.id
+                    WHERE title_fts MATCH ?
+                    GROUP BY s.id
+                    ORDER BY is_original DESC, fts_score ASC, s.votes DESC, s.year DESC
+                    LIMIT 300
+                    """,
+                    (fts_query,),
+                )
+            return cursor.fetchall()
+        except Exception:
+            return []
+
+    def _rows_to_dicts(self, qrows: List[sqlite3.Row]) -> List[dict]:
+        try:
+            return [dict(r) for r in qrows]
+        except Exception:
+            out = []
+            for r in qrows:
+                out.append({
+                    'id': r[0], 'title': r[1], 'type': r[2], 'year': r[3],
+                    'end_year': r[4], 'genres': r[5], 'rating': r[6], 'votes': r[7]
+                })
+            return out
+
+    def _filter_by_year(self, candidates: List[dict], year: Optional[int]) -> List[dict]:
+        if not year or not candidates:
+            return candidates
+        out = []
+        for row in candidates:
+            ry = row.get('year')
+            if ry is None or (year - 2 <= ry <= year + 2):
+                out.append(row)
+        return out
 
     def _build_prefix_index(self, conn: sqlite3.Connection) -> None:
         """Build a lightweight in-memory index mapping first significant token -> top rows.
