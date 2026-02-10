@@ -11,8 +11,14 @@ from rapidfuzz import fuzz, process
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
 import math
+import threading
 
 class IMDbDataProvider(BaseMetadataProvider):
+    # Precompile common regexes for normalization to avoid recompiling per-call
+    _RE_WHITESPACE = re.compile(r'\s+')
+    _RE_NONWORD = re.compile(r'[^\w\s]')
+    _RE_STOPWORDS = re.compile(r'\b(the|a|an|and|of|in|to|for|with)\b')
+    _RE_JAP_STOPWORDS = re.compile(r'\b(wa|no|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b')
     DATASETS = {
         "title.basics": "https://datasets.imdbws.com/title.basics.tsv.gz",
         "title.episode": "https://datasets.imdbws.com/title.episode.tsv.gz",
@@ -56,6 +62,9 @@ class IMDbDataProvider(BaseMetadataProvider):
         super().__init__("imdb", provider_weight=0.9)
         self._search_cache = {}  # Cache recent search results
         self._title_cache = {}   # Cache for title info objects
+        self._prefix_index = None  # in-memory map: token -> list of rows
+        self._prefix_index_built = False
+        self._prefix_index_building = False
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
         # Provider-level default TTL is provided via BaseMetadataProvider.cache_duration
         self._init_connection_pool(pool_size=3)
@@ -666,11 +675,33 @@ class IMDbDataProvider(BaseMetadataProvider):
         # Use connection pooling for better performance
         conn = self._get_connection()
         try:
-            # First try exact match with optimized single query
-            title_lower = title.lower()
-            
-            # Just use fuzzy candidates for simplicity
-            candidates = self._get_fuzzy_candidates(conn, title_lower, year)
+            # Normalize title once
+            title_lower = (title or '').lower()
+
+            # First attempt: fast prefix/LIKE based candidate retrieval using indexed columns
+            quick_candidates = self._get_quick_candidates(conn, title_lower, year)
+
+            # If quick path returned candidates, do a small fuzzy sanity check
+            # to avoid noisy prefixes (e.g., matching 'the' -> many results).
+            candidates = quick_candidates
+            if quick_candidates:
+                qc_list = [dict(row) for row in quick_candidates]
+                qc_search = {r['id']: r['title'] for r in qc_list}
+                qc_matches = process.extract(title, qc_search, scorer=fuzz.ratio, limit=5)
+                top_score = qc_matches[0][1] if qc_matches else 0
+                top_id = qc_matches[0][2] if qc_matches else None
+                top_votes = 0
+                if top_id:
+                    row = next((r for r in qc_list if r['id'] == top_id), None)
+                    if row:
+                        top_votes = row.get('votes') or 0
+
+                # Accept quick path only if top score is strong; otherwise use FTS
+                if not (top_score >= 90 or (top_score >= 85 and top_votes > 500)):
+                    candidates = self._get_fuzzy_candidates(conn, title_lower, year)
+            else:
+                # No quick candidates, use FTS
+                candidates = self._get_fuzzy_candidates(conn, title_lower, year)
 
             # Fallback: if FTS returned no candidates, try direct title lookup (handles data gaps)
             if not candidates:
@@ -706,8 +737,9 @@ class IMDbDataProvider(BaseMetadataProvider):
             search_dict = {row["id"]: row["title"] for row in candidates}
 
             # Perform fuzzy search across candidates (limited)
+            # Keep the extraction limit modest to reduce CPU on first lookup
             title_matches = process.extract(
-                title, search_dict, scorer=fuzz.ratio, limit=200
+                title, search_dict, scorer=fuzz.ratio, limit=100
             )
 
             for matched_title, fuzzy_score, row_id in title_matches:
@@ -755,7 +787,15 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                 if total_score > best_score:
                     best_score = total_score
-                    best_match = self._create_title_info_from_row_fast(row, conn)
+                    # Defer expensive TitleInfo creation until after scoring
+                    best_row = row
+
+            # After scoring completes, create TitleInfo once (if we have a best row)
+            if best_score > 0 and 'best_row' in locals():
+                try:
+                    best_match = self._create_title_info_from_row_fast(best_row, conn)
+                except Exception:
+                    best_match = None
 
         finally:
             self._return_connection(conn)
@@ -823,6 +863,162 @@ class IMDbDataProvider(BaseMetadataProvider):
         except Exception as e:
             logging.debug(f"FTS search failed: {e}")
         return candidates[:1000]  # Limit total candidates
+
+    def _get_quick_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[sqlite3.Row]:
+        """Fast candidate path using indexed LIKE on `title_lower`.
+
+        This is much faster than FTS for common titles and returns a
+        limited set ordered by popularity. Falls back to empty list on error.
+        """
+        try:
+            # If full prefix index already built, use it. Otherwise, do a
+            # single quick DB LIKE query for this token and kick off a
+            # background task to build the full in-memory index.
+            if not self._prefix_index_built:
+                # Quick fallback: small LIKE query limited to top results
+                try:
+                    # same normalization for the token
+                    normalized_temp = self._RE_NONWORD.sub(' ', title_lower)
+                    normalized_temp = self._RE_WHITESPACE.sub(' ', normalized_temp).strip()
+                    words_temp = [w for w in normalized_temp.split() if w]
+                    if not words_temp:
+                        return []
+                    first_temp = None
+                    for w in words_temp:
+                        if len(w) > 2 and not self._RE_STOPWORDS.match(w):
+                            first_temp = w
+                            break
+                    if not first_temp:
+                        first_temp = words_temp[0]
+                    like_param = f"{first_temp}%"
+                    if year:
+                        q = conn.execute(
+                            """
+                            SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
+                            FROM search_view
+                            WHERE title_lower LIKE ?
+                            AND (year BETWEEN ? AND ? OR year IS NULL)
+                            ORDER BY votes DESC, year DESC
+                            LIMIT 300
+                            """,
+                            (like_param, year - 2, year + 2),
+                        )
+                    else:
+                        q = conn.execute(
+                            """
+                            SELECT id, title, type, year, end_year, genres, rating, votes, 0 AS fts_score, 0 AS is_original
+                            FROM search_view
+                            WHERE title_lower LIKE ?
+                            ORDER BY votes DESC, year DESC
+                            LIMIT 300
+                            """,
+                            (like_param,)
+                        )
+                    qrows = q.fetchall()
+                except Exception:
+                    qrows = []
+
+                # Kick off background builder only once
+                if not self._prefix_index_building:
+                    self._prefix_index_building = True
+                    def _bg_build():
+                        try:
+                            # Delay background build slightly to avoid competing
+                            # with the immediate request; reduces latency spikes.
+                            time.sleep(2.0)
+                            import sqlite3 as _sqlite
+                            with _sqlite.connect(self._db_path, timeout=30.0) as bg_conn:
+                                self._build_prefix_index(bg_conn)
+                        finally:
+                            self._prefix_index_building = False
+
+                    t = threading.Thread(target=_bg_build, daemon=True)
+                    t.start()
+
+                # Return the quick query results (converted to dicts)
+                try:
+                    return [dict(r) for r in qrows]
+                except Exception:
+                    # fallback to tuples -> map manually
+                    out = []
+                    for r in qrows:
+                        out.append({
+                            'id': r[0], 'title': r[1], 'type': r[2], 'year': r[3],
+                            'end_year': r[4], 'genres': r[5], 'rating': r[6], 'votes': r[7]
+                        })
+                    return out
+
+            normalized = self._RE_NONWORD.sub(' ', title_lower)
+            normalized = self._RE_WHITESPACE.sub(' ', normalized).strip()
+            words = [w for w in normalized.split() if w]
+            if not words:
+                return []
+
+            # Choose first significant token (avoid common stopwords like 'the')
+            first = None
+            for w in words:
+                if len(w) > 2 and not self._RE_STOPWORDS.match(w):
+                    first = w
+                    break
+            if not first:
+                first = words[0]
+
+            candidates = self._prefix_index.get(first, []) if self._prefix_index else []
+
+            # Filter by year if requested
+            if year and candidates:
+                out = []
+                for row in candidates:
+                    ry = row.get('year')
+                    if ry is None or (year - 2 <= ry <= year + 2):
+                        out.append(row)
+                candidates = out
+
+            # Limit result size
+            return candidates[:300]
+        except Exception as e:
+            logging.debug(f"Quick candidate search failed: {e}")
+            return []
+
+    def _build_prefix_index(self, conn: sqlite3.Connection) -> None:
+        """Build a lightweight in-memory index mapping first significant token -> top rows.
+
+        We limit stored rows per token to avoid excessive memory usage.
+        """
+        try:
+            idx = {}
+            cursor = conn.execute(
+                "SELECT id, title, title_lower, type, year, end_year, genres, rating, votes FROM search_view ORDER BY votes DESC"
+            )
+            max_per_key = 500
+            for r in cursor.fetchall():
+                try:
+                    row = dict(r)
+                except Exception:
+                    # fallback for tuple rows
+                    # columns order as selected above
+                    row = {
+                        'id': r[0], 'title': r[1], 'title_lower': r[2], 'type': r[3],
+                        'year': r[4], 'end_year': r[5], 'genres': r[6], 'rating': r[7], 'votes': r[8]
+                    }
+                title_l = (row.get('title_lower') or '').lower()
+                title_l = self._RE_WHITESPACE.sub(' ', self._RE_NONWORD.sub(' ', title_l)).strip()
+                if not title_l:
+                    continue
+                tokens = title_l.split()
+                if not tokens:
+                    continue
+                # pick first significant token
+                key = next((w for w in tokens if len(w) > 2 and not self._RE_STOPWORDS.match(w)), tokens[0])
+                lst = idx.setdefault(key, [])
+                if len(lst) < max_per_key:
+                    lst.append(row)
+            self._prefix_index = idx
+            self._prefix_index_built = True
+        except Exception as e:
+            logging.debug(f"Failed to build prefix index: {e}")
+            self._prefix_index = {}
+            self._prefix_index_built = True
 
     def _create_title_info_from_row_fast(self, row: sqlite3.Row | dict, conn: sqlite3.Connection) -> TitleInfo:
         """Fast version of _create_title_info_from_row using existing connection"""
