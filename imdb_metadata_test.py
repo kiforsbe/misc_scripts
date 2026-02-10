@@ -76,11 +76,11 @@ def test_imdb_metadata(verbosity=1):
         },
         {
             "filename": "Game.of.Thrones.S08E03.1080p.WEB.H264-MEMENTO.mkv",
-            "expected": {"title": "Game of Thrones", "season": 8, "episode": 3, "start_year": 2011, "end_year": 2019, "status": "Ended", "total_episodes": 74, "total_seasons": 8},
+            "expected": {"title": "Game of Thrones", "season": 8, "episode": 3, "start_year": 2011, "end_year": 2019, "status": "Ended", "total_episodes": 73, "total_seasons": 8},
         },
         {
             "filename": "The.Office.US.S02E01.720p.BluRay.x264-SiNNERS.mkv",
-            "expected": {"title": "The Office", "season": 2, "episode": 1, "start_year": 2005, "end_year": 2013, "status": "Ended", "total_episodes": 188, "total_seasons": 9},
+            "expected": {"title": "The Office", "season": 2, "episode": 1, "start_year": 2005, "end_year": 2013, "status": "Ended", "total_episodes": 191, "total_seasons": 9},
         },
         {
             "filename": "Friends.S10E17E18.720p.BluRay.x264-SiNNERS.mkv",
@@ -184,15 +184,15 @@ def test_imdb_metadata(verbosity=1):
         },
         {
             "filename": "Black.Mirror.S05E01.1080p.WEB.H264-MEMENTO.mkv",
-            "expected": {"title": "Black Mirror", "season": 5, "episode": 1, "start_year": 2011, "end_year": None, "status": "Continuing", "total_episodes": 33, "total_seasons": 7},
+            "expected": {"title": "Black Mirror", "season": 5, "episode": 1, "start_year": 2011, "end_year": None, "status": "Continuing", "total_episodes": 34, "total_seasons": 8},
         },
         {
             "filename": "Sherlock.S04E03.1080p.BluRay.x264-SHORTBREHD.mkv",
-            "expected": {"title": "Sherlock", "season": 4, "episode": 3, "start_year": 2010, "end_year": 2017, "status": "Ended", "total_episodes": 15, "total_seasons": 4},
+            "expected": {"title": "Sherlock", "season": 4, "episode": 3, "start_year": 2010, "end_year": 2017, "status": "Ended", "total_episodes": 12, "total_seasons": 4},
         },
         {
             "filename": "House.of.Cards.S06E08.1080p.NF.WEB-DL.DDP5.1.x264-NTb.mkv",
-            "expected": {"title": "House of Cards", "season": 6, "episode": 8, "start_year": 2013, "end_year": 2022, "status": "Ended", "total_episodes": 73, "total_seasons": 6},
+            "expected": {"title": "House of Cards", "season": 6, "episode": 8, "start_year": 2013, "end_year": 2018, "status": "Ended", "total_episodes": 73, "total_seasons": 6},
         },
         {
             "filename": "True.Detective.S03E08.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv",
@@ -208,7 +208,7 @@ def test_imdb_metadata(verbosity=1):
         },
         {
             "filename": "Westworld.S03E08.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv",
-            "expected": {"title": "Westworld", "season": 3, "episode": 8, "start_year": 2016, "end_year": None, "status": "Continuing", "total_episodes": 28, "total_seasons": 4},
+            "expected": {"title": "Westworld", "season": 3, "episode": 8, "start_year": 2016, "end_year": 2022, "status": "Ended", "total_episodes": 36, "total_seasons": 4},
         },
         {
             "filename": "The.Queen's.Gambit.S01E07.1080p.NF.WEB-DL.DDP5.1.Atmos.x264-NTb.mkv",
@@ -224,7 +224,7 @@ def test_imdb_metadata(verbosity=1):
         },
         {
             "filename": "The.Witcher.S02E08.1080p.NF.WEB-DL.DDP5.1.Atmos.x264-NTb.mkv",
-            "expected": {"title": "The Witcher", "season": 2, "episode": 8, "start_year": 2019, "end_year": None, "status": "Continuing", "total_episodes": 26, "total_seasons": 5},
+            "expected": {"title": "The Witcher", "season": 2, "episode": 8, "start_year": 2019, "end_year": None, "status": "Continuing", "total_episodes": 33, "total_seasons": 5},
         },
         {
             "filename": "Dexter.New.Blood.S01E10.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv",
@@ -232,7 +232,7 @@ def test_imdb_metadata(verbosity=1):
         },
         {
             "filename": "The.Boys.S03E08.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb.mkv",
-            "expected": {"title": "The Boys", "season": 3, "episode": 8, "start_year": 2019, "end_year": None, "status": "Continuing", "total_episodes": 24, "total_seasons": 4},
+            "expected": {"title": "The Boys", "season": 3, "episode": 8, "start_year": 2019, "end_year": None, "status": "Continuing", "total_episodes": 40, "total_seasons": 5},
         },
         {
             "filename": "Squid.Game.S01E09.1080p.NF.WEB-DL.DDP5.1.Atmos.x264-NTb.mkv",
