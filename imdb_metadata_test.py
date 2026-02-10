@@ -1,4 +1,5 @@
 import os
+import time
 import argparse
 from guessit_wrapper import guessit_wrapper
 
@@ -37,9 +38,15 @@ def print_test_failure(filename, mismatch_lines, extra_keys, actual):
         key_value_pairs = {key: actual[key] for key in sorted(extra_keys)}
         print(color_text(f"  [Info] Extra fields in result: {key_value_pairs}", 'yellow'))
 
-def print_test_pass(filename):
-    """Print simple pass message for a test case."""
-    print(color_text(f"✓ {filename}", 'green'))
+def print_test_pass(filename, actual):
+    """Print simple pass message for a test case including timing."""
+    timings = []
+    if actual.get('search_time_ms') is not None:
+        timings.append(f"search={actual.get('search_time_ms')}ms")
+    if actual.get('episode_search_time_ms') is not None:
+        timings.append(f"episode={actual.get('episode_search_time_ms')}ms")
+    timing_str = (' | ' + ', '.join(timings)) if timings else ''
+    print(color_text(f"✓ {filename}{timing_str}", 'green'))
 
 def print_test_full(filename, all_match, expected, actual, extra_keys):
     """Print full detailed comparison for a test case."""
@@ -52,6 +59,13 @@ def print_test_full(filename, all_match, expected, actual, extra_keys):
     print(color_text("\nExpected:", 'cyan'))
     for key, value in sorted(expected.items()):
         print(f"  {key}: {repr(value)}")
+    # Timings
+    if actual.get('search_time_ms') is not None or actual.get('episode_search_time_ms') is not None:
+        print(color_text("\nTimings:", 'blue'))
+        if actual.get('search_time_ms') is not None:
+            print(f"  title lookup: {actual.get('search_time_ms')} ms")
+        if actual.get('episode_search_time_ms') is not None:
+            print(f"  episode lookup: {actual.get('episode_search_time_ms')} ms")
     
     # Show actual values for expected keys
     print(color_text("\nActual (expected keys):", 'cyan'))
@@ -300,8 +314,14 @@ def test_imdb_metadata(verbosity=1):
         # Determine if this is a TV episode or a movie
         is_episode = "season" in expected and "episode" in expected
 
-        # Get title metadata
-        title_result = provider.find_title(guess.get("title"), year=guess.get("year", None))
+        # Get title metadata (timed)
+        title_result = None
+        search_start = time.time()
+        try:
+            title_result = provider.find_title(guess.get("title"), year=guess.get("year", None))
+        finally:
+            search_time_ms = int((time.time() - search_start) * 1000)
+            actual['search_time_ms'] = search_time_ms
 
         # Fill in actual with title metadata
         if title_result is not None and isinstance(title_result.info, TitleInfo):
@@ -324,7 +344,13 @@ def test_imdb_metadata(verbosity=1):
                 # Handle cases where episode is a list (e.g., multi-episode files), only take first episode in list
                 ep_nums = guess_episode_num if isinstance(guess_episode_num, list) else [guess_episode_num]
                 ep_num = ep_nums[0] if ep_nums else None
-                ep_result = provider.get_episode_info(title_result.info.id, season=guess.get("season", None), episode=ep_num)
+                # Time episode lookup separately
+                ep_result = None
+                ep_start = time.time()
+                try:
+                    ep_result = provider.get_episode_info(title_result.info.id, season=guess.get("season", None), episode=ep_num)
+                finally:
+                    actual['episode_search_time_ms'] = int((time.time() - ep_start) * 1000)
 
                 # Fill in actuals based on the IMDB metadata
                 actual['episode_title'] = ep_result.title if ep_result else None
@@ -361,7 +387,7 @@ def test_imdb_metadata(verbosity=1):
             if not all_match:
                 print_test_failure(filename, mismatch_lines, extra_keys, actual)
             else:
-                print_test_pass(filename)
+                print_test_pass(filename, actual)
         elif verbosity >= 1:
             # Level 1: Show failures only
             if not all_match:
