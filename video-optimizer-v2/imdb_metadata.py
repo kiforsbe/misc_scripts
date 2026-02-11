@@ -53,6 +53,23 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     MAX_RETRIES = 3
 
+    # Search tuning parameters
+    YEAR_TOLERANCE = 2              # +/- years when matching by year in FTS queries
+    FTS_LIMIT_WITH_YEAR = 200       # Max FTS candidates when year is provided
+    FTS_LIMIT_WITHOUT_YEAR = 300    # Max FTS candidates when year is not provided
+    FUZZY_MATCH_LIMIT = 200         # Max results from fuzzy title matching
+    MAX_CANDIDATES = 1000           # Hard cap on total candidate rows
+
+    # Scoring bonuses for title matching
+    YEAR_EXACT_BONUS = 200          # Bonus when candidate year matches exactly
+    YEAR_CLOSE_BONUS = 100          # Bonus when candidate year is within +/- 1
+    VOTE_BONUS_CAP = 150            # Maximum popularity bonus from votes
+    VOTE_BONUS_MULTIPLIER = 30      # log10(votes) multiplier for popularity bonus
+
+    # In-memory search cache limits
+    SEARCH_CACHE_MAX = 1000         # Evict when cache exceeds this size
+    SEARCH_CACHE_EVICT = 500        # Number of oldest entries to remove on eviction
+
     def __init__(self):
         super().__init__("imdb", provider_weight=0.9)
         self._search_cache = {}  # Cache recent search results
@@ -760,7 +777,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                 # Perform fuzzy search with limited candidates
                 title_matches = process.extract(
-                    title, search_dict, scorer=fuzz.ratio, limit=200  # Reduced from 20
+                    title, search_dict, scorer=fuzz.ratio, limit=self.FUZZY_MATCH_LIMIT
                 )
 
                 for matched_title, fuzzy_score, row_id in title_matches:
@@ -774,13 +791,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                     # Add year match bonus
                     if year and row["year"]:
                         if row["year"] == year:
-                            total_score += 200
+                            total_score += self.YEAR_EXACT_BONUS
                         elif abs(row["year"] - year) <= 1:
-                            total_score += 100
+                            total_score += self.YEAR_CLOSE_BONUS
 
                     # Add popularity bonus (log-scaled, heavier weight)
                     if row["votes"]:
-                        vote_bonus = min(150, 30 * math.log10(max(1, row["votes"])))
+                        vote_bonus = min(self.VOTE_BONUS_CAP, self.VOTE_BONUS_MULTIPLIER * math.log10(max(1, row["votes"])))
                         total_score += vote_bonus
 
                     row["score"] = total_score
@@ -799,9 +816,9 @@ class IMDbDataProvider(BaseMetadataProvider):
 
             # Cache result with size management
             self._search_cache[cache_key] = result
-            if len(self._search_cache) > 1000:
+            if len(self._search_cache) > self.SEARCH_CACHE_MAX:
                 # Remove oldest entries more efficiently
-                oldest_keys = list(self._search_cache.keys())[:500]
+                oldest_keys = list(self._search_cache.keys())[:self.SEARCH_CACHE_EVICT]
                 for key in oldest_keys:
                     del self._search_cache[key]
 
@@ -823,11 +840,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                     JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
                     AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
-                    AND s.votes >= 1000
+                    AND s.votes >= ?
                     ORDER BY score, s.votes DESC
-                    LIMIT 200
+                    LIMIT ?
                     """,
-                    (fts_query, year - 2, year + 2),
+                    (fts_query, year - self.YEAR_TOLERANCE, year + self.YEAR_TOLERANCE, self.MIN_VOTES_THRESHOLD or 0, self.FTS_LIMIT_WITH_YEAR),
                 )
             else:
                 cursor = conn.execute(
@@ -837,16 +854,16 @@ class IMDbDataProvider(BaseMetadataProvider):
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
-                    AND s.votes >= 1000
+                    AND s.votes >= ?
                     ORDER BY score, s.votes DESC
-                    LIMIT 300
+                    LIMIT ?
                     """,
-                    (fts_query,),
+                    (fts_query, self.MIN_VOTES_THRESHOLD or 0, self.FTS_LIMIT_WITHOUT_YEAR),
                 )
             candidates = cursor.fetchall()
         except Exception as e:
             logging.debug(f"FTS search failed: {e}")
-        return candidates[:1000]  # Limit total candidates
+        return candidates[:self.MAX_CANDIDATES]  # Limit total candidates
 
     def _create_title_info_from_row_fast(self, row: sqlite3.Row | dict, conn: sqlite3.Connection) -> TitleInfo:
         """Fast version of _create_title_info_from_row using existing connection"""
