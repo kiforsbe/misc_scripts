@@ -366,60 +366,10 @@ class LatestEpisodesApp {
     }
 
     injectSuggestionStyles() {
-        if (this._suggestionStylesInjected) return;
-        const css = `
-            /* Keep search input, clear button and type pill on one line */
-            .search-container { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
-            .search-container #search-input { flex: 1 1 auto; min-width: 0; }
-            .search-container #search-clear-btn { flex: 0 0 auto; margin-left: 4px; z-index: 3; }
-            .search-container .input-type-hint { flex: 0 0 auto; order: 2; margin-left: 4px; }
-
-            .series-suggestion-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; cursor: pointer; }
-            .series-suggestion-item span { display: inline-block; }
-            .series-suggestion-item .match-hint {
-                background: rgba(0,0,0,0.06);
-                color: #333;
-                padding: 2px 8px;
-                border-radius: 999px;
-                font-size: 0.8rem;
-                margin-left: 8px;
-                white-space: nowrap;
-                pointer-events: none;
-            }
-
-            /* Type-specific colors for suggestion pills */
-            .series-suggestion-item[data-type*="Tag"] .match-hint,
-            .input-type-hint.input-type-tag {
-                background: rgba(108,117,125,0.12);
-                color: #40464a;
-            }
-            .series-suggestion-item[data-type*="Genre"] .match-hint,
-            .input-type-hint.input-type-genre {
-                background: rgba(255,193,7,0.12);
-                color: #7a5900;
-            }
-            .series-suggestion-item[data-type*="Episode"] .match-hint,
-            .input-type-hint.input-type-episode {
-                background: rgba(32,201,151,0.12);
-                color: #0e6b45;
-            }
-            .series-suggestion-item[data-type*="Series"] .match-hint,
-            .input-type-hint.input-type-series {
-                background: rgba(111,66,193,0.12);
-                color: #2b1c50;
-            }
-            .series-suggestion-item:hover { background: rgba(0,0,0,0.02); }
-        `;
-
-        try {
-            const style = document.createElement('style');
-            style.id = 'latest-episodes-suggestion-styles';
-            style.appendChild(document.createTextNode(css));
-            document.head.appendChild(style);
-            this._suggestionStylesInjected = true;
-        } catch (e) {
-            // ignore if DOM not ready or injection fails
-        }
+        // Styles for suggestions and input-type markers are provided via
+        // `latest_episodes_webapp_template.css`. Mark as injected so callers
+        // don't try to inject at runtime.
+        this._suggestionStylesInjected = true;
     }
 
     renderSeriesSuggestions(rawValue) {
