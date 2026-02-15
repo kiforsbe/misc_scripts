@@ -98,7 +98,7 @@ class LatestEpisodesApp {
     
     init() {
         this.setupEventListeners();
-        this.injectSuggestionStyles();
+        // styles are provided via latest_episodes_webapp_template.css; no runtime injection
         this.setupNavigation();
         this.updateHeaderStats();
         this.populateSeriesFilter();
@@ -365,12 +365,7 @@ class LatestEpisodesApp {
         this.hideSeriesSuggestions();
     }
 
-    injectSuggestionStyles() {
-        // Styles for suggestions and input-type markers are provided via
-        // `latest_episodes_webapp_template.css`. Mark as injected so callers
-        // don't try to inject at runtime.
-        this._suggestionStylesInjected = true;
-    }
+    // `injectSuggestionStyles` removed: styles live in latest_episodes_webapp_template.css
 
     renderSeriesSuggestions(rawValue) {
         const container = document.getElementById('series-suggestions');
