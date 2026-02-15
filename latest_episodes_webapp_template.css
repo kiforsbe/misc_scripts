@@ -262,7 +262,17 @@ body {
 .search-container { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
 .search-container #search-input { flex: 1 1 auto; min-width: 0; }
 .search-container #search-clear-btn { flex: 0 0 auto; margin-left: 4px; z-index: 3; }
-.search-container .input-type-hint { flex: 0 0 auto; order: 2; margin-left: 4px; }
+.search-container .input-type-hint { 
+  flex: 0 0 auto;
+  order: 2;
+  margin-left: 4px;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
 
 .series-suggestion-item span { display: inline-block; }
 
