@@ -98,6 +98,7 @@ class LatestEpisodesApp {
     
     init() {
         this.setupEventListeners();
+        this.injectSuggestionStyles();
         this.setupNavigation();
         this.updateHeaderStats();
         this.populateSeriesFilter();
@@ -121,6 +122,8 @@ class LatestEpisodesApp {
             this.filterAndDisplayEpisodes();
             this.renderSeriesSuggestions(e.target.value);
             this.updateSearchIndicator(e.target.value);
+            // Clear any previously-applied suggestion type marker when user types
+            this.clearInputTypeMarker();
         });
 
         searchInput.addEventListener('focus', (e) => {
@@ -149,6 +152,7 @@ class LatestEpisodesApp {
                 this.filterAndDisplayEpisodes();
                 this.hideSeriesSuggestions();
                 this.updateSearchIndicator('');
+                this.clearInputTypeMarker();
             });
         }
         
@@ -329,18 +333,71 @@ class LatestEpisodesApp {
     
     populateSeriesFilter() {
         const seriesSet = new Set();
-        
+        const seriesTagsSet = new Set();
+        const seriesGenresSet = new Set();
+        const episodeTitlesSet = new Set();
+
         this.data.episodes.forEach(episode => {
             const seriesTitle = episode.metadata.title;
             if (seriesTitle) {
                 seriesSet.add(seriesTitle);
             }
+
+            if (episode.series_metadata && Array.isArray(episode.series_metadata.tags)) {
+                episode.series_metadata.tags.forEach(t => { if (t) seriesTagsSet.add(t); });
+            }
+            if (episode.series_metadata && Array.isArray(episode.series_metadata.genres)) {
+                episode.series_metadata.genres.forEach(g => { if (g) seriesGenresSet.add(g); });
+            }
+            if (episode.metadata && episode.metadata.episode_title) {
+                episodeTitlesSet.add(episode.metadata.episode_title);
+            }
         });
-        
+
         const sortedSeries = Array.from(seriesSet).sort();
         this.seriesTitles = sortedSeries;
         this.seriesTitleMap = new Map(sortedSeries.map(series => [series.toLowerCase(), series]));
+
+        this.seriesTags = Array.from(seriesTagsSet).sort();
+        this.seriesGenres = Array.from(seriesGenresSet).sort();
+        this.episodeTitles = Array.from(episodeTitlesSet).sort();
+
         this.hideSeriesSuggestions();
+    }
+
+    injectSuggestionStyles() {
+        if (this._suggestionStylesInjected) return;
+        const css = `
+            /* Keep search input, clear button and type pill on one line */
+            .search-container { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+            .search-container #search-input { flex: 1 1 auto; min-width: 0; }
+            .search-container #search-clear-btn { flex: 0 0 auto; margin-left: 4px; z-index: 3; }
+            .search-container .input-type-hint { flex: 0 0 auto; order: 2; margin-left: 4px; }
+
+            .series-suggestion-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; cursor: pointer; }
+            .series-suggestion-item span { display: inline-block; }
+            .series-suggestion-item .match-hint {
+                background: rgba(0,0,0,0.06);
+                color: #333;
+                padding: 2px 8px;
+                border-radius: 999px;
+                font-size: 0.8rem;
+                margin-left: 8px;
+                white-space: nowrap;
+                pointer-events: none;
+            }
+            .series-suggestion-item:hover { background: rgba(0,0,0,0.02); }
+        `;
+
+        try {
+            const style = document.createElement('style');
+            style.id = 'latest-episodes-suggestion-styles';
+            style.appendChild(document.createTextNode(css));
+            document.head.appendChild(style);
+            this._suggestionStylesInjected = true;
+        } catch (e) {
+            // ignore if DOM not ready or injection fails
+        }
     }
 
     renderSeriesSuggestions(rawValue) {
@@ -353,22 +410,58 @@ class LatestEpisodesApp {
             return;
         }
 
-        const matches = this.seriesTitles.filter(title => {
-            if (!inputValue) return true;
-            return title.toLowerCase().includes(inputValue);
-        }).slice(0, this.seriesSuggestionMax);
+        // Build a deduplicated map of suggestions with merged types
+        const suggestionMap = new Map();
+        let order = 0;
 
-        if (matches.length === 0 || (inputValue && this.seriesTitleMap.get(inputValue))) {
+        const addItem = (raw, type) => {
+            if (!raw) return;
+            const lower = raw.toLowerCase();
+            if (inputValue && !lower.includes(inputValue)) return;
+            if (suggestionMap.has(lower)) {
+                suggestionMap.get(lower).types.add(type);
+            } else {
+                suggestionMap.set(lower, { value: raw, types: new Set([type]), order: order++ });
+            }
+        };
+
+        // Add items in preferred priority so ordering favors Series then Episode then Genre then Tag
+        (this.seriesTitles || []).forEach(s => addItem(s, 'Series'));
+        (this.episodeTitles || []).forEach(t => addItem(t, 'Episode'));
+        (this.seriesGenres || []).forEach(g => addItem(g, 'Genre'));
+        (this.seriesTags || []).forEach(t => addItem(t, 'Tag'));
+
+        // Sort suggestions ascending (A → Z) by value, then limit
+        const suggestions = Array.from(suggestionMap.values())
+            .sort((a, b) => {
+                const va = (a.value || '').toLowerCase();
+                const vb = (b.value || '').toLowerCase();
+                if (va < vb) return -1;
+                if (va > vb) return 1;
+                return 0;
+            })
+            .slice(0, this.seriesSuggestionMax);
+
+        if (suggestions.length === 0) {
             this.hideSeriesSuggestions();
             return;
         }
 
-        container.innerHTML = matches.map((title, index) => {
-            const highlightedTitle = this.getHighlightedSeriesTitle(title, inputValue);
+        // Helper to order merged type labels (prefer Tag before Genre)
+        const typeOrder = ['Tag', 'Genre', 'Episode', 'Series'];
+        const makeLabel = (typesSet) => {
+            const types = Array.from(typesSet);
+            types.sort((a, b) => typeOrder.indexOf(a) - typeOrder.indexOf(b));
+            return types.join('/');
+        };
+
+        container.innerHTML = suggestions.map((sugg, index) => {
+            const joinedType = makeLabel(sugg.types);
+            const display = sugg.types.has('Series') ? this.getHighlightedSeriesTitle(sugg.value, inputValue) : this.escapeHtml(this.toTitleCase(sugg.value));
             return `
-                <div class="series-suggestion-item" role="option" data-index="${index}" data-value="${this.escapeHtml(title)}">
-                    <span>${highlightedTitle}</span>
-                    ${inputValue ? '<span class="match-hint">Series</span>' : ''}
+                <div class="series-suggestion-item" role="option" data-index="${index}" data-value="${this.escapeHtml(sugg.value)}" data-type="${this.escapeHtml(joinedType)}">
+                    <span>${display}</span>
+                    <span class="match-hint">${this.escapeHtml(joinedType)}</span>
                 </div>
             `;
         }).join('');
@@ -380,7 +473,8 @@ class LatestEpisodesApp {
             item.addEventListener('mousedown', (e) => {
                 e.preventDefault();
                 const value = item.getAttribute('data-value');
-                this.applySuggestion(value || '');
+                const type = item.getAttribute('data-type') || '';
+                this.applySuggestion(value || '', type);
             });
         });
     }
@@ -416,6 +510,136 @@ class LatestEpisodesApp {
         this.activeSuggestionIndex = -1;
     }
 
+    showInputTypeMarker(type) {
+        const container = document.querySelector('.search-container');
+        const input = document.getElementById('search-input');
+        if (!container || !input) return;
+
+        // Remove existing marker first
+        this.clearInputTypeMarker();
+
+        const marker = document.createElement('span');
+        marker.className = 'input-type-hint';
+        marker.textContent = type;
+        marker.style.cssText = `
+            position: absolute;
+            background: rgba(0,0,0,0.06);
+            color: #333;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            pointer-events: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            white-space: nowrap;
+            z-index: 4;
+        `;
+
+        // Ensure container is relatively positioned so absolute children align to it
+        const prevPosition = window.getComputedStyle(container).position;
+        if (prevPosition === 'static' || !prevPosition) {
+            container.style.position = 'relative';
+            container.dataset._prevPosition = '';
+        } else {
+            container.dataset._prevPosition = prevPosition;
+        }
+
+        container.appendChild(marker);
+
+        // Position marker and clear button absolutely over the input so they appear "inside" the textbox
+        requestAnimationFrame(() => {
+            const clearBtn = container.querySelector('#search-clear-btn');
+
+            const inputRect = input.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+
+            const inputTop = input.offsetTop;
+            const inputHeight = input.offsetHeight;
+
+            // Prepare clear button to be absolute if present
+            if (clearBtn) {
+                // Store previous inline styles to restore later
+                clearBtn.dataset._prevPosition = clearBtn.style.position || '';
+                clearBtn.dataset._prevRight = clearBtn.style.right || '';
+                clearBtn.dataset._prevTop = clearBtn.style.top || '';
+                clearBtn.dataset._prevTransform = clearBtn.style.transform || '';
+
+                clearBtn.style.position = 'absolute';
+                // Use clientHeight for more consistent vertical centering inside the input
+                const clearTop = inputTop + Math.max(0, Math.floor((input.clientHeight - (clearBtn.offsetHeight || 20)) / 2));
+                clearBtn.style.top = clearTop + 'px';
+                // remove any transform so our absolute top is used
+                clearBtn.style.transform = 'none';
+                clearBtn.style.right = '8px';
+                clearBtn.style.zIndex = '5';
+            }
+
+            // Compute marker position to the left of clear button
+            const clearWidth = (clearBtn && clearBtn.offsetWidth) ? clearBtn.offsetWidth : 0;
+            const markerWidth = marker.offsetWidth || 0;
+            const rightOffset = 8 + clearWidth + 8; // 8px gap to container right + clearBtn + extra gap
+
+            marker.style.right = (rightOffset) + 'px';
+            // Use clientHeight to align marker vertically within the input
+            const markerTop = inputTop + Math.max(0, Math.floor((input.clientHeight - marker.offsetHeight) / 2));
+            marker.style.top = markerTop + 'px';
+
+            // Expand input padding so typed text doesn't go under the marker/clear button
+            const desiredPadding = rightOffset + markerWidth + 8;
+            input.dataset._prevPaddingRight = input.style.paddingRight || '';
+            input.style.paddingRight = desiredPadding + 'px';
+        });
+    }
+
+    clearInputTypeMarker() {
+        const container = document.querySelector('.search-container');
+        const input = document.getElementById('search-input');
+        if (!container) return;
+        const existing = container.querySelector('.input-type-hint');
+        if (existing) existing.remove();
+        if (input && input.dataset && Object.prototype.hasOwnProperty.call(input.dataset, '_prevPaddingRight')) {
+            input.style.paddingRight = input.dataset._prevPaddingRight;
+            delete input.dataset._prevPaddingRight;
+        }
+
+        // Restore any clear button inline styles we modified
+        const clearBtn = container.querySelector('#search-clear-btn');
+        if (clearBtn && clearBtn.dataset) {
+            if (Object.prototype.hasOwnProperty.call(clearBtn.dataset, '_prevPosition')) {
+                clearBtn.style.position = clearBtn.dataset._prevPosition || '';
+                delete clearBtn.dataset._prevPosition;
+            }
+            if (Object.prototype.hasOwnProperty.call(clearBtn.dataset, '_prevRight')) {
+                clearBtn.style.right = clearBtn.dataset._prevRight || '';
+                delete clearBtn.dataset._prevRight;
+            }
+            if (Object.prototype.hasOwnProperty.call(clearBtn.dataset, '_prevTop')) {
+                clearBtn.style.top = clearBtn.dataset._prevTop || '';
+                delete clearBtn.dataset._prevTop;
+            }
+            if (Object.prototype.hasOwnProperty.call(clearBtn.dataset, '_prevZ')) {
+                clearBtn.style.zIndex = clearBtn.dataset._prevZ || '';
+                delete clearBtn.dataset._prevZ;
+            }
+            if (Object.prototype.hasOwnProperty.call(clearBtn.dataset, '_prevTransform')) {
+                clearBtn.style.transform = clearBtn.dataset._prevTransform || '';
+                delete clearBtn.dataset._prevTransform;
+            }
+        }
+    }
+
+    toTitleCase(text) {
+        if (!text || typeof text !== 'string') return '';
+        return text.split(/([\s-_]+)/).map(part => {
+            // Leave separators as-is
+            if (/^[\s-_]+$/.test(part)) return part;
+            // Lowercase then uppercase first char for consistent title casing
+            return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+        }).join('');
+    }
+
     moveSuggestionSelection(delta) {
         const container = document.getElementById('series-suggestions');
         if (!container || container.style.display === 'none') return;
@@ -443,23 +667,30 @@ class LatestEpisodesApp {
 
         const activeItem = items[this.activeSuggestionIndex];
         const value = activeItem.getAttribute('data-value') || '';
-        this.applySuggestion(value);
+        const type = activeItem.getAttribute('data-type') || '';
+        this.applySuggestion(value, type);
         return true;
     }
 
-    applySuggestion(value) {
+    applySuggestion(value, type) {
         const searchInput = document.getElementById('search-input');
+        const displayValue = value;
         if (searchInput) {
-            searchInput.value = value;
+            searchInput.value = displayValue;
         }
+        // show a visual type marker next to the input (not part of the raw value)
+        if (type) this.showInputTypeMarker(type);
+        // setCombinedQuery expects a raw search term (without the type label)
         this.setCombinedQuery(value);
         this.filterAndDisplayEpisodes();
         this.hideSeriesSuggestions();
-        this.updateSearchIndicator(value);
+        this.updateSearchIndicator(displayValue);
     }
 
     setCombinedQuery(value) {
-        const raw = (value || '').trim();
+        // Strip any appended suggestion-type label (e.g. " (Genre)") so search uses raw value
+        const rawWithLabel = (value || '').trim();
+        const raw = rawWithLabel.replace(/\s*\([^)]*\)\s*$/, '');
         const lowered = raw.toLowerCase();
 
         this.combinedQuery = raw;
@@ -478,14 +709,20 @@ class LatestEpisodesApp {
     
     filterAndDisplayEpisodes() {
         this.filteredEpisodes = this.data.episodes.filter(episode => {
-            // Search filter
+            // Search filter (includes series and episode tags)
             if (this.searchTerm) {
+                const seriesTags = (episode.series_metadata && Array.isArray(episode.series_metadata.tags)) ? episode.series_metadata.tags.join(' ') : '';
+                const seriesGenres = (episode.series_metadata && Array.isArray(episode.series_metadata.genres)) ? episode.series_metadata.genres.join(' ') : '';
+                const episodeTags = (episode.metadata && Array.isArray(episode.metadata.tags)) ? episode.metadata.tags.join(' ') : '';
                 const searchableText = [
                     episode.metadata.title,
                     episode.file_name,
-                    episode.metadata.episode_title
+                    episode.metadata.episode_title,
+                    seriesTags,
+                    seriesGenres,
+                    episodeTags
                 ].join(' ').toLowerCase();
-                
+
                 if (!searchableText.includes(this.searchTerm)) {
                     return false;
                 }
