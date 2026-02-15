@@ -386,6 +386,28 @@ class LatestEpisodesApp {
                 white-space: nowrap;
                 pointer-events: none;
             }
+
+            /* Type-specific colors for suggestion pills */
+            .series-suggestion-item[data-type*="Tag"] .match-hint,
+            .input-type-hint.input-type-tag {
+                background: rgba(108,117,125,0.12);
+                color: #40464a;
+            }
+            .series-suggestion-item[data-type*="Genre"] .match-hint,
+            .input-type-hint.input-type-genre {
+                background: rgba(255,193,7,0.12);
+                color: #7a5900;
+            }
+            .series-suggestion-item[data-type*="Episode"] .match-hint,
+            .input-type-hint.input-type-episode {
+                background: rgba(32,201,151,0.12);
+                color: #0e6b45;
+            }
+            .series-suggestion-item[data-type*="Series"] .match-hint,
+            .input-type-hint.input-type-series {
+                background: rgba(111,66,193,0.12);
+                color: #2b1c50;
+            }
             .series-suggestion-item:hover { background: rgba(0,0,0,0.02); }
         `;
 
@@ -404,7 +426,21 @@ class LatestEpisodesApp {
         const container = document.getElementById('series-suggestions');
         if (!container) return;
 
-        const inputValue = (rawValue || '').trim().toLowerCase();
+        const raw = (rawValue || '').trim();
+        // Support prefix filters like "tag:", "series:", "genre:", or "episode:" to limit suggestion types
+        let inputValue = raw.toLowerCase();
+        let forcedType = null;
+        let searchFilter = inputValue;
+        const prefixMatch = raw.match(/^\s*(tag|series|genre|episode):\s*(.*)$/i);
+        if (prefixMatch) {
+            forcedType = prefixMatch[1].toLowerCase();
+            searchFilter = (prefixMatch[2] || '').trim().toLowerCase();
+            // Show a small indicator in the input to reflect the active prefix filter
+            try { this.showInputTypeMarker(this.toTitleCase(forcedType) + ':'); } catch (e) { /* ignore */ }
+        } else {
+            // Clear any previous prefix indicator
+            try { this.clearInputTypeMarker(); } catch (e) { /* ignore */ }
+        }
         if (!this.seriesTitles.length) {
             this.hideSeriesSuggestions();
             return;
@@ -417,7 +453,10 @@ class LatestEpisodesApp {
         const addItem = (raw, type) => {
             if (!raw) return;
             const lower = raw.toLowerCase();
-            if (inputValue && !lower.includes(inputValue)) return;
+            // If a prefix forced type is set, only include that exact type
+            if (forcedType && type.toLowerCase() !== forcedType) return;
+            // Use the searchFilter (substring after prefix or full input) for matching
+            if (searchFilter && searchFilter.length > 0 && !lower.includes(searchFilter)) return;
             if (suggestionMap.has(lower)) {
                 suggestionMap.get(lower).types.add(type);
             } else {
@@ -457,7 +496,7 @@ class LatestEpisodesApp {
 
         container.innerHTML = suggestions.map((sugg, index) => {
             const joinedType = makeLabel(sugg.types);
-            const display = sugg.types.has('Series') ? this.getHighlightedSeriesTitle(sugg.value, inputValue) : this.escapeHtml(this.toTitleCase(sugg.value));
+            const display = sugg.types.has('Series') ? this.getHighlightedSeriesTitle(sugg.value, searchFilter) : this.escapeHtml(this.toTitleCase(sugg.value));
             return `
                 <div class="series-suggestion-item" role="option" data-index="${index}" data-value="${this.escapeHtml(sugg.value)}" data-type="${this.escapeHtml(joinedType)}">
                     <span>${display}</span>
@@ -519,12 +558,14 @@ class LatestEpisodesApp {
         this.clearInputTypeMarker();
 
         const marker = document.createElement('span');
-        marker.className = 'input-type-hint';
-        marker.textContent = type;
+        // Normalize and add a type class (e.g. input-type-tag) so CSS can style it
+        const rawType = (typeof type === 'string' ? type : '') || '';
+        const norm = rawType.split('/')[0].replace(/[^a-z]/gi, '').toLowerCase() || 'neutral';
+        marker.className = 'input-type-hint input-type-' + norm;
+        marker.textContent = rawType;
+        // Base positioning & sizing only; color/background controlled via stylesheet by type class
         marker.style.cssText = `
             position: absolute;
-            background: rgba(0,0,0,0.06);
-            color: #333;
             padding: 2px 8px;
             border-radius: 999px;
             font-size: 0.8rem;
