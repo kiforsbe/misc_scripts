@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, asdict
 
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
+from presentation import Presenter, Colors, get_emoji
 try:
     sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
     from myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
@@ -17,38 +18,7 @@ except ImportError:
     MyAnimeListWatchStatusProvider = None
     MyAnimeListWatchStatus = None
 
-# ANSI Color codes for terminal output
-class Colors:
-    """ANSI color codes for terminal output."""
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    DIM = '\033[2m'
-    
-    # Standard colors
-    BLACK = '\033[30m'
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    BLUE = '\033[34m'
-    MAGENTA = '\033[35m'
-    CYAN = '\033[36m'
-    WHITE = '\033[37m'
-    
-    # Bright colors
-    BRIGHT_BLACK = '\033[90m'
-    BRIGHT_RED = '\033[91m'
-    BRIGHT_GREEN = '\033[92m'
-    BRIGHT_YELLOW = '\033[93m'
-    BRIGHT_BLUE = '\033[94m'
-    BRIGHT_MAGENTA = '\033[95m'
-    BRIGHT_CYAN = '\033[96m'
-    BRIGHT_WHITE = '\033[97m'
-    
-    @staticmethod
-    def strip(text: str) -> str:
-        """Remove all ANSI color codes from text."""
-        import re
-        return re.sub(r'\033\[[0-9;]+m', '', text)
+# Reusing Colors and emoji helpers from presentation.py
 
 # Enums for status values
 class SeriesStatus(str, Enum):
@@ -73,19 +43,7 @@ class MALStatus(str, Enum):
     PLAN_TO_WATCH = 'Plan to Watch'
     COMPLETED_SEASON = 'Completed (Season)'
 
-# Status emoji mapping
-STATUS_EMOJI = {
-    SeriesStatus.COMPLETE: '✅',
-    SeriesStatus.INCOMPLETE: '❌',
-    SeriesStatus.COMPLETE_WITH_EXTRAS: '⚠️',
-    SeriesStatus.NO_EPISODE_NUMBERS: '❓',
-    SeriesStatus.UNKNOWN_TOTAL_EPISODES: '❓',
-    SeriesStatus.NOT_SERIES: 'ℹ️',
-    SeriesStatus.MOVIE: '🎬',
-    SeriesStatus.NO_METADATA: '❓',
-    SeriesStatus.NO_METADATA_MANAGER: '❓',
-    SeriesStatus.UNKNOWN: '❓'
-}
+# Status emoji mapping was moved to presentation.EMOJI_MAP; use get_emoji() below.
 
 # Dataclasses for complex data structures
 @dataclass
@@ -1429,8 +1387,9 @@ class SeriesCompletenessChecker:
         # One-line summary for each series
         if verbosity >= 1:
             print(f"\n{Colors.BOLD}{Colors.CYAN}=== Series ==={Colors.RESET}")
+            presenter = Presenter(use_colors=True)
             for group_key, analysis in sorted(results['groups'].items()):
-                self._print_one_line_summary(analysis, show_metadata_fields)
+                presenter.print_one_line_summary(analysis, show_metadata_fields, title_length=60)
     
     def _print_one_line_summary(self, analysis: Dict[str, Any], show_metadata_fields: List[str] | None = None) -> None:
         """Print a concise one-line summary for a series."""
@@ -1441,10 +1400,11 @@ class SeriesCompletenessChecker:
         episodes_expected = analysis.get('episodes_expected', 0)
         watch_status = analysis.get('watch_status', {})
         
-        # Status emoji - convert string status to enum and get emoji
+        # Status emoji - convert string status to enum and get emoji from presentation
         try:
             status_enum = SeriesStatus(status) if isinstance(status, str) else status
-            status_emoji = STATUS_EMOJI.get(status_enum, '❓')
+            status_key = status_enum.value if hasattr(status_enum, 'value') else str(status_enum)
+            status_emoji = get_emoji(status_key) or '❓'
         except (ValueError, KeyError):
             status_emoji = '❓'
         

@@ -7,73 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
-
-# Emoji support detection
-def _detect_emoji_support():
-    """Detect if the terminal/environment supports emoji."""
-    # Check if running in a Windows terminal that supports Unicode
-    if sys.platform == 'win32':
-        # Check if stdout encoding supports Unicode
-        try:
-            encoding = sys.stdout.encoding or ''
-            # Windows Terminal, new Command Prompt, and PowerShell 7+ support UTF-8
-            if 'utf-8' in encoding.lower() or 'utf8' in encoding.lower():
-                return True
-            # Try to encode a test emoji
-            '✅'.encode(encoding)
-            return True
-        except (UnicodeEncodeError, AttributeError, LookupError):
-            return False
-    else:
-        # Unix-like systems usually support emoji
-        try:
-            encoding = sys.stdout.encoding or 'utf-8'
-            '✅'.encode(encoding)
-            return True
-        except (UnicodeEncodeError, AttributeError):
-            return False
-
-EMOJI_SUPPORT = _detect_emoji_support()
-
-# Emoji constants with fallbacks
-class Emoji:
-    """Emoji characters with ASCII fallbacks."""
-    if EMOJI_SUPPORT:
-        CHECK = '✅'
-        CROSS = '❌'
-        WARNING = '⚠️'
-        COMPLETE = '✅'
-        INCOMPLETE = '❌'
-        FOLDER = '📁'
-        FILE = '📄'
-        CALENDAR = '📅'
-        PACKAGE = '📦'
-        CHART = '📊'
-        STAR = '⭐'
-    else:
-        CHECK = ''
-        CROSS = ''
-        WARNING = ''
-        COMPLETE = ''
-        INCOMPLETE = ''
-        FOLDER = ''
-        FILE = ''
-        CALENDAR = ''
-        PACKAGE = ''
-        CHART = ''
-        STAR = ''
-
-try:
-    from colorama import Fore, Style, init as colorama_init
-    colorama_init(autoreset=True)
-    COLORAMA_AVAILABLE = True
-except ImportError:
-    COLORAMA_AVAILABLE = False
-    # Fallback to empty strings
-    class Fore:
-        GREEN = CYAN = YELLOW = RED = MAGENTA = BLUE = WHITE = RESET = ""
-    class Style:
-        BRIGHT = DIM = RESET_ALL = ""
+from presentation import get_emoji, color_text, Presenter, Colors
 
 try:
     from tqdm import tqdm
@@ -134,7 +68,7 @@ class SeriesBundler:
             metadata_manager: MetadataManager instance for title lookups
         """
         self.verbose = verbose
-        self.use_colors = use_colors and COLORAMA_AVAILABLE
+        self.use_colors = use_colors
         
         resolved_mal_path = (
             resolve_myanimelist_xml_path(myanimelist_xml_path)
@@ -169,20 +103,7 @@ class SeriesBundler:
         Returns:
             Emoji character or ASCII fallback
         """
-        emoji_map = {
-            'complete': Emoji.COMPLETE,
-            'incomplete': Emoji.INCOMPLETE,
-            'warning': Emoji.WARNING,
-            'check': Emoji.CHECK,
-            'cross': Emoji.CROSS,
-            'folder': Emoji.FOLDER,
-            'file': Emoji.FILE,
-            'calendar': Emoji.CALENDAR,
-            'package': Emoji.PACKAGE,
-            'chart': Emoji.CHART,
-            'star': Emoji.STAR
-        }
-        return emoji_map.get(emoji_type.lower(), '')
+        return get_emoji(emoji_type)
         
     def _log(self, message: str, level: int = 1):
         """Log message if verbosity level is sufficient."""
@@ -191,9 +112,7 @@ class SeriesBundler:
     
     def _color(self, text: str, color: str = "") -> str:
         """Apply color to text if colors are enabled."""
-        if self.use_colors and color:
-            return f"{color}{text}{Style.RESET_ALL}"
-        return text
+        return color_text(text, color, use_colors=self.use_colors)
     
     def _clean_filename(self, name: str) -> str:
         """Clean filename/folder name for filesystem compatibility."""
@@ -709,27 +628,27 @@ class SeriesBundler:
         
         summary = self.get_summary()
         
-        print(self._color("\n=== Series Bundler Summary ===", Fore.CYAN + Style.BRIGHT))
+        print(self._color("\n=== Series Bundler Summary ===", Colors.CYAN + Colors.BOLD))
         file_emoji = self._get_emoji('file')
-        print(f"Total files: {file_emoji} {self._color(str(summary['total_files']), Fore.GREEN)}")
+        print(f"Total files: {file_emoji} {self._color(str(summary['total_files']), Colors.GREEN)}")
         folder_emoji = self._get_emoji('folder')
-        print(f"Total groups: {folder_emoji} {self._color(str(summary['total_groups']), Fore.GREEN)}")
+        print(f"Total groups: {folder_emoji} {self._color(str(summary['total_groups']), Colors.GREEN)}")
         package_emoji = self._get_emoji('package')
         size_text = f"{summary['total_size_mb']} MB"
-        print(f"Total size: {package_emoji} {self._color(size_text, Fore.GREEN)}")
+        print(f"Total size: {package_emoji} {self._color(size_text, Colors.GREEN)}")
         star_emoji = self._get_emoji('star')
-        print(f"Average files per group: {star_emoji} {self._color(str(summary['average_files_per_group']), Fore.YELLOW)}")
+        print(f"Average files per group: {star_emoji} {self._color(str(summary['average_files_per_group']), Colors.YELLOW)}")
         largest_text = f"{summary['largest_group_size']} files"
-        print(f"  Largest group: {self._color(largest_text, Fore.MAGENTA)}")
+        print(f"  Largest group: {self._color(largest_text, Colors.MAGENTA)}")
         smallest_text = f"{summary['smallest_group_size']} files"
-        print(f"  Smallest group: {self._color(smallest_text, Fore.MAGENTA)}")
+        print(f"  Smallest group: {self._color(smallest_text, Colors.MAGENTA)}")
         
         # Debug: show group_metadata status
         if self.verbose >= 2:
             print(f"\nFileGrouper has {len(self.file_grouper.title_metadata)} title metadata entries")
             print(f"FileGrouper has {len(self.file_grouper.group_metadata)} group metadata entries")
         
-        print(self._color("\n=== Groups ===", Fore.CYAN + Style.BRIGHT))
+        print(self._color("\n=== Groups ===", Colors.CYAN + Colors.BOLD))
         # Sort groups by season (extract from group_key)
         sorted_groups = sorted(
             self.file_grouper.groups.items(),
@@ -937,16 +856,16 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         return 1
     
     # Show what would be created
-    print(bundler._color("\n=== Dry Run Preview ===", Fore.YELLOW + Style.BRIGHT))
+    print(bundler._color("\n=== Dry Run Preview ===", Colors.BRIGHT_YELLOW))
     bundler.print_summary()
     
     # Determine destination - use parent directory of first file
     first_file_dir = Path(files[0]).parent
     destination = first_file_dir
     
-    print(bundler._color("\n=== Proposed Structure ===", Fore.CYAN + Style.BRIGHT))
+    print(bundler._color("\n=== Proposed Structure ===", Colors.BRIGHT_CYAN))
     folder_emoji = bundler._get_emoji('folder')
-    print(f"Destination: {folder_emoji} {bundler._color(str(destination), Fore.CYAN)}")
+    print(f"Destination: {folder_emoji} {bundler._color(str(destination), Colors.CYAN)}")
     print()
     
     # Sort groups by season and files within groups by episode
@@ -982,7 +901,7 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         # Print folder and files
         folder_emoji = bundler._get_emoji('folder')
         calendar_emoji = bundler._get_emoji('calendar')
-        print(bundler._color(f"{folder_emoji} {folder_name}/ ({newest_date_str})", Fore.CYAN + Style.BRIGHT))
+        print(bundler._color(f"{folder_emoji} {folder_name}/ ({newest_date_str})", Colors.BRIGHT_CYAN))
         
         # Collect present episodes for missing episode detection
         present_episodes = []
@@ -1091,11 +1010,11 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
                         else:
                             file_date_str = "Unknown"
                         
-                        print(f"   {file_emoji} {filename} {bundler._color(f'({file_date_str})', Style.DIM + Fore.WHITE)}")
+                        print(f"   {file_emoji} {filename} {bundler._color(f'({file_date_str})', Colors.DIM + Colors.WHITE)}")
                 else:
                     # Display missing episode marker (only for integer episodes)
                     if ep == int(ep):
-                        print(bundler._color(f"   {cross_emoji} {title} - {int(ep):02d}", Style.DIM + Fore.RED))
+                        print(bundler._color(f"   {cross_emoji} {title} - {int(ep):02d}", Colors.DIM + Colors.RED))
         else:
             # No episode info, just display files normally
             file_emoji = bundler._get_emoji('file')
@@ -1110,19 +1029,19 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
                 else:
                     file_date_str = "Unknown"
                 
-                print(f"   {file_emoji} {filename} {bundler._color(f'({file_date_str})', Style.DIM + Fore.WHITE)}")
+                print(f"   {file_emoji} {filename} {bundler._color(f'({file_date_str})', Colors.DIM + Colors.WHITE)}")
         
         print()
     
     # Get user confirmation
-    print(bundler._color("This will:", Fore.YELLOW + Style.BRIGHT))
-    print(f"1. Create folder structure in: {bundler._color(str(destination), Fore.CYAN)}")
-    print(f"2. Move {bundler._color(str(len(files)), Fore.MAGENTA)} files into {bundler._color(str(len(bundler.file_grouper.groups)), Fore.MAGENTA)} organized folders")
-    print(f"3. Original files will be {bundler._color('moved', Fore.RED)} (not copied)")
+    print(bundler._color("This will:", Colors.BRIGHT_YELLOW))
+    print(f"1. Create folder structure in: {bundler._color(str(destination), Colors.CYAN)}")
+    print(f"2. Move {bundler._color(str(len(files)), Colors.MAGENTA)} files into {bundler._color(str(len(bundler.file_grouper.groups)), Colors.MAGENTA)} organized folders")
+    print(f"3. Original files will be {bundler._color('moved', Colors.RED)} (not copied)")
     print()
     
     if not get_user_confirmation("Do you want to proceed with bundling?", default=False):
-        print(bundler._color("Operation cancelled by user.", Fore.YELLOW))
+        print(bundler._color("Operation cancelled by user.", Colors.YELLOW))
         print("\nPress Enter to exit...")
         input()
         return 1
@@ -1138,25 +1057,25 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         
         if results:
             complete_emoji = bundler._get_emoji('complete')
-            print(bundler._color(f"\n{complete_emoji} Successfully created {len(results)} bundle folders!", Fore.GREEN + Style.BRIGHT))
-            print(f"Files have been organized in: {bundler._color(str(destination), Fore.CYAN)}")
+            print(bundler._color(f"\n{complete_emoji} Successfully created {len(results)} bundle folders!", Colors.BRIGHT_GREEN))
+            print(f"Files have been organized in: {bundler._color(str(destination), Colors.CYAN)}")
             calendar_emoji = bundler._get_emoji('calendar')
-            print(bundler._color(f"\n{calendar_emoji} Folder dates set to newest file:", Fore.YELLOW))
+            print(bundler._color(f"\n{calendar_emoji} Folder dates set to newest file:", Colors.YELLOW))
             for group_key, result_info in results.items():
                 folder_name = Path(result_info['folder_path']).name
                 newest_date = result_info.get('newest_file_date', 'Unknown')
                 folder_emoji = bundler._get_emoji('folder')
-                print(f"  {folder_emoji} {bundler._color(folder_name, Fore.CYAN)}: {bundler._color(newest_date, Style.DIM + Fore.WHITE)}")
+                print(f"  {folder_emoji} {bundler._color(folder_name, Colors.CYAN)}: {bundler._color(newest_date, Colors.DIM + Colors.WHITE)}")
         else:
             cross_emoji = bundler._get_emoji('cross')
-            print(bundler._color(f"{cross_emoji} No files were bundled.", Fore.RED))
+            print(bundler._color(f"{cross_emoji} No files were bundled.", Colors.RED))
             print("\nPress Enter to exit...")
             input()
             return 1
             
     except Exception as e:
         cross_emoji = bundler._get_emoji('cross')
-        print(bundler._color(f"{cross_emoji} Error during bundling: {e}", Fore.RED))
+        print(bundler._color(f"{cross_emoji} Error during bundling: {e}", Colors.RED))
         print("\nPress Enter to exit...")
         input()
         return 1

@@ -8,18 +8,7 @@ import binascii
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Protocol
-
-try:
-    from colorama import Fore, Style, init as colorama_init
-    colorama_init(autoreset=True)
-    COLORAMA_AVAILABLE = True
-except ImportError:
-    COLORAMA_AVAILABLE = False
-    # Fallback to empty strings
-    class Fore:
-        GREEN = CYAN = YELLOW = RED = MAGENTA = BLUE = WHITE = RESET = ""
-    class Style:
-        BRIGHT = DIM = RESET_ALL = ""
+from presentation import Presenter, color_text, get_emoji, Colors
 
 try:
     from tqdm import tqdm
@@ -132,7 +121,7 @@ class SeriesArchiver:
         self.groups: Dict = {}
         self.verbose = verbose
         self.progress_reporter = progress_reporter
-        self.use_colors = use_colors and COLORAMA_AVAILABLE
+        self.use_colors = use_colors
         
     def _log(self, message: str, level: int = 1):
         """Log message if verbosity level is sufficient."""
@@ -141,9 +130,7 @@ class SeriesArchiver:
     
     def _color(self, text: str, color: str = "") -> str:
         """Apply color to text if colors are enabled."""
-        if self.use_colors and color:
-            return f"{color}{text}{Style.RESET_ALL}"
-        return text
+        return color_text(text, color, use_colors=self.use_colors)
     
     def load_data(self, json_file_path: str) -> bool:
         """Load series data from JSON file."""
@@ -535,16 +522,16 @@ class SeriesArchiver:
         
         # Print summary
         total_files = len(files_to_check)
-        print(f"\n{self._color('CRC Check Summary:', Fore.CYAN + Style.BRIGHT)}")
-        print(f"  Total files: {self._color(str(total_files), Fore.WHITE)}")
-        print(f"  Valid CRC: {self._color(str(valid_count), Fore.GREEN)}")
-        print(f"  Invalid CRC: {self._color(str(invalid_count), Fore.RED if invalid_count > 0 else Fore.GREEN)}")
-        print(f"  No CRC in filename: {self._color(str(no_crc_count), Fore.YELLOW)}")
+        print(f"\n{self._color('CRC Check Summary:', Colors.CYAN + Colors.BOLD)}")
+        print(f"  Total files: {self._color(str(total_files), Colors.WHITE)}")
+        print(f"  Valid CRC: {self._color(str(valid_count), Colors.GREEN)}")
+        print(f"  Invalid CRC: {self._color(str(invalid_count), Colors.RED if invalid_count > 0 else Colors.GREEN)}")
+        print(f"  No CRC in filename: {self._color(str(no_crc_count), Colors.YELLOW)}")
         
         if invalid_count > 0:
-            print(f"\n{self._color(f'⚠️  {invalid_count} files failed CRC validation!', Fore.RED + Style.BRIGHT)}")
+            print(f"\n{self._color(f'⚠️  {invalid_count} files failed CRC validation!', Colors.RED + Colors.BOLD)}")
         elif valid_count > 0:
-            print(f"\n{self._color(f'✅ All {valid_count} files with CRC passed validation!', Fore.GREEN + Style.BRIGHT)}")
+            print(f"\n{self._color(f'✅ All {valid_count} files with CRC passed validation!', Colors.GREEN + Colors.BOLD)}")
         
         return results
     
@@ -606,9 +593,9 @@ class SeriesArchiver:
             
             action_word = "Would process" if dry_run else "Processing"
             group_title = group_data.get('title', 'Unknown')
-            folder_emoji = "📁"
-            print(f"\n{folder_emoji} {action_word} group: {self._color(group_title, Fore.CYAN + Style.BRIGHT)}")
-            self._log(f"   Destination: {self._color(folder_name, Fore.CYAN)}")
+            folder_emoji = get_emoji('folder') or "📁"
+            print(f"\n{folder_emoji} {action_word} group: {self._color(group_title, Colors.CYAN + Colors.BOLD)}")
+            self._log(f"   Destination: {self._color(folder_name, Colors.CYAN)}")
             
             # Process files
             files = group_data.get('files', [])
@@ -687,9 +674,9 @@ class SeriesArchiver:
                 try:
                     os.utime(dest_folder, (newest_file_time, newest_file_time))
                     date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d')
-                    self._log(f"   📅 Folder date set to: {self._color(date_str, Fore.YELLOW)}", 2)
+                    self._log(f"   📅 Folder date set to: {self._color(date_str, Colors.YELLOW)}", 2)
                 except Exception as e:
-                    self._log(f"   {self._color('⚠️', Fore.YELLOW)} Could not set folder date: {e}", 1)
+                    self._log(f"   {self._color('⚠️', Colors.YELLOW)} Could not set folder date: {e}", 1)
             
             # Notify progress reporter of group completion
             if self.progress_reporter:
@@ -697,9 +684,9 @@ class SeriesArchiver:
             else:
                 # Fallback output if no progress reporter
                 status_word = "Would process" if dry_run else "Processed"
-                print(f"   {self._color('✅', Fore.GREEN)} {status_word} {self._color(str(success_count), Fore.GREEN)} files successfully")
+                print(f"   {self._color('✅', Colors.GREEN)} {status_word} {self._color(str(success_count), Colors.GREEN)} files successfully")
                 if error_count > 0:
-                    print(f"   {self._color('❌', Fore.RED)} {error_count} files had errors")
+                    print(f"   {self._color('❌', Colors.RED)} {error_count} files had errors")
             
             # Store folder path and newest file date
             results[group_key] = {
@@ -713,7 +700,7 @@ class SeriesArchiver:
         
         # Verify CRC after operations if requested
         if verify_crc and processed_files and not dry_run:
-            print(f"\n{self._color('=== CRC VERIFICATION ===', Fore.CYAN + Style.BRIGHT)}")
+            print(f"\n{self._color('=== CRC VERIFICATION ===', Colors.CYAN + Colors.BOLD)}")
             crc_results = {}
             
             with tqdm(processed_files, desc="Verifying file integrity", unit="file", disable=self.verbose == 0) as pbar:
@@ -736,7 +723,7 @@ class SeriesArchiver:
                         }
                         
                         if not is_valid:
-                            print(f"   {self._color('⚠️  CRC MISMATCH:', Fore.RED)} {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
+                            print(f"   {self._color('⚠️  CRC MISMATCH:', Colors.RED)} {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
             
             # CRC summary
             if crc_results:
@@ -744,15 +731,15 @@ class SeriesArchiver:
                 valid_count = sum(1 for r in crc_results.values() if r['is_valid'])
                 invalid_count = total_checked - valid_count
                 
-                print(f"\n{self._color('CRC Verification Summary:', Fore.CYAN)}")
-                print(f"  Files checked: {self._color(str(total_checked), Fore.WHITE)}")
-                print(f"  Valid: {self._color(str(valid_count), Fore.GREEN)}")
-                print(f"  Invalid: {self._color(str(invalid_count), Fore.RED if invalid_count > 0 else Fore.GREEN)}")
+                print(f"\n{self._color('CRC Verification Summary:', Colors.CYAN)}")
+                print(f"  Files checked: {self._color(str(total_checked), Colors.WHITE)}")
+                print(f"  Valid: {self._color(str(valid_count), Colors.GREEN)}")
+                print(f"  Invalid: {self._color(str(invalid_count), Colors.RED if invalid_count > 0 else Colors.GREEN)}")
                 
                 if invalid_count == 0:
-                    print(f"\n{self._color('✅ All files passed CRC verification!', Fore.GREEN + Style.BRIGHT)}")
+                    print(f"\n{self._color('✅ All files passed CRC verification!', Colors.GREEN + Colors.BOLD)}")
                 else:
-                    print(f"\n{self._color(f'❌ {invalid_count} files failed CRC verification!', Fore.RED + Style.BRIGHT)}")
+                    print(f"\n{self._color(f'❌ {invalid_count} files failed CRC verification!', Colors.RED + Colors.BOLD)}")
         
         return results
     
@@ -904,69 +891,49 @@ def cmd_list(args):
         print("No groups found matching the filter criteria.")
         return 0
     
+    presenter = Presenter(use_colors=use_colors)
+
     print("Available series groups:")
     print("=" * (title_length+30))  # Consistent width
-    
-    for original_index, group_key, details in indexed_groups:
-        # Status emoji from series_completeness_checker.py
-        status_emoji = {
-            'complete': '✅',
-            'incomplete': '❌', 
-            'complete_with_extras': '⚠️',
-            'no_episode_numbers': '❓',
-            'unknown_total_episodes': '❓',
-            'not_series': 'ℹ️',
-            'movie': '🎬',
-            'no_metadata': '❓',
-            'no_metadata_manager': '❓',
-            'unknown': '❓'
-        }.get(details['status'], '❓')
-        
-        # Get watch info and other episode info
-        group_data = details.get('data', {})
-        watched_episodes = archiver._get_watched_episodes(group_data)
-        missing_episodes = group_data.get('missing_episodes', [])
-        extra_episodes = group_data.get('extra_episodes', [])
-        
-        # Build episode info list
-        episode_info = []
-        if watched_episodes:
-            watched_range = archiver._format_episode_ranges(watched_episodes)
-            episode_info.append(f"Watched: {watched_range}/{details['episodes_expected']}")
-        
-        if missing_episodes:
-            missing_range = archiver._format_episode_ranges(missing_episodes)
-            episode_info.append(f"Missing: {missing_range}")
-        
-        if extra_episodes:
-            extra_range = archiver._format_episode_ranges(extra_episodes)
-            episode_info.append(f"Extra: {extra_range}")
 
-        episode_info_str = ", ".join(episode_info) if episode_info else ""
-        
-        # Format title with proper truncation
-        title_str = details['title']
-        if len(title_str) > title_length:
-            title_str = title_str[:title_length - 3] + "..."
-        
+    for original_index, group_key, details in indexed_groups:
+        group_data = details.get('data', {})
+
+        # Build an analysis-like dict compatible with Presenter
+        analysis = {
+            'status': details.get('status'),
+            'title': group_data.get('title', details.get('title')),
+            'season': group_data.get('season'),
+            'episodes_found': details.get('episodes_found', 0),
+            'episodes_expected': details.get('episodes_expected', 0),
+            'watch_status': group_data.get('watch_status', {}),
+            'files': group_data.get('files', []),
+            'missing_episodes': group_data.get('missing_episodes', []),
+            'extra_episodes': group_data.get('extra_episodes', []),
+            'group_metadata': group_data.get('group_metadata', {}),
+            'myanimelist_watch_status': group_data.get('myanimelist_watch_status')
+        }
+
         if args.verbose == 0:
-            title_str = details['title']
-            if len(title_str) > title_length:
-                title_str = title_str[:title_length - 3] + "..."
-            
-            print(f"{original_index:4d}. {status_emoji} {title_str:<{title_length}} {details['episodes_found']:>3}/{details['episodes_expected']:<3} | {episode_info_str}")
+            # Compact one-line summary
+            print(f"{original_index:4d}.", end=" ")
+            presenter.print_one_line_summary(analysis, title_length=title_length)
         else:
-            print(f"{original_index:4d}. {status_emoji} {details['title']}")
+            # Verbose: print one-line summary then detailed info
+            print(f"{original_index:4d}.", end=" ")
+            presenter.print_one_line_summary(analysis, title_length=title_length)
+            # Additional details
+            watched_episodes = archiver._get_watched_episodes(group_data)
+            missing_episodes = group_data.get('missing_episodes', [])
+            extra_episodes = group_data.get('extra_episodes', [])
+
             print(f"    Episodes: {details['episodes_found']}/{details['episodes_expected']} ({details['status']})")
             if watched_episodes:
-                watched_range = archiver._format_episode_ranges(watched_episodes)
-                print(f"    Watched: {watched_range}")
+                print(f"    Watched: {archiver._format_episode_ranges(watched_episodes)}")
             if missing_episodes:
-                missing_range = archiver._format_episode_ranges(missing_episodes)
-                print(f"    Missing: {missing_range}")
+                print(f"    Missing: {archiver._format_episode_ranges(missing_episodes)}")
             if extra_episodes:
-                extra_range = archiver._format_episode_ranges(extra_episodes)
-                print(f"    Extra: {extra_range}")
+                print(f"    Extra: {archiver._format_episode_ranges(extra_episodes)}")
             if 'folder_name' in details:
                 print(f"    Output folder: {details['folder_name']}")
             if args.verbose > 1:
@@ -1047,20 +1014,20 @@ def cmd_archive(args):
     
     if results:
         if args.dry_run:
-            print(f"\n{archiver._color('ℹ️  Dry run completed', Fore.CYAN + Style.BRIGHT)} - would archive {archiver._color(str(len(results)), Fore.MAGENTA)} series.")
+            print(f"\n{archiver._color('ℹ️  Dry run completed', Colors.CYAN + Colors.BOLD)} - would archive {archiver._color(str(len(results)), Colors.MAGENTA)} series.")
             print("Use without --dry-run to actually perform the operation.")
         else:
-            print(f"\n{archiver._color(f'✅ Successfully archived {len(results)} series!', Fore.GREEN + Style.BRIGHT)}")
+            print(f"\n{archiver._color(f'✅ Successfully archived {len(results)} series!', Colors.GREEN + Colors.BOLD)}")
         
         # Show folder dates if available
         if not args.dry_run and any(isinstance(v, dict) and v.get('newest_file_date') for v in results.values()):
-            print(f"\n{archiver._color('Folder dates set to newest file:', Fore.YELLOW)}")
+            print(f"\n{archiver._color('Folder dates set to newest file:', Colors.YELLOW)}")
             for group_key, result_info in results.items():
                 if isinstance(result_info, dict) and result_info.get('newest_file_date'):
                     folder_name = os.path.basename(result_info['folder_path'])
-                    print(f"  📁 {archiver._color(folder_name, Fore.CYAN)}: {archiver._color(result_info['newest_file_date'], Fore.YELLOW)}")
+                    print(f"  📁 {archiver._color(folder_name, Colors.CYAN)}: {archiver._color(result_info['newest_file_date'], Colors.YELLOW)}")
     else:
-        print(f"{archiver._color('⚠️  No series were processed.', Fore.YELLOW)}")
+        print(f"{archiver._color('⚠️  No series were processed.', Colors.YELLOW)}")
     
     return 0
 
