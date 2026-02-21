@@ -1,4 +1,6 @@
 import asyncio
+import os
+
 import functools
 import logging
 import pathlib
@@ -50,6 +52,14 @@ except Exception as e:
 # Define callback types for clarity
 ProgressCallbackType = Callable[[DownloadItem, Dict[str, Any]], None]  # Progress callback
 StatusCallbackType = Callable[[DownloadItem, str, Optional[str]], None]  # Status callback
+
+
+# Rate-limiting configuration: minimum seconds between consecutive info requests.
+# Can be overridden via environment variable `YTDL_RATE_LIMIT_SECONDS`.
+RATE_LIMIT_SECONDS: float = float(os.environ.get("YTDL_RATE_LIMIT_SECONDS", "2"))
+# Backoff maximum used to configure yt-dlp's `max_sleep_interval`
+RATE_LIMIT_BACKOFF_MAX: float = float(os.environ.get("YTDL_RATE_LIMIT_BACKOFF_MAX", str(60 * 60)))
+
 
 
 def get_cookies_from_browser() -> Optional[tuple]:
@@ -155,6 +165,16 @@ async def fetch_info(url: str, use_cookies: bool = False) -> DownloadItem:
             cookies_config = get_cookies_from_browser()
             if cookies_config:
                 info_ydl_opts["cookiesfrombrowser"] = cookies_config
+
+        # Prefer yt-dlp built-in sleeping/backoff when used as a library.
+        # `sleep_interval` is the base pause in seconds between requests.
+        # `max_sleep_interval` caps exponential/randomized backoff.
+        try:
+            info_ydl_opts["sleep_interval"] = float(RATE_LIMIT_SECONDS)
+            info_ydl_opts["max_sleep_interval"] = float(RATE_LIMIT_BACKOFF_MAX)
+        except Exception:
+            # If conversion fails for any reason, skip setting these options.
+            logger.debug("Could not set yt-dlp sleep options from environment; skipping.")
 
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(info_ydl_opts) as ydl:  # type: ignore
@@ -448,6 +468,13 @@ async def download_item(
                 cookies_config = get_cookies_from_browser()
                 if cookies_config:
                     ydl_opts["cookiesfrombrowser"] = cookies_config
+
+            # Also permit yt-dlp's built-in sleep/backoff to operate during downloads
+            try:
+                ydl_opts["sleep_interval"] = float(RATE_LIMIT_SECONDS)
+                ydl_opts["max_sleep_interval"] = float(RATE_LIMIT_BACKOFF_MAX)
+            except Exception:
+                logger.debug("Could not set yt-dlp sleep options for downloads; skipping.")
 
             # --- Configure Postprocessors ---
             final_extension = ".?"  # The final desired extension
