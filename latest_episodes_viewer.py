@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
 from datetime import datetime
+import socket
 import json
 import os
 import sys
@@ -163,13 +164,30 @@ class LatestEpisodesViewer:
         # Create summary statistics
         summary = self._create_summary(enhanced_episodes, series_groups)
         
+        def _detect_host_subnet_ip():
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                # doesn't actually send packets, just determines the outbound interface IP
+                s.connect(('8.8.8.8', 80))
+                ip = s.getsockname()[0]
+            except Exception:
+                ip = '127.0.0.1'
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            return ip
+
         results = {
             'episodes': enhanced_episodes,
             'series_groups': dict(series_groups),
             'summary': summary,
             'title_metadata': self.file_grouper.title_metadata,
             'thumbnails': [],  # Will be populated by caller if requested
-            'generated_at': datetime.now().isoformat()
+            'generated_at': datetime.now().isoformat(),
+            # Host local subnet IP (single value for the entire exported webapp)
+            'host_subnet_ip': _detect_host_subnet_ip()
         }
         
         return results

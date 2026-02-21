@@ -1038,7 +1038,9 @@ class LatestEpisodesApp {
             `;
             // Plex link button
             if (plex.server_hash && plex.metadata_item_id) {
-                const plexUrl = `http://127.0.0.1:32400/web/index.html#!/server/${plex.server_hash}/details?key=%2Flibrary%2Fmetadata%2F${plex.metadata_item_id}`;
+                // Use embedded host_subnet_ip if available, otherwise fall back to localhost
+                const plexHost = (this.data && this.data.host_subnet_ip) ? this.data.host_subnet_ip : '127.0.0.1';
+                const plexUrl = `http://${plexHost}:32400/web/index.html#!/server/${plex.server_hash}/details?key=%2Flibrary%2Fmetadata%2F${plex.metadata_item_id}`;
                 detailsHtml += `<div class="external-links" style="margin-top:0.5rem;"><a class="plex-link external-link" href="${plexUrl}" target="_blank" rel="noopener" title="Open in Plex"><span class="plex-icon"><svg width="1em" height="1em" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;"><circle cx="16" cy="16" r="16" fill="#282a2d"/><path d="M12.5 8v16l10-8-10-8z" fill="#e5a00d"/></svg></span>Plex</a></div>`;
             }
         } else {
