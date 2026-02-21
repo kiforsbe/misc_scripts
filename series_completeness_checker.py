@@ -11,9 +11,11 @@ from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
 try:
     sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
-    from myanimelist_watch_status import resolve_myanimelist_xml_path
+    from myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
 except ImportError:
     resolve_myanimelist_xml_path = None
+    MyAnimeListWatchStatusProvider = None
+    MyAnimeListWatchStatus = None
 
 # ANSI Color codes for terminal output
 class Colors:
@@ -643,6 +645,14 @@ class SeriesCompletenessChecker:
         self.metadata_manager = metadata_manager
         self.plex_provider = plex_provider
         self.myanimelist_xml_path = resolved_mal_path
+        self.myanimelist_provider = None
+        if resolved_mal_path and MyAnimeListWatchStatusProvider is not None:
+            try:
+                self.myanimelist_provider = MyAnimeListWatchStatusProvider(resolved_mal_path)
+            except Exception as e:
+                print(f"Warning: Could not load MyAnimeList data from {resolved_mal_path}: {e}")
+        elif myanimelist_xml_path and MyAnimeListWatchStatusProvider is None:
+            print("Warning: MyAnimeList functionality not available (video-optimizer-v2 not found)")
         self.completeness_results = {}
     
     def load_results(self, input_path: str) -> Dict[str, Any]:
