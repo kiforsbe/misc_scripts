@@ -568,12 +568,78 @@ class SeriesArchiver:
                     source_path = file_info.get('filepath')
                     if source_path and os.path.exists(source_path):
                         total_files += 1
-        
+
+        # Estimate sizes per-group and check destination available space
+        group_sizes = {}
+        total_bytes_needed = 0
+        for group_key in selected_groups:
+            group_data = self.groups.get(group_key)
+            size_bytes = 0
+            if group_data:
+                for file_info in group_data.get('files', []):
+                    source_path = file_info.get('filepath')
+                    if source_path and os.path.exists(source_path):
+                        try:
+                            size_bytes += os.path.getsize(source_path)
+                        except Exception:
+                            pass
+            group_sizes[group_key] = size_bytes
+            total_bytes_needed += size_bytes
+
+        def _human_size(n: int) -> str:
+            for unit in ['B','KB','MB','GB','TB']:
+                if n < 1024.0:
+                    return f"{n:3.1f}{unit}"
+                n /= 1024.0
+            return f"{n:.1f}PB"
+
+        # Determine an existing path to get disk usage (walk up until existing)
+        existing_path = destination_root
+        p = Path(destination_root)
+        while not p.exists():
+            if p.parent == p:
+                break
+            p = p.parent
+        existing_path = str(p)
+
+        try:
+            disk_usage = shutil.disk_usage(existing_path)
+            available_bytes = disk_usage.free
+        except Exception:
+            available_bytes = 0
+
+        # Print per-group estimated sizes and destination info
+        print(f"\n{self._color('Destination summary:', Colors.CYAN + Colors.BOLD)}")
+        print(f"  Root: {self._color(destination_root, Colors.WHITE)}")
+        print(f"  Available on target ({existing_path}): {self._color(_human_size(available_bytes), Colors.YELLOW)}")
+        print(f"  Total needed: {self._color(_human_size(total_bytes_needed), Colors.MAGENTA)} for {self._color(str(total_files), Colors.WHITE)} files")
+        for group_key in selected_groups:
+            group_data = self.groups.get(group_key)
+            folder_name = self.generate_folder_name(group_data) if group_data else 'Unknown'
+            size = group_sizes.get(group_key, 0)
+            print(f"    - {self._color(folder_name, Colors.CYAN)}: {self._color(_human_size(size), Colors.WHITE)}")
+
+        # Warn if not enough space
+        if total_bytes_needed > available_bytes:
+            warn_msg = f"Not enough free space on target to archive all selected series ({_human_size(total_bytes_needed)} needed, {_human_size(available_bytes)} available)."
+            print(f"\n{self._color('⚠️  WARNING:', Colors.RED + Colors.BOLD)} {self._color(warn_msg, Colors.RED)}")
+            if dry_run:
+                print(self._color('Dry-run: no changes will be made, but space is insufficient for a real run.', Colors.YELLOW))
+            else:
+                # Prompt user for confirmation before proceeding
+                try:
+                    resp = input('Proceed anyway? [y/N]: ').strip().lower()
+                except Exception:
+                    resp = 'n'
+                if resp not in ('y', 'yes'):
+                    print('Aborted by user.')
+                    return results
+
         # Notify progress reporter of start
         action_desc = "Copying" if copy_files else "Moving"
         if dry_run:
             action_desc = f"Simulating {action_desc.lower()}"
-        
+
         if self.progress_reporter:
             self.progress_reporter.on_start(total_files, action_desc)
         
@@ -699,47 +765,99 @@ class SeriesArchiver:
             self.progress_reporter.on_complete(len(selected_groups))
         
         # Verify CRC after operations if requested
-        if verify_crc and processed_files and not dry_run:
-            print(f"\n{self._color('=== CRC VERIFICATION ===', Colors.CYAN + Colors.BOLD)}")
-            crc_results = {}
-            
-            with tqdm(processed_files, desc="Verifying file integrity", unit="file", disable=self.verbose == 0) as pbar:
-                for file_info in pbar:
-                    dest_path = file_info['dest_path']
-                    filename = file_info['filename']
-                    
-                    if self.verbose >= 1:
-                        pbar.set_postfix_str(filename[:40] + "..." if len(filename) > 40 else filename)
-                    
-                    is_valid, expected_crc, actual_crc = self._verify_file_crc(dest_path)
-                    
-                    if expected_crc != "N/A":
-                        crc_results[dest_path] = {
-                            'filename': filename,
-                            'group': file_info['group_title'],
-                            'is_valid': is_valid,
-                            'expected_crc': expected_crc,
-                            'actual_crc': actual_crc
-                        }
+        if verify_crc:
+            # Normal run: verify CRC on destination files we processed
+            if not dry_run and processed_files:
+                print(f"\n{self._color('=== CRC VERIFICATION ===', Colors.CYAN + Colors.BOLD)}")
+                crc_results = {}
+                
+                with tqdm(processed_files, desc="Verifying file integrity", unit="file", disable=self.verbose == 0) as pbar:
+                    for file_info in pbar:
+                        dest_path = file_info['dest_path']
+                        filename = file_info['filename']
                         
-                        if not is_valid:
-                            print(f"   {self._color('⚠️  CRC MISMATCH:', Colors.RED)} {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
-            
-            # CRC summary
-            if crc_results:
-                total_checked = len(crc_results)
-                valid_count = sum(1 for r in crc_results.values() if r['is_valid'])
-                invalid_count = total_checked - valid_count
+                        if self.verbose >= 1:
+                            pbar.set_postfix_str(filename[:40] + "..." if len(filename) > 40 else filename)
+                        
+                        is_valid, expected_crc, actual_crc = self._verify_file_crc(dest_path)
+                        
+                        if expected_crc != "N/A":
+                            crc_results[dest_path] = {
+                                'filename': filename,
+                                'group': file_info['group_title'],
+                                'is_valid': is_valid,
+                                'expected_crc': expected_crc,
+                                'actual_crc': actual_crc
+                            }
+                            
+                            if not is_valid:
+                                print(f"   {self._color('⚠️  CRC MISMATCH:', Colors.RED)} {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
                 
-                print(f"\n{self._color('CRC Verification Summary:', Colors.CYAN)}")
-                print(f"  Files checked: {self._color(str(total_checked), Colors.WHITE)}")
-                print(f"  Valid: {self._color(str(valid_count), Colors.GREEN)}")
-                print(f"  Invalid: {self._color(str(invalid_count), Colors.RED if invalid_count > 0 else Colors.GREEN)}")
-                
-                if invalid_count == 0:
-                    print(f"\n{self._color('✅ All files passed CRC verification!', Colors.GREEN + Colors.BOLD)}")
+                # CRC summary
+                if crc_results:
+                    total_checked = len(crc_results)
+                    valid_count = sum(1 for r in crc_results.values() if r['is_valid'])
+                    invalid_count = total_checked - valid_count
+                    
+                    print(f"\n{self._color('CRC Verification Summary:', Colors.CYAN)}")
+                    print(f"  Files checked: {self._color(str(total_checked), Colors.WHITE)}")
+                    print(f"  Valid: {self._color(str(valid_count), Colors.GREEN)}")
+                    print(f"  Invalid: {self._color(str(invalid_count), Colors.RED if invalid_count > 0 else Colors.GREEN)}")
+                    
+                    if invalid_count == 0:
+                        print(f"\n{self._color('✅ All files passed CRC verification!', Colors.GREEN + Colors.BOLD)}")
+                    else:
+                        print(f"\n{self._color(f'❌ {invalid_count} files failed CRC verification!', Colors.RED + Colors.BOLD)}")
+            # Dry-run: verify CRC on source files and report status
+            elif dry_run:
+                print(f"\n{self._color('=== DRY-RUN CRC CHECK (source files) ===', Colors.CYAN + Colors.BOLD)}")
+                crc_results = {}
+                files_to_check = []
+                for group_key in selected_groups:
+                    group_data = self.groups.get(group_key)
+                    group_title = group_data.get('title') if group_data else group_key
+                    for file_info in (group_data.get('files', []) if group_data else []):
+                        source_path = file_info.get('filepath')
+                        filename = file_info.get('filename', os.path.basename(source_path) if source_path else 'Unknown')
+                        if source_path and os.path.exists(source_path):
+                            files_to_check.append((source_path, filename, group_title))
+
+                if not files_to_check:
+                    print(self._color('No existing source files found to check CRC in dry-run.', Colors.YELLOW))
                 else:
-                    print(f"\n{self._color(f'❌ {invalid_count} files failed CRC verification!', Colors.RED + Colors.BOLD)}")
+                    iterator = files_to_check
+                    if TQDM_AVAILABLE:
+                        iterator = tqdm(files_to_check, desc='Checking CRC (dry-run)', unit='file', disable=self.verbose == 0)
+
+                    for source_path, filename, group_title in iterator:
+                        if self.verbose >= 1 and TQDM_AVAILABLE:
+                            try:
+                                iterator.set_postfix_str(filename[:40] + '...' if len(filename) > 40 else filename)
+                            except Exception:
+                                pass
+                        is_valid, expected_crc, actual_crc = self._verify_file_crc(source_path)
+                        if expected_crc != 'N/A':
+                            crc_results[source_path] = {
+                                'filename': filename,
+                                'group': group_title,
+                                'is_valid': is_valid,
+                                'expected_crc': expected_crc,
+                                'actual_crc': actual_crc
+                            }
+                            if is_valid:
+                                print(f"   {self._color('✅', Colors.GREEN)} {filename} (CRC OK)")
+                            else:
+                                print(f"   {self._color('⚠️  CRC MISMATCH:', Colors.RED)} {filename} (Expected: {expected_crc}, Actual: {actual_crc})")
+
+                    # Summary
+                    if crc_results:
+                        total_checked = len(crc_results)
+                        valid_count = sum(1 for r in crc_results.values() if r['is_valid'])
+                        invalid_count = total_checked - valid_count
+                        print(f"\n{self._color('Dry-run CRC Summary:', Colors.CYAN)}")
+                        print(f"  Files checked: {self._color(str(total_checked), Colors.WHITE)}")
+                        print(f"  Valid: {self._color(str(valid_count), Colors.GREEN)}")
+                        print(f"  Invalid: {self._color(str(invalid_count), Colors.RED if invalid_count > 0 else Colors.GREEN)}")
         
         return results
     
