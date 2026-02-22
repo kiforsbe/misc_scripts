@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/watch?v=*
@@ -141,7 +141,7 @@
     `);
 
   // --- Core Functions ---
-  
+
   /**
    * Show a toast notification
    * @param {string} message - The message to display
@@ -155,14 +155,117 @@
       error: '#f00',
       warning: '#ff0'
     };
-    
+
     const toast = document.createElement('div');
     toast.style.cssText = `position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: ${colors[type] || colors.info}; padding: 12px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 10001; font-family: "Roboto", sans-serif; font-size: 14px; max-width: 400px;`;
     toast.textContent = message;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), duration);
   }
-  
+
+  // Generate simple UUIDv4 for client_id
+  function uuidv4() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  // Persistent download toasts and polling management
+  const activeToasts = {}; // client_id -> toast element
+  const activeDownloads = {}; // client_id -> AbortController for active fetches
+
+  function createPersistentDownloadToast(clientId, title) {
+    const id = `ytdl-toast-${clientId}`;
+    // Remove existing if present
+    const existing = document.getElementById(id);
+    if (existing) existing.remove();
+
+    const container = document.createElement('div');
+    container.id = id;
+    container.className = 'ytdl-persistent-toast';
+    container.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #fff; padding: 10px 12px; border-radius:8px; z-index:10001; width: 320px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); font-family: Roboto, sans-serif;';
+
+    const titleEl = document.createElement('div');
+    titleEl.style.fontWeight = '600';
+    titleEl.style.marginBottom = '6px';
+    titleEl.textContent = title || 'Downloading...';
+    container.appendChild(titleEl);
+
+    const msgEl = document.createElement('div');
+    msgEl.className = 'ytdl-toast-msg';
+    msgEl.style.fontSize = '12px';
+    msgEl.style.marginBottom = '8px';
+    msgEl.textContent = 'Starting...';
+    container.appendChild(msgEl);
+
+    const barBg = document.createElement('div');
+    barBg.style.cssText = 'background:#222; height:10px; border-radius:6px; overflow:hidden;';
+    const bar = document.createElement('div');
+    bar.className = 'ytdl-toast-bar';
+    bar.style.cssText = 'background:#1db954; height:100%; width:0%; transition: width 0.3s ease;';
+    barBg.appendChild(bar);
+    container.appendChild(barBg);
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'margin-top:8px; display:flex; justify-content:flex-end; gap:8px;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'background:transparent; color:inherit; border:1px solid rgba(255,255,255,0.08); padding:4px 8px; border-radius:4px; cursor:pointer;';
+    cancelBtn.addEventListener('click', () => {
+      // Abort the local fetch if active
+      cancelBtn.disabled = true;
+      updatePersistentToast(clientId, 0, 'Cancelling...', 'cancelling');
+      try {
+        const ctrl = activeDownloads[clientId];
+        if (ctrl) {
+          ctrl.abort();
+        }
+      } catch (e) {
+        console.error('Error aborting download:', e);
+      }
+    });
+    actions.appendChild(cancelBtn);
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    closeBtn.style.cssText = 'background:transparent; color:inherit; border:1px solid rgba(255,255,255,0.08); padding:4px 8px; border-radius:4px; cursor:pointer;';
+    closeBtn.addEventListener('click', () => {
+      // Abort local download if active, then remove toast
+      try {
+        const ctrl = activeDownloads[clientId];
+        if (ctrl) ctrl.abort();
+      } catch (e) {
+        console.error('Error aborting download on close:', e);
+      }
+      container.remove();
+    });
+    actions.appendChild(closeBtn);
+    container.appendChild(actions);
+
+    document.body.appendChild(container);
+    activeToasts[clientId] = {container, titleEl, msgEl, bar};
+    return activeToasts[clientId];
+  }
+
+  function updatePersistentToast(clientId, percent, message, status) {
+    const handle = activeToasts[clientId];
+    if (!handle) return;
+    handle.msgEl.textContent = message || (status === 'complete' ? 'Complete' : '');
+    handle.bar.style.width = (percent || 0) + '%';
+    if (status === 'complete') {
+      handle.msgEl.textContent = 'Complete';
+      setTimeout(() => {
+        if (handle && handle.container) handle.container.remove();
+        delete activeToasts[clientId];
+      }, 2500);
+    } else if (status === 'error') {
+      handle.msgEl.textContent = `Error: ${message || 'Failed'}`;
+      handle.bar.style.background = '#ff4d4f';
+    }
+  }
+
+  // Polling removed: downloads are handled synchronously via fetch.
+
   function gcd(a, b) {
     return b === 0 ? a : gcd(b, a % b);
   }
@@ -208,88 +311,85 @@
   function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download') {
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
 
-    // Show brief notification
-    showToast('Download starting...', 'info', 3000);
+    // Generate a client_id for local UI tracking and show persistent toast
+    const clientId = uuidv4();
+    const toastHandle = createPersistentDownloadToast(clientId, filenameHint);
 
     const params = new URLSearchParams();
     params.append('url', url);
+    // client_id is local-only; do not send to server
     if (audioId) params.append('audio_format_id', audioId);
     if (videoId) params.append('video_format_id', videoId);
     if (targetFormat) params.append('target_format', targetFormat);
     if (targetAudioParams) params.append('target_audio_params', targetAudioParams);
     if (targetVideoParams) params.append('target_video_params', targetVideoParams);
 
+    // Perform the download directly and stream the response to provide local progress
     const requestUrl = `${FLASK_SERVICE_BASE_URL}/download?${params.toString()}`;
+    updatePersistentToast(clientId, 0, 'Starting download...', 'running');
+    let contentDisposition = '';
 
-    GM_xmlhttpRequest({
-      method: "GET",
+    // Use GM_xmlhttpRequest to avoid extensions blocking page fetch()
+    const gmReq = GM_xmlhttpRequest({
+      method: 'GET',
       url: requestUrl,
-      responseType: 'blob', // Important for file download
-      timeout: 3600000, // 1 hour timeout for potentially long downloads/conversions
-      onload: function (response) {
-
-        if (response.status >= 200 && response.status < 300) {
-          const blob = response.response;
-          let filename = filenameHint;
-
-          // Try to get filename from Content-Disposition header
-          const disposition = response.responseHeaders.match(/Content-Disposition.*filename\*?=(?:UTF-8'')?([^;\n]*)/i);
-          if (disposition && disposition[1]) {
-            try {
-              // Trim whitespace (including \r) and remove quotes before decoding
-              const rawFilename = disposition[1].trim().replace(/['"]/g, '');
-              filename = decodeURIComponent(rawFilename);
-            } catch (e) {
-              console.warn("Could not decode filename from header:", disposition[1], e);
-              // Use a safe fallback if decoding fails
-              filename = filenameHint + '.' + (targetFormat || (videoId ? 'mp4' : 'mp3'));
-            }
-          } else {
-            // Basic fallback if header is missing
-            filename = filenameHint + '.' + (targetFormat || (videoId ? 'mp4' : 'mp3'));
-            console.warn("Content-Disposition header missing or invalid, using fallback filename:", filename);
-          }
-
-
-          // Create a link and simulate a click to download the blob
-          const link = document.createElement('a');
-          link.href = URL.createObjectURL(blob);
-          link.download = filename;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(link.href); // Clean up
-          console.log("Download initiated for:", filename);
-          
-          // Show success notification
-          showToast(`✓ Downloaded: ${filename}`, 'success', 5000);
+      responseType: 'blob',
+      onprogress: function (e) {
+        if (e.lengthComputable) {
+          const pct = Math.min(99, Math.floor((e.loaded / e.total) * 100));
+          updatePersistentToast(clientId, pct, `Downloading... ${pct}%`, 'running');
         } else {
-          // Try to parse error from JSON response if possible
-          response.blob.text().then(text => {
-            try {
-              const errorJson = JSON.parse(text);
-              const errorMsg = errorJson.error || `Server responded with status ${response.status}`;
-              showToast(`✗ Download failed: ${errorMsg}`, 'error', 8000);
-              console.error("Download error response:", errorJson);
-            } catch (e) {
-              showToast(`✗ Download failed: Server error (${response.status})`, 'error', 8000);
-              console.error("Download failed. Status:", response.status, "Response Text:", text);
-            }
-          }).catch(e => {
-            showToast(`✗ Download failed: Server error (${response.status})`, 'error', 8000);
-            console.error("Download failed. Status:", response.status, "Could not read error response body:", e);
-          });
+          updatePersistentToast(clientId, 50, `Downloading...`, 'running');
         }
       },
-      onerror: function (response) {
-        showToast('✗ Error: Cannot connect to download service. Is it running?', 'error', 8000);
-        console.error("GM_xmlhttpRequest error:", response);
+      onload: function (res) {
+        try {
+          if (res.status >= 200 && res.status < 300) {
+            const blob = res.response;
+            contentDisposition = res.responseHeaders || '';
+            let filename = filenameHint + '.' + (targetFormat || (videoId ? 'mp4' : 'mp3'));
+            try {
+              const m = /filename\*?=(?:UTF-8'')?([^;\n]*)/i.exec(contentDisposition);
+              if (m && m[1]) {
+                const raw = m[1].trim().replace(/['"]/g, '');
+                try { filename = decodeURIComponent(raw); } catch (e) { filename = raw; }
+              }
+            } catch (e) {}
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+            updatePersistentToast(clientId, 100, `Downloaded: ${filename}`, 'complete');
+          } else {
+            updatePersistentToast(clientId, 0, `Server error: ${res.status}`, 'error');
+            showToast(`✗ Download failed: ${res.statusText || res.status}`, 'error', 8000);
+          }
+        } catch (err) {
+          updatePersistentToast(clientId, 0, `Error: ${err.message}`, 'error');
+          showToast(`✗ Download failed: ${err.message}`, 'error', 8000);
+          console.error('Download onload processing error:', err);
+        } finally {
+          try { delete activeDownloads[clientId]; } catch (e) {}
+        }
+      },
+      onerror: function (err) {
+        updatePersistentToast(clientId, 0, `Error: Request failed`, 'error');
+        showToast(`✗ Download failed: network error`, 'error', 8000);
+        console.error('GM_xmlhttpRequest error:', err);
+        try { delete activeDownloads[clientId]; } catch (e) {}
       },
       ontimeout: function () {
-        showToast('⏱ Download timed out. Server may be busy or file is very large.', 'warning', 8000);
-        console.error("Download request timed out.");
+        updatePersistentToast(clientId, 0, `Error: Request timed out`, 'error');
+        showToast(`✗ Download timed out`, 'error', 8000);
+        try { delete activeDownloads[clientId]; } catch (e) {}
       }
     });
+
+    // Store the GM request so cancel/close buttons can abort it
+    activeDownloads[clientId] = gmReq;
   }
 
 
@@ -317,7 +417,7 @@
         if (response.status >= 200 && response.status < 300) {
           formatDataCache = response.response; // Store in cache
           console.log("Formats received and cached:", formatDataCache);
-          
+
           // Auto-update dropdown if it's currently showing
           const menu = document.getElementById('ytdl-dropdown-menu');
           if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
@@ -327,7 +427,7 @@
         } else {
           formatFetchError = response.response?.error || `Server responded with status ${response.status}`;
           console.error("Error fetching formats:", response.status, response.response);
-          
+
           // Auto-update dropdown with error if it's currently showing
           const menu = document.getElementById('ytdl-dropdown-menu');
           if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
@@ -340,7 +440,7 @@
       onerror: function (response) {
         formatFetchError = `Could not connect to service at ${FLASK_SERVICE_BASE_URL}. Is it running?`;
         console.error("GM_xmlhttpRequest error fetching formats:", response);
-        
+
         // Auto-update dropdown with error if it's currently showing
         const menu = document.getElementById('ytdl-dropdown-menu');
         if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
@@ -352,7 +452,7 @@
       ontimeout: function () {
         formatFetchError = "Request timed out fetching formats.";
         console.error("Format fetch request timed out.");
-        
+
         // Auto-update dropdown with error if it's currently showing
         const menu = document.getElementById('ytdl-dropdown-menu');
         if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {

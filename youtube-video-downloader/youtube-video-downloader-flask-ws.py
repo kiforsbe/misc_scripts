@@ -5,26 +5,20 @@ import time
 import asyncio
 import pathlib
 import sys
+import uuid
+import re
 from flask import Flask, request, send_file, jsonify, render_template_string
 import yt_dlp  # For exceptions
 import yt_dlp.utils  # For exceptions
-try:
-    from rich.progress import (
-        Progress,
-        SpinnerColumn,
-        TextColumn,
-        BarColumn,
-        TimeRemainingColumn,
-    )
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TimeRemainingColumn,
+)
 
-    RICH_AVAILABLE = True
-except ImportError:
-    Progress = None
-    SpinnerColumn = None
-    TextColumn = None
-    BarColumn = None
-    TimeRemainingColumn = None
-    RICH_AVAILABLE = False
+# rich.progress is required; assume installed and available
 
 # --- Add ytdl_helper to Python path ---
 # This assumes the script is run from the 'youtube-video-downloader' directory
@@ -130,6 +124,8 @@ def delayed_delete():
                         exc_info=True,
                     )
 
+            # No progress-store cleanup required in this simplified server.
+
         except Exception as e:
             log.error(f"Error in delayed_delete loop: {e}", exc_info=True)
             # Avoid busy-looping on error
@@ -178,6 +174,7 @@ async def _process_download(
         if progress_hook:
             progress_hook(20, f"{item.title} - info fetched")
 
+
         selected_audio_id = audio_format_id
         selected_video_id = video_format_id
 
@@ -220,6 +217,10 @@ async def _process_download(
                     "No downloadable video or audio formats found for this URL."
                 )
 
+            # Report selected formats to progress hook so client sees this step
+            if progress_hook:
+                progress_hook(30, f"{item.title} - formats selected (V:{selected_video_id}, A:{selected_audio_id})")
+
         else:  # Specific format IDs were provided
             log.info(
                 f"Using provided format IDs - Audio: {selected_audio_id}, Video: {selected_video_id}"
@@ -254,6 +255,19 @@ async def _process_download(
             if error:
                 log_msg += f" (Error: {error})"
             log.info(log_msg)
+            # Translate certain status strings into progress updates
+            try:
+                if progress_hook:
+                    if status.lower() in ("downloading", "download"):
+                        progress_hook(40, f"{cb_item.title} - downloading")
+                    elif status.lower() in ("processing", "post-processing", "merging"):
+                        progress_hook(88, f"{cb_item.title} - processing")
+                    elif status.lower() in ("finished", "completed"):
+                        progress_hook(95, f"{cb_item.title} - finished")
+                    elif status.lower() in ("error",):
+                        progress_hook(entry.get('percent', 0) if 'entry' in globals() else 0, f"{cb_item.title} - error: {error}")
+            except Exception:
+                pass
 
         # Define the progress callback function first
         def progress_callback(cb_item, progress_data):
@@ -286,6 +300,9 @@ async def _process_download(
         progress_callback.last_logged_percent = -10
 
         # --- Trigger the download ---
+        if progress_hook:
+            progress_hook(35, f"{item.title} - starting download")
+
         await ytdl_core.download_item(
             item,
             output_dir=temp_dir_path,  # Download directly into our temp dir
@@ -486,8 +503,14 @@ def download():
         )  # 501 Not Implemented
 
     final_filepath = None
+    # Keep original blocking download route for compatibility, but recommend
+    # using /download_start for background downloads. This route will still
+    # perform the download synchronously and return the file (blocking).
     try:
-        if RICH_AVAILABLE:
+        # Show local rich progress if available
+        if Progress is not None and \
+           SpinnerColumn is not None and TextColumn is not None and \
+           BarColumn is not None and TimeRemainingColumn is not None:
             progress = Progress(
                 SpinnerColumn(),
                 TextColumn("{task.description}"),
@@ -499,9 +522,6 @@ def download():
             progress_task_id = progress.add_task("Preparing", total=100)
 
         progress_hook(5, "Request validated")
-        # Run the async download process using asyncio.run()
-        # Note: This blocks the current Flask worker thread until completion.
-        # For production, consider async Flask routes or a task queue (Celery).
         log.info(
             f"Processing download request for URL: {url} (A_ID: {audio_format_id}, V_ID: {video_format_id}, Target: {target_format}), TargetAudioParams: {target_audio_params}), TargetVideoParams: {target_video_params})"
         )
@@ -529,7 +549,6 @@ def download():
                     f"Queued for deletion: {final_filepath} (Queue size: {len(delete_queue)})"
                 )
 
-            # Send the file back to the client
             progress_hook(100, f"{final_filepath.name} - completed")
             return send_file(
                 str(final_filepath),
@@ -607,6 +626,21 @@ def list_formats():
         return jsonify({"error": "Missing 'url' parameter"}), 400
     if not url.startswith(("http://", "https://")):
         return jsonify({"error": "Invalid 'url' parameter format"}), 400
+
+    # Quick reject channel/user/home pages: this endpoint expects a single
+    # video URL (e.g., watch?v=...). Channel or user pages like
+    # '/@username', '/channel/..' or '/user/..' are not supported by
+    # `list_formats` because they don't point to a single downloadable
+    # media item.
+    if re.search(r'/(@|channel/|user/)', url):
+        return (
+            jsonify(
+                {
+                    "error": "Provided URL appears to be a channel or user page; please provide a single video URL (watch?v=...)",
+                }
+            ),
+            400,
+        )
 
     try:
         log.info(f"Fetching formats for URL: {url}")
@@ -709,5 +743,5 @@ if __name__ == "__main__":
     # Use debug=False for anything resembling production/shared use
     log.info("Starting Flask server...")
     app.run(
-        host="127.0.0.1", port=5000, debug=False
-    )  # Set debug=True for development only
+        host="127.0.0.1", port=5000, debug=False, threaded=True
+    )  # Set debug=True for development only; threaded=True allows /progress polling during long requests

@@ -58,7 +58,7 @@ StatusCallbackType = Callable[[DownloadItem, str, Optional[str]], None]  # Statu
 # Can be overridden via environment variable `YTDL_RATE_LIMIT_SECONDS`.
 RATE_LIMIT_SECONDS: float = float(os.environ.get("YTDL_RATE_LIMIT_SECONDS", "2"))
 # Backoff maximum used to configure yt-dlp's `max_sleep_interval`
-RATE_LIMIT_BACKOFF_MAX: float = float(os.environ.get("YTDL_RATE_LIMIT_BACKOFF_MAX", "30"))
+RATE_LIMIT_BACKOFF_MAX: float = float(os.environ.get("YTDL_RATE_LIMIT_BACKOFF_MAX", "10"))
 
 
 
