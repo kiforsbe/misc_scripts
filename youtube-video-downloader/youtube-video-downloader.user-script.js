@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -149,6 +149,18 @@
         .ytdl-thumb-btn svg { width:18px; height:18px; fill: currentColor; }
     `);
 
+      /* Download center styles: consolidated list for active downloads */
+      GM_addStyle(`
+        #ytdl-download-center { position: fixed; top: 80px; right: 20px; width: 360px; max-height: 60vh; overflow-y: auto; z-index: 10001; display:flex; flex-direction:column; gap:8px; }
+        .ytdl-download-item { background: #0f0f0f; color: #fff; padding:10px; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); font-family: Roboto, sans-serif; font-size:13px; }
+        .ytdl-download-title { font-weight:600; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ytdl-download-msg { font-size:12px; color: var(--yt-spec-text-secondary); margin-bottom:6px; }
+        .ytdl-download-bar-bg { background:#222; height:10px; border-radius:6px; overflow:hidden; }
+        .ytdl-download-bar { background:#1db954; height:100%; width:0%; transition: width 0.3s ease; }
+        .ytdl-download-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
+        .ytdl-download-actions button { background:transparent; color:inherit; border:1px solid rgba(255,255,255,0.08); padding:4px 8px; border-radius:4px; cursor:pointer; }
+      `);
+
   // --- Core Functions ---
 
   /**
@@ -185,74 +197,62 @@
   const activeDownloads = {}; // client_id -> AbortController for active fetches
 
   function createPersistentDownloadToast(clientId, title) {
-    const id = `ytdl-toast-${clientId}`;
-    // Remove existing if present
-    const existing = document.getElementById(id);
-    if (existing) existing.remove();
+    // Ensure download center exists
+    let center = document.getElementById('ytdl-download-center');
+    if (!center) {
+      center = document.createElement('div');
+      center.id = 'ytdl-download-center';
+      document.body.appendChild(center);
+    }
 
-    const container = document.createElement('div');
-    container.id = id;
-    container.className = 'ytdl-persistent-toast';
-    container.style.cssText = 'position: fixed; top: 80px; right: 20px; background: #0f0f0f; color: #fff; padding: 10px 12px; border-radius:8px; z-index:10001; width: 320px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); font-family: Roboto, sans-serif;';
+    // Create item
+    const item = document.createElement('div');
+    item.className = 'ytdl-download-item';
+    item.id = `ytdl-download-${clientId}`;
 
     const titleEl = document.createElement('div');
-    titleEl.style.fontWeight = '600';
-    titleEl.style.marginBottom = '6px';
+    titleEl.className = 'ytdl-download-title';
     titleEl.textContent = title || 'Downloading...';
-    container.appendChild(titleEl);
+    item.appendChild(titleEl);
 
     const msgEl = document.createElement('div');
-    msgEl.className = 'ytdl-toast-msg';
-    msgEl.style.fontSize = '12px';
-    msgEl.style.marginBottom = '8px';
+    msgEl.className = 'ytdl-download-msg';
     msgEl.textContent = 'Starting...';
-    container.appendChild(msgEl);
+    item.appendChild(msgEl);
 
     const barBg = document.createElement('div');
-    barBg.style.cssText = 'background:#222; height:10px; border-radius:6px; overflow:hidden;';
+    barBg.className = 'ytdl-download-bar-bg';
     const bar = document.createElement('div');
-    bar.className = 'ytdl-toast-bar';
-    bar.style.cssText = 'background:#1db954; height:100%; width:0%; transition: width 0.3s ease;';
+    bar.className = 'ytdl-download-bar';
+    bar.style.width = '0%';
     barBg.appendChild(bar);
-    container.appendChild(barBg);
+    item.appendChild(barBg);
 
     const actions = document.createElement('div');
-    actions.style.cssText = 'margin-top:8px; display:flex; justify-content:flex-end; gap:8px;';
+    actions.className = 'ytdl-download-actions';
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.style.cssText = 'background:transparent; color:inherit; border:1px solid rgba(255,255,255,0.08); padding:4px 8px; border-radius:4px; cursor:pointer;';
     cancelBtn.addEventListener('click', () => {
-      // Abort the local fetch if active
       cancelBtn.disabled = true;
       updatePersistentToast(clientId, 0, 'Cancelling...', 'cancelling');
       try {
         const ctrl = activeDownloads[clientId];
-        if (ctrl) {
-          ctrl.abort();
-        }
-      } catch (e) {
-        console.error('Error aborting download:', e);
-      }
+        if (ctrl && typeof ctrl.abort === 'function') ctrl.abort();
+      } catch (e) { console.error('Error aborting download:', e); }
     });
-    actions.appendChild(cancelBtn);
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close';
-    closeBtn.style.cssText = 'background:transparent; color:inherit; border:1px solid rgba(255,255,255,0.08); padding:4px 8px; border-radius:4px; cursor:pointer;';
     closeBtn.addEventListener('click', () => {
-      // Abort local download if active, then remove toast
-      try {
-        const ctrl = activeDownloads[clientId];
-        if (ctrl) ctrl.abort();
-      } catch (e) {
-        console.error('Error aborting download on close:', e);
-      }
-      container.remove();
+      try { const ctrl = activeDownloads[clientId]; if (ctrl && typeof ctrl.abort === 'function') ctrl.abort(); } catch (e) { console.error(e); }
+      item.remove();
+      delete activeToasts[clientId];
     });
+    actions.appendChild(cancelBtn);
     actions.appendChild(closeBtn);
-    container.appendChild(actions);
+    item.appendChild(actions);
 
-    document.body.appendChild(container);
-    activeToasts[clientId] = {container, titleEl, msgEl, bar};
+    center.appendChild(item);
+    activeToasts[clientId] = {item, titleEl, msgEl, bar};
     return activeToasts[clientId];
   }
 
@@ -260,16 +260,17 @@
     const handle = activeToasts[clientId];
     if (!handle) return;
     handle.msgEl.textContent = message || (status === 'complete' ? 'Complete' : '');
-    handle.bar.style.width = (percent || 0) + '%';
+    try { handle.bar.style.width = (percent || 0) + '%'; } catch (e) {}
     if (status === 'complete') {
       handle.msgEl.textContent = 'Complete';
+      handle.bar.style.width = '100%';
       setTimeout(() => {
-        if (handle && handle.container) handle.container.remove();
+        if (handle && handle.item) handle.item.remove();
         delete activeToasts[clientId];
       }, 2500);
     } else if (status === 'error') {
       handle.msgEl.textContent = `Error: ${message || 'Failed'}`;
-      handle.bar.style.background = '#ff4d4f';
+      try { handle.bar.style.background = '#ff4d4f'; } catch (e) {}
     }
   }
 
@@ -767,7 +768,7 @@
       const videoTitleElement = document.querySelector('h1.ytd-watch-metadata'); // More robust selector
       const videoTitle = videoTitleElement?.textContent?.trim() || document.title.split(" - YouTube")[0] || 'youtube_video'; // Fallback title
       const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
-      triggerDownload(videoUrl, null, null, null, safeFilenameHint); // Default download
+      triggerDownload(videoUrl, null, null, null, null, null, safeFilenameHint); // Default download
       // Ensure dropdown is hidden if open when main button is clicked
       const menu = document.getElementById('ytdl-dropdown-menu');
       if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
@@ -965,6 +966,68 @@
         const overlay = document.createElement('div');
         overlay.className = 'ytdl-thumb-overlay';
 
+        const getTitleFromAnchor = (anchor) => {
+          try {
+            const isBad = (s) => {
+              if (!s) return true;
+              const t = s.trim();
+              if (!t) return true;
+              if (t.length < 3) return true;
+              if (/^(true|false|null|undefined|\d+)$/i.test(t)) return true;
+              return false;
+            };
+
+            // 1) Try anchor aria-label or title attribute first
+            const aria = anchor.getAttribute('aria-label');
+            if (!isBad(aria)) return aria.trim();
+            if (!isBad(anchor.title)) return anchor.title.trim();
+
+            // 2) Find the nearest renderer container that usually contains the title
+            const renderer = anchor.closest('ytd-rich-grid-media, ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-video-renderer');
+
+            // 3) Look for common title link / formatted-string elements in renderer first
+            const titleSelectors = [
+              'a#video-title-link',
+              'a.yt-simple-endpoint[aria-label]',
+              'yt-formatted-string#video-title',
+              'yt-formatted-string[id^="video-title"]',
+              'yt-formatted-string.title',
+              'a#video-title',
+              'span#video-title',
+              'h3.title',
+              'h3'
+            ];
+
+            const searchRoots = [anchor, renderer, document];
+            for (const root of searchRoots) {
+              if (!root) continue;
+              for (const sel of titleSelectors) {
+                try {
+                  const el = root.querySelector(sel);
+                  if (el) {
+                    // Prefer aria-label on title link if present
+                    if (el.getAttribute && el.getAttribute('aria-label') && !isBad(el.getAttribute('aria-label'))) {
+                      return el.getAttribute('aria-label').trim();
+                    }
+                    const txt = el.textContent?.trim();
+                    if (!isBad(txt)) return txt;
+                  }
+                } catch (e) { /* ignore selector errors */ }
+              }
+            }
+
+            // 4) try image alt inside anchor or renderer
+            const img = anchor.querySelector('img') || renderer?.querySelector('img');
+            if (img && !isBad(img.alt)) return img.alt.trim();
+
+            // 5) fallback to document title
+            const docT = document.title.split(' - YouTube')[0];
+            return (!isBad(docT) ? docT : 'youtube_video');
+          } catch (e) {
+            return document.title.split(' - YouTube')[0] || 'youtube_video';
+          }
+        };
+
         const makeBtn = (label, targetFormat, title) => {
           const btn = document.createElement('button');
           btn.className = 'ytdl-thumb-btn';
@@ -985,8 +1048,8 @@
                 showToast('Could not determine video URL', 'error', 4000);
                 return;
               }
-              const videoTitle = a.querySelector('#video-title')?.textContent?.trim() || document.title.split(' - YouTube')[0] || 'youtube_video';
-              const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
+              const videoTitle = getTitleFromAnchor(a) || document.title.split(' - YouTube')[0] || 'youtube_video';
+              const safeFilenameHint = (videoTitle || 'youtube_video').replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
               try {
                 const data = await fetchFormatsOnce(videoUrl);
                 const bestAudioId = data?.audio_formats?.[0]?.format_id || null;
@@ -1013,8 +1076,8 @@
                 showToast('Could not determine video URL', 'error', 4000);
                 return;
               }
-              const videoTitle = a.querySelector('#video-title')?.textContent?.trim() || document.title.split(' - YouTube')[0] || 'youtube_video';
-              const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
+              const videoTitle = getTitleFromAnchor(a) || document.title.split(' - YouTube')[0] || 'youtube_video';
+              const safeFilenameHint = (videoTitle || 'youtube_video').replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
               // Use targetFormat as provided (will be null for quick buttons to let backend choose default)
               triggerDownload(videoUrl, null, null, targetFormat, null, null, safeFilenameHint);
             });
