@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -508,6 +508,42 @@
     });
   }
 
+  // Fetch formats once and return a Promise that resolves with the JSON data (or null on error)
+  function fetchFormatsOnce(url) {
+    return new Promise((resolve) => {
+      try {
+        const params = new URLSearchParams();
+        params.append('url', url);
+        const requestUrl = `${FLASK_SERVICE_BASE_URL}/list_formats?${params.toString()}`;
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: requestUrl,
+          responseType: 'json',
+          timeout: 30000,
+          onload: function (response) {
+            if (response.status >= 200 && response.status < 300) {
+              resolve(response.response);
+            } else {
+              console.error('fetchFormatsOnce: server error', response.status, response);
+              resolve(null);
+            }
+          },
+          onerror: function (err) {
+            console.error('fetchFormatsOnce: request error', err);
+            resolve(null);
+          },
+          ontimeout: function () {
+            console.error('fetchFormatsOnce: request timed out');
+            resolve(null);
+          }
+        });
+      } catch (e) {
+        console.error('fetchFormatsOnce internal error', e);
+        resolve(null);
+      }
+    });
+  }
+
   function formatBitrate(bitrate) {
     return bitrate ? `${Math.round(bitrate)}k` : '';
   }
@@ -936,24 +972,59 @@
           btn.title = title;
           // Use textContent to avoid Trusted Types / CSP TrustedHTML errors
           btn.textContent = label;
-          btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const href = a.getAttribute('href');
-            const videoUrl = parseVideoUrlFromHref(href) || (href ? (new URL(href, window.location.origin)).href : null);
-            if (!videoUrl) {
-              showToast('Could not determine video URL', 'error', 4000);
-              return;
-            }
-            const videoTitle = a.querySelector('#video-title')?.textContent?.trim() || document.title.split(' - YouTube')[0] || 'youtube_video';
-            const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
-            triggerDownload(videoUrl, null, null, targetFormat, null, null, safeFilenameHint);
-          });
+
+          // Detect audio button by title (contains 'audio') so we can resolve best audio format id
+          if (title && title.toLowerCase().includes('audio')) {
+            // For audio quick-download, try to resolve the best audio format id first
+            btn.addEventListener('click', async (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const href = a.getAttribute('href');
+              const videoUrl = parseVideoUrlFromHref(href) || (href ? (new URL(href, window.location.origin)).href : null);
+              if (!videoUrl) {
+                showToast('Could not determine video URL', 'error', 4000);
+                return;
+              }
+              const videoTitle = a.querySelector('#video-title')?.textContent?.trim() || document.title.split(' - YouTube')[0] || 'youtube_video';
+              const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
+              try {
+                const data = await fetchFormatsOnce(videoUrl);
+                const bestAudioId = data?.audio_formats?.[0]?.format_id || null;
+                if (bestAudioId) {
+                  // Pass the audio_format_id but leave targetFormat null to let backend choose default
+                  triggerDownload(videoUrl, bestAudioId, null, null, null, null, safeFilenameHint);
+                } else {
+                  // Fallback: request default handling (no explicit target)
+                  triggerDownload(videoUrl, null, null, null, null, null, safeFilenameHint);
+                }
+              } catch (err) {
+                console.error('Error resolving audio format for quick-download:', err);
+                // Fallback behavior
+                triggerDownload(videoUrl, null, null, null, null, null, safeFilenameHint);
+              }
+            });
+          } else {
+            btn.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const href = a.getAttribute('href');
+              const videoUrl = parseVideoUrlFromHref(href) || (href ? (new URL(href, window.location.origin)).href : null);
+              if (!videoUrl) {
+                showToast('Could not determine video URL', 'error', 4000);
+                return;
+              }
+              const videoTitle = a.querySelector('#video-title')?.textContent?.trim() || document.title.split(' - YouTube')[0] || 'youtube_video';
+              const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
+              // Use targetFormat as provided (will be null for quick buttons to let backend choose default)
+              triggerDownload(videoUrl, null, null, targetFormat, null, null, safeFilenameHint);
+            });
+          }
           return btn;
         };
 
-        const videoBtn = makeBtn('🎬', 'mp4', 'Quick download (video)');
-        const audioBtn = makeBtn('🎧', 'mp3', 'Quick download (audio)');
+        // Pass null as targetFormat so backend defaults are used; audio button still resolves best audio id
+        const videoBtn = makeBtn('🎬', null, 'Quick download (video)');
+        const audioBtn = makeBtn('🎧', null, 'Quick download (audio)');
 
         overlay.appendChild(videoBtn);
         overlay.appendChild(audioBtn);
