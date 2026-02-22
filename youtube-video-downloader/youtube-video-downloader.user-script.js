@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
-// @match        https://www.youtube.com/watch?v=*
+// @match        https://www.youtube.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=youtube.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -138,6 +138,15 @@
         #owner.ytd-watch-metadata {
             min-width: calc(25% - 6px) !important;
         }
+        /* Thumbnail overlay quick-download buttons: top-left, stacked vertically */
+        .ytdl-thumb-overlay { position: absolute; top: 6px; left: 6px; display:flex; flex-direction: column; gap:6px; z-index: 9999; pointer-events: none; opacity: 0; transition: opacity .08s ease, background-color .12s ease; }
+        a#thumbnail:hover .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
+        /* Darken buttons ~20% (increase alpha) and make square with rounded corners */
+        .ytdl-thumb-btn { background: rgba(0,0,0,0.8); color: #fff; border-radius: 6px; width: 34px; height: 34px; display:flex; align-items:center; justify-content:center; font-size:14px; cursor:pointer; border: none; padding:0; opacity: 0.9; transition: opacity .08s ease, background-color .12s ease, transform .08s ease; }
+        a#thumbnail:hover .ytdl-thumb-btn, .ytdl-thumb-overlay:hover .ytdl-thumb-btn, .ytdl-thumb-btn:hover { opacity: 1; }
+        .ytdl-thumb-btn:hover { background-color: rgba(0,0,0,1) !important; opacity: 1 !important; }
+        .ytdl-thumb-btn:focus, .ytdl-thumb-btn:active { opacity: 1 !important; background-color: rgba(0,0,0,1) !important; outline: none; }
+        .ytdl-thumb-btn svg { width:18px; height:18px; fill: currentColor; }
     `);
 
   // --- Core Functions ---
@@ -896,6 +905,84 @@
       // console.log(`Button container not found, retrying (${retryCount}/${MAX_RETRIES})...`); // Less verbose logging
       return false; // Indicate not found yet
     }
+  }
+
+  // --- Thumbnail quick-download overlay icons ---
+  function parseVideoUrlFromHref(href) {
+    try {
+      if (!href) return null;
+      const u = new URL(href, window.location.origin);
+      if (isVideoUrlJS(u.href)) return u.href;
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function addThumbnailIcons(root = document) {
+    const anchors = root.querySelectorAll('a#thumbnail');
+    anchors.forEach(a => {
+      try {
+        if (a.dataset.ytdlAttached) return;
+        a.dataset.ytdlAttached = '1';
+
+        const overlay = document.createElement('div');
+        overlay.className = 'ytdl-thumb-overlay';
+
+        const makeBtn = (label, targetFormat, title) => {
+          const btn = document.createElement('button');
+          btn.className = 'ytdl-thumb-btn';
+          btn.type = 'button';
+          btn.title = title;
+          // Use textContent to avoid Trusted Types / CSP TrustedHTML errors
+          btn.textContent = label;
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const href = a.getAttribute('href');
+            const videoUrl = parseVideoUrlFromHref(href) || (href ? (new URL(href, window.location.origin)).href : null);
+            if (!videoUrl) {
+              showToast('Could not determine video URL', 'error', 4000);
+              return;
+            }
+            const videoTitle = a.querySelector('#video-title')?.textContent?.trim() || document.title.split(' - YouTube')[0] || 'youtube_video';
+            const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
+            triggerDownload(videoUrl, null, null, targetFormat, null, null, safeFilenameHint);
+          });
+          return btn;
+        };
+
+        const videoBtn = makeBtn('🎬', 'mp4', 'Quick download (video)');
+        const audioBtn = makeBtn('🎧', 'mp3', 'Quick download (audio)');
+
+        overlay.appendChild(videoBtn);
+        overlay.appendChild(audioBtn);
+
+        // Ensure parent is positioned (minimally invasive)
+        const parent = a;
+        if (getComputedStyle(parent).position === 'static') {
+          parent.style.position = 'relative';
+        }
+        parent.appendChild(overlay);
+      } catch (err) {
+        console.error('Error attaching ytdl thumbnail icons:', err);
+      }
+    });
+  }
+
+  // Initial scan + observe for dynamic content
+  try {
+    addThumbnailIcons(document);
+    const thumbObserver = new MutationObserver((mutations) => {
+      let added = false;
+      for (const m of mutations) {
+        if (m.addedNodes && m.addedNodes.length) { added = true; break; }
+      }
+      if (added) addThumbnailIcons(document);
+    });
+    thumbObserver.observe(document.body, { childList: true, subtree: true });
+  } catch (e) {
+    console.error('Thumbnail observer setup failed:', e);
   }
 
   function handleUrlChange() {
