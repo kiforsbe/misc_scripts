@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/watch?v=*
@@ -274,6 +274,25 @@
     return urlParams.get('v');
   }
 
+  function isVideoUrlJS(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      const host = (u.hostname || '').toLowerCase();
+      if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+        if (u.searchParams.get('v')) return true;
+        if (u.pathname.startsWith('/embed/')) return true;
+        return false;
+      }
+      if (host === 'youtu.be') {
+        const id = u.pathname.replace(/^\/+/, '');
+        return !!id;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function showSpinner(button, defaultText = 'Downloading... ') {
     button.textContent = defaultText + '⏳'; // Simple loading indicator
     button.disabled = true;
@@ -397,6 +416,22 @@
     // Don't fetch if already fetching or if data is cached
     if (isFetchingFormats || formatDataCache) {
       console.log("Skipping format fetch (already fetching or cached).");
+      return;
+    }
+
+    // Validate URL is a single video URL
+    if (!isVideoUrlJS(url)) {
+      console.warn('fetchFormats called with non-video URL:', url);
+      if (dropdownMenu) showDropdownError(dropdownMenu, 'Only individual YouTube video URLs are supported.');
+      formatFetchError = 'Only individual YouTube video URLs are supported.';
+      return;
+    }
+
+    // Validate URL is a single video URL
+    if (!isVideoUrlJS(url)) {
+      console.warn('fetchFormats called with non-video URL:', url);
+      if (dropdownMenu) showDropdownError(dropdownMenu, 'Only individual YouTube video URLs are supported.');
+      formatFetchError = 'Only individual YouTube video URLs are supported.';
       return;
     }
 

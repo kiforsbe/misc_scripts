@@ -7,6 +7,7 @@ import pathlib
 import sys
 import uuid
 import re
+from urllib.parse import urlparse, parse_qs
 from flask import Flask, request, send_file, jsonify, render_template_string
 import yt_dlp  # For exceptions
 import yt_dlp.utils  # For exceptions
@@ -77,6 +78,26 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
     response.headers["Access-Control-Expose-Headers"] = CORS_EXPOSE_HEADERS
     return response
+
+
+def is_video_url(url: str) -> bool:
+    """Return True if the URL points to an individual YouTube video (watch, youtu.be, embed)."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if host.endswith("youtube.com") or host.endswith("youtube-nocookie.com"):
+            qs = parse_qs(parsed.query)
+            if qs.get("v"):
+                return True
+            if parsed.path.startswith("/embed/"):
+                return True
+            return False
+        if host == "youtu.be":
+            pid = parsed.path.lstrip("/")
+            return bool(pid)
+        return False
+    except Exception:
+        return False
 
 # Logger will be configured in __main__
 log = logging.getLogger(__name__)  # Use a specific logger for the app
@@ -627,18 +648,11 @@ def list_formats():
     if not url.startswith(("http://", "https://")):
         return jsonify({"error": "Invalid 'url' parameter format"}), 400
 
-    # Quick reject channel/user/home pages: this endpoint expects a single
-    # video URL (e.g., watch?v=...). Channel or user pages like
-    # '/@username', '/channel/..' or '/user/..' are not supported by
-    # `list_formats` because they don't point to a single downloadable
-    # media item.
-    if re.search(r'/(@|channel/|user/)', url):
+    # Require an individual video URL (watch?v=..., youtu.be, or /embed/)
+    if not is_video_url(url):
+        log.warning(f"list_formats called with non-video URL: {url}")
         return (
-            jsonify(
-                {
-                    "error": "Provided URL appears to be a channel or user page; please provide a single video URL (watch?v=...)",
-                }
-            ),
+            jsonify({"error": "Only individual YouTube video URLs are supported by this endpoint."}),
             400,
         )
 
