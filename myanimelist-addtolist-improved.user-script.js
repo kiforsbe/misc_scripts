@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MyAnimeList AddToList Improved
 // @namespace    http://tampermonkey.net/
-// @version      0.5.1
+// @version      0.5.3
 // @icon         https://myanimelist.net/favicon.ico
 // @description  Adds a quick-status dropdown to every btn-anime-watch-status button on MyAnimeList season pages.
 // @match        https://myanimelist.net/anime/season/*
@@ -215,28 +215,29 @@
   // -- Apply status via fetch (same-origin, avoids X-Frame-Options) --------
   async function applyStatus(animeId, statusNum) {
     const statusLabel = STATUSES.find(s => s.num === statusNum)?.label || '';
-    const hostBtn = document.querySelector(`.btn-anime-watch-status[data-id="${animeId}"]`);
-    const existingStatus = hostBtn ? getCurrentStatus(hostBtn) : 0;
 
-    const isEdit = existingStatus !== 0;
-    const formUrl = isEdit
-      ? `https://myanimelist.net/ownlist/anime/${animeId}/edit?hideLayout=1`
-      : `https://myanimelist.net/ownlist/anime/add?selected_series_id=${animeId}&hideLayout=1`;
+    // Always use the add URL — MAL redirects to /edit automatically if the anime is already in the list
+    const formUrl = `https://myanimelist.net/ownlist/anime/add?selected_series_id=${animeId}&hideLayout=1`;
 
-    console.log(`[MAL-QS] applyStatus animeId=${animeId} statusNum=${statusNum} isEdit=${isEdit}`);
+    console.log(`[MAL-QS] applyStatus animeId=${animeId} statusNum=${statusNum}`);
     console.log(`[MAL-QS] formUrl: ${formUrl}`);
 
     try {
       // Step 1: GET the form to extract all fields including CSRF token
       const getResp = await fetch(formUrl, { credentials: 'include' });
-      console.log(`[MAL-QS] GET ${formUrl} → ${getResp.status} ${getResp.statusText}`);
+      const finalUrl = getResp.url; // may differ from formUrl after MAL's redirect to /edit
+      console.log(`[MAL-QS] GET ${formUrl} → ${getResp.status} ${getResp.statusText} (final: ${finalUrl})`);
       const html = await getResp.text();
       console.log('[MAL-QS] GET response HTML (first 3000 chars):\n', html.substring(0, 3000));
 
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
 
-      const form = doc.querySelector('form');
+      // Find the status edit form specifically — the page may also contain a delete form
+      const form = doc.querySelector('select[name="add_anime[status]"]')?.closest('form')
+                || doc.querySelector('form[action*="/edit"]')
+                || doc.querySelector('form[action*="/add"]')
+                || doc.querySelector('form');
       if (!form) {
         console.error('[MAL-QS] No <form> found in response. Full HTML:\n', html);
         showToast('Form not found', 'error');
@@ -278,8 +279,8 @@
 
       console.log('[MAL-QS] Final fields (with status override):', JSON.stringify(fields, null, 2));
 
-      // Step 2: POST the form
-      const action = form.getAttribute('action') || formUrl.split('?')[0];
+      // Step 2: POST the form — if form has no action, submit to the final (redirected) URL
+      const action = form.getAttribute('action') || finalUrl.split('?')[0];
       const postUrl = action.startsWith('http') ? action : `https://myanimelist.net${action}`;
       console.log(`[MAL-QS] POSTing to: ${postUrl}`);
 
@@ -293,11 +294,8 @@
       console.log('[MAL-QS] POST response body (first 2000 chars):\n', respText.substring(0, 2000));
 
       if (resp.ok) {
-        showToast('\u2713 ' + statusLabel, 'success');
-        if (hostBtn) {
-          hostBtn.textContent = statusLabel;
-          hostBtn.dataset.status = String(statusNum);
-        }
+        showToast('\u2713 ' + statusLabel + ' — reloading…', 'success');
+        setTimeout(() => location.reload(), 800);
       } else {
         showToast('Error ' + resp.status, 'error');
       }
