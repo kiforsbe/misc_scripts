@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MyAnimeList AddToList Improved
 // @namespace    http://tampermonkey.net/
-// @version      0.5.0
+// @version      0.5.1
 // @icon         https://myanimelist.net/favicon.ico
 // @description  Adds a quick-status dropdown to every btn-anime-watch-status button on MyAnimeList season pages.
 // @match        https://myanimelist.net/anime/season/*
@@ -72,11 +72,42 @@
     .mal-qs-item[aria-current="true"] { opacity: 0.55; cursor: default; }
     .mal-qs-item[aria-current="true"]:hover { filter: none; }
 
+    /* Toast notification */
+    .mal-qs-toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 999999;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: sans-serif;
+      color: #fff;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .mal-qs-toast.show { opacity: 1; }
+    .mal-qs-toast.success { background: #2e7d32; }
+    .mal-qs-toast.error   { background: #c62828; }
+
     /* Dark mode */
     @media (prefers-color-scheme: dark) {
       .mal-qs-menu { background: #1a1a1a; border-color: rgba(255,255,255,0.1); box-shadow: 0 4px 18px rgba(0,0,0,0.6); }
     }
   `);
+
+  // -- Toast helper ---------------------------------------------------------
+  const _toast = document.createElement('div');
+  _toast.className = 'mal-qs-toast';
+  document.body.appendChild(_toast);
+  let _toastTimer = null;
+  function showToast(msg, type = 'success') {
+    _toast.textContent = msg;
+    _toast.className = `mal-qs-toast ${type} show`;
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { _toast.classList.remove('show'); }, 2500);
+  }
 
   // -- Single global menu ---------------------------------------------------
   const menu = document.createElement('div');
@@ -181,57 +212,60 @@
     if (e.key === 'ArrowUp')   { e.preventDefault(); (items[idx - 1] || items[items.length - 1]).focus(); }
   });
 
-  // -- Apply status ---------------------------------------------------------
+  // -- Apply status via hidden iframe --------------------------------------
   function applyStatus(animeId, statusNum) {
-    // Click the real button to trigger MAL's native dialog, then preselect status
+    const statusLabel = STATUSES.find(s => s.num === statusNum)?.label || '';
     const hostBtn = document.querySelector(`.btn-anime-watch-status[data-id="${animeId}"]`);
-    if (hostBtn) {
-      hostBtn.click();
-      preselectInModal(statusNum);
-    } else {
-      // Fallback: direct navigation
-      window.location.href =
-        `https://myanimelist.net/ownlist/anime/add?selected_series_id=${animeId}&status=${statusNum}`;
-    }
-  }
+    const existingStatus = hostBtn ? getCurrentStatus(hostBtn) : 0;
 
-  function preselectInModal(statusNum) {
-    const desired = String(statusNum);
-    if (trySet(desired)) return;
-    const obs = new MutationObserver(() => { if (trySet(desired)) obs.disconnect(); });
-    obs.observe(document.body, { childList: true, subtree: true });
-    setTimeout(() => obs.disconnect(), 5000);
-  }
+    // Choose add vs. edit URL
+    const url = existingStatus !== 0
+      ? `https://myanimelist.net/ownlist/anime/${animeId}/edit?hideLayout=1`
+      : `https://myanimelist.net/ownlist/anime/add?selected_series_id=${animeId}&hideLayout=1`;
 
-  function trySet(desired) {
-    // 1. <select>
-    const sel = document.querySelector(
-      'select[name="status"], select#myinfo_status, select[name="list_status"]'
-    );
-    if (sel) {
-      sel.value = desired;
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
-    // 2. Radio
-    for (const name of ['status', 'list_status', 'my_status']) {
-      const radio = document.querySelector(
-        `input[type="radio"][name="${name}"][value="${desired}"]`
-      );
-      if (radio) { radio.click(); return true; }
-    }
-    // 3. Text buttons inside dialog
-    const labelMap = { '1': 'Watching', '2': 'Completed', '3': 'On Hold', '4': 'Dropped', '6': 'Plan to Watch' };
-    const want = labelMap[desired];
-    if (want) {
-      const dialog = document.querySelector('[role="dialog"], .modal, #add-to-list-wrapper');
-      const scope  = dialog || document;
-      const found  = Array.from(scope.querySelectorAll('button, a, li, label')).find(
-        el => (el.textContent || '').trim().toLowerCase() === want.toLowerCase()
-      );
-      if (found) { found.click(); return true; }
-    }
-    return false;
+    const frame = document.createElement('iframe');
+    frame.src = url;
+    frame.style.cssText = 'position:fixed;width:1px;height:1px;top:-9999px;left:-9999px;opacity:0;border:none;';
+    document.body.appendChild(frame);
+
+    let submitted = false;
+    frame.addEventListener('load', () => {
+      if (submitted) {
+        // Second load = response after form submit
+        frame.remove();
+        showToast('\u2713 ' + statusLabel, 'success');
+        // Update host button text and data attribute
+        if (hostBtn) {
+          hostBtn.textContent = statusLabel;
+          hostBtn.dataset.status = String(statusNum);
+        }
+        return;
+      }
+
+      const doc = frame.contentDocument;
+      if (!doc || !doc.body) { frame.remove(); showToast('Could not load form', 'error'); return; }
+
+      // Set status select
+      const sel = doc.querySelector('select[name="status"], select#myinfo_status, select[name="list_status"]');
+      if (sel) {
+        sel.value = String(statusNum);
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      // Submit the form
+      submitted = true;
+      const submitBtn = doc.querySelector('input[name="submitIt"], input[type="submit"], button[type="submit"]');
+      if (submitBtn) {
+        submitBtn.click();
+      } else {
+        const form = doc.querySelector('form');
+        if (form) form.submit();
+        else { frame.remove(); showToast('Submit button not found', 'error'); }
+      }
+    });
+
+    // Safety timeout
+    setTimeout(() => { if (frame.isConnected) { frame.remove(); showToast('Request timed out', 'error'); } }, 10000);
   }
 
   // -- Augment buttons ------------------------------------------------------
