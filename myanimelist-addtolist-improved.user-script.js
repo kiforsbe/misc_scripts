@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MyAnimeList AddToList Improved
 // @namespace    http://tampermonkey.net/
-// @version      0.5.3
+// @version      0.5.4
 // @icon         https://myanimelist.net/favicon.ico
 // @description  Adds a quick-status dropdown to every btn-anime-watch-status button on MyAnimeList season pages.
 // @match        https://myanimelist.net/anime/season/*
@@ -12,6 +12,10 @@
 
 (function () {
   'use strict';
+
+  // Set to true to enable verbose console logging
+  const DEBUG = false;
+  const log = (...a) => DEBUG && console.log(...a);
 
   // Status list and display order
   const STATUSES = [
@@ -219,16 +223,16 @@
     // Always use the add URL — MAL redirects to /edit automatically if the anime is already in the list
     const formUrl = `https://myanimelist.net/ownlist/anime/add?selected_series_id=${animeId}&hideLayout=1`;
 
-    console.log(`[MAL-QS] applyStatus animeId=${animeId} statusNum=${statusNum}`);
-    console.log(`[MAL-QS] formUrl: ${formUrl}`);
+    log(`[MAL-QS] applyStatus animeId=${animeId} statusNum=${statusNum}`);
+    log(`[MAL-QS] formUrl: ${formUrl}`);
 
     try {
       // Step 1: GET the form to extract all fields including CSRF token
       const getResp = await fetch(formUrl, { credentials: 'include' });
       const finalUrl = getResp.url; // may differ from formUrl after MAL's redirect to /edit
-      console.log(`[MAL-QS] GET ${formUrl} → ${getResp.status} ${getResp.statusText} (final: ${finalUrl})`);
+      log(`[MAL-QS] GET ${formUrl} → ${getResp.status} ${getResp.statusText} (final: ${finalUrl})`);
       const html = await getResp.text();
-      console.log('[MAL-QS] GET response HTML (first 3000 chars):\n', html.substring(0, 3000));
+      log('[MAL-QS] GET response HTML (first 3000 chars):\n', html.substring(0, 3000));
 
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
@@ -243,8 +247,8 @@
         showToast('Form not found', 'error');
         return;
       }
-      console.log('[MAL-QS] Form action:', form.getAttribute('action'));
-      console.log('[MAL-QS] Form method:', form.getAttribute('method'));
+      log('[MAL-QS] Form action:', form.getAttribute('action'));
+      log('[MAL-QS] Form method:', form.getAttribute('method'));
 
       // Collect all form fields, then override status
       const formData = new FormData();
@@ -255,14 +259,14 @@
         else if (el.type === 'radio') { if (el.checked) { formData.set(el.name, el.value); fields[el.name] = el.value; } }
         else { formData.set(el.name, el.value); fields[el.name] = el.value; }
       });
-      console.log('[MAL-QS] Collected fields before status override:', JSON.stringify(fields, null, 2));
+      log('[MAL-QS] Collected fields before status override:', JSON.stringify(fields, null, 2));
 
       // Extract CSRF token from <meta name="csrf_token"> — not present in form fields
       const csrfToken = doc.querySelector('meta[name="csrf_token"]')?.getAttribute('content');
       if (csrfToken) {
         formData.set('csrf_token', csrfToken);
         fields['csrf_token'] = csrfToken;
-        console.log('[MAL-QS] CSRF token:', csrfToken);
+        log('[MAL-QS] CSRF token:', csrfToken);
       } else {
         console.warn('[MAL-QS] No CSRF token found in meta tags');
       }
@@ -277,21 +281,21 @@
       formData.set('submitIt', '1');
       fields['submitIt'] = '1';
 
-      console.log('[MAL-QS] Final fields (with status override):', JSON.stringify(fields, null, 2));
+      log('[MAL-QS] Final fields (with status override):', JSON.stringify(fields, null, 2));
 
       // Step 2: POST the form — if form has no action, submit to the final (redirected) URL
       const action = form.getAttribute('action') || finalUrl.split('?')[0];
       const postUrl = action.startsWith('http') ? action : `https://myanimelist.net${action}`;
-      console.log(`[MAL-QS] POSTing to: ${postUrl}`);
+      log(`[MAL-QS] POSTing to: ${postUrl}`);
 
       const resp = await fetch(postUrl, {
         method: 'POST',
         credentials: 'include',
         body: formData,
       });
-      console.log(`[MAL-QS] POST → ${resp.status} ${resp.statusText}`);
-      const respText = await resp.text();
-      console.log('[MAL-QS] POST response body (first 2000 chars):\n', respText.substring(0, 2000));
+      log(`[MAL-QS] POST → ${resp.status} ${resp.statusText}`);
+      const respText = DEBUG ? await resp.text() : null;
+      log('[MAL-QS] POST response body (first 2000 chars):\n', respText?.substring(0, 2000));
 
       if (resp.ok) {
         showToast('\u2713 ' + statusLabel + ' — reloading…', 'success');
