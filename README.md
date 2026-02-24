@@ -10,6 +10,25 @@ These user scripts enhance the webservice functionality by integrating download 
 A Tampermonkey script that adds simple triangle indicators to Plex playlist items, showing their watch status (watched/unwatched) based on metadata from the Plex API.
 It fetches the watch status of each item in a Plex playlist and displays a triangle icon next to each item, indicating whether it has been watched or not. The script is designed to enhance the user experience by providing quick visual feedback on the watch status of playlist items.
 
+### myanimelist-addtolist-improved.user-script.js
+A Tampermonkey script that augments every watch-status button on MyAnimeList season and anime pages with a quick-status chevron dropdown, allowing you to set or change the watch status of any title without leaving the page.
+
+#### Features
+- Adds a seamless chevron trigger to the right of every `.btn-anime-watch-status` button, styled to look like a native extension of the host button (matching background, border, height, and border-radius)
+- Dropdown lists all five statuses: Plan to Watch, Watching, On Hold, Completed, Dropped
+- Applies status changes in-page via `fetch` (same-origin form POST) — no page navigation required
+- Automatically detects whether the title is being added or edited by following MAL's server-side redirect
+- Reloads the page after a successful save so button state reflects the new status
+- Disables invalid statuses (Watching, Completed, On Hold, Dropped) for not-yet-aired titles, keeping only Plan to Watch enabled
+- Toast notifications for success and error feedback
+- Keyboard navigation (Escape, Arrow Up/Down) and full ARIA support
+- Observes dynamic content and SPA navigation to augment newly added buttons automatically
+- `DEBUG` constant at the top of the script to toggle verbose console logging on/off
+
+#### Matches
+- `https://myanimelist.net/anime/season/*`
+- `https://myanimelist.net/anime/*`
+
 ## Libraries
 
 ### browser_utils.py
