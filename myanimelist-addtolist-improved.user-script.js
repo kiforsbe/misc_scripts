@@ -212,60 +212,99 @@
     if (e.key === 'ArrowUp')   { e.preventDefault(); (items[idx - 1] || items[items.length - 1]).focus(); }
   });
 
-  // -- Apply status via hidden iframe --------------------------------------
-  function applyStatus(animeId, statusNum) {
+  // -- Apply status via fetch (same-origin, avoids X-Frame-Options) --------
+  async function applyStatus(animeId, statusNum) {
     const statusLabel = STATUSES.find(s => s.num === statusNum)?.label || '';
     const hostBtn = document.querySelector(`.btn-anime-watch-status[data-id="${animeId}"]`);
     const existingStatus = hostBtn ? getCurrentStatus(hostBtn) : 0;
 
-    // Choose add vs. edit URL
-    const url = existingStatus !== 0
+    const isEdit = existingStatus !== 0;
+    const formUrl = isEdit
       ? `https://myanimelist.net/ownlist/anime/${animeId}/edit?hideLayout=1`
       : `https://myanimelist.net/ownlist/anime/add?selected_series_id=${animeId}&hideLayout=1`;
 
-    const frame = document.createElement('iframe');
-    frame.src = url;
-    frame.style.cssText = 'position:fixed;width:1px;height:1px;top:-9999px;left:-9999px;opacity:0;border:none;';
-    document.body.appendChild(frame);
+    console.log(`[MAL-QS] applyStatus animeId=${animeId} statusNum=${statusNum} isEdit=${isEdit}`);
+    console.log(`[MAL-QS] formUrl: ${formUrl}`);
 
-    let submitted = false;
-    frame.addEventListener('load', () => {
-      if (submitted) {
-        // Second load = response after form submit
-        frame.remove();
+    try {
+      // Step 1: GET the form to extract all fields including CSRF token
+      const getResp = await fetch(formUrl, { credentials: 'include' });
+      console.log(`[MAL-QS] GET ${formUrl} → ${getResp.status} ${getResp.statusText}`);
+      const html = await getResp.text();
+      console.log('[MAL-QS] GET response HTML (first 3000 chars):\n', html.substring(0, 3000));
+
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+
+      const form = doc.querySelector('form');
+      if (!form) {
+        console.error('[MAL-QS] No <form> found in response. Full HTML:\n', html);
+        showToast('Form not found', 'error');
+        return;
+      }
+      console.log('[MAL-QS] Form action:', form.getAttribute('action'));
+      console.log('[MAL-QS] Form method:', form.getAttribute('method'));
+
+      // Collect all form fields, then override status
+      const formData = new FormData();
+      const fields = {};
+      form.querySelectorAll('input, select, textarea').forEach(el => {
+        if (!el.name) return;
+        if (el.type === 'checkbox') { if (el.checked) { formData.set(el.name, el.value); fields[el.name] = el.value; } }
+        else if (el.type === 'radio') { if (el.checked) { formData.set(el.name, el.value); fields[el.name] = el.value; } }
+        else { formData.set(el.name, el.value); fields[el.name] = el.value; }
+      });
+      console.log('[MAL-QS] Collected fields before status override:', JSON.stringify(fields, null, 2));
+
+      // Extract CSRF token from <meta name="csrf_token"> — not present in form fields
+      const csrfToken = doc.querySelector('meta[name="csrf_token"]')?.getAttribute('content');
+      if (csrfToken) {
+        formData.set('csrf_token', csrfToken);
+        fields['csrf_token'] = csrfToken;
+        console.log('[MAL-QS] CSRF token:', csrfToken);
+      } else {
+        console.warn('[MAL-QS] No CSRF token found in meta tags');
+      }
+
+      // Set both the hidden shorthand field and the namespaced field
+      formData.set('astatus', String(statusNum));
+      formData.set('add_anime[status]', String(statusNum));
+      fields['astatus'] = String(statusNum);
+      fields['add_anime[status]'] = String(statusNum);
+
+      // submitIt=1 tells the server this is an actual submission
+      formData.set('submitIt', '1');
+      fields['submitIt'] = '1';
+
+      console.log('[MAL-QS] Final fields (with status override):', JSON.stringify(fields, null, 2));
+
+      // Step 2: POST the form
+      const action = form.getAttribute('action') || formUrl.split('?')[0];
+      const postUrl = action.startsWith('http') ? action : `https://myanimelist.net${action}`;
+      console.log(`[MAL-QS] POSTing to: ${postUrl}`);
+
+      const resp = await fetch(postUrl, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      });
+      console.log(`[MAL-QS] POST → ${resp.status} ${resp.statusText}`);
+      const respText = await resp.text();
+      console.log('[MAL-QS] POST response body (first 2000 chars):\n', respText.substring(0, 2000));
+
+      if (resp.ok) {
         showToast('\u2713 ' + statusLabel, 'success');
-        // Update host button text and data attribute
         if (hostBtn) {
           hostBtn.textContent = statusLabel;
           hostBtn.dataset.status = String(statusNum);
         }
-        return;
-      }
-
-      const doc = frame.contentDocument;
-      if (!doc || !doc.body) { frame.remove(); showToast('Could not load form', 'error'); return; }
-
-      // Set status select
-      const sel = doc.querySelector('select[name="status"], select#myinfo_status, select[name="list_status"]');
-      if (sel) {
-        sel.value = String(statusNum);
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-
-      // Submit the form
-      submitted = true;
-      const submitBtn = doc.querySelector('input[name="submitIt"], input[type="submit"], button[type="submit"]');
-      if (submitBtn) {
-        submitBtn.click();
       } else {
-        const form = doc.querySelector('form');
-        if (form) form.submit();
-        else { frame.remove(); showToast('Submit button not found', 'error'); }
+        showToast('Error ' + resp.status, 'error');
       }
-    });
-
-    // Safety timeout
-    setTimeout(() => { if (frame.isConnected) { frame.remove(); showToast('Request timed out', 'error'); } }, 10000);
+    } catch (err) {
+      console.error('[MAL-QS] Exception in applyStatus:', err);
+      showToast('Error: ' + err.message, 'error');
+    }
   }
 
   // -- Augment buttons ------------------------------------------------------
