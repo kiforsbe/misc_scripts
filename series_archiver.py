@@ -986,6 +986,55 @@ def _parse_modified_expression(expression: str) -> Tuple[str, datetime, bool]:
     return operator, parsed_dt, is_date_only
 
 
+def _parse_modified_conditions(expression: str) -> List[Tuple[str, datetime, bool]]:
+    """Parse modified filter into one or more conditions.
+
+    Supported forms:
+    - Single expression: "<2026-01-01"
+    - Closed range: "2026-01-01..2026-01-31"
+    - Multiple expressions (AND): ">=2026-01-01, <2026-02-01"
+    """
+    expr = (expression or '').strip()
+    if not expr:
+        raise ValueError("--modified cannot be empty")
+
+    if '..' in expr:
+        parts = expr.split('..')
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid --modified range '{expression}'. "
+                "Use format like '2026-01-01..2026-01-31'."
+            )
+
+        start_raw, end_raw = parts[0].strip(), parts[1].strip()
+        if not start_raw or not end_raw:
+            raise ValueError(
+                f"Invalid --modified range '{expression}'. "
+                "Both start and end values are required."
+            )
+
+        start_condition = _parse_modified_expression(f">={start_raw}")
+        end_condition = _parse_modified_expression(f"<={end_raw}")
+
+        lower_bound = _normalize_datetime(start_condition[1])
+        upper_bound = _normalize_datetime(end_condition[1])
+        if lower_bound > upper_bound:
+            raise ValueError(
+                f"Invalid --modified range '{expression}'. "
+                "Range start must be earlier than or equal to range end."
+            )
+
+        return [start_condition, end_condition]
+
+    if ',' in expr:
+        parts = [part.strip() for part in expr.split(',') if part.strip()]
+        if not parts:
+            raise ValueError("--modified cannot be empty")
+        return [_parse_modified_expression(part) for part in parts]
+
+    return [_parse_modified_expression(expr)]
+
+
 def _get_group_modified_datetime(group_data: Dict) -> Optional[datetime]:
     """Extract a group's modified datetime (prefers group avg timestamp, then newest file mtime)."""
     group_metadata = group_data.get('group_metadata', {}) or {}
@@ -1156,7 +1205,7 @@ def cmd_list(args):
     # Filter by modified datetime if requested
     if hasattr(args, 'modified') and args.modified:
         try:
-            op, modified_dt, is_date_only = _parse_modified_expression(args.modified)
+            modified_conditions = _parse_modified_conditions(args.modified)
         except ValueError as exc:
             print(f"Error: {exc}")
             return 1
@@ -1164,7 +1213,10 @@ def cmd_list(args):
         filtered_indexed_groups = []
         for original_index, group_key, details in indexed_groups:
             group_data = details.get('data', {})
-            if _matches_modified_expression(group_data, op, modified_dt, is_date_only):
+            if all(
+                _matches_modified_expression(group_data, op, modified_dt, is_date_only)
+                for op, modified_dt, is_date_only in modified_conditions
+            ):
                 filtered_indexed_groups.append((original_index, group_key, details))
         indexed_groups = filtered_indexed_groups
     
@@ -1398,8 +1450,9 @@ def main():
     list_parser.add_argument('--sort', action='store_true',
                             help='Sort series alphabetically by title')
     list_parser.add_argument('--modified', metavar='EXPR',
-                            help='Filter by modified datetime using expressions like "<2026-01-01", ">=2026-01-01T12:00", "=2026-01-01". '
-                                 'ISO format is preferred, but common date formats are also accepted.')
+                           help='Filter by modified datetime. Supports single expressions like "<2026-01-01" or ">=2026-01-01T12:00", '
+                               'closed ranges like "2026-01-01..2026-01-31", and combined conditions like ">=2026-01-01, <2026-02-01". '
+                               'ISO format is preferred, but common date formats are also accepted.')
     list_parser.add_argument('--no-color', action='store_true',
                             help='Disable color formatting in output')
     
