@@ -259,7 +259,6 @@ class PlexMetadataProvider:
             logging.warning(f"Could not retrieve server hash from Plex API: {e}")
         return None
 
-    @profile
     def get_watch_status(self, file_path: str) -> Optional[PlexWatchStatus]:
         """
         Get watch status for a specific file path
