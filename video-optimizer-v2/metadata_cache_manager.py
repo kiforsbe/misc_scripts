@@ -17,7 +17,7 @@ import re
 import sys
 import math
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List
 
 try:
     from colorama import Fore, Style, init as colorama_init
@@ -39,6 +39,12 @@ from anime_metadata import AnimeDataProvider
 from imdb_metadata import IMDbDataProvider
 
 ProviderMap = Dict[str, object]
+ProviderBuilderMap = Dict[str, Callable[[], object]]
+
+PROVIDER_BUILDERS: ProviderBuilderMap = {
+    "imdb": IMDbDataProvider,
+    "anime": AnimeDataProvider,
+}
 
 # Global color flag
 _use_color = True
@@ -61,17 +67,27 @@ def _colorize_provider(name: str) -> str:
     return _colorize(name, Fore.CYAN)
 
 
-def _build_providers() -> ProviderMap:
-    return {
-        "imdb": IMDbDataProvider(),
-        "anime": AnimeDataProvider(),
-    }
+def _build_providers(selection: List[str]) -> ProviderMap:
+    provider_names = list(_select_provider_names(selection))
+    return {name: PROVIDER_BUILDERS[name]() for name in provider_names}
+
+
+def _select_provider_names(selection: List[str]) -> Iterable[str]:
+    if "all" in selection:
+        return PROVIDER_BUILDERS.keys()
+    return (name for name in selection if name in PROVIDER_BUILDERS)
 
 
 def _select_providers(all_providers: ProviderMap, selection: List[str]) -> Iterable[object]:
     if "all" in selection:
         return all_providers.values()
     return (all_providers[name] for name in selection if name in all_providers)
+
+
+def _normalize_provider_selection(selection: List[str] | None) -> List[str]:
+    if not selection:
+        return ["all"]
+    return selection
 
 
 def _parse_relative_text(text: str) -> int:
@@ -292,9 +308,25 @@ def cmd_set_default_ttl(providers: Iterable[object], seconds: int) -> None:
             for ds in datasets:
                 cur = conn.execute("SELECT 1 FROM data_version WHERE dataset = ? LIMIT 1", (ds,)).fetchone()
                 if cur:
-                    conn.execute("UPDATE data_version SET default_ttl = ? WHERE dataset = ?", (days, ds))
+                    conn.execute(
+                        """
+                        UPDATE data_version
+                        SET default_ttl = ?,
+                            last_modified = COALESCE(last_modified, updated, CAST(strftime('%s','now') AS INTEGER)),
+                            expires_at = COALESCE(last_modified, updated, CAST(strftime('%s','now') AS INTEGER)) + (? * 86400)
+                        WHERE dataset = ?
+                        """,
+                        (days, days, ds),
+                    )
                 else:
-                    conn.execute("INSERT INTO data_version (dataset, default_ttl) VALUES (?, ?)", (ds, days))
+                    now_ts = int(datetime.now().timestamp())
+                    conn.execute(
+                        """
+                        INSERT INTO data_version (dataset, default_ttl, updated, last_modified, expires_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (ds, days, now_ts, now_ts, now_ts + (days * 86400)),
+                    )
             conn.commit()
             conn.close()
             logging.info("[%s] Set default_ttl=%d days for datasets: %s", name, days, ",".join(datasets))
@@ -304,7 +336,8 @@ def cmd_set_default_ttl(providers: Iterable[object], seconds: int) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Metadata cache manager")
-    parser.add_argument("--provider", "-p", nargs="+", default=["all"], choices=["imdb", "anime", "all"], help="Target provider(s)")
+    provider_choices = list(PROVIDER_BUILDERS.keys()) + ["all"]
+    parser.add_argument("--provider", "-p", action="append", default=None, choices=provider_choices, help="Target provider(s). Repeat flag for multiple providers, e.g. -p imdb -p anime")
     parser.add_argument("--verbose", "-v", action="count", default=0, help="Increase verbosity")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
 
@@ -321,6 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Set provider DB `data_version.default_ttl` for datasets (calendar days)
     default_ttl = sub.add_parser("set-default-ttl", help="Set default_ttl (days) for provider datasets in data_version")
+    default_ttl.add_argument("--provider", "-p", action="append", dest="provider_override", default=None, choices=provider_choices, help="Target provider(s) for this command. Repeat flag for multiple providers")
     default_ttl.add_argument("days", type=int, help="Number of calendar days to set as default_ttl for provider datasets")
 
     return parser
@@ -341,8 +375,12 @@ def main(argv: List[str] | None = None) -> int:
     global _use_color
     _use_color = not args.no_color
 
-    providers_map = _build_providers()
-    selected = list(_select_providers(providers_map, args.provider))
+    selected_provider_names = _normalize_provider_selection(args.provider)
+    if args.command == "set-default-ttl" and getattr(args, "provider_override", None):
+        selected_provider_names = _normalize_provider_selection(args.provider_override)
+
+    providers_map = _build_providers(selected_provider_names)
+    selected = list(_select_providers(providers_map, selected_provider_names))
 
     if not selected:
         parser.error("No providers matched selection")

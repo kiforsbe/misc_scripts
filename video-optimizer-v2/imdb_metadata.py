@@ -75,6 +75,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._search_cache = {}  # Cache recent search results
         self._title_cache = {}   # Cache for title info objects
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
+        self.CACHE_EXPIRY_DATASETS = list(self.DATASETS.keys())
         self._connection_pool = []  # Connection pool for better performance
         self._pool_size = 3
         self._init_database()
@@ -153,7 +154,10 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                     CREATE TABLE IF NOT EXISTS data_version (
                         dataset TEXT PRIMARY KEY,
-                        updated INTEGER  -- Use integer timestamp
+                        updated INTEGER,  -- Legacy timestamp field
+                        expires_at INTEGER,  -- Absolute expiry timestamp (epoch seconds)
+                        default_ttl INTEGER,  -- Default TTL in days
+                        last_modified INTEGER  -- Source last-modified timestamp (epoch seconds)
                     ) WITHOUT ROWID;
 
                     -- Compressed view for search operations
@@ -189,6 +193,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
                     """
                 )
+
                 conn.commit()
         except Exception as e:
             logging.error(f"Failed to initialize database: {str(e)}")
@@ -196,12 +201,14 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _load_cache_duration(self) -> None:
         try:
+            super()._load_cache_duration()
+
+            # Backward compatibility for legacy row that stored duration days.
             with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                cursor = conn.execute(
+                row = conn.execute(
                     "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
-                )
-                row = cursor.fetchone()
-                if row is not None and row[0] is not None:
+                ).fetchone()
+                if row and row[0] is not None:
                     days = int(row[0])
                     if days >= 0:
                         self.cache_duration = timedelta(days=days)
@@ -210,6 +217,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _persist_cache_duration(self) -> None:
         try:
+            super()._persist_cache_duration()
             with sqlite3.connect(self._db_path, timeout=5.0) as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES ('cache_duration', ?)",
