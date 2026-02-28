@@ -84,6 +84,9 @@ class AnimeDataProvider(BaseMetadataProvider):
         super().__init__('anime', provider_weight=1.0)
         # Provider-level default TTL is provided via BaseMetadataProvider.cache_duration
         self._search_cache = {}  # Cache recent search results
+        # In-process guard to avoid re-checking/reloading DB on every lookup.
+        self._db_loaded_once = False
+        self._db_loaded_until_ts: Optional[int] = None
         self._db_path = os.path.join(self.cache_dir, "anime_data.db")
         # Which data_version.dataset rows represent this provider's sources
         self.CACHE_EXPIRY_DATASETS = ['anime_offline_database']
@@ -475,8 +478,22 @@ class AnimeDataProvider(BaseMetadataProvider):
 
     def load_database(self) -> None:
         """Load the anime database into SQLite, downloading if needed"""
+        now_ts = int(time.time())
+
+        # Fast-path: DB already validated/loaded in this process and not expired.
+        if self._db_loaded_once:
+            if self._db_loaded_until_ts is None or now_ts < self._db_loaded_until_ts:
+                return
+            # Past in-memory expiry, force re-validation below.
+            self._db_loaded_once = False
+
         if self._is_data_current():
             logging.info("Database contains current anime data")
+            self._db_loaded_once = True
+            try:
+                self._db_loaded_until_ts = int(self.get_cache_expiry().timestamp())
+            except Exception:
+                self._db_loaded_until_ts = now_ts + int(self.cache_duration.total_seconds())
             return
 
         logging.info("Loading anime database...")
@@ -543,6 +560,12 @@ class AnimeDataProvider(BaseMetadataProvider):
         except Exception as e:
             logging.error(f"Error processing anime database: {e}")
             raise
+
+        self._db_loaded_once = True
+        try:
+            self._db_loaded_until_ts = int(self.get_cache_expiry().timestamp())
+        except Exception:
+            self._db_loaded_until_ts = now_ts + int(self.cache_duration.total_seconds())
 
         return
 
@@ -1031,6 +1054,8 @@ class AnimeDataProvider(BaseMetadataProvider):
     def refresh_data(self) -> None:
         """Invalidate cache and immediately reload/refresh the data"""
         logging.info("Refreshing anime database...")
+        self._db_loaded_once = False
+        self._db_loaded_until_ts = None
         self.set_cache_expiry(0)
         self._search_cache.clear()
         self.load_database()
