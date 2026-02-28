@@ -196,6 +196,21 @@ class FileGrouper:
             f"{title} Part {season}",     # "Title Part 2"
             f"{title} {season}",          # "Title 2"
         ]
+
+    @staticmethod
+    def _select_preferred_source_url(sources: List[str] | None) -> Optional[str]:
+        if not sources:
+            return None
+
+        for src in sources:
+            if 'myanimelist.net' in src:
+                return src
+
+        for src in sources:
+            if 'imdb.com' in src:
+                return src
+
+        return None
         
     def discover_files(self, input_paths: List[str], excluded_paths: List[str] | None = None,
                       include_patterns: List[str] | None = None, exclude_patterns: List[str] | None = None,
@@ -530,6 +545,39 @@ class FileGrouper:
                     # Silently continue if Plex lookup fails (database might be locked, etc.)
                     pass
 
+            # Normalize provider episode payload for downstream consumers
+            if result.get('episode_info') and not result.get('episode_metadata'):
+                result['episode_metadata'] = result['episode_info']
+
+            # Attach title-level metadata directly to each episode record
+            metadata_id = result.get('metadata_id')
+            title_metadata_entry = None
+            if metadata_id is not None:
+                title_metadata_entry = self.title_metadata.get(metadata_id) or self.title_metadata.get(str(metadata_id))
+
+            if title_metadata_entry:
+                title_metadata = title_metadata_entry.get('metadata', {})
+
+                if title_metadata and not result.get('series_metadata'):
+                    result['series_metadata'] = {
+                        'id': metadata_id,
+                        'title': title_metadata.get('title', result.get('title', 'Unknown')),
+                        'type': title_metadata.get('type', 'unknown'),
+                        'year': title_metadata.get('year'),
+                        'rating': title_metadata.get('rating'),
+                        'genres': title_metadata.get('genres', []),
+                        'tags': title_metadata.get('tags', []),
+                        'sources': title_metadata.get('sources', []),
+                        'total_episodes': title_metadata.get('total_episodes'),
+                        'plot': title_metadata.get('plot')
+                    }
+
+                if not result.get('source_url'):
+                    result['source_url'] = self._select_preferred_source_url(title_metadata.get('sources', []))
+
+                if 'myanimelist_watch_status' in title_metadata_entry and not result.get('myanimelist_watch_status'):
+                    result['myanimelist_watch_status'] = title_metadata_entry['myanimelist_watch_status']
+
             # Derive per-episode watch status from title-level MyAnimeList data
             plex_watched = False
             mal_episode_watched = False
@@ -671,6 +719,9 @@ class FileGrouper:
         for metadata_id, value in self.title_metadata.items():
             # Export the complete metadata including MyAnimeList watch status
             metadata_dict = value['metadata'].copy()
+
+            if 'provider' in value:
+                metadata_dict['provider'] = value.get('provider')
             
             # Add MyAnimeList watch status if it exists at title level
             if 'myanimelist_watch_status' in value:
@@ -753,12 +804,15 @@ class FileGrouper:
             'watched': watch_status.watched,
             'watch_count': watch_status.watch_count,
             'last_watched': watch_status.last_watched.isoformat() if watch_status.last_watched else None,
+            'server_hash': getattr(watch_status, 'server_hash', None),
+            'metadata_item_id': getattr(watch_status, 'metadata_item_id', None),
             'view_offset': watch_status.view_offset,
             'duration': watch_status.duration,
             'progress_percent': round(watch_status.progress_percent, 1),
             'plex_title': watch_status.plex_title,
             'plex_year': watch_status.plex_year,
-            'library_section': watch_status.library_section
+            'library_section': watch_status.library_section,
+            'queried_id': getattr(watch_status, 'queried_id', None)
         }
     
     def _serialize_mal_watch_status(self, watch_status: MyAnimeListWatchStatus) -> Dict[str, Any]:
