@@ -259,6 +259,7 @@ class PlexMetadataProvider:
             logging.warning(f"Could not retrieve server hash from Plex API: {e}")
         return None
 
+    @profile
     def get_watch_status(self, file_path: str) -> Optional[PlexWatchStatus]:
         """
         Get watch status for a specific file path
@@ -284,42 +285,101 @@ class PlexMetadataProvider:
             # Get server hash
             server_hash = self.get_server_hash(conn)
 
-            # Updated query to match by filename as well as full path
-            media_query = """
-            SELECT 
-                md.id as metadata_item_id,
-                md.guid,
-                md.title,
-                md.year,
-                mp.duration,
-                mp.file as file_path,
-                ls.name as library_section
-            FROM metadata_items md
-            JOIN media_items mi ON md.id = mi.metadata_item_id
-            JOIN media_parts mp ON mi.id = mp.media_item_id
-            LEFT JOIN library_sections ls ON md.library_section_id = ls.id
-            WHERE mp.file LIKE ?
-               OR mp.file = ?
+            # Fast path: exact file match first, fallback to filename match only if needed.
+            exact_query = """
+            WITH candidate AS (
+                SELECT
+                    md.id as metadata_item_id,
+                    md.guid,
+                    md.title,
+                    md.year,
+                    mp.duration,
+                    mp.file as file_path,
+                    ls.name as library_section
+                FROM metadata_items md
+                JOIN media_items mi ON md.id = mi.metadata_item_id
+                JOIN media_parts mp ON mi.id = mp.media_item_id
+                LEFT JOIN library_sections ls ON md.library_section_id = ls.id
+                WHERE mp.file = ?
+                   OR mp.file = ?
+                ORDER BY
+                    CASE
+                        WHEN mp.file = ? THEN 1
+                        ELSE 2
+                    END,
+                    mp.file
+                LIMIT 1
+            )
+            SELECT
+                c.metadata_item_id,
+                c.guid,
+                c.title,
+                c.year,
+                c.duration,
+                c.file_path,
+                c.library_section,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM metadata_item_views miv
+                    WHERE miv.guid = c.guid
+                ), 0) as view_count,
+                (
+                    SELECT MAX(miv.viewed_at)
+                    FROM metadata_item_views miv
+                    WHERE miv.guid = c.guid
+                ) as last_viewed_at
+            FROM candidate c
             """
-            
-            cursor.execute(media_query, (f"%{filename}%", file_path))
+
+            fallback_query = """
+            WITH candidate AS (
+                SELECT
+                    md.id as metadata_item_id,
+                    md.guid,
+                    md.title,
+                    md.year,
+                    mp.duration,
+                    mp.file as file_path,
+                    ls.name as library_section
+                FROM metadata_items md
+                JOIN media_items mi ON md.id = mi.metadata_item_id
+                JOIN media_parts mp ON mi.id = mp.media_item_id
+                LEFT JOIN library_sections ls ON md.library_section_id = ls.id
+                WHERE mp.file LIKE ?
+                ORDER BY mp.file
+                LIMIT 1
+            )
+            SELECT
+                c.metadata_item_id,
+                c.guid,
+                c.title,
+                c.year,
+                c.duration,
+                c.file_path,
+                c.library_section,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM metadata_item_views miv
+                    WHERE miv.guid = c.guid
+                ), 0) as view_count,
+                (
+                    SELECT MAX(miv.viewed_at)
+                    FROM metadata_item_views miv
+                    WHERE miv.guid = c.guid
+                ) as last_viewed_at
+            FROM candidate c
+            """
+
+            cursor.execute(exact_query, (normalized_path, file_path, normalized_path))
             media_result = cursor.fetchone()
+
+            if not media_result:
+                cursor.execute(fallback_query, (f"%{filename}%",))
+                media_result = cursor.fetchone()
             
             if media_result:
-                # Get view information from metadata_item_views
-                view_query = """
-                SELECT 
-                    COUNT(*) as view_count,
-                    MAX(viewed_at) as last_viewed_at
-                FROM metadata_item_views
-                WHERE guid = ?
-                """
-                
-                cursor.execute(view_query, (media_result['guid'],))
-                view_result = cursor.fetchone()
-                
-                view_count = view_result['view_count'] if view_result else 0
-                last_viewed_at = view_result['last_viewed_at'] if view_result else None
+                view_count = media_result['view_count'] or 0
+                last_viewed_at = media_result['last_viewed_at']
                 
                 # Convert timestamps
                 last_watched = None
