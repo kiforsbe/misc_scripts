@@ -60,6 +60,7 @@ class MatchResult:
 
 class BaseMetadataProvider(ABC):
     """Base class for metadata providers with common functionality"""
+    DEFAULT_TTL_DAYS = 7
     
     def __init__(self, cache_dir: str, cache_duration: timedelta = timedelta(days=7), provider_weight: float = 1.0):
         self.cache_dir = os.path.join(os.path.expanduser("~"), ".video_metadata_cache", cache_dir)
@@ -192,10 +193,34 @@ class BaseMetadataProvider(ABC):
 
             now_ts = int(time.time())
             ttl_days = int(self.cache_duration.days)
+
+            existing_ttl_by_dataset = {}
+            try:
+                placeholders = ','.join('?' for _ in datasets)
+                cur = conn.execute(
+                    f"SELECT dataset, default_ttl FROM data_version WHERE dataset IN ({placeholders})",
+                    tuple(datasets),
+                )
+                for ds_name, ds_ttl in cur.fetchall():
+                    if ds_ttl is not None:
+                        try:
+                            existing_ttl_by_dataset[ds_name] = int(ds_ttl)
+                        except Exception:
+                            pass
+            except Exception:
+                existing_ttl_by_dataset = {}
+
             for ds in datasets:
+                ttl_to_persist = ttl_days
+                if ttl_to_persist <= 0:
+                    existing_ttl = existing_ttl_by_dataset.get(ds)
+                    if existing_ttl is not None and existing_ttl > 0:
+                        ttl_to_persist = existing_ttl
+                    else:
+                        ttl_to_persist = self.DEFAULT_TTL_DAYS
                 conn.execute(
                     "INSERT OR REPLACE INTO data_version (dataset, expires_at, default_ttl, last_modified) VALUES (?, ?, ?, ?)",
-                    (ds, expiry_ts, ttl_days, now_ts),
+                    (ds, expiry_ts, ttl_to_persist, now_ts),
                 )
             conn.commit()
             conn.close()
@@ -228,6 +253,7 @@ class BaseMetadataProvider(ABC):
             expiries = []
             ttls = []
             last_mods = []
+            zero_ttl_datasets = []
             for ds in datasets:
                 # Read both `expires_at` and `updated` so we can prefer the new
                 # column but fall back to the old one when necessary.
@@ -247,7 +273,11 @@ class BaseMetadataProvider(ABC):
                             pass
                     if len(row) > 2 and row[2] is not None:
                         try:
-                            ttls.append(int(row[2]))
+                            ttl_val = int(row[2])
+                            if ttl_val > 0:
+                                ttls.append(ttl_val)
+                            elif ttl_val == 0:
+                                zero_ttl_datasets.append(ds)
                         except Exception:
                             pass
                     if len(row) > 3 and row[3] is not None:
@@ -256,11 +286,30 @@ class BaseMetadataProvider(ABC):
                         except Exception:
                             pass
             conn.close()
+            resolved_ttl_days = None
             if ttls:
                 # If DB supplies a default_ttl for any dataset, use the smallest
                 # as the provider-level default
+                resolved_ttl_days = min(ttls)
+            elif zero_ttl_datasets:
+                # If only zero TTLs were found, replace with hard-coded default.
+                resolved_ttl_days = self.DEFAULT_TTL_DAYS
+
+            if resolved_ttl_days is not None:
                 try:
-                    self.cache_duration = timedelta(days=min(ttls))
+                    self.cache_duration = timedelta(days=resolved_ttl_days)
+                except Exception:
+                    pass
+
+            # Repair zero default_ttl rows during initialization.
+            if zero_ttl_datasets and resolved_ttl_days is not None:
+                try:
+                    for ds in zero_ttl_datasets:
+                        conn.execute(
+                            "UPDATE data_version SET default_ttl = ? WHERE dataset = ?",
+                            (int(resolved_ttl_days), ds),
+                        )
+                    conn.commit()
                 except Exception:
                     pass
             if expiries:
@@ -274,6 +323,7 @@ class BaseMetadataProvider(ABC):
                     self._data_version_last_modified = datetime.fromtimestamp(max(last_mods))
                 except Exception:
                     self._data_version_last_modified = None
+            conn.close()
         except Exception as e:
             logging.debug(f"Could not read cache expiry from provider DB: {e}")
     
