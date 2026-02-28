@@ -5,7 +5,7 @@ import shutil
 import sys
 import re
 import binascii
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Protocol
 from presentation import Presenter, color_text, get_emoji, Colors
@@ -893,6 +893,158 @@ class SeriesArchiver:
         return summary
 
 
+def _normalize_datetime(dt: datetime) -> datetime:
+    """Convert timezone-aware datetimes to local naive datetimes for safe comparisons."""
+    if dt.tzinfo is not None:
+        return dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
+def _parse_smart_datetime(value: str) -> Tuple[Optional[datetime], bool]:
+    """Parse datetime text (ISO preferred) and return (datetime, is_date_only)."""
+    text = (value or '').strip()
+    if not text:
+        return None, False
+
+    lowered = text.lower()
+    now = datetime.now()
+    if lowered == 'now':
+        return now, False
+    if lowered == 'today':
+        return datetime(now.year, now.month, now.day), True
+    if lowered == 'yesterday':
+        today = datetime(now.year, now.month, now.day)
+        return today - timedelta(days=1), True
+    if lowered == 'tomorrow':
+        today = datetime(now.year, now.month, now.day)
+        return today + timedelta(days=1), True
+
+    is_date_only = bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}', text))
+
+    # ISO-first parsing, including trailing Z
+    iso_candidate = text[:-1] + '+00:00' if text.endswith('Z') else text
+    try:
+        parsed = datetime.fromisoformat(iso_candidate)
+        return _normalize_datetime(parsed), is_date_only
+    except ValueError:
+        pass
+
+    # Common fallback formats
+    formats = [
+        '%Y/%m/%d',
+        '%Y.%m.%d',
+        '%Y%m%d',
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%d %H:%M:%S',
+        '%Y/%m/%d %H:%M',
+        '%Y/%m/%d %H:%M:%S',
+        '%d.%m.%Y',
+        '%d.%m.%Y %H:%M',
+        '%d.%m.%Y %H:%M:%S'
+    ]
+
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            date_only = fmt in ('%Y/%m/%d', '%Y.%m.%d', '%Y%m%d', '%d.%m.%Y')
+            return parsed, date_only
+        except ValueError:
+            continue
+
+    # Unix timestamp fallback (seconds or milliseconds)
+    if re.fullmatch(r'\d{10,13}', text):
+        try:
+            timestamp = int(text)
+            if len(text) == 13:
+                timestamp = timestamp / 1000
+            return datetime.fromtimestamp(timestamp), False
+        except (ValueError, OSError):
+            pass
+
+    return None, False
+
+
+def _parse_modified_expression(expression: str) -> Tuple[str, datetime, bool]:
+    """Parse expressions like '<2026-01-01' or '>=2026-01-01T12:00'."""
+    expr = (expression or '').strip()
+    match = re.match(r'^(<=|>=|<|>|==|=|!=)\s*(.+)$', expr)
+
+    if match:
+        operator = match.group(1)
+        raw_value = match.group(2).strip()
+    else:
+        operator = '='
+        raw_value = expr
+
+    parsed_dt, is_date_only = _parse_smart_datetime(raw_value)
+    if parsed_dt is None:
+        raise ValueError(
+            f"Invalid --modified expression '{expression}'. "
+            "Use forms like '<2026-01-01', '>=2026-01-01T15:30', '=2026-01-01'."
+        )
+
+    return operator, parsed_dt, is_date_only
+
+
+def _get_group_modified_datetime(group_data: Dict) -> Optional[datetime]:
+    """Extract a group's modified datetime (prefers group avg timestamp, then newest file mtime)."""
+    group_metadata = group_data.get('group_metadata', {}) or {}
+    avg_modified_time = group_metadata.get('avg_modified_time')
+    if isinstance(avg_modified_time, (int, float)):
+        try:
+            return datetime.fromtimestamp(avg_modified_time)
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    newest_mtime = None
+    for file_info in group_data.get('files', []):
+        source_path = file_info.get('filepath') or file_info.get('file_path')
+        if not source_path:
+            continue
+        if not os.path.exists(source_path):
+            continue
+
+        try:
+            file_mtime = os.path.getmtime(source_path)
+            if newest_mtime is None or file_mtime > newest_mtime:
+                newest_mtime = file_mtime
+        except OSError:
+            continue
+
+    if newest_mtime is None:
+        return None
+    return datetime.fromtimestamp(newest_mtime)
+
+
+def _matches_modified_expression(group_data: Dict, operator: str, target_dt: datetime, is_date_only: bool) -> bool:
+    """Evaluate a parsed modified-date expression against group data."""
+    group_modified_dt = _get_group_modified_datetime(group_data)
+    if group_modified_dt is None:
+        return False
+
+    actual_dt = _normalize_datetime(group_modified_dt)
+    expected_dt = _normalize_datetime(target_dt)
+
+    if is_date_only and operator in ('=', '==', '!='):
+        is_equal = actual_dt.date() == expected_dt.date()
+        return (not is_equal) if operator == '!=' else is_equal
+
+    if operator in ('=', '=='):
+        return actual_dt == expected_dt
+    if operator == '!=':
+        return actual_dt != expected_dt
+    if operator == '<':
+        return actual_dt < expected_dt
+    if operator == '<=':
+        return actual_dt <= expected_dt
+    if operator == '>':
+        return actual_dt > expected_dt
+    if operator == '>=':
+        return actual_dt >= expected_dt
+
+    return False
+
+
 def cmd_list(args):
     """Handle the list command."""
     use_colors = not getattr(args, 'no_color', False)
@@ -998,6 +1150,21 @@ def cmd_list(args):
             
             # Include if both filters match
             if completion_status_match and watch_status_match:
+                filtered_indexed_groups.append((original_index, group_key, details))
+        indexed_groups = filtered_indexed_groups
+
+    # Filter by modified datetime if requested
+    if hasattr(args, 'modified') and args.modified:
+        try:
+            op, modified_dt, is_date_only = _parse_modified_expression(args.modified)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+
+        filtered_indexed_groups = []
+        for original_index, group_key, details in indexed_groups:
+            group_data = details.get('data', {})
+            if _matches_modified_expression(group_data, op, modified_dt, is_date_only):
                 filtered_indexed_groups.append((original_index, group_key, details))
         indexed_groups = filtered_indexed_groups
     
@@ -1230,6 +1397,9 @@ def main():
                                  'Examples: "complete watched", "+complete +watched", "-unknown -unwatched", "watched -watched_partial"')
     list_parser.add_argument('--sort', action='store_true',
                             help='Sort series alphabetically by title')
+    list_parser.add_argument('--modified', metavar='EXPR',
+                            help='Filter by modified datetime using expressions like "<2026-01-01", ">=2026-01-01T12:00", "=2026-01-01". '
+                                 'ISO format is preferred, but common date formats are also accepted.')
     list_parser.add_argument('--no-color', action='store_true',
                             help='Disable color formatting in output')
     
