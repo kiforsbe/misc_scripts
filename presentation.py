@@ -1,6 +1,7 @@
 import datetime
 import os
 import sys
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 
@@ -39,6 +40,45 @@ class Presenter:
 
     def __init__(self, use_colors: bool = True):
         self.use_colors = use_colors
+
+    def _display_width(self, text: str) -> int:
+        """Calculate terminal display width for text (ignores ANSI color codes)."""
+        plain = Colors.strip(text)
+        width = 0
+        for char in plain:
+            if char == '\ufe0f':
+                continue
+            if unicodedata.combining(char):
+                continue
+            width += 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+        return width
+
+    def _truncate_to_width(self, text: str, max_width: int) -> str:
+        """Truncate text to a terminal display width with ellipsis when needed."""
+        if max_width <= 0:
+            return ''
+
+        if self._display_width(text) <= max_width:
+            return text
+
+        ellipsis = '...'
+        ellipsis_width = self._display_width(ellipsis)
+        if max_width <= ellipsis_width:
+            return ellipsis[:max_width]
+
+        target_width = max_width - ellipsis_width
+        result_chars = []
+        current_width = 0
+        for char in text:
+            char_width = 0
+            if char != '\ufe0f' and not unicodedata.combining(char):
+                char_width = 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
+            if current_width + char_width > target_width:
+                break
+            result_chars.append(char)
+            current_width += char_width
+
+        return ''.join(result_chars) + ellipsis
 
     def _format_episode_ranges(self, episodes: List[int]) -> str:
         if not episodes:
@@ -82,18 +122,19 @@ class Presenter:
         else:
             status_color = Colors.BRIGHT_BLACK
 
-        # Title with season
-        title_str = title
-        if season:
-            title_str += f" {Colors.DIM}S{season:02d}{Colors.RESET}"
+        # Title with season (display-width aware for proper alignment)
+        season_suffix_plain = f" S{season:02d}" if season else ""
+        season_suffix_colored = f" {Colors.DIM}S{season:02d}{Colors.RESET}" if season else ""
 
-        # Truncate plain title for padding
-        plain_title = title
-        if len(plain_title) > title_length:
-            truncated = plain_title[: title_length - 3] + '...'
-            title_str = truncated
-            if season:
-                title_str += f" {Colors.DIM}S{season:02d}{Colors.RESET}"
+        title_plain_display = f"{title}{season_suffix_plain}"
+        if self._display_width(title_plain_display) > title_length:
+            max_title_width = max(1, title_length - self._display_width(season_suffix_plain))
+            truncated_title = self._truncate_to_width(title, max_title_width)
+            title_str = f"{truncated_title}{season_suffix_colored}"
+            plain_title = f"{truncated_title}{season_suffix_plain}"
+        else:
+            title_str = f"{title}{season_suffix_colored}"
+            plain_title = title_plain_display
 
         # Extra info: watched/missing/extra
         extra_info = []
@@ -128,7 +169,7 @@ class Presenter:
 
         episodes_expected_str = str(episodes_expected) if episodes_expected else '?'
 
-        padding_needed = title_length - len(plain_title)
+        padding_needed = title_length - self._display_width(plain_title)
         padding_needed = max(0, padding_needed)
 
         line = f"{status_color}{status_emoji}{Colors.RESET} {Colors.BOLD}{title_str}{Colors.RESET}{' ' * padding_needed} {Colors.BRIGHT_BLUE}{episodes_found:>4}{Colors.RESET}/{Colors.BRIGHT_BLACK}{episodes_expected_str:<4}{Colors.RESET}{extra_info_str}{timestamp_str}"
