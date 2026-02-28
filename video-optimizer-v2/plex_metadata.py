@@ -286,7 +286,7 @@ class PlexMetadataProvider:
             server_hash = self.get_server_hash(conn)
 
             # Fast path: exact file match first, fallback to filename match only if needed.
-            exact_query = """
+            query_template = """
             WITH candidate AS (
                 SELECT
                     md.id as metadata_item_id,
@@ -300,14 +300,8 @@ class PlexMetadataProvider:
                 JOIN media_items mi ON md.id = mi.metadata_item_id
                 JOIN media_parts mp ON mi.id = mp.media_item_id
                 LEFT JOIN library_sections ls ON md.library_section_id = ls.id
-                WHERE mp.file = ?
-                   OR mp.file = ?
-                ORDER BY
-                    CASE
-                        WHEN mp.file = ? THEN 1
-                        ELSE 2
-                    END,
-                    mp.file
+                WHERE {where_clause}
+                ORDER BY {order_clause}
                 LIMIT 1
             )
             SELECT
@@ -331,51 +325,23 @@ class PlexMetadataProvider:
             FROM candidate c
             """
 
-            fallback_query = """
-            WITH candidate AS (
-                SELECT
-                    md.id as metadata_item_id,
-                    md.guid,
-                    md.title,
-                    md.year,
-                    mp.duration,
-                    mp.file as file_path,
-                    ls.name as library_section
-                FROM metadata_items md
-                JOIN media_items mi ON md.id = mi.metadata_item_id
-                JOIN media_parts mp ON mi.id = mp.media_item_id
-                LEFT JOIN library_sections ls ON md.library_section_id = ls.id
-                WHERE mp.file LIKE ?
-                ORDER BY mp.file
-                LIMIT 1
-            )
-            SELECT
-                c.metadata_item_id,
-                c.guid,
-                c.title,
-                c.year,
-                c.duration,
-                c.file_path,
-                c.library_section,
-                COALESCE((
-                    SELECT COUNT(*)
-                    FROM metadata_item_views miv
-                    WHERE miv.guid = c.guid
-                ), 0) as view_count,
-                (
-                    SELECT MAX(miv.viewed_at)
-                    FROM metadata_item_views miv
-                    WHERE miv.guid = c.guid
-                ) as last_viewed_at
-            FROM candidate c
-            """
+            def fetch_candidate(where_clause: str, order_clause: str, params: tuple):
+                query = query_template.format(where_clause=where_clause, order_clause=order_clause)
+                cursor.execute(query, params)
+                return cursor.fetchone()
 
-            cursor.execute(exact_query, (normalized_path, file_path, normalized_path))
-            media_result = cursor.fetchone()
+            media_result = fetch_candidate(
+                "mp.file = ? OR mp.file = ?",
+                "CASE WHEN mp.file = ? THEN 1 ELSE 2 END, mp.file",
+                (normalized_path, file_path, normalized_path),
+            )
 
             if not media_result:
-                cursor.execute(fallback_query, (f"%{filename}%",))
-                media_result = cursor.fetchone()
+                media_result = fetch_candidate(
+                    "mp.file LIKE ?",
+                    "mp.file",
+                    (f"%{filename}%",),
+                )
             
             if media_result:
                 view_count = media_result['view_count'] or 0
