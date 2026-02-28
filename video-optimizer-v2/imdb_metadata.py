@@ -767,40 +767,40 @@ class IMDbDataProvider(BaseMetadataProvider):
             # This is very ineffective for now, as it ignores the scoring from the FTS5 search
             # We will for now use fuzzy matching on the candidates instead along with additional scorign to get a better match
             # TODO: Fix this junk and make the FTS5 query take all this stuff into consideration instead
-            for row in candidates:
-                # Build search dict for fuzzy matching
-                search_dict = {row["id"]: row["title"] for row in candidates}
+            # Build lookup maps once to avoid repeated O(n) scans in the hot loop
+            search_dict = {r["id"]: r["title"] for r in candidates}
+            candidate_by_id = {r["id"]: r for r in candidates}
 
-                # Perform fuzzy search with limited candidates
-                title_matches = process.extract(
-                    title, search_dict, scorer=fuzz.ratio, limit=self.FUZZY_MATCH_LIMIT
-                )
+            # Perform fuzzy search once with limited candidates
+            title_matches = process.extract(
+                title, search_dict, scorer=fuzz.ratio, limit=self.FUZZY_MATCH_LIMIT
+            )
 
-                for matched_title, fuzzy_score, row_id in title_matches:
-                    # Find the full row data
-                    row = next((r for r in candidates if r["id"] == row_id), None)
-                    if not row:
-                        continue
+            for _matched_title, fuzzy_score, row_id in title_matches:
+                # O(1) row lookup by id
+                row = candidate_by_id.get(row_id)
+                if not row:
+                    continue
 
-                    total_score = fuzzy_score
+                total_score = fuzzy_score
 
-                    # Add year match bonus
-                    if year and row["year"]:
-                        if row["year"] == year:
-                            total_score += self.YEAR_EXACT_BONUS
-                        elif abs(row["year"] - year) <= 1:
-                            total_score += self.YEAR_CLOSE_BONUS
+                # Add year match bonus
+                if year and row["year"]:
+                    if row["year"] == year:
+                        total_score += self.YEAR_EXACT_BONUS
+                    elif abs(row["year"] - year) <= 1:
+                        total_score += self.YEAR_CLOSE_BONUS
 
-                    # Add popularity bonus (log-scaled, heavier weight)
-                    if row["votes"]:
-                        vote_bonus = min(self.VOTE_BONUS_CAP, self.VOTE_BONUS_MULTIPLIER * math.log10(max(1, row["votes"])))
-                        total_score += vote_bonus
+                # Add popularity bonus (log-scaled, heavier weight)
+                if row["votes"]:
+                    vote_bonus = min(self.VOTE_BONUS_CAP, self.VOTE_BONUS_MULTIPLIER * math.log10(max(1, row["votes"])))
+                    total_score += vote_bonus
 
-                    row["score"] = total_score
+                row["score"] = total_score
 
-                    if total_score > best_score:
-                        best_score = total_score
-                        best_match = self._create_title_info_from_row_fast(row, conn)
+                if total_score > best_score:
+                    best_score = total_score
+                    best_match = self._create_title_info_from_row_fast(row, conn)
 
         finally:
             self._return_connection(conn)
