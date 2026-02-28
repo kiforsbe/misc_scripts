@@ -382,6 +382,54 @@ class BaseMetadataProvider(ABC):
         except Exception:
             return False
 
+    def _get_expired_datasets(self, datasets: Optional[Iterable[str]] = None) -> List[str]:
+        """Return dataset names whose cache metadata indicates they are expired or missing."""
+        db_path = getattr(self, "_db_path", None)
+        ds_list = list(datasets) if datasets is not None else list(getattr(self, "CACHE_EXPIRY_DATASETS", []) or [])
+        if not db_path or not ds_list:
+            return []
+
+        expired: List[str] = []
+        now_ts = int(time.time())
+        try:
+            with sqlite3.connect(db_path) as conn:
+                placeholders = ','.join('?' for _ in ds_list)
+                cur = conn.execute(
+                    f"SELECT dataset, expires_at, updated FROM data_version WHERE dataset IN ({placeholders})",
+                    tuple(ds_list),
+                )
+                rows = {r[0]: r for r in cur.fetchall()}
+
+                for ds in ds_list:
+                    row = rows.get(ds)
+                    if not row:
+                        expired.append(ds)
+                        continue
+
+                    expires_at = row[1]
+                    updated = row[2]
+
+                    if expires_at is not None:
+                        try:
+                            if int(expires_at) <= now_ts:
+                                expired.append(ds)
+                            continue
+                        except Exception:
+                            pass
+
+                    if updated is not None:
+                        try:
+                            if int(updated) + int(self.cache_duration.total_seconds()) <= now_ts:
+                                expired.append(ds)
+                        except Exception:
+                            expired.append(ds)
+                    else:
+                        expired.append(ds)
+        except Exception:
+            return ds_list
+
+        return expired
+
     def _invalidate_cache_core(
         self,
         datasets: Optional[Iterable[str]] = None,
@@ -411,7 +459,7 @@ class BaseMetadataProvider(ABC):
             for attr in cache_attrs:
                 cache_obj = getattr(self, attr, None)
                 try:
-                    if hasattr(cache_obj, "clear"):
+                    if cache_obj is not None and hasattr(cache_obj, "clear"):
                         cache_obj.clear()
                     elif cache_obj is not None:
                         setattr(self, attr, {})
@@ -433,11 +481,6 @@ class BaseMetadataProvider(ABC):
     @abstractmethod
     def get_episode_info(self, parent_id: str, season: int, episode: int) -> Optional[EpisodeInfo]:
         """Get episode information if the title is a TV show"""
-        pass
-    
-    @abstractmethod
-    def invalidate_cache(self) -> None:
-        """Invalidate the current cache, forcing a refresh on next access"""
         pass
     
     @abstractmethod

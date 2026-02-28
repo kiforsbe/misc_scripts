@@ -90,6 +90,10 @@ class AnimeDataProvider(BaseMetadataProvider):
         self._init_connection_pool(pool_size=3)
         self._init_database()
         self._load_cache_duration()
+        expired = self._get_expired_datasets(self.CACHE_EXPIRY_DATASETS)
+        if expired:
+            logging.info("Expired anime datasets detected on init: %s. Refreshing from source.", ",".join(expired))
+            self.refresh_data()
 
     def _parse_season_from_title(self, title: str) -> tuple[Optional[int], str]:
         """
@@ -1024,22 +1028,10 @@ class AnimeDataProvider(BaseMetadataProvider):
 
         return normalized
     
-    def invalidate_cache(self) -> None:
-        """Invalidate the current cache, forcing a refresh on next access"""
-        logging.info("Invalidating anime database cache...")
-        try:
-            self._invalidate_cache_core(
-                datasets=["anime_offline_database"],
-                cache_attrs=["_search_cache"],
-            )
-            
-            logging.info("Anime cache invalidated successfully")
-        except Exception as e:
-            logging.error(f"Failed to invalidate anime cache: {str(e)}")
-    
     def refresh_data(self) -> None:
         """Invalidate cache and immediately reload/refresh the data"""
         logging.info("Refreshing anime database...")
-        self.invalidate_cache()
+        self.set_cache_expiry(0)
+        self._search_cache.clear()
         self.load_database()
         logging.info("Anime database refreshed successfully")

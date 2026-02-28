@@ -80,6 +80,10 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._pool_size = 3
         self._init_database()
         self._load_cache_duration()
+        expired = self._get_expired_datasets(self.CACHE_EXPIRY_DATASETS)
+        if expired:
+            logging.info("Expired IMDb datasets detected on init: %s. Refreshing from source.", ",".join(expired))
+            self.refresh_data()
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a connection from the pool or create a new one"""
@@ -229,26 +233,10 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _is_data_current(self) -> bool:
         """Check if the database contains current data"""
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                # Use cache_duration from base class (day granularity)
-                cache_days = int(self.cache_duration.days)
-                cursor = conn.execute(
-                    f"""
-                    SELECT COUNT(*) FROM data_version 
-                    WHERE dataset IN ('title.basics', 'title.ratings', 'title.episode')
-                    AND updated > strftime('%s', 'now', '-{cache_days} days')
-                """
-                )
-                count = cursor.fetchone()[0]
-
-                # Also check if we have data in title_basics (main table)
-                cursor = conn.execute("SELECT COUNT(*) FROM title_basics LIMIT 1")
-                has_data = cursor.fetchone()[0] > 0
-
-                return count >= 3 and has_data
-        except Exception:
-            return False
+        return self._is_data_current_in_db(
+            main_table="title_basics",
+            datasets=getattr(self, "CACHE_EXPIRY_DATASETS", None),
+        )
 
     def _verify_data_integrity(self) -> None:
         """Verify that all datasets are properly linked"""
@@ -1014,27 +1002,12 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         return normalized
     
-    def invalidate_cache(self) -> None:
-        """Invalidate the current cache, forcing a refresh on next access"""
-        logging.info("Invalidating IMDb database cache...")
-        try:
-            # Clear the data_version table to force reload
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute("DELETE FROM data_version")
-                conn.commit()
-            
-            # Clear in-memory caches
-            self._search_cache.clear()
-            self._title_cache.clear()
-            
-            logging.info("IMDb cache invalidated successfully")
-        except Exception as e:
-            logging.error(f"Failed to invalidate IMDb cache: {str(e)}")
-    
     def refresh_data(self) -> None:
         """Invalidate cache and immediately reload/refresh the data"""
         logging.info("Refreshing IMDb database...")
-        self.invalidate_cache()
+        self.set_cache_expiry(0)
+        self._search_cache.clear()
+        self._title_cache.clear()
         self._ensure_data_loaded()
         logging.info("IMDb database refreshed successfully")
 
