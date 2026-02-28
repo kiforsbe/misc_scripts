@@ -428,7 +428,7 @@ Refresh Operations:
         
         # Validate input_paths requirement (not needed in refresh modes)
         if not refresh_mode and (not args.input_paths or len(args.input_paths) == 0):
-            self.parser.error('At least one input path is required unless using --refresh-bundle or --webapp-refresh')
+            self.parser.error(self._build_missing_input_paths_error(args))
         
         # Check for incompatible arguments in refresh modes
         if refresh_mode:
@@ -444,6 +444,45 @@ Refresh Operations:
         # Handle quiet flag
         if args.quiet:
             args.verbose = 0
+
+    def _build_missing_input_paths_error(self, args) -> str:
+        """Build contextual error for missing input paths.
+
+        Args:
+            args: Parsed arguments namespace
+
+        Returns:
+            Error message with optional hints
+        """
+        base_message = 'At least one input path is required unless using --refresh-bundle or --webapp-refresh'
+
+        mal_value = getattr(args, 'myanimelist_xml', None)
+        if not mal_value:
+            return base_message
+
+        # Detect likely shell quoting/escaping fallout where --myanimelist-xml
+        # accidentally swallowed later CLI options and positional input paths.
+        suspicious_tokens = (' --', '\t--', '" --', "' --")
+        malformed_tail = any(token in mal_value for token in suspicious_tokens)
+
+        # On Windows-like paths, a trailing backslash inside certain shells can
+        # escape the closing quote and consume subsequent arguments.
+        windows_trailing_slash = (
+            isinstance(mal_value, str)
+            and (':\\' in mal_value or mal_value.startswith('\\\\'))
+            and mal_value.endswith('\\')
+        )
+
+        if malformed_tail or windows_trailing_slash:
+            return (
+                f'{base_message}. '\
+                'Hint: --myanimelist-xml may be malformed due to shell quoting/escaping '\
+                '(commonly a trailing backslash in a quoted Windows path). '\
+                'Try one of: "C:/path/", "C:\\\\path", or "C:\\\\path\\\\"; '\
+                'and place positional input paths after -- (for example: -- "E:/Downloads/").'
+            )
+
+        return base_message
     
     def _get_refresh_mode(self, args) -> Optional[str]:
         """Determine which refresh mode is active.
