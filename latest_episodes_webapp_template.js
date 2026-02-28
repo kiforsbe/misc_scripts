@@ -14,6 +14,7 @@
 class LatestEpisodesApp {
     constructor() {
         this.data = EPISODES_DATA;
+        this.normalizeEpisodeData();
         this.filteredEpisodes = [];
         this.selectedEpisode = null;
         this.searchTerm = '';
@@ -32,6 +33,51 @@ class LatestEpisodesApp {
         this.isNavigating = false; // Flag to prevent infinite loops during navigation
         this.mobileBreakpoint = 768;
         this.init();
+    }
+
+    normalizeEpisodeData() {
+        if (!this.data || !Array.isArray(this.data.episodes)) {
+            return;
+        }
+
+        const seriesCountByTitle = new Map();
+        this.data.episodes.forEach((episode) => {
+            const title = episode?.metadata?.title || 'Unknown';
+            seriesCountByTitle.set(title, (seriesCountByTitle.get(title) || 0) + 1);
+        });
+
+        this.data.episodes.forEach((episode) => {
+            const metadata = episode.metadata || {};
+            const title = metadata.title || 'Unknown';
+
+            if (episode.series_episode_count == null) {
+                episode.series_episode_count = seriesCountByTitle.get(title) || 0;
+            }
+
+            if (!episode.series_metadata && metadata.series_metadata) {
+                episode.series_metadata = metadata.series_metadata;
+            }
+
+            if (!episode.source_url && metadata.source_url) {
+                episode.source_url = metadata.source_url;
+            }
+
+            if (!episode.episode_metadata) {
+                if (metadata.episode_metadata) {
+                    episode.episode_metadata = metadata.episode_metadata;
+                } else if (metadata.episode_info) {
+                    episode.episode_metadata = metadata.episode_info;
+                }
+            }
+
+            if (!episode.myanimelist_watch_status && metadata.myanimelist_watch_status) {
+                episode.myanimelist_watch_status = metadata.myanimelist_watch_status;
+            }
+
+            if (!episode.plex_watch_status && metadata.plex_watch_status) {
+                episode.plex_watch_status = metadata.plex_watch_status;
+            }
+        });
     }
 
     buildUrl(staticUrl) {

@@ -152,17 +152,9 @@ class LatestEpisodesViewer:
         for episode in episodes_data:
             title = episode['metadata'].get('title', 'Unknown')
             series_groups[title].append(episode)
-        
-        # Enhance with series-level metadata and watch status
-        print("Enhancing with series metadata...")
-        enhanced_episodes = []
-        
-        for episode in tqdm(episodes_data, desc="Enhancing episodes", disable=not show_progress):
-            enhanced_episode = self._enhance_episode_with_series_data(episode, series_groups)
-            enhanced_episodes.append(enhanced_episode)
-        
+
         # Create summary statistics
-        summary = self._create_summary(enhanced_episodes, series_groups)
+        summary = self._create_summary(episodes_data, series_groups)
         
         def _detect_host_subnet_ip():
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -180,7 +172,7 @@ class LatestEpisodesViewer:
             return ip
 
         results = {
-            'episodes': enhanced_episodes,
+            'episodes': episodes_data,
             'series_groups': dict(series_groups),
             'summary': summary,
             'title_metadata': self.file_grouper.title_metadata,
@@ -191,95 +183,6 @@ class LatestEpisodesViewer:
         }
         
         return results
-    
-    def _enhance_episode_with_series_data(self, episode: Dict[str, Any], series_groups: Dict[str, List]) -> Dict[str, Any]:
-        """Enhance episode data with series-level information."""
-        enhanced = episode.copy()
-        metadata = episode.get('metadata', {})
-
-        title = metadata.get('title', 'Unknown')
-        metadata_id = metadata.get('metadata_id')
-        
-        # Get series episodes for context
-        series_episodes = series_groups.get(title, [])
-        enhanced['series_episode_count'] = len(series_episodes)
-
-        # Reuse metadata produced by FileGrouper where possible
-        if metadata.get('series_metadata'):
-            enhanced['series_metadata'] = metadata['series_metadata']
-
-        if metadata.get('source_url'):
-            enhanced['source_url'] = metadata['source_url']
-
-        if metadata.get('episode_metadata'):
-            enhanced['episode_metadata'] = metadata['episode_metadata']
-        elif metadata.get('episode_info'):
-            enhanced['episode_metadata'] = metadata['episode_info']
-
-        if metadata.get('myanimelist_watch_status'):
-            enhanced['myanimelist_watch_status'] = metadata['myanimelist_watch_status']
-
-        # Fallback to FileGrouper title cache if fields were not embedded in file metadata
-        if metadata_id and hasattr(self.file_grouper, 'title_metadata'):
-            try:
-                cached_metadata = self.file_grouper.title_metadata.get(metadata_id) or \
-                                 self.file_grouper.title_metadata.get(str(metadata_id))
-                if cached_metadata:
-                    metadata_dict = cached_metadata.get('metadata', {})
-
-                    if metadata_dict and 'series_metadata' not in enhanced:
-                        enhanced['series_metadata'] = {
-                            'id': metadata_id,
-                            'title': metadata_dict.get('title', title),
-                            'type': metadata_dict.get('type', 'unknown'),
-                            'year': metadata_dict.get('year'),
-                            'rating': metadata_dict.get('rating'),
-                            'genres': metadata_dict.get('genres', []),
-                            'tags': metadata_dict.get('tags', []),
-                            'sources': metadata_dict.get('sources', []),
-                            'total_episodes': metadata_dict.get('total_episodes'),
-                            'plot': metadata_dict.get('plot')
-                        }
-
-                    if 'source_url' not in enhanced:
-                        sources = metadata_dict.get('sources', [])
-                        if sources:
-                            mal_sources = [src for src in sources if 'myanimelist.net' in src]
-                            imdb_sources = [src for src in sources if 'imdb.com' in src]
-                            source_url = mal_sources[0] if mal_sources else (imdb_sources[0] if imdb_sources else None)
-                            if source_url:
-                                enhanced['source_url'] = source_url
-
-                    if 'myanimelist_watch_status' not in enhanced and cached_metadata.get('myanimelist_watch_status'):
-                        enhanced['myanimelist_watch_status'] = cached_metadata.get('myanimelist_watch_status')
-            except Exception as e:
-                logging.debug(f"Could not apply cached title metadata for {title}: {e}")
-        
-        # Get Plex watch status
-        if metadata.get('plex_watch_status'):
-            enhanced['plex_watch_status'] = metadata['plex_watch_status']
-        elif self.plex_provider:
-            try:
-                plex_status = self.plex_provider.get_watch_status(episode['file_path'])
-                if plex_status:
-                    enhanced['plex_watch_status'] = {
-                        'watched': plex_status.watched,
-                        'watch_count': plex_status.watch_count,
-                        'progress_percent': plex_status.progress_percent,
-                        'last_watched': plex_status.last_watched.isoformat() if plex_status.last_watched else None,
-                        'server_hash': plex_status.server_hash,
-                        'metadata_item_id': plex_status.metadata_item_id,
-                        'plex_title': plex_status.plex_title,
-                        'plex_year': plex_status.plex_year,
-                        'library_section': plex_status.library_section,
-                        'duration': plex_status.duration,
-                        'view_offset': plex_status.view_offset,
-                        'queried_id': plex_status.queried_id
-                    }
-            except Exception as e:
-                logging.debug(f"Could not get Plex status for {episode['file_path']}: {e}")
-        
-        return enhanced
     
     def _create_summary(self, episodes: List[Dict], series_groups: Dict[str, List]) -> Dict[str, Any]:
         """Create summary statistics."""
@@ -298,7 +201,7 @@ class LatestEpisodesViewer:
         
         for episode in episodes:
             # Plex watch status
-            plex_status = episode.get('plex_watch_status')
+            plex_status = episode.get('plex_watch_status') or episode.get('metadata', {}).get('plex_watch_status')
             if plex_status:
                 if plex_status['watched']:
                     watch_status_counts['watched'] += 1
@@ -310,7 +213,7 @@ class LatestEpisodesViewer:
                 watch_status_counts['unknown'] += 1
             
             # MyAnimeList status
-            mal_status = episode.get('myanimelist_watch_status')
+            mal_status = episode.get('myanimelist_watch_status') or episode.get('metadata', {}).get('myanimelist_watch_status')
             if mal_status:
                 status = mal_status.get('my_status', '').lower().replace(' ', '_')
                 if status:
