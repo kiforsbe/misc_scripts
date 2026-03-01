@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.4
+// @version      1.7.5
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -38,18 +38,16 @@
         .ytdl-custom-button-container {
             display: flex;
             align-items: center;
-            margin-left: 8px; /* Adjust spacing as needed */
-            /* position: relative; */ /* <-- REMOVE THIS */
+          margin-left: 8px;
             font-size: 1.4rem;
             color: var(--yt-spec-text-primary);
             background-color: var(--yt-spec-badge-chip-background);
             padding: 0;
             border: none;
-            border-radius: 18px; /* Match YouTube style */
+          border-radius: 18px;
             cursor: pointer;
-            height: 36px; /* Match YouTube button height */
-            /* overflow: hidden; */ /* REMOVED THIS LINE */
-            width: fit-content; /* <--- ADD THIS LINE */
+          height: 36px;
+          width: fit-content;
         }
         .ytdl-download-button {
             padding: 0 16px;
@@ -63,7 +61,7 @@
             font-size: 1.4rem;
             font-weight: 500;
             cursor: pointer;
-            border-right: 1px solid var(--yt-spec-10-percent-layer); /* Separator */
+            border-right: 1px solid var(--yt-spec-10-percent-layer);
         }
         .ytdl-download-button:hover {
             background-color: var(--yt-spec-badge-chip-background-hover);
@@ -83,18 +81,16 @@
             background-color: var(--yt-spec-badge-chip-background-hover);
         }
         .ytdl-dropdown-menu {
-            display: none; /* Hidden by default */
-            /* position: absolute; */ /* <-- CHANGE */
-            position: fixed;      /* <-- TO FIXED */
-            /* Remove top/bottom/left - will be set dynamically */
+          display: none;
+          position: fixed;
             background-color: var(--yt-spec-menu-background);
             border: 1px solid var(--yt-spec-10-percent-layer);
             border-radius: 4px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            z-index: 10000; /* Even higher z-index */
+          z-index: 10000;
             min-width: 200px;
-            max-height: 300px;
-            overflow-y: auto; /* Keep this for scrolling within the menu */
+          max-height: 300px;
+          overflow-y: auto;
             color: var(--yt-spec-text-primary);
         }
         .ytdl-dropdown-menu.show {
@@ -105,9 +101,9 @@
             cursor: pointer;
             font-size: 1.3rem;
             white-space: nowrap;
-            display: block; /* Make it block level */
-            text-decoration: none; /* Remove underline if it's an anchor */
-            color: inherit; /* Inherit text color */
+          display: block;
+          text-decoration: none;
+          color: inherit;
         }
         .ytdl-dropdown-header {
           font-weight: bold;
@@ -116,9 +112,7 @@
           margin-bottom: 4px;
         }
         .ytdl-dropdown-item:hover {
-            /* Use YouTube's standard hover background */
-            background-color: var(--yt-spec-hover-background, rgba(0, 0, 0, 0.1)); /* Added fallback */
-            /* Text color remains inherited (var(--yt-spec-text-primary)), ensuring contrast */
+          background-color: var(--yt-spec-hover-background, rgba(0, 0, 0, 0.1));
         }
         .ytdl-loading-indicator {
             padding: 10px;
@@ -128,7 +122,7 @@
         }
         .ytdl-error-message {
             padding: 10px;
-            color: var(--yt-spec-error-message-color, red); /* Use YT variable or fallback */
+          color: var(--yt-spec-error-message-color, red);
             font-weight: bold;
         }
         /* Hide original YT download button */
@@ -139,10 +133,10 @@
         #owner.ytd-watch-metadata {
             min-width: calc(25% - 6px) !important;
         }
-        /* Thumbnail overlay quick-download buttons: top-left, stacked vertically */
+        /* Thumbnail quick-download buttons (top-left, stacked). */
         .ytdl-thumb-overlay { position: absolute; top: 6px; left: 6px; display:flex; flex-direction: column; gap:6px; z-index: 9999; pointer-events: none; opacity: 0; transition: opacity .08s ease, background-color .12s ease; }
         a#thumbnail:hover .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
-        /* Darken buttons ~20% (increase alpha) and make square with rounded corners */
+        /* Thumbnail quick-download button style. */
         .ytdl-thumb-btn { background: rgba(0,0,0,0.8); color: #fff; border-radius: 6px; width: 34px; height: 34px; display:flex; align-items:center; justify-content:center; font-size:14px; cursor:pointer; border: none; padding:0; opacity: 0.9; transition: opacity .08s ease, background-color .12s ease, transform .08s ease; }
         a#thumbnail:hover .ytdl-thumb-btn, .ytdl-thumb-overlay:hover .ytdl-thumb-btn, .ytdl-thumb-btn:hover { opacity: 1; }
         .ytdl-thumb-btn:hover { background-color: rgba(0,0,0,1) !important; opacity: 1 !important; }
@@ -190,6 +184,10 @@
     setTimeout(() => toast.remove(), duration);
   }
 
+  /**
+   * Loads persisted per-video quick-download status from localStorage.
+   * @returns {Record<string, {video?: boolean, audio?: boolean, updatedAt?: number}>}
+   */
   function loadQuickDownloadStatusMap() {
     try {
       const raw = localStorage.getItem(QUICK_DOWNLOAD_STATUS_STORAGE_KEY);
@@ -202,6 +200,10 @@
     }
   }
 
+  /**
+   * Persists per-video quick-download status to localStorage.
+   * @param {Record<string, {video?: boolean, audio?: boolean, updatedAt?: number}>} map
+   */
   function saveQuickDownloadStatusMap(map) {
     try {
       localStorage.setItem(QUICK_DOWNLOAD_STATUS_STORAGE_KEY, JSON.stringify(map || {}));
@@ -210,6 +212,11 @@
     }
   }
 
+  /**
+   * Extracts a YouTube video ID from supported YouTube URL formats.
+   * @param {string} url
+   * @returns {string|null}
+   */
   function extractVideoIdFromAnyUrl(url) {
     try {
       const u = new URL(url, window.location.origin);
@@ -233,6 +240,11 @@
     }
   }
 
+  /**
+   * Returns persisted quick-download status for a video.
+   * @param {string|null} videoId
+   * @returns {{video: boolean, audio: boolean}}
+   */
   function getQuickDownloadStatusForVideo(videoId) {
     if (!videoId) return { video: false, audio: false };
     const map = loadQuickDownloadStatusMap();
@@ -243,6 +255,11 @@
     };
   }
 
+  /**
+   * Marks a quick-download type as completed for a video and refreshes overlays.
+   * @param {string|null} videoId
+   * @param {'video'|'audio'} kind
+   */
   function markQuickDownloadCompleted(videoId, kind) {
     if (!videoId || !kind) return;
     const map = loadQuickDownloadStatusMap();
@@ -254,6 +271,11 @@
     updateStatusOverlaysForVideo(videoId);
   }
 
+  /**
+   * Renders the thumbnail status overlay based on saved download state.
+   * @param {HTMLElement} statusOverlay
+   * @param {{video?: boolean, audio?: boolean}} status
+   */
   function renderStatusOverlay(statusOverlay, status) {
     if (!statusOverlay) return;
     while (statusOverlay.firstChild) {
@@ -266,6 +288,10 @@
       return;
     }
 
+    /**
+     * Adds one status icon row (video/audio) with a check indicator.
+     * @param {string} emoji
+     */
     const addStatusIcon = (emoji) => {
       const icon = document.createElement('div');
       icon.className = 'ytdl-thumb-status-icon';
@@ -285,6 +311,10 @@
     statusOverlay.style.display = 'flex';
   }
 
+  /**
+   * Updates all visible thumbnail overlays tied to a specific video ID.
+   * @param {string|null} videoId
+   */
   function updateStatusOverlaysForVideo(videoId) {
     if (!videoId) return;
     const status = getQuickDownloadStatusForVideo(videoId);
@@ -294,6 +324,10 @@
   }
 
   // Generate simple UUIDv4 for client_id
+  /**
+   * Generates a UUID v4-like identifier for local download UI tracking.
+   * @returns {string}
+   */
   function uuidv4() {
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
       const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -305,6 +339,12 @@
   const activeToasts = {}; // client_id -> toast element
   const activeDownloads = {}; // client_id -> AbortController for active fetches
 
+  /**
+   * Creates a persistent download center item for a download request.
+   * @param {string} clientId
+   * @param {string} title
+   * @returns {{item: HTMLElement, titleEl: HTMLElement, msgEl: HTMLElement, bar: HTMLElement}}
+   */
   function createPersistentDownloadToast(clientId, title) {
     // Ensure download center exists
     let center = document.getElementById('ytdl-download-center');
@@ -365,6 +405,13 @@
     return activeToasts[clientId];
   }
 
+  /**
+   * Updates progress and message state for a persistent download item.
+   * @param {string} clientId
+   * @param {number} percent
+   * @param {string} message
+   * @param {'running'|'complete'|'error'|'cancelling'} status
+   */
   function updatePersistentToast(clientId, percent, message, status) {
     const handle = activeToasts[clientId];
     if (!handle) return;
@@ -383,16 +430,29 @@
     }
   }
 
-  // Polling removed: downloads are handled synchronously via fetch.
-
+  /**
+   * Computes the greatest common divisor.
+   * @param {number} a
+   * @param {number} b
+   * @returns {number}
+   */
   function gcd(a, b) {
     return b === 0 ? a : gcd(b, a % b);
   }
+  /**
+   * Reads the current watch-page video ID from location query params.
+   * @returns {string|null}
+   */
   function getVideoIdFromUrl() {
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get('v');
   }
 
+  /**
+   * Validates whether a URL points to an individual YouTube video.
+   * @param {string} url
+   * @returns {boolean}
+   */
   function isVideoUrlJS(url) {
     try {
       const u = new URL(url, window.location.origin);
@@ -412,16 +472,30 @@
     }
   }
 
+  /**
+   * Replaces button text with a temporary loading label.
+   * @param {HTMLButtonElement} button
+   * @param {string} defaultText
+   */
   function showSpinner(button, defaultText = 'Downloading... ') {
     button.textContent = defaultText + '⏳'; // Simple loading indicator
     button.disabled = true;
   }
 
+  /**
+   * Restores button text and enabled state after loading.
+   * @param {HTMLButtonElement} button
+   * @param {string} defaultText
+   */
   function hideSpinner(button, defaultText = 'Download') {
     button.textContent = defaultText;
     button.disabled = false;
   }
 
+  /**
+   * Displays a loading indicator inside the format dropdown.
+   * @param {HTMLElement} menu
+   */
   function showDropdownSpinner(menu) {
     // Clear existing content first
     while (menu.firstChild) {
@@ -434,6 +508,11 @@
     menu.classList.add('show'); // Ensure it's visible
   }
 
+  /**
+   * Displays an error message inside the format dropdown.
+   * @param {HTMLElement} menu
+   * @param {string} message
+   */
   function showDropdownError(menu, message) {
     // Clear existing content first
     while (menu.firstChild) {
@@ -446,6 +525,17 @@
     menu.classList.add('show'); // Ensure it's visible
   }
 
+  /**
+   * Starts a download request and streams progress into the download center UI.
+   * @param {string} url
+   * @param {string|null} audioId
+   * @param {string|null} videoId
+   * @param {string|null} targetFormat
+   * @param {string|number|null} targetAudioParams
+   * @param {string|number|null} targetVideoParams
+   * @param {string} filenameHint
+   * @param {{videoId?: string|null, kind?: 'video'|'audio'}|null} quickTrack
+   */
   function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null) {
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
 
@@ -534,6 +624,11 @@
   }
 
 
+  /**
+   * Fetches available formats for a video and optionally updates an open dropdown.
+   * @param {string} url
+   * @param {HTMLElement} [dropdownMenu]
+   */
   function fetchFormats(url, dropdownMenu) {
     // Don't fetch if already fetching or if data is cached
     if (isFetchingFormats || formatDataCache) {
@@ -621,7 +716,11 @@
     });
   }
 
-  // Fetch formats once and return a Promise that resolves with the JSON data (or null on error)
+  /**
+   * Fetches formats once and resolves with format data or null on failure.
+   * @param {string} url
+   * @returns {Promise<object|null>}
+   */
   function fetchFormatsOnce(url) {
     return new Promise((resolve) => {
       try {
@@ -657,10 +756,20 @@
     });
   }
 
+  /**
+   * Formats a bitrate value in kbps for UI labels.
+   * @param {number|null|undefined} bitrate
+   * @returns {string}
+   */
   function formatBitrate(bitrate) {
     return bitrate ? `${Math.round(bitrate)}k` : '';
   }
 
+  /**
+   * Builds a compact display label for a video format.
+   * @param {{width?: number, height?: number, fps?: number}} format
+   * @returns {string}
+   */
   function formatVideoDetails(format) {
     let ratioStr = '';
     let resStr = '';
@@ -686,6 +795,11 @@
     return `${ratioStr} ${resStr}`.trim(); // Combine ratio and resolution/fps
   }
 
+  /**
+   * Populates the download format dropdown with available choices.
+   * @param {HTMLElement} menu
+   * @param {any} data
+   */
   function populateDropdown(menu, data) {
     // 1. Clear previous items using standard DOM methods
     while (menu.firstChild) {
@@ -713,6 +827,16 @@
     menu.appendChild(header);
 
     // --- Helper to create item ---
+    /**
+     * Creates a clickable dropdown option row.
+     * @param {string} text
+     * @param {string|null} audioId
+     * @param {string|null} videoId
+     * @param {string|null} targetFormat
+     * @param {string|number|null} targetAudioParams
+     * @param {string|number|null} targetVideoParams
+     * @returns {HTMLAnchorElement}
+     */
     const createItem = (text, audioId, videoId, targetFormat = null, targetAudioParams = null, targetVideoParams = null) => {
       const item = document.createElement('a');
       item.href = '#';
@@ -876,6 +1000,10 @@
   }
 
 
+  /**
+   * Creates the main watch-page download button group and dropdown behavior.
+   * @returns {HTMLDivElement}
+   */
   function createDownloadButton() {
     const container = document.createElement('div');
     container.className = 'ytdl-custom-button-container';
@@ -1019,6 +1147,10 @@
     return container;
   }
 
+  /**
+   * Inserts the custom download button into the active watch-page action row.
+   * @returns {boolean}
+   */
   function insertButton() {
     // Try a more specific and potentially stable selector for the button container row
     const actionsContainer = document.querySelector('#actions #actions-inner #menu ytd-menu-renderer');
@@ -1076,7 +1208,11 @@
     }
   }
 
-  // --- Thumbnail quick-download overlay icons ---
+  /**
+   * Converts a thumbnail href into an absolute, valid single-video URL.
+   * @param {string|null} href
+   * @returns {string|null}
+   */
   function parseVideoUrlFromHref(href) {
     try {
       if (!href) return null;
@@ -1088,6 +1224,10 @@
     }
   }
 
+  /**
+   * Adds quick-download and status overlays to thumbnail anchors under a root node.
+   * @param {Document|HTMLElement} root
+   */
   function addThumbnailIcons(root = document) {
     const anchors = root.querySelectorAll('a#thumbnail');
     anchors.forEach(a => {
@@ -1107,6 +1247,11 @@
         const statusOverlay = document.createElement('div');
         statusOverlay.className = 'ytdl-thumb-status';
 
+        /**
+         * Resolves a best-effort video title from a thumbnail anchor context.
+         * @param {HTMLAnchorElement} anchor
+         * @returns {string}
+         */
         const getTitleFromAnchor = (anchor) => {
           try {
             const isBad = (s) => {
@@ -1169,6 +1314,13 @@
           }
         };
 
+        /**
+         * Creates a thumbnail quick-download button and binds click behavior.
+         * @param {string} label
+         * @param {string|null} targetFormat
+         * @param {string} title
+         * @returns {HTMLButtonElement}
+         */
         const makeBtn = (label, targetFormat, title) => {
           const btn = document.createElement('button');
           btn.className = 'ytdl-thumb-btn';
@@ -1298,6 +1450,9 @@
     console.error('Thumbnail observer setup failed:', e);
   }
 
+  /**
+   * Handles YouTube SPA navigation by resetting button and cache state when video changes.
+   */
   function handleUrlChange() {
     const newVideoId = getVideoIdFromUrl();
     if (newVideoId !== currentVideoId) {
