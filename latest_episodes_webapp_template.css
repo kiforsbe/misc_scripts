@@ -66,6 +66,11 @@ body {
   overflow: hidden;
 }
 
+html, body {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
 .main-container {
   background: rgba(255, 255, 255, 0.95);
   border-radius: 0px;
@@ -121,6 +126,7 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
 
 .sidebar {
@@ -940,6 +946,35 @@ body {
 
 /* Responsive Design */
 @media (max-width: 768px) {
+  html, body {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .main-container {
+    height: 100dvh;
+  }
+
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 1200;
+  }
+
+  /* Prevent phone focus-zoom on form controls (notably iOS Safari) */
+  .search-input,
+  .filter-select,
+  .group-by-select,
+  #filter-toggle,
+  #mobile-back-btn,
+  #search-clear-btn,
+  button,
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
   .content-container {
     flex-direction: column;
   }
