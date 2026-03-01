@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.6
+// @version      1.7.1
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -20,6 +20,7 @@
   const FLASK_SERVICE_BASE_URL = "http://127.0.0.1:5000"; // Your Flask service address
   const BUTTON_POLL_INTERVAL = 1000; // Check for button container every second
   const MAX_RETRIES = 15; // Stop trying after 15 seconds if container not found
+  const QUICK_DOWNLOAD_STATUS_STORAGE_KEY = 'ytdl_quick_download_status_v1';
   // --- End Configuration ---
 
   let buttonContainerInterval = null;
@@ -147,6 +148,10 @@
         .ytdl-thumb-btn:hover { background-color: rgba(0,0,0,1) !important; opacity: 1 !important; }
         .ytdl-thumb-btn:focus, .ytdl-thumb-btn:active { opacity: 1 !important; background-color: rgba(0,0,0,1) !important; outline: none; }
         .ytdl-thumb-btn svg { width:18px; height:18px; fill: currentColor; }
+        .ytdl-thumb-status { position: absolute; top: 6px; left: 6px; display:flex; flex-direction: column; gap:6px; z-index: 9998; pointer-events: none; opacity: 1; transition: opacity .08s ease; }
+        a#thumbnail:hover .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
+        .ytdl-thumb-status-icon { position: relative; width: 34px; height: 34px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:16px; background: rgba(255,255,255,0.2); border-radius: 6px; text-shadow: 0 0 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.85); }
+        .ytdl-thumb-status-icon .ytdl-status-check { position:absolute; right:1px; bottom:-2px; color:#37d94f; font-size:12px; font-weight:700; text-shadow: 0 0 2px rgba(0,0,0,1), 0 0 4px rgba(0,0,0,1); }
     `);
 
       /* Download center styles: consolidated list for active downloads */
@@ -182,6 +187,106 @@
     toast.textContent = message;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), duration);
+  }
+
+  function loadQuickDownloadStatusMap() {
+    try {
+      const raw = localStorage.getItem(QUICK_DOWNLOAD_STATUS_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (e) {
+      console.error('Failed to load quick download status map:', e);
+      return {};
+    }
+  }
+
+  function saveQuickDownloadStatusMap(map) {
+    try {
+      localStorage.setItem(QUICK_DOWNLOAD_STATUS_STORAGE_KEY, JSON.stringify(map || {}));
+    } catch (e) {
+      console.error('Failed to save quick download status map:', e);
+    }
+  }
+
+  function extractVideoIdFromAnyUrl(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      const host = (u.hostname || '').toLowerCase();
+      if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+        const qv = u.searchParams.get('v');
+        if (qv) return qv;
+        if (u.pathname.startsWith('/embed/')) {
+          const embedId = u.pathname.split('/embed/')[1]?.split('/')[0]?.trim();
+          return embedId || null;
+        }
+        return null;
+      }
+      if (host === 'youtu.be') {
+        const id = u.pathname.replace(/^\/+/, '').split('/')[0]?.trim();
+        return id || null;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function getQuickDownloadStatusForVideo(videoId) {
+    if (!videoId) return { video: false, audio: false };
+    const map = loadQuickDownloadStatusMap();
+    const row = map[videoId];
+    return {
+      video: !!(row && row.video),
+      audio: !!(row && row.audio)
+    };
+  }
+
+  function markQuickDownloadCompleted(videoId, kind) {
+    if (!videoId || !kind) return;
+    const map = loadQuickDownloadStatusMap();
+    const row = map[videoId] && typeof map[videoId] === 'object' ? map[videoId] : {};
+    row[kind] = true;
+    row.updatedAt = Date.now();
+    map[videoId] = row;
+    saveQuickDownloadStatusMap(map);
+    updateStatusOverlaysForVideo(videoId);
+  }
+
+  function renderStatusOverlay(statusOverlay, status) {
+    if (!statusOverlay) return;
+    while (statusOverlay.firstChild) {
+      statusOverlay.removeChild(statusOverlay.firstChild);
+    }
+    const hasVideo = !!status?.video;
+    const hasAudio = !!status?.audio;
+    if (!hasVideo && !hasAudio) {
+      statusOverlay.style.display = 'none';
+      return;
+    }
+
+    const addStatusIcon = (emoji) => {
+      const icon = document.createElement('div');
+      icon.className = 'ytdl-thumb-status-icon';
+      icon.textContent = emoji;
+      const check = document.createElement('span');
+      check.className = 'ytdl-status-check';
+      check.textContent = '✓';
+      icon.appendChild(check);
+      statusOverlay.appendChild(icon);
+    };
+
+    if (hasVideo) addStatusIcon('🎬');
+    if (hasAudio) addStatusIcon('🎧');
+    statusOverlay.style.display = 'flex';
+  }
+
+  function updateStatusOverlaysForVideo(videoId) {
+    if (!videoId) return;
+    const status = getQuickDownloadStatusForVideo(videoId);
+    const selector = `a#thumbnail[data-ytdl-video-id="${videoId}"] .ytdl-thumb-status`;
+    const overlays = document.querySelectorAll(selector);
+    overlays.forEach(overlay => renderStatusOverlay(overlay, status));
   }
 
   // Generate simple UUIDv4 for client_id
@@ -337,7 +442,7 @@
     menu.classList.add('show'); // Ensure it's visible
   }
 
-  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download') {
+  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null) {
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
 
     // Generate a client_id for local UI tracking and show persistent toast
@@ -392,6 +497,9 @@
             document.body.removeChild(link);
             URL.revokeObjectURL(link.href);
             updatePersistentToast(clientId, 100, `Downloaded: ${filename}`, 'complete');
+            if (quickTrack && quickTrack.videoId && (quickTrack.kind === 'video' || quickTrack.kind === 'audio')) {
+              markQuickDownloadCompleted(quickTrack.videoId, quickTrack.kind);
+            }
           } else {
             updatePersistentToast(clientId, 0, `Server error: ${res.status}`, 'error');
             showToast(`✗ Download failed: ${res.statusText || res.status}`, 'error', 8000);
@@ -962,9 +1070,18 @@
       try {
         if (a.dataset.ytdlAttached) return;
         a.dataset.ytdlAttached = '1';
+        const hrefForId = a.getAttribute('href');
+        const parsedVideoUrl = parseVideoUrlFromHref(hrefForId) || (hrefForId ? (new URL(hrefForId, window.location.origin)).href : null);
+        const parsedVideoId = parsedVideoUrl ? extractVideoIdFromAnyUrl(parsedVideoUrl) : null;
+        if (parsedVideoId) {
+          a.dataset.ytdlVideoId = parsedVideoId;
+        }
 
         const overlay = document.createElement('div');
         overlay.className = 'ytdl-thumb-overlay';
+
+        const statusOverlay = document.createElement('div');
+        statusOverlay.className = 'ytdl-thumb-status';
 
         const getTitleFromAnchor = (anchor) => {
           try {
@@ -1055,15 +1172,42 @@
                 const bestAudioId = data?.audio_formats?.[0]?.format_id || null;
                 if (bestAudioId) {
                   // Pass the audio_format_id but leave targetFormat null to let backend choose default
-                  triggerDownload(videoUrl, bestAudioId, null, null, null, null, safeFilenameHint);
+                  triggerDownload(
+                    videoUrl,
+                    bestAudioId,
+                    null,
+                    null,
+                    null,
+                    null,
+                    safeFilenameHint,
+                    { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'audio' }
+                  );
                 } else {
                   // Fallback: request default handling (no explicit target)
-                  triggerDownload(videoUrl, null, null, null, null, null, safeFilenameHint);
+                  triggerDownload(
+                    videoUrl,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    safeFilenameHint,
+                    { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'audio' }
+                  );
                 }
               } catch (err) {
                 console.error('Error resolving audio format for quick-download:', err);
                 // Fallback behavior
-                triggerDownload(videoUrl, null, null, null, null, null, safeFilenameHint);
+                triggerDownload(
+                  videoUrl,
+                  null,
+                  null,
+                  null,
+                  null,
+                  null,
+                  safeFilenameHint,
+                  { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'audio' }
+                );
               }
             });
           } else {
@@ -1079,7 +1223,16 @@
               const videoTitle = getTitleFromAnchor(a) || document.title.split(' - YouTube')[0] || 'youtube_video';
               const safeFilenameHint = (videoTitle || 'youtube_video').replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
               // Use targetFormat as provided (will be null for quick buttons to let backend choose default)
-              triggerDownload(videoUrl, null, null, targetFormat, null, null, safeFilenameHint);
+              triggerDownload(
+                videoUrl,
+                null,
+                null,
+                targetFormat,
+                null,
+                null,
+                safeFilenameHint,
+                { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'video' }
+              );
             });
           }
           return btn;
@@ -1091,12 +1244,14 @@
 
         overlay.appendChild(videoBtn);
         overlay.appendChild(audioBtn);
+        renderStatusOverlay(statusOverlay, getQuickDownloadStatusForVideo(parsedVideoId));
 
         // Ensure parent is positioned (minimally invasive)
         const parent = a;
         if (getComputedStyle(parent).position === 'static') {
           parent.style.position = 'relative';
         }
+        parent.appendChild(statusOverlay);
         parent.appendChild(overlay);
       } catch (err) {
         console.error('Error attaching ytdl thumbnail icons:', err);
