@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.6
+// @version      1.7.7
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -23,11 +23,13 @@
   const QUICK_DOWNLOAD_STATUS_STORAGE_KEY = 'ytdl_quick_download_status_v1';
   // --- End Configuration ---
 
+  // Runtime state for watch-page insertion retries and SPA route tracking.
   let buttonContainerInterval = null;
   let retryCount = 0;
   let currentVideoId = null;
 
   // --- State for Format Caching ---
+  // Cached per-page `/list_formats` result to keep dropdown open/close responsive.
   let formatDataCache = null;
   let isFetchingFormats = false;
   let formatFetchError = null;
@@ -124,7 +126,7 @@
 
   /**
    * Persists per-video quick-download status to localStorage.
-   * @param {Record<string, {video?: boolean, audio?: boolean, updatedAt?: number}>} map
+    * @param {Record<string, {video?: boolean, audio?: boolean, updatedAt?: number}>} map - Status map keyed by YouTube video ID.
    */
   function saveQuickDownloadStatusMap(map) {
     try {
@@ -136,7 +138,7 @@
 
   /**
    * Extracts a YouTube video ID from supported YouTube URL formats.
-   * @param {string} url
+    * @param {string} url - Candidate YouTube URL to parse.
    * @returns {string|null}
    */
   function extractVideoIdFromAnyUrl(url) {
@@ -164,7 +166,7 @@
 
   /**
    * Returns persisted quick-download status for a video.
-   * @param {string|null} videoId
+    * @param {string|null} videoId - YouTube video ID to lookup.
    * @returns {{video: boolean, audio: boolean}}
    */
   function getQuickDownloadStatusForVideo(videoId) {
@@ -179,8 +181,8 @@
 
   /**
    * Marks a quick-download type as completed for a video and refreshes overlays.
-   * @param {string|null} videoId
-   * @param {'video'|'audio'} kind
+    * @param {string|null} videoId - YouTube video ID to update.
+    * @param {'video'|'audio'} kind - Download type flag to mark as completed.
    */
   function markQuickDownloadCompleted(videoId, kind) {
     if (!videoId || !kind) return;
@@ -195,8 +197,8 @@
 
   /**
    * Renders the thumbnail status overlay based on saved download state.
-   * @param {HTMLElement} statusOverlay
-   * @param {{video?: boolean, audio?: boolean}} status
+    * @param {HTMLElement} statusOverlay - Overlay element to render into.
+    * @param {{video?: boolean, audio?: boolean}} status - Saved status object for the current video.
    */
   function renderStatusOverlay(statusOverlay, status) {
     if (!statusOverlay) return;
@@ -212,7 +214,7 @@
 
     /**
      * Adds one status icon row (video/audio) with a check indicator.
-     * @param {string} emoji
+      * @param {string} emoji - Emoji glyph to display (video or audio icon).
      */
     const addStatusIcon = (emoji) => {
       const icon = document.createElement('div');
@@ -235,7 +237,7 @@
 
   /**
    * Updates all visible thumbnail overlays tied to a specific video ID.
-   * @param {string|null} videoId
+    * @param {string|null} videoId - YouTube video ID whose overlays should be refreshed.
    */
   function updateStatusOverlaysForVideo(videoId) {
     if (!videoId) return;
@@ -257,14 +259,14 @@
     });
   }
 
-  // Persistent download toasts and polling management
-  const activeToasts = {}; // client_id -> toast element
-  const activeDownloads = {}; // client_id -> AbortController for active fetches
+  // Active UI maps keyed by client_id for in-progress download rows.
+  const activeToasts = {}; // client_id -> toast row DOM handles
+  const activeDownloads = {}; // client_id -> request handle (supports abort)
 
   /**
    * Creates a persistent download center item for a download request.
-   * @param {string} clientId
-   * @param {string} title
+    * @param {string} clientId - Local tracking ID for this download request.
+    * @param {string} title - Display title shown in the download center row.
    * @returns {{item: HTMLElement, titleEl: HTMLElement, msgEl: HTMLElement, bar: HTMLElement}}
    */
   function createPersistentDownloadToast(clientId, title) {
@@ -329,10 +331,10 @@
 
   /**
    * Updates progress and message state for a persistent download item.
-   * @param {string} clientId
-   * @param {number} percent
-   * @param {string} message
-   * @param {'running'|'complete'|'error'|'cancelling'} status
+    * @param {string} clientId - Local tracking ID for the download row.
+    * @param {number} percent - Progress percentage to reflect in the UI.
+    * @param {string} message - Status message to display to the user.
+    * @param {'running'|'complete'|'error'|'cancelling'} status - Lifecycle state for styling and cleanup behavior.
    */
   function updatePersistentToast(clientId, percent, message, status) {
     const handle = activeToasts[clientId];
@@ -354,8 +356,8 @@
 
   /**
    * Computes the greatest common divisor.
-   * @param {number} a
-   * @param {number} b
+    * @param {number} a - First integer value.
+    * @param {number} b - Second integer value.
    * @returns {number}
    */
   function gcd(a, b) {
@@ -372,7 +374,7 @@
 
   /**
    * Validates whether a URL points to an individual YouTube video.
-   * @param {string} url
+    * @param {string} url - URL to validate.
    * @returns {boolean}
    */
   function isVideoUrlJS(url) {
@@ -396,8 +398,8 @@
 
   /**
    * Replaces button text with a temporary loading label.
-   * @param {HTMLButtonElement} button
-   * @param {string} defaultText
+    * @param {HTMLButtonElement} button - Button element to update.
+    * @param {string} defaultText - Base label shown before the spinner suffix.
    */
   function showSpinner(button, defaultText = 'Downloading... ') {
     button.textContent = defaultText + '⏳'; // Simple loading indicator
@@ -406,8 +408,8 @@
 
   /**
    * Restores button text and enabled state after loading.
-   * @param {HTMLButtonElement} button
-   * @param {string} defaultText
+    * @param {HTMLButtonElement} button - Button element to reset.
+    * @param {string} defaultText - Label to restore.
    */
   function hideSpinner(button, defaultText = 'Download') {
     button.textContent = defaultText;
@@ -416,7 +418,7 @@
 
   /**
    * Displays a loading indicator inside the format dropdown.
-   * @param {HTMLElement} menu
+    * @param {HTMLElement} menu - Dropdown container element.
    */
   function showDropdownSpinner(menu) {
     // Clear existing content first
@@ -432,8 +434,8 @@
 
   /**
    * Displays an error message inside the format dropdown.
-   * @param {HTMLElement} menu
-   * @param {string} message
+    * @param {HTMLElement} menu - Dropdown container element.
+    * @param {string} message - Error text to render.
    */
   function showDropdownError(menu, message) {
     // Clear existing content first
@@ -449,14 +451,14 @@
 
   /**
    * Starts a download request and streams progress into the download center UI.
-   * @param {string} url
-   * @param {string|null} audioId
-   * @param {string|null} videoId
-   * @param {string|null} targetFormat
-   * @param {string|number|null} targetAudioParams
-   * @param {string|number|null} targetVideoParams
-   * @param {string} filenameHint
-   * @param {{videoId?: string|null, kind?: 'video'|'audio'}|null} quickTrack
+    * @param {string} url - Source video URL passed to the backend.
+    * @param {string|null} audioId - Explicit audio format ID to request, if any.
+    * @param {string|null} videoId - Explicit video format ID to request, if any.
+    * @param {string|null} targetFormat - Requested conversion/output format (for example `mp3`).
+    * @param {string|number|null} targetAudioParams - Optional audio conversion argument (for example bitrate).
+    * @param {string|number|null} targetVideoParams - Optional video conversion argument.
+    * @param {string} filenameHint - Preferred fallback filename stem.
+    * @param {{videoId?: string|null, kind?: 'video'|'audio'}|null} quickTrack - Optional tracking payload for persisted status updates.
    */
   function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null) {
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
@@ -513,6 +515,7 @@
             document.body.removeChild(link);
             URL.revokeObjectURL(link.href);
             updatePersistentToast(clientId, 100, `Downloaded: ${filename}`, 'complete');
+            // Persist status only after successful response handling.
             if (quickTrack && quickTrack.videoId && (quickTrack.kind === 'video' || quickTrack.kind === 'audio')) {
               markQuickDownloadCompleted(quickTrack.videoId, quickTrack.kind);
             }
@@ -548,8 +551,8 @@
 
   /**
    * Fetches available formats for a video and optionally updates an open dropdown.
-   * @param {string} url
-   * @param {HTMLElement} [dropdownMenu]
+    * @param {string} url - Source video URL.
+    * @param {HTMLElement} [dropdownMenu] - Optional dropdown element to immediately update with results/errors.
    */
   function fetchFormats(url, dropdownMenu) {
     // Don't fetch if already fetching or if data is cached
@@ -640,7 +643,7 @@
 
   /**
    * Fetches formats once and resolves with format data or null on failure.
-   * @param {string} url
+    * @param {string} url - Source video URL.
    * @returns {Promise<object|null>}
    */
   function fetchFormatsOnce(url) {
@@ -680,7 +683,7 @@
 
   /**
    * Formats a bitrate value in kbps for UI labels.
-   * @param {number|null|undefined} bitrate
+    * @param {number|null|undefined} bitrate - Raw bitrate value in kbps.
    * @returns {string}
    */
   function formatBitrate(bitrate) {
@@ -689,7 +692,7 @@
 
   /**
    * Builds a compact display label for a video format.
-   * @param {{width?: number, height?: number, fps?: number}} format
+    * @param {{width?: number, height?: number, fps?: number}} format - Format metadata with optional dimensions/FPS.
    * @returns {string}
    */
   function formatVideoDetails(format) {
@@ -719,8 +722,8 @@
 
   /**
    * Populates the download format dropdown with available choices.
-   * @param {HTMLElement} menu
-   * @param {any} data
+    * @param {HTMLElement} menu - Dropdown element that receives option rows.
+    * @param {any} data - Parsed backend format payload.
    */
   function populateDropdown(menu, data) {
     // 1. Clear previous items using standard DOM methods
@@ -751,12 +754,12 @@
     // --- Helper to create item ---
     /**
      * Creates a clickable dropdown option row.
-     * @param {string} text
-     * @param {string|null} audioId
-     * @param {string|null} videoId
-     * @param {string|null} targetFormat
-     * @param {string|number|null} targetAudioParams
-     * @param {string|number|null} targetVideoParams
+      * @param {string} text - Human-readable option label.
+      * @param {string|null} audioId - Audio format ID for this option, if any.
+      * @param {string|null} videoId - Video format ID for this option, if any.
+      * @param {string|null} targetFormat - Optional conversion target format.
+      * @param {string|number|null} targetAudioParams - Optional audio conversion parameter.
+      * @param {string|number|null} targetVideoParams - Optional video conversion parameter.
      * @returns {HTMLAnchorElement}
      */
     const createItem = (text, audioId, videoId, targetFormat = null, targetAudioParams = null, targetVideoParams = null) => {
@@ -1132,7 +1135,7 @@
 
   /**
    * Converts a thumbnail href into an absolute, valid single-video URL.
-   * @param {string|null} href
+    * @param {string|null} href - Raw href value from a thumbnail anchor.
    * @returns {string|null}
    */
   function parseVideoUrlFromHref(href) {
@@ -1148,7 +1151,7 @@
 
   /**
    * Adds quick-download and status overlays to thumbnail anchors under a root node.
-   * @param {Document|HTMLElement} root
+    * @param {Document|HTMLElement} root - Root node to scan for thumbnail anchors.
    */
   function addThumbnailIcons(root = document) {
     const anchors = root.querySelectorAll('a#thumbnail');
@@ -1171,7 +1174,7 @@
 
         /**
          * Resolves a best-effort video title from a thumbnail anchor context.
-         * @param {HTMLAnchorElement} anchor
+         * @param {HTMLAnchorElement} anchor - Thumbnail anchor used as the lookup context.
          * @returns {string}
          */
         const getTitleFromAnchor = (anchor) => {
@@ -1238,9 +1241,9 @@
 
         /**
          * Creates a thumbnail quick-download button and binds click behavior.
-         * @param {string} label
-         * @param {string|null} targetFormat
-         * @param {string} title
+         * @param {string} label - Emoji label shown in the button.
+         * @param {string|null} targetFormat - Optional explicit target format to request.
+         * @param {string} title - Tooltip/title attribute for the button.
          * @returns {HTMLButtonElement}
          */
         const makeBtn = (label, targetFormat, title) => {
@@ -1357,7 +1360,7 @@
     });
   }
 
-  // Initial scan + observe for dynamic content
+  // Initial scan + observer to handle lazy-rendered and dynamically inserted thumbnails.
   try {
     addThumbnailIcons(document);
     const thumbObserver = new MutationObserver((mutations) => {
@@ -1430,13 +1433,12 @@
 
   console.log("YouTube Downloader Service UI script running (v1.2).");
 
-  // Initial setup
+  // Boot for current page, then keep button state synced as YouTube navigates without reload.
   currentVideoId = getVideoIdFromUrl();
   buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
   insertButton(); // Try immediately on load
 
-  // YouTube uses dynamic loading (SPA), so we need to detect navigation
-  // Using MutationObserver on the <title> element is a common way
+  // Title mutations are a lightweight route-change signal in YouTube's SPA navigation model.
   const titleObserver = new MutationObserver(handleUrlChange);
   const titleElement = document.querySelector('head > title');
   if (titleElement) {
