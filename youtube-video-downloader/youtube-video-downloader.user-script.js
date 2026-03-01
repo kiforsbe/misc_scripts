@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.1
+// @version      1.7.4
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -150,8 +150,9 @@
         .ytdl-thumb-btn svg { width:18px; height:18px; fill: currentColor; }
         .ytdl-thumb-status { position: absolute; top: 6px; left: 6px; display:flex; flex-direction: column; gap:6px; z-index: 9998; pointer-events: none; opacity: 1; transition: opacity .08s ease; }
         a#thumbnail:hover .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
-        .ytdl-thumb-status-icon { position: relative; width: 34px; height: 34px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:16px; background: rgba(255,255,255,0.2); border-radius: 6px; text-shadow: 0 0 3px rgba(0,0,0,0.95), 0 0 8px rgba(0,0,0,0.85); }
-        .ytdl-thumb-status-icon .ytdl-status-check { position:absolute; right:1px; bottom:-2px; color:#37d94f; font-size:12px; font-weight:700; text-shadow: 0 0 2px rgba(0,0,0,1), 0 0 4px rgba(0,0,0,1); }
+        .ytdl-thumb-status-icon { position: relative; width: 34px; height: 34px; display:flex; align-items:center; justify-content:center; color:#000; font-size:16px; background: rgba(255,255,255,0.35); border-radius: 6px; text-shadow: 0 0 1px rgba(255,255,255,0.9); }
+        .ytdl-thumb-status-icon .ytdl-status-emoji { display:inline-flex; align-items:center; justify-content:center; filter: grayscale(1) brightness(0); }
+        .ytdl-thumb-status-icon .ytdl-status-check { position:absolute; right:1px; bottom:-2px; color:#37d94f; font-size:18px; font-weight:700; text-shadow: 0 0 2px rgba(0,0,0,1), 0 0 4px rgba(0,0,0,1); }
     `);
 
       /* Download center styles: consolidated list for active downloads */
@@ -268,7 +269,10 @@
     const addStatusIcon = (emoji) => {
       const icon = document.createElement('div');
       icon.className = 'ytdl-thumb-status-icon';
-      icon.textContent = emoji;
+      const emojiSpan = document.createElement('span');
+      emojiSpan.className = 'ytdl-status-emoji';
+      emojiSpan.textContent = emoji;
+      icon.appendChild(emojiSpan);
       const check = document.createElement('span');
       check.className = 'ytdl-status-check';
       check.textContent = '✓';
@@ -718,7 +722,18 @@
       item.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        triggerDownload(data.url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, safeFilenameHint);
+        const pageVideoId = extractVideoIdFromAnyUrl(data.url);
+        const trackKind = (videoId || (!audioId && !targetFormat)) ? 'video' : 'audio';
+        triggerDownload(
+          data.url,
+          audioId,
+          videoId,
+          targetFormat,
+          targetAudioParams,
+          targetVideoParams,
+          safeFilenameHint,
+          { videoId: pageVideoId, kind: trackKind }
+        );
         // Find the menu again by ID in case it was re-created
         const currentMenu = document.getElementById('ytdl-dropdown-menu');
         if (currentMenu && currentMenu.parentNode === document.body) {
@@ -876,7 +891,16 @@
       const videoTitleElement = document.querySelector('h1.ytd-watch-metadata'); // More robust selector
       const videoTitle = videoTitleElement?.textContent?.trim() || document.title.split(" - YouTube")[0] || 'youtube_video'; // Fallback title
       const safeFilenameHint = videoTitle.replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
-      triggerDownload(videoUrl, null, null, null, null, null, safeFilenameHint); // Default download
+      triggerDownload(
+        videoUrl,
+        null,
+        null,
+        null,
+        null,
+        null,
+        safeFilenameHint,
+        { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'video' }
+      ); // Default download
       // Ensure dropdown is hidden if open when main button is clicked
       const menu = document.getElementById('ytdl-dropdown-menu');
       if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
