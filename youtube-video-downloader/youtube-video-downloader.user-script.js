@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.5
+// @version      1.7.6
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -34,132 +34,54 @@
   // --- End State ---
 
   // --- Styles ---
-  GM_addStyle(`
-        .ytdl-custom-button-container {
-            display: flex;
-            align-items: center;
-          margin-left: 8px;
-            font-size: 1.4rem;
-            color: var(--yt-spec-text-primary);
-            background-color: var(--yt-spec-badge-chip-background);
-            padding: 0;
-            border: none;
-          border-radius: 18px;
-            cursor: pointer;
-          height: 36px;
-          width: fit-content;
-        }
-        .ytdl-download-button {
-            padding: 0 16px;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            border: none;
-            background-color: transparent;
-            color: inherit;
-            font-family: "Roboto","Arial",sans-serif;
-            font-size: 1.4rem;
-            font-weight: 500;
-            cursor: pointer;
-            border-right: 1px solid var(--yt-spec-10-percent-layer);
-        }
-        .ytdl-download-button:hover {
-            background-color: var(--yt-spec-badge-chip-background-hover);
-        }
-        .ytdl-dropdown-arrow {
-            padding: 0 8px;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            border: none;
-            background-color: transparent;
-            color: inherit;
-            font-size: 1.6rem;
-            cursor: pointer;
-        }
-        .ytdl-dropdown-arrow:hover {
-            background-color: var(--yt-spec-badge-chip-background-hover);
-        }
-        .ytdl-dropdown-menu {
-          display: none;
-          position: fixed;
-            background-color: var(--yt-spec-menu-background);
-            border: 1px solid var(--yt-spec-10-percent-layer);
-            border-radius: 4px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-          z-index: 10000;
-            min-width: 200px;
-          max-height: 300px;
-          overflow-y: auto;
-            color: var(--yt-spec-text-primary);
-        }
-        .ytdl-dropdown-menu.show {
-            display: block;
-        }
-        .ytdl-dropdown-item, .ytdl-dropdown-header {
-            padding: 8px 12px;
-            cursor: pointer;
-            font-size: 1.3rem;
-            white-space: nowrap;
-          display: block;
-          text-decoration: none;
-          color: inherit;
-        }
-        .ytdl-dropdown-header {
-          font-weight: bold;
-          cursor: default;
-          border-bottom: 1px solid var(--yt-spec-10-percent-layer);
-          margin-bottom: 4px;
-        }
-        .ytdl-dropdown-item:hover {
-          background-color: var(--yt-spec-hover-background, rgba(0, 0, 0, 0.1));
-        }
-        .ytdl-loading-indicator {
-            padding: 10px;
-            text-align: center;
-            font-style: italic;
-            color: var(--yt-spec-text-secondary);
-        }
-        .ytdl-error-message {
-            padding: 10px;
-          color: var(--yt-spec-error-message-color, red);
-            font-weight: bold;
-        }
-        /* Hide original YT download button */
-        ytd-download-button-renderer {
-            display: none !important;
-        }
+  const STYLES = `
+    /* Main watch-page controls */
+    .ytdl-custom-button-container { display: flex; align-items: center; margin-left: 8px; font-size: 1.4rem; color: var(--yt-spec-text-primary); background-color: var(--yt-spec-badge-chip-background); padding: 0; border: none; border-radius: 18px; cursor: pointer; height: 36px; width: fit-content; }
+    .ytdl-download-button { padding: 0 16px; height: 100%; display: flex; align-items: center; border: none; background-color: transparent; color: inherit; font-family: "Roboto", "Arial", sans-serif; font-size: 1.4rem; font-weight: 500; cursor: pointer; border-right: 1px solid var(--yt-spec-10-percent-layer); }
+    .ytdl-dropdown-arrow { padding: 0 8px; height: 100%; display: flex; align-items: center; border: none; background-color: transparent; color: inherit; font-size: 1.6rem; cursor: pointer; }
+    .ytdl-download-button:hover, .ytdl-dropdown-arrow:hover { background-color: var(--yt-spec-badge-chip-background-hover); }
 
-        #owner.ytd-watch-metadata {
-            min-width: calc(25% - 6px) !important;
-        }
-        /* Thumbnail quick-download buttons (top-left, stacked). */
-        .ytdl-thumb-overlay { position: absolute; top: 6px; left: 6px; display:flex; flex-direction: column; gap:6px; z-index: 9999; pointer-events: none; opacity: 0; transition: opacity .08s ease, background-color .12s ease; }
-        a#thumbnail:hover .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
-        /* Thumbnail quick-download button style. */
-        .ytdl-thumb-btn { background: rgba(0,0,0,0.8); color: #fff; border-radius: 6px; width: 34px; height: 34px; display:flex; align-items:center; justify-content:center; font-size:14px; cursor:pointer; border: none; padding:0; opacity: 0.9; transition: opacity .08s ease, background-color .12s ease, transform .08s ease; }
-        a#thumbnail:hover .ytdl-thumb-btn, .ytdl-thumb-overlay:hover .ytdl-thumb-btn, .ytdl-thumb-btn:hover { opacity: 1; }
-        .ytdl-thumb-btn:hover { background-color: rgba(0,0,0,1) !important; opacity: 1 !important; }
-        .ytdl-thumb-btn:focus, .ytdl-thumb-btn:active { opacity: 1 !important; background-color: rgba(0,0,0,1) !important; outline: none; }
-        .ytdl-thumb-btn svg { width:18px; height:18px; fill: currentColor; }
-        .ytdl-thumb-status { position: absolute; top: 6px; left: 6px; display:flex; flex-direction: column; gap:6px; z-index: 9998; pointer-events: none; opacity: 1; transition: opacity .08s ease; }
-        a#thumbnail:hover .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
-        .ytdl-thumb-status-icon { position: relative; width: 34px; height: 34px; display:flex; align-items:center; justify-content:center; color:#000; font-size:16px; background: rgba(255,255,255,0.35); border-radius: 6px; text-shadow: 0 0 1px rgba(255,255,255,0.9); }
-        .ytdl-thumb-status-icon .ytdl-status-emoji { display:inline-flex; align-items:center; justify-content:center; filter: grayscale(1) brightness(0); }
-        .ytdl-thumb-status-icon .ytdl-status-check { position:absolute; right:1px; bottom:-2px; color:#37d94f; font-size:18px; font-weight:700; text-shadow: 0 0 2px rgba(0,0,0,1), 0 0 4px rgba(0,0,0,1); }
-    `);
+    /* Format dropdown */
+    .ytdl-dropdown-menu { display: none; position: fixed; background-color: var(--yt-spec-menu-background); border: 1px solid var(--yt-spec-10-percent-layer); border-radius: 4px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2); z-index: 10000; min-width: 200px; max-height: 300px; overflow-y: auto; color: var(--yt-spec-text-primary); }
+    .ytdl-dropdown-menu.show { display: block; }
+    .ytdl-dropdown-item, .ytdl-dropdown-header { padding: 8px 12px; cursor: pointer; font-size: 1.3rem; white-space: nowrap; display: block; text-decoration: none; color: inherit; }
+    .ytdl-dropdown-header { font-weight: bold; cursor: default; border-bottom: 1px solid var(--yt-spec-10-percent-layer); margin-bottom: 4px; }
+    .ytdl-dropdown-item:hover { background-color: var(--yt-spec-hover-background, rgba(0, 0, 0, 0.1)); }
+    .ytdl-loading-indicator { padding: 10px; text-align: center; font-style: italic; color: var(--yt-spec-text-secondary); }
+    .ytdl-error-message { padding: 10px; color: var(--yt-spec-error-message-color, red); font-weight: bold; }
 
-      /* Download center styles: consolidated list for active downloads */
-      GM_addStyle(`
-        #ytdl-download-center { position: fixed; top: 80px; right: 20px; width: 360px; max-height: 60vh; overflow-y: auto; z-index: 10001; display:flex; flex-direction:column; gap:8px; }
-        .ytdl-download-item { background: #0f0f0f; color: #fff; padding:10px; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); font-family: Roboto, sans-serif; font-size:13px; }
-        .ytdl-download-title { font-weight:600; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .ytdl-download-msg { font-size:12px; color: var(--yt-spec-text-secondary); margin-bottom:6px; }
-        .ytdl-download-bar-bg { background:#222; height:10px; border-radius:6px; overflow:hidden; }
-        .ytdl-download-bar { background:#1db954; height:100%; width:0%; transition: width 0.3s ease; }
-        .ytdl-download-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
-        .ytdl-download-actions button { background:transparent; color:inherit; border:1px solid rgba(255,255,255,0.08); padding:4px 8px; border-radius:4px; cursor:pointer; }
-      `);
+    /* YouTube native overrides */
+    ytd-download-button-renderer { display: none !important; }
+    #owner.ytd-watch-metadata { min-width: calc(25% - 6px) !important; }
+
+    /* Thumbnail quick-download overlay */
+    .ytdl-thumb-overlay { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 9999; pointer-events: none; opacity: 0; transition: opacity .08s ease, background-color .12s ease; }
+    a#thumbnail:hover .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
+    .ytdl-thumb-btn { background: rgba(0, 0, 0, 0.8); color: #fff; border-radius: 6px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; font-size: 14px; cursor: pointer; border: none; padding: 0; opacity: 0.9; transition: opacity .08s ease, background-color .12s ease, transform .08s ease; }
+    a#thumbnail:hover .ytdl-thumb-btn, .ytdl-thumb-overlay:hover .ytdl-thumb-btn, .ytdl-thumb-btn:hover { opacity: 1; }
+    .ytdl-thumb-btn:hover { background-color: rgba(0, 0, 0, 1) !important; opacity: 1 !important; }
+    .ytdl-thumb-btn:focus, .ytdl-thumb-btn:active { opacity: 1 !important; background-color: rgba(0, 0, 0, 1) !important; outline: none; }
+    .ytdl-thumb-btn svg { width: 18px; height: 18px; fill: currentColor; }
+
+    /* Thumbnail downloaded-status overlay */
+    .ytdl-thumb-status { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 9998; pointer-events: none; opacity: 1; transition: opacity .08s ease; }
+    a#thumbnail:hover .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
+    .ytdl-thumb-status-icon { position: relative; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; color: #000; font-size: 16px; background: rgba(255, 255, 255, 0.35); border-radius: 6px; text-shadow: 0 0 1px rgba(255, 255, 255, 0.9); }
+    .ytdl-thumb-status-icon .ytdl-status-emoji { display: inline-flex; align-items: center; justify-content: center; filter: grayscale(1) brightness(0); }
+    .ytdl-thumb-status-icon .ytdl-status-check { position: absolute; right: 1px; bottom: -2px; color: #37d94f; font-size: 18px; font-weight: 700; text-shadow: 0 0 2px rgba(0, 0, 0, 1), 0 0 4px rgba(0, 0, 0, 1); }
+
+    /* Download center */
+    #ytdl-download-center { position: fixed; top: 80px; right: 20px; width: 360px; max-height: 60vh; overflow-y: auto; z-index: 10001; display: flex; flex-direction: column; gap: 8px; }
+    .ytdl-download-item { background: #0f0f0f; color: #fff; padding: 10px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5); font-family: Roboto, sans-serif; font-size: 13px; }
+    .ytdl-download-title { font-weight: 600; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ytdl-download-msg { font-size: 12px; color: var(--yt-spec-text-secondary); margin-bottom: 6px; }
+    .ytdl-download-bar-bg { background: #222; height: 10px; border-radius: 6px; overflow: hidden; }
+    .ytdl-download-bar { background: #1db954; height: 100%; width: 0%; transition: width 0.3s ease; }
+    .ytdl-download-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+    .ytdl-download-actions button { background: transparent; color: inherit; border: 1px solid rgba(255, 255, 255, 0.08); padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+  `;
+
+  GM_addStyle(STYLES);
 
   // --- Core Functions ---
 
