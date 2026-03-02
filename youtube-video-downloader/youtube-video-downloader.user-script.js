@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.8
+// @version      1.7.9
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -254,7 +254,7 @@
   function updateStatusOverlaysForVideo(videoId) {
     if (!videoId) return;
     const status = getQuickDownloadStatusForVideo(videoId);
-    const selector = `a#thumbnail[data-ytdl-video-id="${videoId}"] .ytdl-thumb-status`;
+    const selector = `.ytdl-thumb-anchor[data-ytdl-video-id="${videoId}"] .ytdl-thumb-status`;
     const overlays = document.querySelectorAll(selector);
     overlays.forEach(overlay => renderStatusOverlay(overlay, status));
   }
@@ -1178,7 +1178,7 @@
     * @param {Document|HTMLElement} root - Root node to scan for thumbnail anchors.
    */
   function addThumbnailIcons(root = document) {
-    const anchors = root.querySelectorAll('a#thumbnail, ytd-thumbnail a.yt-simple-endpoint[href], a.ytp-videowall-still[href]');
+    const anchors = root.querySelectorAll('a#thumbnail, ytd-thumbnail a.yt-simple-endpoint[href], a.ytp-videowall-still[href], #related a.yt-lockup-view-model__content-image[href*="/watch"], ytd-watch-next-secondary-results-renderer a.yt-lockup-view-model__content-image[href*="/watch"], #related a[href*="/watch"][aria-hidden="true"][tabindex="-1"], ytd-watch-next-secondary-results-renderer a[href*="/watch"][aria-hidden="true"][tabindex="-1"]');
     anchors.forEach(a => {
       try {
         if (a.dataset.ytdlAttached) return;
@@ -1219,12 +1219,14 @@
             if (!isBad(anchor.title)) return anchor.title.trim();
 
             // 2) Find the nearest renderer container that usually contains the title
-            const renderer = anchor.closest('ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-rich-grid-media, ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-video-renderer');
+            const renderer = anchor.closest('yt-lockup-view-model, ytd-watch-next-secondary-results-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-rich-grid-media, ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-video-renderer');
 
             // 3) Look for common title link / formatted-string elements in renderer first
             const titleSelectors = [
               'a#video-title-link',
               'a#video-title',
+              'a.yt-lockup-metadata-view-model__title',
+              'h3.yt-lockup-metadata-view-model__heading-reset a.yt-lockup-metadata-view-model__title',
               'h3 a#video-title',
               'h3 a#video-title-link',
               'yt-formatted-string#video-title',
@@ -1260,7 +1262,7 @@
             if (parsedVideoId) {
               const safeVideoId = parsedVideoId.replace(/"/g, '\\"');
               const byId = document.querySelector(
-                `a#video-title[href*="v=${safeVideoId}"], a#video-title-link[href*="v=${safeVideoId}"]`
+                `a#video-title[href*="v=${safeVideoId}"], a#video-title-link[href*="v=${safeVideoId}"], a.yt-lockup-metadata-view-model__title[href*="v=${safeVideoId}"]`
               );
               if (byId) {
                 if (byId.getAttribute && byId.getAttribute('title') && !isBad(byId.getAttribute('title'))) {
