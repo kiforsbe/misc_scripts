@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.9
+// @version      1.7.10
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -57,8 +57,8 @@
     #owner.ytd-watch-metadata { min-width: calc(25% - 6px) !important; }
 
     /* Thumbnail quick-download overlay */
-    .ytdl-thumb-overlay { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 9999; pointer-events: none; opacity: 0; transition: opacity .08s ease, background-color .12s ease; }
-    a#thumbnail:hover .ytdl-thumb-overlay, .ytdl-thumb-anchor:hover .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
+    .ytdl-thumb-overlay { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 2147483000; pointer-events: none; opacity: 0; transition: opacity .08s ease, background-color .12s ease; }
+    a#thumbnail:hover .ytdl-thumb-overlay, .ytdl-thumb-anchor:hover .ytdl-thumb-overlay, .ytdl-thumb-anchor.ytdl-thumb-active .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-rich-grid-media:hover .ytdl-thumb-overlay, yt-lockup-view-model:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
     .ytdl-thumb-btn { background: rgba(0, 0, 0, 0.8); color: #fff; border-radius: 6px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; font-size: 14px; cursor: pointer; border: none; padding: 0; opacity: 0.9; transition: opacity .08s ease, background-color .12s ease, transform .08s ease; }
     a#thumbnail:hover .ytdl-thumb-btn, .ytdl-thumb-anchor:hover .ytdl-thumb-btn, .ytdl-thumb-overlay:hover .ytdl-thumb-btn, .ytdl-thumb-btn:hover { opacity: 1; }
     .ytdl-thumb-btn:hover { background-color: rgba(0, 0, 0, 1) !important; opacity: 1 !important; }
@@ -66,8 +66,8 @@
     .ytdl-thumb-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
     /* Thumbnail downloaded-status overlay */
-    .ytdl-thumb-status { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 9998; pointer-events: none; opacity: 1; transition: opacity .08s ease; }
-    a#thumbnail:hover .ytdl-thumb-status, .ytdl-thumb-anchor:hover .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
+    .ytdl-thumb-status { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 2147482999; pointer-events: none; opacity: 1; transition: opacity .08s ease; }
+    a#thumbnail:hover .ytdl-thumb-status, .ytdl-thumb-anchor:hover .ytdl-thumb-status, .ytdl-thumb-anchor.ytdl-thumb-active .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-rich-grid-media:hover .ytdl-thumb-status, yt-lockup-view-model:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
     .ytdl-thumb-status-icon { position: relative; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; color: #000; font-size: 16px; background: rgba(255, 255, 255, 0.35); border-radius: 6px; text-shadow: 0 0 1px rgba(255, 255, 255, 0.9); }
     .ytdl-thumb-status-icon .ytdl-status-emoji { display: inline-flex; align-items: center; justify-content: center; filter: grayscale(1) brightness(0); }
     .ytdl-thumb-status-icon .ytdl-status-check { position: absolute; right: 1px; bottom: -2px; color: #37d94f; font-size: 18px; font-weight: 700; text-shadow: 0 0 2px rgba(0, 0, 0, 1), 0 0 4px rgba(0, 0, 0, 1); }
@@ -1178,17 +1178,27 @@
     * @param {Document|HTMLElement} root - Root node to scan for thumbnail anchors.
    */
   function addThumbnailIcons(root = document) {
-    const anchors = root.querySelectorAll('a#thumbnail, ytd-thumbnail a.yt-simple-endpoint[href], a.ytp-videowall-still[href], #related a.yt-lockup-view-model__content-image[href*="/watch"], ytd-watch-next-secondary-results-renderer a.yt-lockup-view-model__content-image[href*="/watch"], #related a[href*="/watch"][aria-hidden="true"][tabindex="-1"], ytd-watch-next-secondary-results-renderer a[href*="/watch"][aria-hidden="true"][tabindex="-1"]');
+    const anchors = root.querySelectorAll('a#thumbnail, ytd-thumbnail a.yt-simple-endpoint, a.ytp-videowall-still, a.yt-lockup-view-model__content-image[href*="/watch"], a[href*="/watch"][aria-hidden="true"][tabindex="-1"], a.yt-simple-endpoint[href*="/watch"][aria-hidden="true"], #related a.yt-lockup-view-model__content-image, ytd-watch-next-secondary-results-renderer a.yt-lockup-view-model__content-image, #related a[aria-hidden="true"][tabindex="-1"], ytd-watch-next-secondary-results-renderer a[aria-hidden="true"][tabindex="-1"]');
     anchors.forEach(a => {
       try {
         if (a.dataset.ytdlAttached) return;
-        a.dataset.ytdlAttached = '1';
-        a.classList.add('ytdl-thumb-anchor');
         const hrefForId = a.getAttribute('href');
-        const parsedVideoUrl = parseVideoUrlFromHref(hrefForId) || (hrefForId ? (new URL(hrefForId, window.location.origin)).href : null);
+        if (!hrefForId) return;
+        const parsedVideoUrl = parseVideoUrlFromHref(hrefForId);
+        if (!parsedVideoUrl) return;
+        const overlayHost = a.closest('ytd-rich-item-renderer, ytd-rich-grid-media, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, yt-lockup-view-model') || a;
+        if (overlayHost.dataset.ytdlAttached) {
+          a.dataset.ytdlAttached = '1';
+          return;
+        }
+
+        a.dataset.ytdlAttached = '1';
+        overlayHost.dataset.ytdlAttached = '1';
+        overlayHost.classList.add('ytdl-thumb-anchor');
         const parsedVideoId = parsedVideoUrl ? extractVideoIdFromAnyUrl(parsedVideoUrl) : null;
         if (parsedVideoId) {
           a.dataset.ytdlVideoId = parsedVideoId;
+          overlayHost.dataset.ytdlVideoId = parsedVideoId;
         }
 
         const overlay = document.createElement('div');
@@ -1396,10 +1406,87 @@
         overlay.appendChild(audioBtn);
         renderStatusOverlay(statusOverlay, getQuickDownloadStatusForVideo(parsedVideoId));
 
-        // Ensure parent is positioned (minimally invasive)
-        const parent = a;
+        const hoverRoot = overlayHost.closest('yt-lockup-view-model, ytd-rich-item-renderer, ytd-rich-grid-media, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer') || overlayHost;
+        let isPointerTracking = false;
+        const isPointInsideRect = (x, y, rect) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+        const stopPointerTracking = () => {
+          if (!isPointerTracking) return;
+          isPointerTracking = false;
+          document.removeEventListener('pointermove', onPointerMove, true);
+          document.removeEventListener('scroll', onScrollOrResize, true);
+          window.removeEventListener('resize', onScrollOrResize, true);
+        };
+        const onPointerMove = (ev) => {
+          try {
+            if (!document.documentElement.contains(hoverRoot)) {
+              setOverlayActive(false);
+              return;
+            }
+            const rect = hoverRoot.getBoundingClientRect();
+            if (!isPointInsideRect(ev.clientX, ev.clientY, rect)) {
+              setOverlayActive(false);
+            }
+          } catch (e) {
+            setOverlayActive(false);
+          }
+        };
+        const onScrollOrResize = () => {
+          try {
+            if (!document.documentElement.contains(hoverRoot)) {
+              setOverlayActive(false);
+              return;
+            }
+            if (!overlayHost.classList.contains('ytdl-thumb-active')) return;
+            const rect = hoverRoot.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            if (!isPointInsideRect(cx, cy, rect)) {
+              setOverlayActive(false);
+            }
+          } catch (e) {
+            setOverlayActive(false);
+          }
+        };
+        const startPointerTracking = () => {
+          if (isPointerTracking) return;
+          isPointerTracking = true;
+          document.addEventListener('pointermove', onPointerMove, true);
+          document.addEventListener('scroll', onScrollOrResize, true);
+          window.addEventListener('resize', onScrollOrResize, true);
+        };
+        const setOverlayActive = (isActive) => {
+          if (isActive) {
+            overlayHost.classList.add('ytdl-thumb-active');
+            startPointerTracking();
+          } else {
+            overlayHost.classList.remove('ytdl-thumb-active');
+            stopPointerTracking();
+          }
+        };
+
+        a.addEventListener('pointerenter', () => setOverlayActive(true));
+        a.addEventListener('pointerleave', () => {});
+        overlay.addEventListener('pointerenter', () => setOverlayActive(true));
+        overlay.addEventListener('pointerleave', () => {});
+        if (hoverRoot !== a) {
+          hoverRoot.addEventListener('pointerenter', () => setOverlayActive(true));
+          hoverRoot.addEventListener('pointerleave', () => {});
+        }
+
+        // Ensure host is positioned and place overlay relative to the visible thumbnail area.
+        const parent = overlayHost;
         if (getComputedStyle(parent).position === 'static') {
           parent.style.position = 'relative';
+        }
+        if (parent !== a) {
+          const parentRect = parent.getBoundingClientRect();
+          const anchorRect = a.getBoundingClientRect();
+          const top = Math.max(0, Math.round(anchorRect.top - parentRect.top + 6));
+          const left = Math.max(0, Math.round(anchorRect.left - parentRect.left + 6));
+          overlay.style.top = `${top}px`;
+          overlay.style.left = `${left}px`;
+          statusOverlay.style.top = `${top}px`;
+          statusOverlay.style.left = `${left}px`;
         }
         parent.appendChild(statusOverlay);
         parent.appendChild(overlay);
@@ -1413,13 +1500,20 @@
   try {
     addThumbnailIcons(document);
     const thumbObserver = new MutationObserver((mutations) => {
-      let added = false;
+      let shouldRescan = false;
       for (const m of mutations) {
-        if (m.addedNodes && m.addedNodes.length) { added = true; break; }
+        if (m.type === 'childList' && m.addedNodes && m.addedNodes.length) {
+          shouldRescan = true;
+          break;
+        }
+        if (m.type === 'attributes' && m.attributeName === 'href') {
+          shouldRescan = true;
+          break;
+        }
       }
-      if (added) addThumbnailIcons(document);
+      if (shouldRescan) addThumbnailIcons(document);
     });
-    thumbObserver.observe(document.body, { childList: true, subtree: true });
+    thumbObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
   } catch (e) {
     console.error('Thumbnail observer setup failed:', e);
   }
