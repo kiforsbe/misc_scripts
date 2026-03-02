@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.7
+// @version      1.7.8
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -58,19 +58,31 @@
 
     /* Thumbnail quick-download overlay */
     .ytdl-thumb-overlay { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 9999; pointer-events: none; opacity: 0; transition: opacity .08s ease, background-color .12s ease; }
-    a#thumbnail:hover .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
+    a#thumbnail:hover .ytdl-thumb-overlay, .ytdl-thumb-anchor:hover .ytdl-thumb-overlay, ytd-rich-item-renderer:hover .ytdl-thumb-overlay, ytd-grid-video-renderer:hover .ytdl-thumb-overlay, ytd-compact-video-renderer:hover .ytdl-thumb-overlay, .ytdl-thumb-overlay:hover, .ytdl-thumb-btn:hover { opacity: 1; pointer-events: auto; }
     .ytdl-thumb-btn { background: rgba(0, 0, 0, 0.8); color: #fff; border-radius: 6px; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; font-size: 14px; cursor: pointer; border: none; padding: 0; opacity: 0.9; transition: opacity .08s ease, background-color .12s ease, transform .08s ease; }
-    a#thumbnail:hover .ytdl-thumb-btn, .ytdl-thumb-overlay:hover .ytdl-thumb-btn, .ytdl-thumb-btn:hover { opacity: 1; }
+    a#thumbnail:hover .ytdl-thumb-btn, .ytdl-thumb-anchor:hover .ytdl-thumb-btn, .ytdl-thumb-overlay:hover .ytdl-thumb-btn, .ytdl-thumb-btn:hover { opacity: 1; }
     .ytdl-thumb-btn:hover { background-color: rgba(0, 0, 0, 1) !important; opacity: 1 !important; }
     .ytdl-thumb-btn:focus, .ytdl-thumb-btn:active { opacity: 1 !important; background-color: rgba(0, 0, 0, 1) !important; outline: none; }
     .ytdl-thumb-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
     /* Thumbnail downloaded-status overlay */
     .ytdl-thumb-status { position: absolute; top: 6px; left: 6px; display: flex; flex-direction: column; gap: 6px; z-index: 9998; pointer-events: none; opacity: 1; transition: opacity .08s ease; }
-    a#thumbnail:hover .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
+    a#thumbnail:hover .ytdl-thumb-status, .ytdl-thumb-anchor:hover .ytdl-thumb-status, ytd-rich-item-renderer:hover .ytdl-thumb-status, ytd-grid-video-renderer:hover .ytdl-thumb-status, ytd-compact-video-renderer:hover .ytdl-thumb-status { opacity: 0; }
     .ytdl-thumb-status-icon { position: relative; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; color: #000; font-size: 16px; background: rgba(255, 255, 255, 0.35); border-radius: 6px; text-shadow: 0 0 1px rgba(255, 255, 255, 0.9); }
     .ytdl-thumb-status-icon .ytdl-status-emoji { display: inline-flex; align-items: center; justify-content: center; filter: grayscale(1) brightness(0); }
     .ytdl-thumb-status-icon .ytdl-status-check { position: absolute; right: 1px; bottom: -2px; color: #37d94f; font-size: 18px; font-weight: 700; text-shadow: 0 0 2px rgba(0, 0, 0, 1), 0 0 4px rgba(0, 0, 0, 1); }
+
+    /* Smaller quick-download UI in watch-page sidebar playlists */
+    ytd-watch-flexy #secondary ytd-compact-video-renderer .ytdl-thumb-overlay,
+    ytd-watch-flexy #secondary ytd-playlist-panel-video-renderer .ytdl-thumb-overlay { top: 4px; left: 4px; gap: 4px; }
+    ytd-watch-flexy #secondary ytd-compact-video-renderer .ytdl-thumb-status,
+    ytd-watch-flexy #secondary ytd-playlist-panel-video-renderer .ytdl-thumb-status { top: 4px; left: 4px; gap: 4px; }
+    ytd-watch-flexy #secondary ytd-compact-video-renderer .ytdl-thumb-btn,
+    ytd-watch-flexy #secondary ytd-playlist-panel-video-renderer .ytdl-thumb-btn { width: 22px; height: 22px; font-size: 12px; border-radius: 5px; }
+    ytd-watch-flexy #secondary ytd-compact-video-renderer .ytdl-thumb-status-icon,
+    ytd-watch-flexy #secondary ytd-playlist-panel-video-renderer .ytdl-thumb-status-icon { width: 22px; height: 22px; font-size: 13px; border-radius: 5px; }
+    ytd-watch-flexy #secondary ytd-compact-video-renderer .ytdl-thumb-status-icon .ytdl-status-check,
+    ytd-watch-flexy #secondary ytd-playlist-panel-video-renderer .ytdl-thumb-status-icon .ytdl-status-check { font-size: 15px; right: 0; bottom: -1px; }
 
     /* Download center */
     #ytdl-download-center { position: fixed; top: 80px; right: 20px; width: 360px; max-height: 60vh; overflow-y: auto; z-index: 10001; display: flex; flex-direction: column; gap: 8px; }
@@ -370,6 +382,18 @@
   function getVideoIdFromUrl() {
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get('v');
+  }
+
+  /**
+   * Checks whether the current location is an individual watch page.
+   * @returns {boolean}
+   */
+  function isWatchPageUrl() {
+    try {
+      return window.location.pathname === '/watch' && !!getVideoIdFromUrl();
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -1154,11 +1178,12 @@
     * @param {Document|HTMLElement} root - Root node to scan for thumbnail anchors.
    */
   function addThumbnailIcons(root = document) {
-    const anchors = root.querySelectorAll('a#thumbnail');
+    const anchors = root.querySelectorAll('a#thumbnail, ytd-thumbnail a.yt-simple-endpoint[href], a.ytp-videowall-still[href]');
     anchors.forEach(a => {
       try {
         if (a.dataset.ytdlAttached) return;
         a.dataset.ytdlAttached = '1';
+        a.classList.add('ytdl-thumb-anchor');
         const hrefForId = a.getAttribute('href');
         const parsedVideoUrl = parseVideoUrlFromHref(hrefForId) || (hrefForId ? (new URL(hrefForId, window.location.origin)).href : null);
         const parsedVideoId = parsedVideoUrl ? extractVideoIdFromAnyUrl(parsedVideoUrl) : null;
@@ -1194,28 +1219,32 @@
             if (!isBad(anchor.title)) return anchor.title.trim();
 
             // 2) Find the nearest renderer container that usually contains the title
-            const renderer = anchor.closest('ytd-rich-grid-media, ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-video-renderer');
+            const renderer = anchor.closest('ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-rich-grid-media, ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-video-renderer');
 
             // 3) Look for common title link / formatted-string elements in renderer first
             const titleSelectors = [
               'a#video-title-link',
-              'a.yt-simple-endpoint[aria-label]',
+              'a#video-title',
+              'h3 a#video-title',
+              'h3 a#video-title-link',
               'yt-formatted-string#video-title',
               'yt-formatted-string[id^="video-title"]',
               'yt-formatted-string.title',
-              'a#video-title',
               'span#video-title',
-              'h3.title',
-              'h3'
+              'h3.title'
             ];
 
-            const searchRoots = [anchor, renderer, document];
+            const searchRoots = [anchor, renderer];
             for (const root of searchRoots) {
               if (!root) continue;
               for (const sel of titleSelectors) {
                 try {
                   const el = root.querySelector(sel);
                   if (el) {
+                    // Prefer title attribute where available (playlist/watch-later commonly uses this)
+                    if (el.getAttribute && el.getAttribute('title') && !isBad(el.getAttribute('title'))) {
+                      return el.getAttribute('title').trim();
+                    }
                     // Prefer aria-label on title link if present
                     if (el.getAttribute && el.getAttribute('aria-label') && !isBad(el.getAttribute('aria-label'))) {
                       return el.getAttribute('aria-label').trim();
@@ -1224,6 +1253,24 @@
                     if (!isBad(txt)) return txt;
                   }
                 } catch (e) { /* ignore selector errors */ }
+              }
+            }
+
+            // 3b) If not found yet, resolve by video id from known title links only.
+            if (parsedVideoId) {
+              const safeVideoId = parsedVideoId.replace(/"/g, '\\"');
+              const byId = document.querySelector(
+                `a#video-title[href*="v=${safeVideoId}"], a#video-title-link[href*="v=${safeVideoId}"]`
+              );
+              if (byId) {
+                if (byId.getAttribute && byId.getAttribute('title') && !isBad(byId.getAttribute('title'))) {
+                  return byId.getAttribute('title').trim();
+                }
+                if (byId.getAttribute && byId.getAttribute('aria-label') && !isBad(byId.getAttribute('aria-label'))) {
+                  return byId.getAttribute('aria-label').trim();
+                }
+                const byIdText = byId.textContent?.trim();
+                if (!isBad(byIdText)) return byIdText;
               }
             }
 
@@ -1380,6 +1427,11 @@
    */
   function handleUrlChange() {
     const newVideoId = getVideoIdFromUrl();
+    const onWatchPage = isWatchPageUrl();
+
+    // Always rescan thumbnails after SPA navigation updates.
+    addThumbnailIcons(document);
+
     if (newVideoId !== currentVideoId) {
       console.log(`URL changed to video ID: ${newVideoId}. Resetting button and cache.`);
       currentVideoId = newVideoId;
@@ -1405,15 +1457,20 @@
       formatFetchError = null;
       console.log("Format cache and fetch state cleared.");
 
-      // Restart the polling process
-      if (buttonContainerInterval) clearInterval(buttonContainerInterval);
-      buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
-      insertButton(); // Try immediately
+      // Restart the polling process for watch pages only.
+      if (buttonContainerInterval) {
+        clearInterval(buttonContainerInterval);
+        buttonContainerInterval = null;
+      }
+      if (onWatchPage) {
+        buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
+        insertButton(); // Try immediately
+      }
     } else {
       // Optional: Check if button exists even on same URL
       const existingButton = document.getElementById('ytdl-custom-button-container');
       const existingMenu = document.getElementById('ytdl-dropdown-menu'); // Check menu too
-      if (!existingButton && buttonContainerInterval) {
+      if (!existingButton && onWatchPage) {
         console.log("Button missing on same video ID, restarting poll.");
         retryCount = 0;
         // Clean up menu if it somehow got left behind
@@ -1423,20 +1480,28 @@
         formatDataCache = null;
         isFetchingFormats = false;
         formatFetchError = null;
+        if (buttonContainerInterval) clearInterval(buttonContainerInterval);
         buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
         insertButton();
+      } else if (!onWatchPage) {
+        if (buttonContainerInterval) {
+          clearInterval(buttonContainerInterval);
+          buttonContainerInterval = null;
+        }
       }
     }
   }
 
   // --- Initialization ---
 
-  console.log("YouTube Downloader Service UI script running (v1.2).");
+  console.log("YouTube Downloader Service UI script running.");
 
   // Boot for current page, then keep button state synced as YouTube navigates without reload.
   currentVideoId = getVideoIdFromUrl();
-  buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
-  insertButton(); // Try immediately on load
+  if (isWatchPageUrl()) {
+    buttonContainerInterval = setInterval(insertButton, BUTTON_POLL_INTERVAL);
+    insertButton(); // Try immediately on load
+  }
 
   // Title mutations are a lightweight route-change signal in YouTube's SPA navigation model.
   const titleObserver = new MutationObserver(handleUrlChange);
@@ -1446,4 +1511,14 @@
   } else {
     console.warn("Could not find <title> element to observe for navigation.");
   }
+
+  // Additional YouTube SPA hooks to reliably handle Home/Subscriptions/Playlist updates.
+  window.addEventListener('yt-navigate-finish', () => {
+    setTimeout(() => addThumbnailIcons(document), 0);
+    handleUrlChange();
+  }, true);
+
+  document.addEventListener('yt-page-data-updated', () => {
+    setTimeout(() => addThumbnailIcons(document), 0);
+  }, true);
 })();
