@@ -440,6 +440,14 @@ def test_guessit():
                 "episode": 7,
                 "type": "episode",
             }
+        },
+        {
+            "filename": "[SubsPlease] Dragon Raja S2 (JP) - 21 (720p) [375D72FF].mkv",
+            "expected": {
+                "title": "Dragon Raja S2",
+                "episode": 21,
+                "type": "episode",
+            }
         }
     ]
 

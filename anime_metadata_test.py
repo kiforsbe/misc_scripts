@@ -354,6 +354,15 @@ def test_anime_metadata(verbosity=0):
                 "version": 2,
                 "mal_id": 61884,
             }
+        },
+        {
+            "filename": "[SubsPlease] Dragon Raja S2 (JP) - 21 (720p) [375D72FF].mkv",
+            "expected": {
+                "title": "Dragon Raja S2",
+                "episode": 21,
+                "type": "episode",
+                "mal_id": 59662,
+            }
         }
     ]
 

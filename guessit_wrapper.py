@@ -10,6 +10,7 @@ EPISODE_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)(?:v\d+)?")
 MOVIE_EXT_RE = re.compile(r'\.(mkv|mp4|avi|mov|wmv|flv|ts)$')
 EPISODE_TITLE_STOP_RE = re.compile(r"\s+\d+|(?=\s+(?:AMZN|WEB|BluRay|BD|HDTV|DDP|AAC|H\.?264|HEVC|x265|FLUX|-\w+|\[))")
 VERSION_RE = re.compile(r"\b\d+(?:\.\d+)?[vV](\d+)\b")
+LOCALE_TAG_RE = re.compile(r"\s*\((?:jp|jpn|eng|english|sub|subs|dub|multi|raw)\)\s*", re.IGNORECASE)
 
 PATTERNS = (
     (
@@ -159,6 +160,9 @@ def _build_fast_result(fields, release_group, filename):
     result = dict(fields)
     result.pop('alternative_title', None)
 
+    if 'title' in result and result['title']:
+        result['title'] = _normalize_title(result['title'])
+
     if release_group:
         result['release_group'] = release_group
 
@@ -171,6 +175,12 @@ def _build_fast_result(fields, release_group, filename):
         result['type'] = 'episode'
 
     return result
+
+
+def _normalize_title(title):
+    # Remove language/track tags that should not be part of canonical anime title lookup.
+    cleaned = LOCALE_TAG_RE.sub(' ', title)
+    return re.sub(r'\s+', ' ', cleaned).strip()
 
 def guessit_wrapper(filename, options=None):
     # Extract release group from the beginning if present
@@ -191,6 +201,8 @@ def guessit_wrapper(filename, options=None):
             result = guessit.guessit(filename, options=options)
             result.update(fields)
             result.pop('alternative_title', None)
+            if 'title' in result and result['title']:
+                result['title'] = _normalize_title(result['title'])
             # Preserve release_group from beginning of filename if captured
             if release_group:
                 result['release_group'] = release_group
@@ -206,6 +218,9 @@ def guessit_wrapper(filename, options=None):
         ep_num = EPISODE_NUMBER_RE.match(m.group(2))
         if ep_num and (str(episode) == ep_num.group(1) or float(episode) == float(ep_num.group(1))):
             result['title'] = m.group(1)
+
+    if 'title' in result and result['title']:
+        result['title'] = _normalize_title(result['title'])
 
     # Preserve release_group from beginning of filename if captured
     if release_group:
