@@ -261,6 +261,7 @@ def test_anime_metadata(verbosity=0):
                 "title": "Shangri-La Frontier",
                 "season": 1,
                 "episode": 12,
+                "mal_id": 52347,
             }
         },
         {
@@ -269,6 +270,7 @@ def test_anime_metadata(verbosity=0):
                 "title": "Shangri-La Frontier",
                 "season": 2,
                 "episode": 2,
+                "mal_id": 58572,
             }
         },
         {
@@ -380,30 +382,26 @@ def test_anime_metadata(verbosity=0):
         if season_num:
             title = f"{title} Season {season_num}"
         episode_num = guess.get("episode")
-        
-        # Use the filename as the title to search in anime_metadata
+        episode_result = None
+
+        # Use the parsed title to search in anime_metadata for display and fallback mapping.
         title_result = None
         if provider:
             title_result = provider.find_title(title, year=guess.get("year"))
         
-        # If we found the anime, use it to calculate proper season/episode
+        # If we found the anime, use the matched id to calculate season/episode and MAL id.
         if title_result and provider:
-            episode_result = provider.get_episode_info(title_result.info.id, season_num, episode_num)
+            if episode_num is not None:
+                episode_result = provider.get_episode_info(title_result.info.id, season_num, episode_num)
             if episode_result:
                 # Update guess with calculated season/episode
                 guess['season'] = episode_result.season
                 guess['episode'] = episode_result.episode
-            
-            # Extract MAL ID from sources if available
-            if title_result.info.sources:
-                for source in title_result.info.sources:
-                    if "myanimelist.net/anime/" in source:
-                        try:
-                            mal_id = int(source.rstrip('/').split('/')[-1])
-                            guess['mal_id'] = mal_id
-                            break
-                        except (ValueError, IndexError):
-                            pass
+                # mal_id must come from get_episode_info(parent_id)
+                try:
+                    guess['mal_id'] = int(episode_result.parent_id)
+                except (ValueError, TypeError):
+                    pass
         
         # Prepare output data
         output_lines = []
