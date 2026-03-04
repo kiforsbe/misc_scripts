@@ -199,6 +199,18 @@ class LatestEpisodesApp {
                 this.hideSeriesSuggestions();
                 this.updateSearchIndicator('');
                 this.clearInputTypeMarker();
+
+                // Keep current navigation context while removing the `search` URL parameter
+                const urlParams = new URLSearchParams(window.location.search);
+                if (this.selectedEpisode) {
+                    if (urlParams.has('list')) {
+                        this.updateUrlForList(this.selectedEpisode);
+                    } else {
+                        this.updateUrlForEpisode(this.selectedEpisode);
+                    }
+                } else {
+                    this.updateUrlForList(null);
+                }
             });
         }
         
@@ -717,6 +729,18 @@ class LatestEpisodesApp {
         this.filterAndDisplayEpisodes();
         this.hideSeriesSuggestions();
         this.updateSearchIndicator(displayValue);
+
+        // Keep URL/navigation params in sync when a suggestion is explicitly accepted
+        const urlParams = new URLSearchParams(window.location.search);
+        if (this.selectedEpisode) {
+            if (urlParams.has('list')) {
+                this.updateUrlForList(this.selectedEpisode);
+            } else {
+                this.updateUrlForEpisode(this.selectedEpisode);
+            }
+        } else {
+            this.updateUrlForList(null);
+        }
     }
 
     setCombinedQuery(value) {
@@ -971,6 +995,13 @@ class LatestEpisodesApp {
     }
     
     selectEpisode(index, updateUrl = true, suppressMobileToggle = false) {
+        const clickedEpisode = this.filteredEpisodes[index];
+        const isSameEpisode = this.selectedEpisode && clickedEpisode && this.selectedEpisode.file_path === clickedEpisode.file_path;
+        if (isSameEpisode) {
+            this.clearEpisodeSelection(updateUrl);
+            return;
+        }
+
         // Update visual selection
         document.querySelectorAll('.episode-item').forEach(item => {
             item.classList.remove('selected');
@@ -991,6 +1022,28 @@ class LatestEpisodesApp {
                 this.showMainOnMobile();
                 this.hideEpisodePopup();
             }
+        }
+    }
+
+    clearEpisodeSelection(updateUrl = true) {
+        document.querySelectorAll('.episode-item').forEach(item => {
+            item.classList.remove('selected');
+        });
+        this.selectedEpisode = null;
+
+        const container = document.getElementById('episode-details');
+        if (container) {
+            container.innerHTML = `
+                <div class="welcome-message">
+                    <i class="bi bi-play-circle display-1 text-muted"></i>
+                    <h3 class="text-muted">Select an episode to view details</h3>
+                    <p class="text-muted">Choose an episode from the list on the left to see detailed information about the episode and series.</p>
+                </div>
+            `;
+        }
+
+        if (updateUrl && !this.isNavigating) {
+            this.updateUrlForList(null);
         }
     }
     
