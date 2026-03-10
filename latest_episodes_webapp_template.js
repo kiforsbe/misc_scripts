@@ -27,6 +27,8 @@ class LatestEpisodesApp {
         this.seriesTitleMap = new Map();
         this.seriesSuggestionMax = 500;
         this.activeSuggestionIndex = -1;
+        this.lastRenderKey = '';
+        this.lastSuggestionKey = '';
         this.searchDebounceMs = 350;
         this.searchDebounceTimer = null;
         this.popupTimeout = null;
@@ -225,6 +227,18 @@ class LatestEpisodesApp {
                 this.hideSeriesSuggestions();
             }
         });
+
+        const suggestionsContainer = document.getElementById('series-suggestions');
+        if (suggestionsContainer) {
+            suggestionsContainer.addEventListener('mousedown', (e) => {
+                const item = e.target.closest('.series-suggestion-item');
+                if (!item) return;
+                e.preventDefault();
+                const value = item.getAttribute('data-value') || '';
+                const type = item.getAttribute('data-type') || '';
+                this.applySuggestion(value, type);
+            });
+        }
 
         const clearBtn = document.getElementById('search-clear-btn');
         if (clearBtn) {
@@ -488,6 +502,10 @@ class LatestEpisodesApp {
         if (!container) return;
 
         const raw = (rawValue || '').trim();
+        const suggestionKey = raw.toLowerCase();
+        if (container.style.display === 'block' && suggestionKey === this.lastSuggestionKey) {
+            return;
+        }
         // Support prefix filters like "tag:", "series:", "genre:", or "episode:" to limit suggestion types
         let inputValue = raw.toLowerCase();
         let forcedType = null;
@@ -568,15 +586,7 @@ class LatestEpisodesApp {
 
         container.style.display = 'block';
         this.activeSuggestionIndex = -1;
-
-        container.querySelectorAll('.series-suggestion-item').forEach(item => {
-            item.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                const value = item.getAttribute('data-value');
-                const type = item.getAttribute('data-type') || '';
-                this.applySuggestion(value || '', type);
-            });
-        });
+        this.lastSuggestionKey = suggestionKey;
     }
 
     updateSearchIndicator(rawValue) {
@@ -608,6 +618,7 @@ class LatestEpisodesApp {
         container.style.display = 'none';
         container.innerHTML = '';
         this.activeSuggestionIndex = -1;
+        this.lastSuggestionKey = '';
     }
 
     showInputTypeMarker(type) {
@@ -938,6 +949,12 @@ class LatestEpisodesApp {
     
     renderEpisodesList() {
         const container = document.getElementById('episodes-list');
+        const renderKey = this.computeRenderKey();
+
+        if (renderKey === this.lastRenderKey) {
+            return;
+        }
+        this.lastRenderKey = renderKey;
         
         if (this.filteredEpisodes.length === 0) {
             container.innerHTML = `
@@ -954,6 +971,28 @@ class LatestEpisodesApp {
         } else {
             this.renderFlatEpisodesList();
         }
+    }
+
+    computeRenderKey() {
+        let hash = 2166136261;
+
+        for (const episode of this.filteredEpisodes) {
+            const path = episode && episode.file_path ? String(episode.file_path) : '';
+            for (let i = 0; i < path.length; i++) {
+                hash ^= path.charCodeAt(i);
+                hash = Math.imul(hash, 16777619);
+            }
+        }
+
+        return [
+            this.groupBy,
+            this.filteredEpisodes.length,
+            this.searchTerm,
+            this.watchStatusFilter,
+            this.malStatusFilter,
+            this.seriesFilter,
+            (hash >>> 0).toString(16)
+        ].join('|');
     }
     
     renderFlatEpisodesList() {
@@ -1044,7 +1083,7 @@ class LatestEpisodesApp {
                  onmouseenter="app.showEpisodePopup(event, ${index})" onmouseleave="app.hideEpisodePopup()">
                 <div class="episode-thumbnail">
                     ${staticUrl ? 
-                        `<img src="${imgSrc}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">` : 
+                        `<img src="${imgSrc}" alt="Episode thumbnail" loading="lazy" decoding="async" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">` : 
                         ''}
                     <div style="${staticUrl ? 'display: none;' : 'display: flex;'} width: 100%; height: 100%; align-items: center; justify-content: center;">
                         ${episode.metadata.episode || '?'}
@@ -1142,6 +1181,7 @@ class LatestEpisodesApp {
                 ${staticUrl ? `
                     <div class="episode-detail-thumbnail">
                         <img src="${imgSrc}" alt="Episode thumbnail" 
+                                loading="lazy" decoding="async"
                              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" 
                              onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" 
                              onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" 
