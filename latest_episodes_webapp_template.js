@@ -79,7 +79,47 @@ class LatestEpisodesApp {
             if (!episode.plex_watch_status && metadata.plex_watch_status) {
                 episode.plex_watch_status = metadata.plex_watch_status;
             }
+
+            this.cacheEpisodeFilterFields(episode);
         });
+    }
+
+    buildEpisodeSearchIndex(episode) {
+        const metadata = episode.metadata || {};
+        const seriesMetadata = episode.series_metadata || {};
+        const seriesTags = Array.isArray(seriesMetadata.tags) ? seriesMetadata.tags.join(' ') : '';
+        const seriesGenres = Array.isArray(seriesMetadata.genres) ? seriesMetadata.genres.join(' ') : '';
+        const episodeTags = Array.isArray(metadata.tags) ? metadata.tags.join(' ') : '';
+
+        return [
+            metadata.title || '',
+            episode.file_name || '',
+            metadata.episode_title || '',
+            seriesTags,
+            seriesGenres,
+            episodeTags
+        ].join(' ').toLowerCase();
+    }
+
+    cacheEpisodeFilterFields(episode) {
+        const plex = episode.plex_watch_status;
+        let watchStatus = 'unknown';
+        if (plex) {
+            if (plex.watched) {
+                watchStatus = 'watched';
+            } else if (plex.progress_percent > 0) {
+                watchStatus = 'partially_watched';
+            } else {
+                watchStatus = 'not_watched';
+            }
+        }
+
+        const mal = episode.myanimelist_watch_status;
+        const malStatus = (!mal || !mal.my_status) ? 'no_mal_data' : this.normalizeStatusValue(mal.my_status);
+
+        episode._filterWatchStatus = watchStatus;
+        episode._filterMalStatus = malStatus;
+        episode._filterSearchIndex = this.buildEpisodeSearchIndex(episode);
     }
 
     buildUrl(staticUrl) {
@@ -784,28 +824,20 @@ class LatestEpisodesApp {
     
     filterAndDisplayEpisodes() {
         this.filteredEpisodes = this.data.episodes.filter(episode => {
+            if (!episode._filterSearchIndex) {
+                this.cacheEpisodeFilterFields(episode);
+            }
+
             // Search filter (includes series and episode tags)
             if (this.searchTerm) {
-                const seriesTags = (episode.series_metadata && Array.isArray(episode.series_metadata.tags)) ? episode.series_metadata.tags.join(' ') : '';
-                const seriesGenres = (episode.series_metadata && Array.isArray(episode.series_metadata.genres)) ? episode.series_metadata.genres.join(' ') : '';
-                const episodeTags = (episode.metadata && Array.isArray(episode.metadata.tags)) ? episode.metadata.tags.join(' ') : '';
-                const searchableText = [
-                    episode.metadata.title,
-                    episode.file_name,
-                    episode.metadata.episode_title,
-                    seriesTags,
-                    seriesGenres,
-                    episodeTags
-                ].join(' ').toLowerCase();
-
-                if (!searchableText.includes(this.searchTerm)) {
+                if (!episode._filterSearchIndex.includes(this.searchTerm)) {
                     return false;
                 }
             }
             
             // Watch status filter
             if (this.watchStatusFilter !== 'all') {
-                const watchStatus = this.getEpisodeWatchStatus(episode);
+                const watchStatus = episode._filterWatchStatus || this.getEpisodeWatchStatus(episode);
                 if (watchStatus !== this.watchStatusFilter) {
                     return false;
                 }
@@ -813,7 +845,7 @@ class LatestEpisodesApp {
             
             // MAL status filter
             if (this.malStatusFilter !== 'all') {
-                const malStatus = this.getEpisodeMalStatus(episode);
+                const malStatus = episode._filterMalStatus || this.getEpisodeMalStatus(episode);
                 const normalizedFilter = this.normalizeStatusValue(this.malStatusFilter);
                 if (malStatus !== normalizedFilter) {
                     return false;
@@ -834,12 +866,25 @@ class LatestEpisodesApp {
     }
     
     getEpisodeWatchStatus(episode) {
+        if (episode && episode._filterWatchStatus) {
+            return episode._filterWatchStatus;
+        }
+
         const plex = episode.plex_watch_status;
-        if (!plex) return 'unknown';
+        if (!plex) {
+            episode._filterWatchStatus = 'unknown';
+            return 'unknown';
+        }
         
-        if (plex.watched) return 'watched';
-        if (plex.progress_percent > 0) return 'partially_watched';
-        return 'not_watched';
+        let watchStatus = 'not_watched';
+        if (plex.watched) {
+            watchStatus = 'watched';
+        } else if (plex.progress_percent > 0) {
+            watchStatus = 'partially_watched';
+        }
+
+        episode._filterWatchStatus = watchStatus;
+        return watchStatus;
     }
 
     normalizeStatusValue(value) {
@@ -853,10 +898,19 @@ class LatestEpisodesApp {
     }
     
     getEpisodeMalStatus(episode) {
-        const mal = episode.myanimelist_watch_status;
-        if (!mal || !mal.my_status) return 'no_mal_data';
+        if (episode && episode._filterMalStatus) {
+            return episode._filterMalStatus;
+        }
 
-        return this.normalizeStatusValue(mal.my_status);
+        const mal = episode.myanimelist_watch_status;
+        if (!mal || !mal.my_status) {
+            episode._filterMalStatus = 'no_mal_data';
+            return 'no_mal_data';
+        }
+
+        const malStatus = this.normalizeStatusValue(mal.my_status);
+        episode._filterMalStatus = malStatus;
+        return malStatus;
     }
 
     getSeriesMalStatus(episodes) {
