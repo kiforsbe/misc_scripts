@@ -1,5 +1,6 @@
 import asyncio
 import os
+import copy
 
 import functools
 import logging
@@ -643,8 +644,34 @@ async def download_item(
             logger.debug(f"Starting yt-dlp download with options: {ydl_opts}")
             loop = asyncio.get_event_loop()
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore
-                # Run download in executor
-                await loop.run_in_executor(None, ydl.download, [item.url])
+                # Prefer downloading from the same prefetched info snapshot used for
+                # listing/selection to avoid a second extraction returning a different
+                # format set moments later.
+                downloaded = False
+                if isinstance(item._raw_info, dict) and item._raw_info:
+                    try:
+                        info_snapshot = copy.deepcopy(item._raw_info)
+                        info_snapshot.setdefault("webpage_url", item.url)
+                        info_snapshot.setdefault("original_url", item.url)
+                        logger.info(
+                            "Attempting download from prefetched info snapshot "
+                            f"(id={info_snapshot.get('id')}, format={format_string})."
+                        )
+                        await loop.run_in_executor(
+                            None,
+                            functools.partial(ydl.process_ie_result, info_snapshot, True),
+                        )
+                        downloaded = True
+                    except yt_dlp.utils.DownloadError as e:
+                        logger.warning(
+                            "Download from prefetched info snapshot failed; "
+                            "retrying with fresh URL extraction. Error: %s",
+                            e,
+                        )
+
+                if not downloaded:
+                    # Fallback path: let yt-dlp re-extract from URL.
+                    await loop.run_in_executor(None, ydl.download, [item.url])
 
             # --- Post-Download Processing (Finding and Moving) ---
             _update_status("Processing")

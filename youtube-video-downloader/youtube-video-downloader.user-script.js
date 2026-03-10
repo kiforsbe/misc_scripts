@@ -21,6 +21,7 @@
   const BUTTON_POLL_INTERVAL = 1000; // Check for button container every second
   const MAX_RETRIES = 15; // Stop trying after 15 seconds if container not found
   const QUICK_DOWNLOAD_STATUS_STORAGE_KEY = 'ytdl_quick_download_status_v1';
+  const ENABLE_FORMAT_DEBUG_LOGS = true;
   // --- End Configuration ---
 
   // Runtime state for watch-page insertion retries and SPA route tracking.
@@ -332,12 +333,38 @@
       item.remove();
       delete activeToasts[clientId];
     });
+    const retryBtn = document.createElement('button');
+    retryBtn.textContent = 'Retry';
+    retryBtn.style.display = 'none';
+    retryBtn.addEventListener('click', () => {
+      const handle = activeToasts[clientId];
+      if (!handle || !handle.requestConfig) {
+        showToast('No retry data available for this item.', 'warning', 4000);
+        return;
+      }
+
+      const cfg = handle.requestConfig;
+      retryBtn.disabled = true;
+      updatePersistentToast(clientId, 0, 'Retrying...', 'running');
+      triggerDownload(
+        cfg.url,
+        cfg.audioId,
+        cfg.videoId,
+        cfg.targetFormat,
+        cfg.targetAudioParams,
+        cfg.targetVideoParams,
+        cfg.filenameHint,
+        cfg.quickTrack,
+        clientId
+      );
+    });
     actions.appendChild(cancelBtn);
+    actions.appendChild(retryBtn);
     actions.appendChild(closeBtn);
     item.appendChild(actions);
 
     center.appendChild(item);
-    activeToasts[clientId] = {item, titleEl, msgEl, bar};
+    activeToasts[clientId] = {item, titleEl, msgEl, bar, cancelBtn, retryBtn, closeBtn, requestConfig: null};
     return activeToasts[clientId];
   }
 
@@ -353,6 +380,21 @@
     if (!handle) return;
     handle.msgEl.textContent = message || (status === 'complete' ? 'Complete' : '');
     try { handle.bar.style.width = (percent || 0) + '%'; } catch (e) {}
+    if (status === 'running') {
+      try { handle.bar.style.background = '#1db954'; } catch (e) {}
+    }
+    if (handle.retryBtn) {
+      if (status === 'error') {
+        handle.retryBtn.style.display = '';
+        handle.retryBtn.disabled = false;
+      } else {
+        handle.retryBtn.style.display = 'none';
+        handle.retryBtn.disabled = false;
+      }
+    }
+    if (handle.cancelBtn && status === 'running') {
+      handle.cancelBtn.disabled = false;
+    }
     if (status === 'complete') {
       handle.msgEl.textContent = 'Complete';
       handle.bar.style.width = '100%';
@@ -484,12 +526,40 @@
     * @param {string} filenameHint - Preferred fallback filename stem.
     * @param {{videoId?: string|null, kind?: 'video'|'audio'}|null} quickTrack - Optional tracking payload for persisted status updates.
    */
-  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null) {
+  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null, existingClientId = null) {
+    if (audioId !== null && audioId !== undefined && !isValidFormatId(audioId)) {
+      console.error('[ytdl-ui] Blocked download: invalid audio format id', { url, audioId, videoId, targetFormat });
+      showToast('Invalid audio stream id from format list. Please retry.', 'error', 6000);
+      return;
+    }
+    if (videoId !== null && videoId !== undefined && !isValidFormatId(videoId)) {
+      console.error('[ytdl-ui] Blocked download: invalid video format id', { url, audioId, videoId, targetFormat });
+      showToast('Invalid video stream id from format list. Please retry.', 'error', 6000);
+      return;
+    }
+
     console.log(`Requesting download: URL=${url}, AudioID=${audioId}, VideoID=${videoId}, Target=${targetFormat}`);
 
-    // Generate a client_id for local UI tracking and show persistent toast
-    const clientId = uuidv4();
-    const toastHandle = createPersistentDownloadToast(clientId, filenameHint);
+    // Generate/reuse a client_id for local UI tracking and toast row
+    const clientId = existingClientId || uuidv4();
+    let toastHandle = activeToasts[clientId];
+    if (!toastHandle) {
+      toastHandle = createPersistentDownloadToast(clientId, filenameHint);
+    } else {
+      try { toastHandle.titleEl.textContent = filenameHint || 'Downloading...'; } catch (e) {}
+    }
+    if (toastHandle) {
+      toastHandle.requestConfig = {
+        url,
+        audioId,
+        videoId,
+        targetFormat,
+        targetAudioParams,
+        targetVideoParams,
+        filenameHint,
+        quickTrack: quickTrack || null
+      };
+    }
 
     const params = new URLSearchParams();
     params.append('url', url);
@@ -608,6 +678,7 @@
     const params = new URLSearchParams();
     params.append('url', url);
     const requestUrl = `${FLASK_SERVICE_BASE_URL}/list_formats?${params.toString()}`;
+    const expectedVideoId = extractVideoIdFromAnyUrl(url);
 
     GM_xmlhttpRequest({
       method: "GET",
@@ -616,14 +687,31 @@
       timeout: 30000, // 30 seconds timeout for fetching formats
       onload: function (response) {
         if (response.status >= 200 && response.status < 300) {
-          formatDataCache = response.response; // Store in cache
-          console.log("Formats received and cached:", formatDataCache);
+          const sanitized = sanitizeFormatPayload(response.response, expectedVideoId);
+          if (!sanitized.ok) {
+            formatDataCache = null;
+            formatFetchError = sanitized.error || 'Invalid format payload received.';
+            console.error('[ytdl-ui] Rejected /list_formats payload:', {
+              error: formatFetchError,
+              url,
+              expectedVideoId,
+              payload: response.response
+            });
+          } else {
+            formatDataCache = sanitized.data; // Store sanitized cache
+            logFormatDiagnostics('fetchFormats(cache)', formatDataCache, expectedVideoId, sanitized.stats);
+            console.log("Formats received and cached:", formatDataCache);
+          }
 
           // Auto-update dropdown if it's currently showing
           const menu = document.getElementById('ytdl-dropdown-menu');
           if (menu && menu.classList.contains('show') && menu.parentNode === document.body) {
-            console.log("Dropdown is open, auto-updating with formats...");
-            populateDropdown(menu, formatDataCache);
+            if (formatDataCache) {
+              console.log("Dropdown is open, auto-updating with formats...");
+              populateDropdown(menu, formatDataCache);
+            } else {
+              showDropdownError(menu, formatFetchError || 'Invalid format payload received.');
+            }
           }
         } else {
           formatFetchError = response.response?.error || `Server responded with status ${response.status}`;
@@ -668,13 +756,17 @@
   /**
    * Fetches formats once and resolves with format data or null on failure.
     * @param {string} url - Source video URL.
+    * @param {boolean} [bustCache=false] - Whether to append a cache-busting query key.
    * @returns {Promise<object|null>}
    */
-  function fetchFormatsOnce(url) {
+  function fetchFormatsOnce(url, bustCache = false) {
     return new Promise((resolve) => {
       try {
         const params = new URLSearchParams();
         params.append('url', url);
+        if (bustCache) {
+          params.append('_ts', String(Date.now()));
+        }
         const requestUrl = `${FLASK_SERVICE_BASE_URL}/list_formats?${params.toString()}`;
         GM_xmlhttpRequest({
           method: 'GET',
@@ -683,7 +775,20 @@
           timeout: 30000,
           onload: function (response) {
             if (response.status >= 200 && response.status < 300) {
-              resolve(response.response);
+              const expectedVideoId = extractVideoIdFromAnyUrl(url);
+              const sanitized = sanitizeFormatPayload(response.response, expectedVideoId);
+              if (!sanitized.ok) {
+                console.error('[ytdl-ui] fetchFormatsOnce rejected payload:', {
+                  url,
+                  expectedVideoId,
+                  error: sanitized.error,
+                  payload: response.response
+                });
+                resolve(null);
+                return;
+              }
+              logFormatDiagnostics(`fetchFormatsOnce(${bustCache ? 'bustCache' : 'normal'})`, sanitized.data, expectedVideoId, sanitized.stats);
+              resolve(sanitized.data);
             } else {
               console.error('fetchFormatsOnce: server error', response.status, response);
               resolve(null);
@@ -703,6 +808,194 @@
         resolve(null);
       }
     });
+  }
+
+  /**
+   * Checks if a format_id value is usable for backend download requests.
+   * @param {string|number|null|undefined} formatId - Candidate format id from format listings.
+   * @returns {boolean}
+   */
+  function isValidFormatId(formatId) {
+    if (formatId === null || formatId === undefined) return false;
+    const normalized = String(formatId).trim().toLowerCase();
+    return !!normalized && normalized !== 'null' && normalized !== 'none' && normalized !== 'n/a' && normalized !== 'na';
+  }
+
+  /**
+   * Logs compact format diagnostics that can be shared with backend logs.
+   * @param {string} source - Caller/source label.
+   * @param {any} data - Sanitized format payload.
+   * @param {string|null} expectedVideoId - Video id expected by caller.
+   * @param {{rawAudioCount?: number, rawVideoCount?: number, validAudioCount?: number, validVideoCount?: number, droppedAudioCount?: number, droppedVideoCount?: number}|null} [stats] - Sanitization stats.
+   */
+  function logFormatDiagnostics(source, data, expectedVideoId, stats = null) {
+    if (!ENABLE_FORMAT_DEBUG_LOGS) return;
+    try {
+      const responseVideoId = extractVideoIdFromAnyUrl(data?.url || '') || null;
+      const audioFormats = Array.isArray(data?.audio_formats) ? data.audio_formats : [];
+      const videoFormats = Array.isArray(data?.video_formats) ? data.video_formats : [];
+      const topAudioIds = audioFormats.slice(0, 6).map(f => String(f.format_id));
+      const topVideoIds = videoFormats.slice(0, 6).map(f => String(f.format_id));
+      console.info('[ytdl-ui] Format diagnostics:', {
+        source,
+        expectedVideoId,
+        responseVideoId,
+        title: data?.title || null,
+        rawAudioCount: stats?.rawAudioCount ?? null,
+        rawVideoCount: stats?.rawVideoCount ?? null,
+        validAudioCount: audioFormats.length,
+        validVideoCount: videoFormats.length,
+        droppedAudioCount: stats?.droppedAudioCount ?? null,
+        droppedVideoCount: stats?.droppedVideoCount ?? null,
+        topAudioIds,
+        topVideoIds
+      });
+    } catch (e) {
+      console.warn('[ytdl-ui] Failed to log format diagnostics:', e);
+    }
+  }
+
+  /**
+   * Sanitizes backend /list_formats payload and rejects stale/malformed responses.
+   * @param {any} data - Raw payload from backend.
+   * @param {string|null} expectedVideoId - Expected video id derived from requested URL.
+   * @returns {{ok: true, data: any, stats: {rawAudioCount: number, rawVideoCount: number, validAudioCount: number, validVideoCount: number, droppedAudioCount: number, droppedVideoCount: number}} | {ok: false, error: string, stats: {rawAudioCount: number, rawVideoCount: number, validAudioCount: number, validVideoCount: number, droppedAudioCount: number, droppedVideoCount: number}}}
+   */
+  function sanitizeFormatPayload(data, expectedVideoId = null) {
+    const rawAudio = Array.isArray(data?.audio_formats) ? data.audio_formats : [];
+    const rawVideo = Array.isArray(data?.video_formats) ? data.video_formats : [];
+    const stats = {
+      rawAudioCount: rawAudio.length,
+      rawVideoCount: rawVideo.length,
+      validAudioCount: 0,
+      validVideoCount: 0,
+      droppedAudioCount: 0,
+      droppedVideoCount: 0
+    };
+
+    if (!data || typeof data !== 'object') {
+      return { ok: false, error: 'Payload is not an object.', stats };
+    }
+
+    const responseVideoId = extractVideoIdFromAnyUrl(data.url || '') || null;
+    if (expectedVideoId && responseVideoId && expectedVideoId !== responseVideoId) {
+      return {
+        ok: false,
+        error: `Stale payload video mismatch (expected ${expectedVideoId}, got ${responseVideoId}).`,
+        stats
+      };
+    }
+
+    const cleanAudio = rawAudio.filter((f) => {
+      if (!f || typeof f !== 'object') return false;
+      if (!isValidFormatId(f.format_id)) return false;
+      const acodec = String(f.acodec || '').toLowerCase();
+      if (acodec === 'none') return false;
+      return true;
+    });
+
+    const cleanVideo = rawVideo.filter((f) => {
+      if (!f || typeof f !== 'object') return false;
+      if (!isValidFormatId(f.format_id)) return false;
+      const vcodec = String(f.vcodec || '').toLowerCase();
+      if (vcodec === 'none') return false;
+      return true;
+    });
+
+    stats.validAudioCount = cleanAudio.length;
+    stats.validVideoCount = cleanVideo.length;
+    stats.droppedAudioCount = Math.max(0, rawAudio.length - cleanAudio.length);
+    stats.droppedVideoCount = Math.max(0, rawVideo.length - cleanVideo.length);
+
+    return {
+      ok: true,
+      data: {
+        ...data,
+        audio_formats: cleanAudio,
+        video_formats: cleanVideo
+      },
+      stats
+    };
+  }
+
+  /**
+   * Returns valid audio stream rows and drops malformed/stale entries.
+   * @param {any} data - Raw /list_formats payload.
+   * @param {string|null} expectedVideoId - Video id that the payload should match.
+   * @returns {Array<any>}
+   */
+  function getValidAudioFormats(data, expectedVideoId = null) {
+    if (!data || typeof data !== 'object') return [];
+
+    // If the backend response points at another video, treat it as stale.
+    if (expectedVideoId) {
+      const responseVideoId = extractVideoIdFromAnyUrl(data.url || '') || null;
+      if (responseVideoId && responseVideoId !== expectedVideoId) {
+        console.warn('Ignoring stale format list for a different video id:', { expectedVideoId, responseVideoId });
+        return [];
+      }
+    }
+
+    const audioFormats = Array.isArray(data.audio_formats) ? data.audio_formats : [];
+    return audioFormats.filter((f) => {
+      if (!f || typeof f !== 'object') return false;
+      if (!isValidFormatId(f.format_id)) return false;
+      const acodec = String(f.acodec || '').toLowerCase();
+      if (acodec === 'none') return false;
+      return true;
+    });
+  }
+
+  /**
+   * Verifies that requested explicit format ids still exist in a fresh format list.
+   * @param {string} videoUrl - Video URL tied to the request.
+   * @param {string|null} requestedAudioId - Requested audio format id.
+   * @param {string|null} requestedVideoId - Requested video format id.
+   * @returns {Promise<{ok: true} | {ok: false, reason: string, details?: any}>}
+   */
+  async function verifyRequestedFormatsStillAvailable(videoUrl, requestedAudioId, requestedVideoId) {
+    const needsAudioValidation = requestedAudioId !== null && requestedAudioId !== undefined;
+    const needsVideoValidation = requestedVideoId !== null && requestedVideoId !== undefined;
+    if (!needsAudioValidation && !needsVideoValidation) return { ok: true };
+
+    if (needsAudioValidation && !isValidFormatId(requestedAudioId)) {
+      return { ok: false, reason: 'Requested audio format id is invalid before verification.', details: { requestedAudioId } };
+    }
+    if (needsVideoValidation && !isValidFormatId(requestedVideoId)) {
+      return { ok: false, reason: 'Requested video format id is invalid before verification.', details: { requestedVideoId } };
+    }
+
+    const fresh = await fetchFormatsOnce(videoUrl, true);
+    if (!fresh) {
+      return { ok: false, reason: 'Failed to fetch fresh format list for verification.' };
+    }
+
+    const availableAudioIds = new Set((Array.isArray(fresh.audio_formats) ? fresh.audio_formats : []).map(f => String(f.format_id)));
+    const availableVideoIds = new Set((Array.isArray(fresh.video_formats) ? fresh.video_formats : []).map(f => String(f.format_id)));
+
+    if (needsAudioValidation && !availableAudioIds.has(String(requestedAudioId))) {
+      return {
+        ok: false,
+        reason: 'Requested audio format is not available in a fresh format list.',
+        details: {
+          requestedAudioId: String(requestedAudioId),
+          availableAudioIds: Array.from(availableAudioIds).slice(0, 30)
+        }
+      };
+    }
+
+    if (needsVideoValidation && !availableVideoIds.has(String(requestedVideoId))) {
+      return {
+        ok: false,
+        reason: 'Requested video format is not available in a fresh format list.',
+        details: {
+          requestedVideoId: String(requestedVideoId),
+          availableVideoIds: Array.from(availableVideoIds).slice(0, 30)
+        }
+      };
+    }
+
+    return { ok: true };
   }
 
   /**
@@ -792,9 +1085,21 @@
       item.className = 'ytdl-dropdown-item';
       // Add a little space after the icon
       item.textContent = text.replace(/^(\S+)/, '$1 '); // Adds space after first non-space sequence (the icon)
-      item.addEventListener('click', (e) => {
+      item.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
+
+        const verifyResult = await verifyRequestedFormatsStillAvailable(data.url, audioId, videoId);
+        if (!verifyResult.ok) {
+          console.error('[ytdl-ui] Blocked dropdown download due to stale/invalid format ids:', {
+            reason: verifyResult.reason,
+            details: verifyResult.details || null,
+            request: { url: data.url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams }
+          });
+          showToast('Selected format is no longer available. Re-open the menu and try again.', 'warning', 7000);
+          return;
+        }
+
         const pageVideoId = extractVideoIdFromAnyUrl(data.url);
         const trackKind = (videoId || (!audioId && !targetFormat)) ? 'video' : 'audio';
         triggerDownload(
@@ -1328,46 +1633,38 @@
               const videoTitle = getTitleFromAnchor(a) || document.title.split(' - YouTube')[0] || 'youtube_video';
               const safeFilenameHint = (videoTitle || 'youtube_video').replace(/[^a-zA-Z0-9\-_\.]/g, '_').substring(0, 50);
               try {
-                const data = await fetchFormatsOnce(videoUrl);
-                const bestAudioId = data?.audio_formats?.[0]?.format_id || null;
-                if (bestAudioId) {
-                  // Pass the audio_format_id but leave targetFormat null to let backend choose default
-                  triggerDownload(
-                    videoUrl,
-                    bestAudioId,
-                    null,
-                    null,
-                    null,
-                    null,
-                    safeFilenameHint,
-                    { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'audio' }
-                  );
-                } else {
-                  // Fallback: request default handling (no explicit target)
-                  triggerDownload(
-                    videoUrl,
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    safeFilenameHint,
-                    { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'audio' }
-                  );
+                const expectedVideoId = extractVideoIdFromAnyUrl(videoUrl);
+                // First attempt can use normal request path.
+                let data = await fetchFormatsOnce(videoUrl, false);
+                let validAudioFormats = getValidAudioFormats(data, expectedVideoId);
+
+                // If the list looks stale/malformed, retry once with cache-busting.
+                if (!validAudioFormats.length) {
+                  data = await fetchFormatsOnce(videoUrl, true);
+                  validAudioFormats = getValidAudioFormats(data, expectedVideoId);
                 }
-              } catch (err) {
-                console.error('Error resolving audio format for quick-download:', err);
-                // Fallback behavior
+
+                const bestAudioId = validAudioFormats[0]?.format_id || null;
+                if (!bestAudioId) {
+                  showToast('No valid audio stream available for this video right now. Please retry in a moment.', 'warning', 6000);
+                  console.warn('Quick audio download skipped: no valid audio format id found.', { videoUrl, data });
+                  return;
+                }
+
+                // Pass the audio_format_id and avoid null-audio fallback for quick audio.
                 triggerDownload(
                   videoUrl,
-                  null,
+                  bestAudioId,
                   null,
                   null,
                   null,
                   null,
                   safeFilenameHint,
-                  { videoId: extractVideoIdFromAnyUrl(videoUrl), kind: 'audio' }
+                  { videoId: expectedVideoId, kind: 'audio' }
                 );
+              } catch (err) {
+                console.error('Error resolving audio format for quick-download:', err);
+                showToast('Could not resolve valid audio streams. Try again shortly.', 'error', 6000);
               }
             });
           } else {
