@@ -27,6 +27,8 @@ class LatestEpisodesApp {
         this.seriesTitleMap = new Map();
         this.seriesSuggestionMax = 500;
         this.activeSuggestionIndex = -1;
+        this.searchDebounceMs = 350;
+        this.searchDebounceTimer = null;
         this.popupTimeout = null;
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
@@ -164,12 +166,7 @@ class LatestEpisodesApp {
         // Search functionality
         const searchInput = document.getElementById('search-input');
         searchInput.addEventListener('input', (e) => {
-            this.setCombinedQuery(e.target.value);
-            this.filterAndDisplayEpisodes();
-            this.renderSeriesSuggestions(e.target.value);
-            this.updateSearchIndicator(e.target.value);
-            // Clear any previously-applied suggestion type marker when user types
-            this.clearInputTypeMarker();
+            this.handleSearchInput(e.target.value);
         });
 
         searchInput.addEventListener('focus', (e) => {
@@ -194,11 +191,7 @@ class LatestEpisodesApp {
             clearBtn.addEventListener('click', () => {
                 const input = document.getElementById('search-input');
                 if (input) input.value = '';
-                this.setCombinedQuery('');
-                this.filterAndDisplayEpisodes();
-                this.hideSeriesSuggestions();
-                this.updateSearchIndicator('');
-                this.clearInputTypeMarker();
+                this.applySearchNow('');
 
                 // Keep current navigation context while removing the `search` URL parameter
                 const urlParams = new URLSearchParams(window.location.search);
@@ -324,6 +317,31 @@ class LatestEpisodesApp {
                 this.hideSeriesSuggestions();
             }
         });
+    }
+
+    clearPendingSearchDebounce() {
+        if (this.searchDebounceTimer) {
+            clearTimeout(this.searchDebounceTimer);
+            this.searchDebounceTimer = null;
+        }
+    }
+
+    applySearchNow(value) {
+        this.clearPendingSearchDebounce();
+        this.setCombinedQuery(value);
+        this.filterAndDisplayEpisodes();
+        this.renderSeriesSuggestions(value);
+        this.updateSearchIndicator(value);
+        // Clear any previously-applied suggestion type marker when user types or search is reset.
+        this.clearInputTypeMarker();
+    }
+
+    handleSearchInput(value) {
+        this.clearPendingSearchDebounce();
+        this.searchDebounceTimer = setTimeout(() => {
+            this.searchDebounceTimer = null;
+            this.applySearchNow(value);
+        }, this.searchDebounceMs);
     }
 
     isMobile() {
@@ -724,6 +742,7 @@ class LatestEpisodesApp {
         }
         // show a visual type marker next to the input (not part of the raw value)
         if (type) this.showInputTypeMarker(type);
+        this.clearPendingSearchDebounce();
         // setCombinedQuery expects a raw search term (without the type label)
         this.setCombinedQuery(value);
         this.filterAndDisplayEpisodes();
