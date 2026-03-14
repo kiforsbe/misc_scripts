@@ -691,7 +691,8 @@ def list_formats():
 if __name__ == "__main__":
     def setup_logging():
         """Configure logging: console ERROR by default, optional file logging."""
-        log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+        log_level = os.environ.get("LOG_LEVEL", "ERROR").upper()
+        resolved_log_level = getattr(logging, log_level, logging.ERROR)
         log_to_file = os.environ.get("LOG_TO_FILE", "").strip().lower() in (
             "1",
             "true",
@@ -702,14 +703,14 @@ if __name__ == "__main__":
 
         root_logger = logging.getLogger()
         root_logger.handlers.clear()
-        root_logger.setLevel(logging.DEBUG)
+        root_logger.setLevel(resolved_log_level)
 
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
 
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.ERROR)
+        console_handler.setLevel(resolved_log_level)
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
@@ -717,7 +718,7 @@ if __name__ == "__main__":
         werkzeug_logger = logging.getLogger("werkzeug")
         werkzeug_logger.handlers.clear()
         werkzeug_logger.propagate = False
-        werkzeug_logger.setLevel(logging.INFO)
+        werkzeug_logger.setLevel(resolved_log_level)
         werkzeug_logger.addHandler(logging.NullHandler())
 
         flask_logger = logging.getLogger("flask.app")
@@ -727,7 +728,7 @@ if __name__ == "__main__":
 
         if log_to_file:
             file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
-            file_handler.setLevel(getattr(logging, log_level, logging.INFO))
+            file_handler.setLevel(resolved_log_level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
 

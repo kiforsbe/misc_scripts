@@ -62,6 +62,18 @@ RATE_LIMIT_SECONDS: float = float(os.environ.get("YTDL_RATE_LIMIT_SECONDS", "2")
 RATE_LIMIT_BACKOFF_MAX: float = float(os.environ.get("YTDL_RATE_LIMIT_BACKOFF_MAX", "10"))
 
 
+def _yt_dlp_verbose_enabled() -> bool:
+    """Enable yt-dlp verbose output when debug logging is enabled."""
+    env_level = os.environ.get("LOG_LEVEL")
+    if env_level:
+        resolved_level = getattr(logging, env_level.strip().upper(), None)
+        if isinstance(resolved_level, int):
+            return resolved_level <= logging.DEBUG
+    return logger.isEnabledFor(logging.DEBUG) or logging.getLogger().isEnabledFor(
+        logging.DEBUG
+    )
+
+
 
 def get_cookies_from_browser() -> Optional[tuple]:
     """
@@ -149,17 +161,20 @@ async def fetch_info(url: str, use_cookies: bool = False) -> DownloadItem:
 
     try:
         # Use specific options for info fetching
+        yt_dlp_verbose = _yt_dlp_verbose_enabled()
         info_ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
+            "quiet": not yt_dlp_verbose,
+            "no_warnings": not yt_dlp_verbose,
             "extract_flat": False,  # Need full format info
             "skip_download": True,
-            "verbose": False,
+            "verbose": yt_dlp_verbose,
             "ignoreerrors": False,  # Raise error if info fetch fails for this URL
             "forcejson": True,
             "dump_single_json": True,  # Get info as JSON string
             # 'simulate': True, # Alternative to skip_download? Test needed.
         }
+        if yt_dlp_verbose:
+            logger.debug("yt-dlp verbose mode enabled for info fetch")
         
         if use_cookies:
             # Try to add browser cookies if available
@@ -448,14 +463,15 @@ async def download_item(
             # Filter out None values
             metadata_dict = {k: v for k, v in metadata_dict.items() if v is not None}
 
+            yt_dlp_verbose = _yt_dlp_verbose_enabled()
             ydl_opts = {
                 "format": format_string,
                 "progress_hooks": [_progress_hook],
                 "outtmpl": str(temp_out_tmpl),
                 "windowsfilenames": sys.platform == "win32",  # Use OS-specific sanitization
-                "quiet": True,
-                "no_warnings": True,
-                "verbose": False,
+                "quiet": not yt_dlp_verbose,
+                "no_warnings": not yt_dlp_verbose,
+                "verbose": yt_dlp_verbose,
                 "ignoreerrors": False,  # Fail on download errors
                 "noprogress": True,  # Disable yt-dlp's console progress bar
                 "ffmpeg_location": ffmpeg_path,
@@ -463,6 +479,8 @@ async def download_item(
                 "writethumbnail": True,
                 "metadata": metadata_dict,
             }
+            if yt_dlp_verbose:
+                logger.debug("yt-dlp verbose mode enabled for download")
             
             if use_cookies:
                 # Try to add browser cookies if available
