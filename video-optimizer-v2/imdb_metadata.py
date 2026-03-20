@@ -6,7 +6,6 @@ import requests
 import sqlite3
 import time
 import re
-from datetime import timedelta
 from typing import Optional, Dict, List, Tuple
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
@@ -82,8 +81,10 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._load_cache_duration()
         expired = self._get_expired_datasets(self.CACHE_EXPIRY_DATASETS)
         if expired:
-            logging.info("Expired IMDb datasets detected on init: %s. Refreshing from source.", ",".join(expired))
-            self.refresh_data()
+            # Do not force a download during provider construction.
+            # This allows cache status inspection (e.g. metadata_cache_manager status)
+            # without triggering a refresh. Actual reload happens lazily on first lookup.
+            logging.info("Expired IMDb datasets detected on init: %s. Reload will occur on next data access.", ",".join(expired))
     
     def _get_connection(self) -> sqlite3.Connection:
         """Get a connection from the pool or create a new one"""
@@ -205,31 +206,48 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _load_cache_duration(self) -> None:
         try:
+            # Use base-class persistence. Avoid storing cache duration in
+            # data_version rows that are reserved for source datasets.
             super()._load_cache_duration()
-
-            # Backward compatibility for legacy row that stored duration days.
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                row = conn.execute(
-                    "SELECT updated FROM data_version WHERE dataset = 'cache_duration' LIMIT 1"
-                ).fetchone()
-                if row and row[0] is not None:
-                    days = int(row[0])
-                    if days >= 0:
-                        self.cache_duration = timedelta(days=days)
         except Exception as e:
             logging.debug(f"Could not load cache duration for IMDb provider: {e}")
 
     def _persist_cache_duration(self) -> None:
         try:
             super()._persist_cache_duration()
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO data_version (dataset, updated) VALUES ('cache_duration', ?)",
-                    (int(self.cache_duration.days),),
-                )
-                conn.commit()
         except Exception:
             logging.debug("Could not persist cache duration for IMDb provider")
+
+    def _upsert_dataset_version(self, conn: sqlite3.Connection, dataset_name: str, source_ts: Optional[int] = None) -> None:
+        """Persist expiry metadata for one dataset in data_version."""
+        now_ts = int(time.time())
+        expires_at = now_ts + int(self.cache_duration.total_seconds())
+        src_ts = int(source_ts) if source_ts else now_ts
+
+        # Preserve an existing positive default_ttl when present.
+        ttl_days = int(self.cache_duration.days)
+        try:
+            row = conn.execute(
+                "SELECT default_ttl FROM data_version WHERE dataset = ? LIMIT 1",
+                (dataset_name,),
+            ).fetchone()
+            if row and row[0] is not None:
+                existing_ttl = int(row[0])
+                if existing_ttl > 0:
+                    ttl_days = existing_ttl
+            if ttl_days <= 0:
+                ttl_days = self.DEFAULT_TTL_DAYS
+        except Exception:
+            if ttl_days <= 0:
+                ttl_days = self.DEFAULT_TTL_DAYS
+
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO data_version (dataset, expires_at, default_ttl, last_modified, updated)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (dataset_name, expires_at, ttl_days, src_ts, now_ts),
+        )
 
     def _is_data_current(self) -> bool:
         """Check if the database contains current data"""
@@ -340,6 +358,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Load a dataset into the database"""
         url = self.DATASETS[dataset_name]
         gz_cache = os.path.join(self.cache_dir, f"{dataset_name}.tsv.gz")
+        source_last_modified_ts: Optional[int] = None
 
         # Only download if file is missing or older than cache_duration
         need_download = True
@@ -354,6 +373,14 @@ class IMDbDataProvider(BaseMetadataProvider):
                 try:
                     response = requests.get(url, stream=True)
                     total_size = int(response.headers.get("content-length", 0))
+                    lm_header = response.headers.get("last-modified")
+                    if lm_header:
+                        try:
+                            from email.utils import parsedate_to_datetime
+
+                            source_last_modified_ts = int(parsedate_to_datetime(lm_header).timestamp())
+                        except Exception:
+                            source_last_modified_ts = None
 
                     with tqdm(
                         total=total_size,
@@ -375,6 +402,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                         logging.info("Retrying...")
                         continue
                     raise
+        else:
+            try:
+                source_last_modified_ts = int(os.path.getmtime(gz_cache))
+            except Exception:
+                source_last_modified_ts = int(time.time())
         
         # Parse and insert into database with aggressive filtering
         try:
@@ -480,14 +512,8 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                     pbar.close()
 
-                # Update version info
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO data_version (dataset, updated)
-                    VALUES (?, ?)
-                """,
-                    (dataset_name, int(time.time())),
-                )
+                # Update version metadata used by cache freshness/status checks.
+                self._upsert_dataset_version(conn, dataset_name, source_last_modified_ts)
 
                 # After all akas are inserted, rebuild the FTS table from the content table (like anime_metadata.py)
                 conn.execute("INSERT INTO title_fts(title_fts) VALUES('rebuild')")
