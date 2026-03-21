@@ -95,8 +95,9 @@ class AnimeDataProvider(BaseMetadataProvider):
         self._load_cache_duration()
         expired = self._get_expired_datasets(self.CACHE_EXPIRY_DATASETS)
         if expired:
-            logging.info("Expired anime datasets detected on init: %s. Refreshing from source.", ",".join(expired))
-            self.refresh_data()
+            # Do not force refresh during construction; this allows status checks
+            # without triggering network/database work. Reload happens on first lookup.
+            logging.info("Expired anime datasets detected on init: %s. Reload will occur on next data access.", ",".join(expired))
 
     def _parse_season_from_title(self, title: str) -> tuple[Optional[int], str]:
         """
@@ -750,6 +751,9 @@ class AnimeDataProvider(BaseMetadataProvider):
                     except Exception:
                         ttl_val = int(self.cache_duration.days)
 
+                    if ttl_val <= 0:
+                        ttl_val = self.DEFAULT_TTL_DAYS
+
                     conn.execute(
                         "INSERT OR REPLACE INTO data_version (dataset, expires_at, default_ttl, last_modified, updated) VALUES (?, ?, ?, ?, ?)",
                         ('anime_offline_database', expiry_ts, ttl_val, now_ts, now_ts),
@@ -1056,7 +1060,17 @@ class AnimeDataProvider(BaseMetadataProvider):
         logging.info("Refreshing anime database...")
         self._db_loaded_once = False
         self._db_loaded_until_ts = None
+        previous_duration = self.cache_duration
         self.set_cache_expiry(0)
         self._search_cache.clear()
         self.load_database()
+
+        # Restore configured TTL so refreshed data does not remain immediately expired.
+        if self.cache_duration != previous_duration:
+            self.set_cache_duration(previous_duration)
+
+        try:
+            self._db_loaded_until_ts = int(self.get_cache_expiry().timestamp())
+        except Exception:
+            self._db_loaded_until_ts = int(time.time()) + int(self.cache_duration.total_seconds())
         logging.info("Anime database refreshed successfully")
