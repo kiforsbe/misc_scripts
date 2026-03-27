@@ -249,6 +249,7 @@ class LatestEpisodesViewer:
         
         # Define template file paths
         css_template_path = template_dir / "latest_episodes_webapp_template.css"
+        virtual_list_template_path = template_dir / "latest_episodes_virtual_list.js"
         js_template_path = template_dir / "latest_episodes_webapp_template.js"
         html_template_path = template_dir / "latest_episodes_webapp_template.html"
         
@@ -256,6 +257,8 @@ class LatestEpisodesViewer:
         missing_files = []
         if not css_template_path.exists():
             missing_files.append(str(css_template_path))
+        if not virtual_list_template_path.exists():
+            missing_files.append(str(virtual_list_template_path))
         if not js_template_path.exists():
             missing_files.append(str(js_template_path))
         if not html_template_path.exists():
@@ -268,6 +271,7 @@ class LatestEpisodesViewer:
             print("\nPlease ensure these template files are in the same directory as this script:")
             print("  - latest_episodes_webapp_template.html")
             print("  - latest_episodes_webapp_template.css")
+            print("  - latest_episodes_virtual_list.js")
             print("  - latest_episodes_webapp_template.js")
             raise FileNotFoundError(f"Missing template files: {', '.join(missing_files)}")
         
@@ -275,14 +279,19 @@ class LatestEpisodesViewer:
         with open(css_template_path, 'r', encoding='utf-8') as f:
             css_content = f.read()
         
+        with open(virtual_list_template_path, 'r', encoding='utf-8') as f:
+            virtual_list_content = f.read()
+
         with open(js_template_path, 'r', encoding='utf-8') as f:
             js_content = f.read()
+
+        bundled_js_content = f"{virtual_list_content}\n\n{js_content}"
         
         with open(html_template_path, 'r', encoding='utf-8') as f:
             html_template = f.read()
         
         # Generate HTML with embedded data
-        html_content = self._generate_html_from_template(results, html_template, css_content, js_content)
+        html_content = self._generate_html_from_template(results, html_template, css_content, bundled_js_content)
         
         # Write the complete HTML file
         with open(output_path, 'w', encoding='utf-8') as f:

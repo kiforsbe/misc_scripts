@@ -18,6 +18,9 @@ class LatestEpisodesApp {
         this.data = EPISODES_DATA;
         this.normalizeEpisodeData();
         this.filteredEpisodes = [];
+        this.virtualRows = [];
+        this.episodeIndexToRowIndex = new Map();
+        this.episodeListVirtualizer = null;
         this.selectedEpisode = null;
         this.searchTerm = '';
         this.watchStatusFilter = 'all';
@@ -144,13 +147,7 @@ class LatestEpisodesApp {
         const episodeIndex = this.filteredEpisodes.findIndex(ep => ep.file_path === filePath);
         if (episodeIndex !== -1) {
             this.selectEpisode(episodeIndex);
-            // Scroll to the selected episode in the list
-            setTimeout(() => {
-                const selectedItem = document.querySelector(`[data-index="${episodeIndex}"]`);
-                if (selectedItem) {
-                    selectedItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
-            }, 100);
+            this.scrollToEpisode(episodeIndex);
         } else {
             // Episode not in current filtered view, need to find it in full dataset
             const fullEpisodeIndex = this.data.episodes.findIndex(ep => ep.file_path === filePath);
@@ -170,13 +167,7 @@ class LatestEpisodesApp {
                 const newIndex = this.filteredEpisodes.findIndex(ep => ep.file_path === filePath);
                 if (newIndex !== -1) {
                     this.selectEpisode(newIndex);
-                    // Scroll to the selected episode in the list
-                    setTimeout(() => {
-                        const selectedItem = document.querySelector(`[data-index="${newIndex}"]`);
-                        if (selectedItem) {
-                            selectedItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        }
-                    }, 200);
+                    this.scrollToEpisode(newIndex);
                 }
             }
         }
@@ -191,6 +182,7 @@ class LatestEpisodesApp {
     
     init() {
         this.setupEventListeners();
+        this.initializeEpisodeListVirtualizer();
         // styles are provided via latest_episodes_webapp_template.css; no runtime injection
         this.setupNavigation();
         this.updateHeaderStats();
@@ -374,6 +366,89 @@ class LatestEpisodesApp {
                 this.hideSeriesSuggestions();
             }
         });
+
+        const episodesList = document.getElementById('episodes-list');
+        if (episodesList) {
+            episodesList.addEventListener('click', (e) => {
+                this.handleEpisodeListClick(e);
+            });
+            episodesList.addEventListener('mouseover', (e) => {
+                this.handleEpisodeListMouseOver(e);
+            });
+            episodesList.addEventListener('mouseout', (e) => {
+                this.handleEpisodeListMouseOut(e);
+            });
+            episodesList.addEventListener('mouseleave', () => {
+                this.hideEpisodePopup();
+            });
+        }
+    }
+
+    initializeEpisodeListVirtualizer() {
+        const container = document.getElementById('episodes-list');
+        if (!container || typeof VirtualList === 'undefined') {
+            return;
+        }
+
+        this.episodeListVirtualizer = new VirtualList({
+            container,
+            overscan: 8,
+            getItemKey: (row) => row.key,
+            getItemEstimatedHeight: (row) => {
+                if (!row) return 96;
+                if (row.type === 'group') return 92;
+                if (row.type === 'empty') return 96;
+                return 98;
+            },
+            renderItem: (row) => this.renderEpisodeListRow(row)
+        });
+    }
+
+    handleEpisodeListClick(event) {
+        const item = event.target.closest('.episode-item[data-index]');
+        if (!item) {
+            return;
+        }
+
+        const index = Number(item.getAttribute('data-index'));
+        if (!Number.isInteger(index)) {
+            return;
+        }
+
+        this.selectEpisode(index);
+    }
+
+    handleEpisodeListMouseOver(event) {
+        const item = event.target.closest('.episode-item[data-index]');
+        if (!item) {
+            return;
+        }
+
+        const relatedTarget = event.relatedTarget;
+        if (relatedTarget && item.contains(relatedTarget)) {
+            return;
+        }
+
+        const index = Number(item.getAttribute('data-index'));
+        if (!Number.isInteger(index)) {
+            return;
+        }
+
+        this.showEpisodePopup(event, index, item);
+    }
+
+    handleEpisodeListMouseOut(event) {
+        const item = event.target.closest('.episode-item[data-index]');
+        if (!item) {
+            return;
+        }
+
+        const relatedTarget = event.relatedTarget;
+        if (relatedTarget && item.contains(relatedTarget)) {
+            return;
+        }
+
+        this.hideEpisodePopup();
     }
 
     clearPendingSearchDebounce() {
@@ -426,8 +501,7 @@ class LatestEpisodesApp {
             if (!this.selectedEpisode) return;
             const idx = this.filteredEpisodes.findIndex(ep => ep.file_path === this.selectedEpisode.file_path);
             if (idx !== -1) {
-                const el = document.querySelector(`[data-index="${idx}"]`);
-                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                this.scrollToEpisode(idx);
             }
         }, 120);
         // Hide header back button and clear header state
@@ -951,24 +1025,13 @@ class LatestEpisodesApp {
     }
     
     renderEpisodesList() {
-        const container = document.getElementById('episodes-list');
         const renderKey = this.computeRenderKey();
 
         if (renderKey === this.lastRenderKey) {
             return;
         }
         this.lastRenderKey = renderKey;
-        
-        if (this.filteredEpisodes.length === 0) {
-            container.innerHTML = `
-                <div class="text-center p-4 text-muted">
-                    <i class="bi bi-search"></i>
-                    <p>No episodes match your filters</p>
-                </div>
-            `;
-            return;
-        }
-        
+
         if (this.groupBy === 'series') {
             this.renderGroupedEpisodesList();
         } else {
@@ -999,15 +1062,17 @@ class LatestEpisodesApp {
     }
     
     renderFlatEpisodesList() {
-        const container = document.getElementById('episodes-list');
-        container.innerHTML = this.filteredEpisodes.map((episode, index) => {
-            return this.renderEpisodeItem(episode, index);
-        }).join('');
+        const rows = this.filteredEpisodes.map((episode, index) => ({
+            type: 'episode',
+            key: episode.file_path || `episode-${index}`,
+            episode,
+            episodeIndex: index
+        }));
+
+        this.setEpisodeListRows(rows);
     }
     
     renderGroupedEpisodesList() {
-        const container = document.getElementById('episodes-list');
-        
         // Group episodes by series
         const groupedEpisodes = this.filteredEpisodes.reduce((groups, episode, index) => {
             const seriesTitle = episode.metadata.title;
@@ -1024,8 +1089,8 @@ class LatestEpisodesApp {
             const latestEpisodeB = Math.max(...groupedEpisodes[b].map(item => item.episode.download_timestamp));
             return latestEpisodeB - latestEpisodeA; // Newest first
         });
-        
-        let html = '';
+
+        const rows = [];
         sortedSeries.forEach(seriesTitle => {
             const episodes = groupedEpisodes[seriesTitle];
             const firstEpisode = episodes[0].episode;
@@ -1035,42 +1100,105 @@ class LatestEpisodesApp {
             const totalEpisodes = firstEpisode.series_metadata && firstEpisode.series_metadata.total_episodes;
             const episodeCountText = totalEpisodes ? `${episodes.length}/${totalEpisodes} episodes` : `${episodes.length} episode${episodes.length !== 1 ? 's' : ''}`;
             const seriesTags = firstEpisode.series_metadata && firstEpisode.series_metadata.tags && firstEpisode.series_metadata.tags.length > 0 ? firstEpisode.series_metadata.tags : null;
-            
-            html += `
-                <div class="series-group ${seriesMalStatusClass ? `mal-${seriesMalStatusClass}` : ''}">
-                    <div class="series-group-header">
-                        <div class="series-group-main">
-                            <div class="series-group-title">
-                                <span>${this.escapeHtml(seriesTitle)}</span>
-                            </div>
-                            <div class="series-group-right">
-                                ${seriesRating ? `<span class="series-rating">${seriesRating}</span>` : ''}
-                                <span class="series-group-count">${episodeCountText}</span>
-                            </div>
-                        </div>
-                        ${seriesTags ? `
-                            <div class="series-tags">
-                                ${seriesTags.slice(0, 5).map(tag => `<span class="series-tag">${this.escapeHtml(tag)}</span>`).join('')}
-                                ${seriesTags.length > 5 ? `<span class="series-tag">+${seriesTags.length - 5}</span>` : ''}
-                            </div>
-                        ` : ''}
-                    </div>
-            `;
-            
-            episodes.forEach(({ episode, index }) => {
-                html += this.renderEpisodeItem(episode, index);
+
+            rows.push({
+                type: 'group',
+                key: `group-${seriesTitle}`,
+                isFirstGroup: rows.length === 0,
+                seriesTitle,
+                seriesMalStatusClass,
+                seriesRating,
+                episodeCountText,
+                seriesTags
             });
-            
-            html += '</div>';
+
+            episodes.forEach(({ episode, index }) => {
+                rows.push({
+                    type: 'episode',
+                    key: episode.file_path || `episode-${index}`,
+                    episode,
+                    episodeIndex: index
+                });
+            });
         });
-        
-        container.innerHTML = html;
+
+        this.setEpisodeListRows(rows);
+    }
+
+    setEpisodeListRows(rows) {
+        const normalizedRows = rows.length > 0 ? rows : [{ type: 'empty', key: 'empty-results' }];
+        const episodeIndexToRowIndex = new Map();
+
+        normalizedRows.forEach((row, rowIndex) => {
+            if (row.type === 'episode') {
+                episodeIndexToRowIndex.set(row.episodeIndex, rowIndex);
+            }
+        });
+
+        this.virtualRows = normalizedRows;
+        this.episodeIndexToRowIndex = episodeIndexToRowIndex;
+
+        if (this.episodeListVirtualizer) {
+            this.episodeListVirtualizer.setItems(normalizedRows);
+            return;
+        }
+
+        const container = document.getElementById('episodes-list');
+        if (container) {
+            container.innerHTML = normalizedRows.map((row) => this.renderEpisodeListRow(row)).join('');
+        }
+    }
+
+    renderEpisodeListRow(row) {
+        if (!row) {
+            return '';
+        }
+
+        if (row.type === 'group') {
+            return this.renderSeriesGroupHeader(row);
+        }
+
+        if (row.type === 'empty') {
+            return `
+                <div class="episode-list-empty text-center text-muted">
+                    <i class="bi bi-search"></i>
+                    <p>No episodes match your filters</p>
+                </div>
+            `;
+        }
+
+        return this.renderEpisodeItem(row.episode, row.episodeIndex);
+    }
+
+    renderSeriesGroupHeader(row) {
+        return `
+            <div class="series-group-row ${row.isFirstGroup ? 'first-group' : ''} ${row.seriesMalStatusClass ? `mal-${row.seriesMalStatusClass}` : ''}">
+                <div class="series-group-header">
+                    <div class="series-group-main">
+                        <div class="series-group-title">
+                            <span>${this.escapeHtml(row.seriesTitle)}</span>
+                        </div>
+                        <div class="series-group-right">
+                            ${row.seriesRating ? `<span class="series-rating">${row.seriesRating}</span>` : ''}
+                            <span class="series-group-count">${row.episodeCountText}</span>
+                        </div>
+                    </div>
+                    ${row.seriesTags ? `
+                        <div class="series-tags">
+                            ${row.seriesTags.slice(0, 5).map(tag => `<span class="series-tag">${this.escapeHtml(tag)}</span>`).join('')}
+                            ${row.seriesTags.length > 5 ? `<span class="series-tag">+${row.seriesTags.length - 5}</span>` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
     }
     
     renderEpisodeItem(episode, index) {
         const watchStatus = this.getEpisodeWatchStatus(episode);
         const malStatus = this.getEpisodeMalStatus(episode);
         const combinedStatusClass = this.getCombinedEpisodeStatusClass(watchStatus, malStatus);
+        const isSelected = this.isEpisodeSelected(episode);
         const downloadDate = new Date(episode.download_date);
         const episodeTitle = episode.metadata.episode_title || `Episode ${episode.metadata.episode}`;
         const seriesEpisodes = this.getSeriesEpisodes(episode.metadata.title);
@@ -1082,8 +1210,7 @@ class LatestEpisodesApp {
         const imgAnim = animUrl ? this.buildUrl(animUrl) : '';
 
         return `
-                  <div class="episode-item ${combinedStatusClass}" onclick="app.selectEpisode(${index})" data-index="${index}"
-                 onmouseenter="app.showEpisodePopup(event, ${index})" onmouseleave="app.hideEpisodePopup()">
+                  <div class="episode-item ${combinedStatusClass} ${isSelected ? 'selected' : ''}" data-index="${index}">
                 <div class="episode-thumbnail">
                     ${staticUrl ? 
                         `<img src="${imgSrc}" alt="Episode thumbnail" loading="lazy" decoding="async" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">` : 
@@ -1108,6 +1235,15 @@ class LatestEpisodesApp {
             </div>
         `;
     }
+
+    isEpisodeSelected(episode) {
+        return Boolean(
+            episode &&
+            this.selectedEpisode &&
+            episode.file_path &&
+            this.selectedEpisode.file_path === episode.file_path
+        );
+    }
     
     selectEpisode(index, updateUrl = true, suppressMobileToggle = false) {
         const clickedEpisode = this.filteredEpisodes[index];
@@ -1122,21 +1258,30 @@ class LatestEpisodesApp {
             item.classList.remove('selected');
         });
 
+        if (!clickedEpisode) {
+            return;
+        }
+
+        this.selectedEpisode = clickedEpisode;
+        this.renderEpisodeDetails();
+
         const selectedItem = document.querySelector(`[data-index="${index}"]`);
         if (selectedItem) {
             selectedItem.classList.add('selected');
-            this.selectedEpisode = this.filteredEpisodes[index];
-            this.renderEpisodeDetails();
-            
-            // Update URL and browser history
-            if (updateUrl && !this.isNavigating) {
-                this.updateUrlForEpisode(this.selectedEpisode);
-            }
-            // On mobile show the main content (details) and hide list unless suppressed
-            if (this.isMobile() && !suppressMobileToggle) {
-                this.showMainOnMobile();
-                this.hideEpisodePopup();
-            }
+        }
+
+        if (this.episodeListVirtualizer) {
+            this.episodeListVirtualizer.rerender();
+        }
+
+        // Update URL and browser history
+        if (updateUrl && !this.isNavigating) {
+            this.updateUrlForEpisode(this.selectedEpisode);
+        }
+        // On mobile show the main content (details) and hide list unless suppressed
+        if (this.isMobile() && !suppressMobileToggle) {
+            this.showMainOnMobile();
+            this.hideEpisodePopup();
         }
     }
 
@@ -1145,6 +1290,10 @@ class LatestEpisodesApp {
             item.classList.remove('selected');
         });
         this.selectedEpisode = null;
+
+        if (this.episodeListVirtualizer) {
+            this.episodeListVirtualizer.rerender();
+        }
 
         const container = document.getElementById('episode-details');
         if (container) {
@@ -1880,6 +2029,12 @@ class LatestEpisodesApp {
     }
     
     scrollToEpisode(index) {
+        const rowIndex = this.episodeIndexToRowIndex.get(index);
+        if (this.episodeListVirtualizer && Number.isInteger(rowIndex)) {
+            this.episodeListVirtualizer.scrollToIndex(rowIndex, { align: 'center', behavior: 'smooth' });
+            return;
+        }
+
         // Wait for DOM to be updated, then scroll
         setTimeout(() => {
             const episodeItem = document.querySelector(`[data-index="${index}"]`);
@@ -2088,7 +2243,7 @@ class LatestEpisodesApp {
         }
     }
     
-    showEpisodePopup(event, index) {
+    showEpisodePopup(event, index, episodeItem = null) {
         // Clear any pending hide timeout
         if (this.hideTimeout) {
             clearTimeout(this.hideTimeout);
@@ -2236,8 +2391,9 @@ class LatestEpisodesApp {
         }
         
         // Position popup
-        const episodeItem = event.currentTarget;
-        const episodeRect = episodeItem.getBoundingClientRect();
+        const popupTarget = episodeItem || event.currentTarget;
+        if (!popupTarget) return;
+        const episodeRect = popupTarget.getBoundingClientRect();
         const sidebarRect = document.querySelector('.sidebar').getBoundingClientRect();
         const popupWidth = 525;
         const popupHeight = 500; // Increased estimated height
@@ -2344,12 +2500,6 @@ class LatestEpisodesApp {
         }, 100); // Small delay to allow moving between episodes
     }
     
-    escapeHtml(text) {
-        if (typeof text !== 'string') return '';
-        return text.replace(/[&<>"']/g, match => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[match]));
-    }
 }
 
 // Initialize the app when DOM is loaded

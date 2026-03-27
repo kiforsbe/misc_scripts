@@ -335,6 +335,24 @@ html, body {
   padding: 0.5rem;
 }
 
+.virtual-list-top-spacer,
+.virtual-list-bottom-spacer {
+  height: 0;
+  pointer-events: none;
+}
+
+.virtual-list-content {
+  min-height: 0;
+}
+
+.virtual-list-row {
+  width: 100%;
+}
+
+.episode-list-empty {
+  padding: 1.5rem 1rem;
+}
+
 .episode-thumbnail {
   width: 140px;
   height: calc(100% - 8px);
@@ -819,23 +837,37 @@ html, body {
   margin-bottom: 2rem;
 }
 
-.series-group.mal-watching .series-group-header {
+.series-group-row {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.series-group-row.first-group {
+  margin-top: 0;
+}
+
+.series-group.mal-watching .series-group-header,
+.series-group-row.mal-watching .series-group-header {
   box-shadow: inset 0.5rem 0 0 var(--primary-color);
 }
 
-.series-group.mal-completed .series-group-header {
+.series-group.mal-completed .series-group-header,
+.series-group-row.mal-completed .series-group-header {
   box-shadow: inset 0.5rem 0 0 var(--success-color);
 }
 
-.series-group.mal-on-hold .series-group-header {
+.series-group.mal-on-hold .series-group-header,
+.series-group-row.mal-on-hold .series-group-header {
   box-shadow: inset 0.5rem 0 0 var(--warning-color);
 }
 
-.series-group.mal-dropped .series-group-header {
+.series-group.mal-dropped .series-group-header,
+.series-group-row.mal-dropped .series-group-header {
   box-shadow: inset 0.5rem 0 0 var(--danger-color);
 }
 
-.series-group.mal-plan-to-watch .series-group-header {
+.series-group.mal-plan-to-watch .series-group-header,
+.series-group-row.mal-plan-to-watch .series-group-header {
   box-shadow: inset 0.5rem 0 0 #6c757d;
 }
 
