@@ -1329,20 +1329,24 @@ class LatestEpisodesApp {
             <div class="series-group-row ${row.isFirstGroup ? 'first-group' : ''} ${row.seriesMalStatusClass ? `mal-${row.seriesMalStatusClass}` : ''}">
                 <div class="series-group-header">
                     <div class="series-group-main">
-                        <div class="series-group-title">
-                            <span>${this.escapeHtml(row.seriesTitle)}</span>
+                        <div class="series-group-heading">
+                            <div class="series-group-title">
+                                <span class="series-group-title-text">${this.escapeHtml(row.seriesTitle)}</span>
+                            </div>
                         </div>
                         <div class="series-group-right">
                             ${row.seriesRating ? `<span class="series-rating">${row.seriesRating}</span>` : ''}
+                        </div>
+                        <div class="series-group-subline">
+                            ${row.seriesTags ? `
+                                <div class="series-tags">
+                                    ${row.seriesTags.slice(0, 2).map(tag => `<span class="series-tag">${this.escapeHtml(tag)}</span>`).join('')}
+                                    ${row.seriesTags.length > 2 ? `<span class="series-tag series-tag-more">+${row.seriesTags.length - 2}</span>` : ''}
+                                </div>
+                            ` : '<div class="series-tags"></div>'}
                             <span class="series-group-count">${row.episodeCountText}</span>
                         </div>
                     </div>
-                    ${row.seriesTags ? `
-                        <div class="series-tags">
-                            ${row.seriesTags.slice(0, 5).map(tag => `<span class="series-tag">${this.escapeHtml(tag)}</span>`).join('')}
-                            ${row.seriesTags.length > 5 ? `<span class="series-tag">+${row.seriesTags.length - 5}</span>` : ''}
-                        </div>
-                    ` : ''}
                 </div>
             </div>
         `;
