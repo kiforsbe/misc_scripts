@@ -30,10 +30,11 @@ class LatestEpisodesApp {
         this.combinedQuery = '';
         this.seriesTitles = [];
         this.seriesTitleMap = new Map();
-        this.seriesSuggestionMax = 500;
+        this.seriesSuggestionMax = Number.POSITIVE_INFINITY;
         this.activeSuggestionIndex = -1;
         this.lastRenderKey = '';
         this.lastSuggestionKey = '';
+        this.suppressNextSearchFocusOpen = false;
         this.searchDebounceMs = 350;
         this.searchDebounceTimer = null;
         this.popupTimeout = null;
@@ -45,6 +46,7 @@ class LatestEpisodesApp {
         this.supportsHoverInteractions = this.detectHoverSupport();
         this.useStableMobileVirtualization = this.shouldUseStableMobileVirtualization();
         this.viewportSyncFrame = null;
+        this.activeTagsPopupAnchor = null;
         this.init();
     }
 
@@ -311,7 +313,15 @@ class LatestEpisodesApp {
 
         searchInput.addEventListener('focus', (e) => {
             this.scheduleViewportSync();
+            if (this.suppressNextSearchFocusOpen) {
+                this.suppressNextSearchFocusOpen = false;
+                return;
+            }
             this.renderSeriesSuggestions(e.target.value);
+        });
+
+        searchInput.addEventListener('click', () => {
+            this.toggleSeriesSuggestions();
         });
 
         searchInput.addEventListener('blur', () => {
@@ -343,12 +353,22 @@ class LatestEpisodesApp {
             });
         }
 
+        const dropdownIndicator = document.querySelector('.search-dropdown-indicator');
+        if (dropdownIndicator) {
+            dropdownIndicator.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.toggleSeriesSuggestions();
+            });
+        }
+
         const clearBtn = document.getElementById('search-clear-btn');
         if (clearBtn) {
-            clearBtn.addEventListener('click', () => {
+            clearBtn.addEventListener('click', (e) => {
+                e.preventDefault();
                 const input = document.getElementById('search-input');
                 if (input) input.value = '';
                 this.applySearchNow('');
+                this.hideSeriesSuggestions();
 
                 // Keep current navigation context while removing the `search` URL parameter
                 const urlParams = new URLSearchParams(window.location.search);
@@ -496,17 +516,38 @@ class LatestEpisodesApp {
         }, { passive: true });
 
         document.addEventListener('click', (e) => {
+            const popupTag = e.target.closest('.tag-popup-tag[data-tag]');
+            if (popupTag) {
+                e.preventDefault();
+                this.applyTagFilter(popupTag.getAttribute('data-tag') || '');
+                return;
+            }
+
+            const tagPopup = e.target.closest('#tags-tooltip-popup');
+            if (!tagPopup) {
+                this.hideTagsPopup();
+            }
+
             const container = document.querySelector('.search-container');
             if (container && !container.contains(e.target)) {
                 this.hideSeriesSuggestions();
             }
         });
 
+        const hideTagsPopupOnScroll = () => {
+            this.hideTagsPopup();
+        };
+
+        window.addEventListener('scroll', hideTagsPopupOnScroll, { passive: true, capture: true });
+        document.addEventListener('wheel', hideTagsPopupOnScroll, { passive: true });
+        document.addEventListener('touchmove', hideTagsPopupOnScroll, { passive: true });
+
         const episodesList = document.getElementById('episodes-list');
         if (episodesList) {
             episodesList.addEventListener('click', (e) => {
                 this.handleEpisodeListClick(e);
             });
+            episodesList.addEventListener('scroll', hideTagsPopupOnScroll, { passive: true });
             if (this.supportsHoverInteractions) {
                 episodesList.addEventListener('mouseover', (e) => {
                     this.handleEpisodeListMouseOver(e);
@@ -549,6 +590,22 @@ class LatestEpisodesApp {
     }
 
     handleEpisodeListClick(event) {
+        const tagButton = event.target.closest('.series-tag[data-tag]');
+        if (tagButton) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.applyTagFilter(tagButton.getAttribute('data-tag') || '');
+            return;
+        }
+
+        const moreButton = event.target.closest('.series-tag-more[data-hidden-tags]');
+        if (moreButton) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.toggleGroupHeaderTagsPopup(moreButton);
+            return;
+        }
+
         const item = event.target.closest('.episode-item[data-index]');
         if (!item) {
             return;
@@ -852,6 +909,28 @@ class LatestEpisodesApp {
         this.lastSuggestionKey = '';
     }
 
+    areSeriesSuggestionsVisible() {
+        const container = document.getElementById('series-suggestions');
+        return Boolean(container && container.style.display === 'block');
+    }
+
+    toggleSeriesSuggestions() {
+        const searchInput = document.getElementById('search-input');
+        if (!searchInput) {
+            return;
+        }
+
+        if (this.areSeriesSuggestionsVisible()) {
+            this.suppressNextSearchFocusOpen = true;
+            this.hideSeriesSuggestions();
+            searchInput.focus({ preventScroll: true });
+            return;
+        }
+
+        searchInput.focus({ preventScroll: true });
+        this.renderSeriesSuggestions(searchInput.value);
+    }
+
     showInputTypeMarker(type) {
         const container = document.querySelector('.search-container');
         const input = document.getElementById('search-input');
@@ -1042,6 +1121,76 @@ class LatestEpisodesApp {
         } else {
             this.updateUrlForList(null);
         }
+    }
+
+    applyTagFilter(tag) {
+        if (!tag) {
+            return;
+        }
+
+        this.hideTagsPopup();
+        this.applySuggestion(tag, 'Tag');
+    }
+
+    getHiddenTagsFromElement(element) {
+        if (!element) {
+            return [];
+        }
+
+        const encoded = element.getAttribute('data-hidden-tags') || '';
+        if (!encoded) {
+            return [];
+        }
+
+        try {
+            const parsed = JSON.parse(decodeURIComponent(encoded));
+            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+        } catch (error) {
+            return [];
+        }
+    }
+
+    toggleGroupHeaderTagsPopup(anchor) {
+        const hiddenTags = this.getHiddenTagsFromElement(anchor);
+        if (!hiddenTags.length) {
+            return;
+        }
+
+        if (this.activeTagsPopupAnchor === anchor && document.getElementById('tags-tooltip-popup')) {
+            this.hideTagsPopup();
+            return;
+        }
+
+        this.showGroupHeaderTagsPopup(anchor, hiddenTags);
+    }
+
+    showGroupHeaderTagsPopup(anchor, hiddenTags) {
+        this.hideTagsPopup();
+
+        const popup = document.createElement('div');
+        popup.id = 'tags-tooltip-popup';
+        popup.className = 'series-tags-popup';
+        popup.innerHTML = `
+            <div class="series-tags-popup-title">More tags (${hiddenTags.length})</div>
+            <div class="series-tags-popup-list">
+                ${hiddenTags.map((tag) => `<button type="button" class="tag-popup-tag" data-tag="${this.escapeHtml(tag)}">${this.escapeHtml(tag)}</button>`).join('')}
+            </div>
+        `;
+
+        document.body.appendChild(popup);
+        this.activeTagsPopupAnchor = anchor;
+
+        const anchorRect = anchor.getBoundingClientRect();
+        const popupRect = popup.getBoundingClientRect();
+        const left = Math.max(12, Math.min(anchorRect.right - popupRect.width, window.innerWidth - popupRect.width - 12));
+        let top = anchorRect.bottom + 10;
+
+        if (top + popupRect.height > window.innerHeight - 12) {
+            top = anchorRect.top - popupRect.height - 10;
+        }
+
+        popup.style.left = `${left}px`;
+        popup.style.top = `${Math.max(12, top)}px`;
     }
 
     setCombinedQuery(value) {
@@ -1340,8 +1489,8 @@ class LatestEpisodesApp {
                         <div class="series-group-subline">
                             ${row.seriesTags ? `
                                 <div class="series-tags">
-                                    ${row.seriesTags.slice(0, 2).map(tag => `<span class="series-tag">${this.escapeHtml(tag)}</span>`).join('')}
-                                    ${row.seriesTags.length > 2 ? `<span class="series-tag series-tag-more">+${row.seriesTags.length - 2}</span>` : ''}
+                                    ${row.seriesTags.slice(0, 3).map(tag => `<button type="button" class="series-tag" data-tag="${this.escapeHtml(tag)}">${this.escapeHtml(tag)}</button>`).join('')}
+                                    ${row.seriesTags.length > 3 ? `<button type="button" class="series-tag series-tag-more" data-hidden-tags="${encodeURIComponent(JSON.stringify(row.seriesTags.slice(3)))}">+${row.seriesTags.length - 3}</button>` : ''}
                                 </div>
                             ` : '<div class="series-tags"></div>'}
                             <span class="series-group-count">${row.episodeCountText}</span>
@@ -1360,7 +1509,10 @@ class LatestEpisodesApp {
         const imageLoading = this.useStableMobileVirtualization ? 'eager' : 'lazy';
         const imageDecoding = this.useStableMobileVirtualization ? 'sync' : 'async';
         const downloadDate = new Date(episode.download_date);
-        const episodeTitle = episode.metadata.episode_title || `Episode ${episode.metadata.episode}`;
+        const rawEpisodeTitle = typeof episode.metadata.episode_title === 'string' ? episode.metadata.episode_title.trim() : '';
+        const displayTitle = this.groupBy === 'series'
+            ? (rawEpisodeTitle || episode.metadata.title)
+            : episode.metadata.title;
         const seriesEpisodes = this.getSeriesEpisodes(episode.metadata.title);
         const episodeCount = seriesEpisodes.length;
         const thumbnailData = this.getThumbnailData(episode);
@@ -1381,11 +1533,8 @@ class LatestEpisodesApp {
                 </div>
                 <div class="episode-content">
                     <div class="episode-series">
-                        ${this.groupBy === 'series' ? '' : this.escapeHtml(episode.metadata.title)}
+                        ${this.escapeHtml(displayTitle)}
                     </div>
-                    <!--- <div class="episode-title">
-                        ${this.escapeHtml(episodeTitle)}
-                    </div> --->
                     <div class="episode-meta">
                         <span>Episode ${episode.metadata.episode}${this.getEpisodeCountDisplay(episode, episodeCount)}</span>
                     </div>
@@ -2401,6 +2550,8 @@ class LatestEpisodesApp {
         if (existing) {
             existing.remove();
         }
+
+        this.activeTagsPopupAnchor = null;
     }
     
     showEpisodePopup(event, index, episodeItem = null) {
