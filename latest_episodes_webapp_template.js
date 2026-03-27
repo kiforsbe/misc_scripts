@@ -11,6 +11,8 @@
 // URL Format: ?series=SeriesName&season=1&episode=5&search=term&watchStatus=watched
 // Legacy Hash Format: #episode:SeriesName:1:5
 
+const ENABLE_EPISODE_NAME_SEARCH = false;
+
 class LatestEpisodesApp {
     constructor() {
         this.data = EPISODES_DATA;
@@ -92,11 +94,12 @@ class LatestEpisodesApp {
         const seriesTags = Array.isArray(seriesMetadata.tags) ? seriesMetadata.tags.join(' ') : '';
         const seriesGenres = Array.isArray(seriesMetadata.genres) ? seriesMetadata.genres.join(' ') : '';
         const episodeTags = Array.isArray(metadata.tags) ? metadata.tags.join(' ') : '';
+        const episodeTitle = ENABLE_EPISODE_NAME_SEARCH ? (metadata.episode_title || '') : '';
 
         return [
             metadata.title || '',
             episode.file_name || '',
-            metadata.episode_title || '',
+            episodeTitle,
             seriesTags,
             seriesGenres,
             episodeTags
@@ -479,7 +482,7 @@ class LatestEpisodesApp {
             if (episode.series_metadata && Array.isArray(episode.series_metadata.genres)) {
                 episode.series_metadata.genres.forEach(g => { if (g) seriesGenresSet.add(g); });
             }
-            if (episode.metadata && episode.metadata.episode_title) {
+            if (ENABLE_EPISODE_NAME_SEARCH && episode.metadata && episode.metadata.episode_title) {
                 episodeTitlesSet.add(episode.metadata.episode_title);
             }
         });
