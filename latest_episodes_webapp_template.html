@@ -16,9 +16,15 @@
     <div class="main-container">
         <!-- Header -->
         <div class="header">
-            <button id="mobile-back-btn" class="btn btn-sm btn-outline-primary mobile-back-btn" style="display:none;" aria-label="Back to list"><i class="bi bi-chevron-left"></i></button>
-            <h1><i class="bi bi-clock-history me-2"></i>Latest Episodes</h1>
-            <div class="header-stats">
+            <div class="header-main">
+                <button id="mobile-back-btn" class="btn btn-sm btn-outline-primary mobile-back-btn" style="display:none;" aria-label="Back to list"><i class="bi bi-chevron-left"></i></button>
+                <div class="header-copy">
+                    <p class="header-kicker">Recent library activity</p>
+                    <h1><i class="bi bi-clock-history"></i><span>Latest Episodes</span></h1>
+                    <p class="header-subtitle">Track fresh downloads, active series, and watch progress.</p>
+                </div>
+            </div>
+            <div class="header-stats" aria-label="Library summary">
                 <div class="stat-item">
                     <span class="stat-value" id="total-episodes">0</span>
                     <span class="stat-label">Episodes</span>
