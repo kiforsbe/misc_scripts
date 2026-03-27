@@ -44,6 +44,7 @@ class LatestEpisodesApp {
         this.useVirtualizedEpisodeList = true;
         this.supportsHoverInteractions = this.detectHoverSupport();
         this.useStableMobileVirtualization = this.shouldUseStableMobileVirtualization();
+        this.viewportSyncFrame = null;
         this.init();
     }
 
@@ -200,6 +201,7 @@ class LatestEpisodesApp {
     }
     
     init() {
+        this.setupViewportMetrics();
         this.setupEventListeners();
         this.initializeEpisodeListVirtualizer();
         // styles are provided via latest_episodes_webapp_template.css; no runtime injection
@@ -216,6 +218,88 @@ class LatestEpisodesApp {
             const cc = document.querySelector('.content-container');
             if (cc) cc.classList.remove('mobile-show-main');
         }
+
+        this.syncViewportMetrics();
+    }
+
+    setupViewportMetrics() {
+        this.syncViewportMetrics = this.syncViewportMetrics.bind(this);
+        this.scheduleViewportSync = this.scheduleViewportSync.bind(this);
+
+        this.scheduleViewportSync();
+
+        window.addEventListener('resize', this.scheduleViewportSync, { passive: true });
+        window.addEventListener('orientationchange', this.scheduleViewportSync, { passive: true });
+
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', this.scheduleViewportSync, { passive: true });
+            window.visualViewport.addEventListener('scroll', this.scheduleViewportSync, { passive: true });
+        }
+    }
+
+    scheduleViewportSync() {
+        if (this.viewportSyncFrame != null) {
+            cancelAnimationFrame(this.viewportSyncFrame);
+        }
+
+        this.viewportSyncFrame = requestAnimationFrame(() => {
+            this.viewportSyncFrame = null;
+            this.syncViewportMetrics();
+        });
+    }
+
+    syncViewportMetrics() {
+        const root = document.documentElement;
+        const visualViewport = window.visualViewport;
+        const supportsLargeViewportUnits = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('height', '100lvh');
+        const activeElement = document.activeElement;
+        const isSearchFocused = activeElement && activeElement.id === 'search-input';
+        const isTextInputFocused = activeElement && (
+            activeElement.tagName === 'INPUT' ||
+            activeElement.tagName === 'TEXTAREA' ||
+            activeElement.isContentEditable
+        );
+
+        const visibleHeight = Math.max(320, Math.round((visualViewport ? visualViewport.height : window.innerHeight) || window.innerHeight || 0));
+        const layoutHeight = Math.max(
+            visibleHeight,
+            Math.round(window.innerHeight || 0),
+            Math.round(document.documentElement.clientHeight || 0)
+        );
+
+        const searchInput = document.getElementById('search-input');
+        const searchRect = searchInput ? searchInput.getBoundingClientRect() : null;
+        const keyboardUiBuffer = (this.isMobile() && isSearchFocused && isTextInputFocused)
+            ? 64
+            : 0;
+        const availableSuggestionHeight = searchRect
+            ? Math.max(140, Math.floor(visibleHeight - searchRect.bottom - keyboardUiBuffer - 8))
+            : 280;
+
+        root.style.setProperty('--visible-app-height', `${visibleHeight}px`);
+        root.style.setProperty('--search-suggestions-max-height', `${availableSuggestionHeight}px`);
+        root.style.setProperty('--keyboard-ui-buffer', `${keyboardUiBuffer}px`);
+        if (supportsLargeViewportUnits) {
+            root.style.removeProperty('--app-height');
+        } else {
+            root.style.setProperty('--app-height', `${layoutHeight}px`);
+        }
+
+        const header = document.querySelector('.header');
+        const headerHeight = header ? Math.ceil(header.getBoundingClientRect().height) : 72;
+        root.style.setProperty('--header-height', `${Math.max(48, headerHeight)}px`);
+
+        const keyboardOpen = Boolean(isTextInputFocused && this.isMobile());
+        const mobileSearchActive = Boolean(isSearchFocused && this.isMobile());
+
+        document.body.classList.toggle('ios-keyboard-open', keyboardOpen);
+        document.body.classList.toggle('mobile-search-active', mobileSearchActive);
+        root.classList.toggle('ios-keyboard-open', keyboardOpen);
+        root.classList.toggle('mobile-search-active', mobileSearchActive);
+
+        if (this.episodeListVirtualizer) {
+            this.episodeListVirtualizer.handleResize();
+        }
     }
     
     setupEventListeners() {
@@ -226,7 +310,12 @@ class LatestEpisodesApp {
         });
 
         searchInput.addEventListener('focus', (e) => {
+            this.scheduleViewportSync();
             this.renderSeriesSuggestions(e.target.value);
+        });
+
+        searchInput.addEventListener('blur', () => {
+            this.scheduleViewportSync();
         });
 
         searchInput.addEventListener('keydown', (e) => {
@@ -351,6 +440,33 @@ class LatestEpisodesApp {
                 const controls = document.getElementById('filter-controls');
                 if (controls) controls.classList.remove('collapsed');
             }
+        });
+
+        document.addEventListener('focusin', (e) => {
+            const target = e.target;
+            if (!(target instanceof HTMLElement) || !this.isMobile()) {
+                return;
+            }
+
+            if (!target.matches('input, textarea, select, [contenteditable="true"]')) {
+                return;
+            }
+
+            this.scheduleViewportSync();
+
+            setTimeout(() => {
+                target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }, 120);
+        });
+
+        document.addEventListener('focusout', () => {
+            if (!this.isMobile()) {
+                return;
+            }
+
+            setTimeout(() => {
+                this.scheduleViewportSync();
+            }, 180);
         });
 
         // Simple swipe detection for mobile to swipe-right -> show list
@@ -527,6 +643,7 @@ class LatestEpisodesApp {
         // hide in-content back button if present
         const backBtn = document.getElementById('back-to-list-btn');
         if (backBtn) backBtn.style.display = 'none';
+        this.scheduleViewportSync();
     }
 
     showListOnMobile() {
@@ -549,6 +666,7 @@ class LatestEpisodesApp {
         if (!this.isNavigating) {
             this.updateUrlForList(this.selectedEpisode);
         }
+        this.scheduleViewportSync();
     }
 
     setupNavigation() {
