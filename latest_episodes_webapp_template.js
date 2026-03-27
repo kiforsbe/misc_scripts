@@ -41,7 +41,26 @@ class LatestEpisodesApp {
         this.currentPopupIndex = -1;
         this.isNavigating = false; // Flag to prevent infinite loops during navigation
         this.mobileBreakpoint = 768;
+        this.useVirtualizedEpisodeList = true;
+        this.supportsHoverInteractions = this.detectHoverSupport();
+        this.useStableMobileVirtualization = this.shouldUseStableMobileVirtualization();
         this.init();
+    }
+
+    detectHoverSupport() {
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+            return true;
+        }
+
+        return window.matchMedia('(hover: hover)').matches;
+    }
+
+    shouldUseStableMobileVirtualization() {
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+            return false;
+        }
+
+        return window.matchMedia('(pointer: coarse)').matches;
     }
 
     normalizeEpisodeData() {
@@ -372,33 +391,42 @@ class LatestEpisodesApp {
             episodesList.addEventListener('click', (e) => {
                 this.handleEpisodeListClick(e);
             });
-            episodesList.addEventListener('mouseover', (e) => {
-                this.handleEpisodeListMouseOver(e);
-            });
-            episodesList.addEventListener('mouseout', (e) => {
-                this.handleEpisodeListMouseOut(e);
-            });
-            episodesList.addEventListener('mouseleave', () => {
-                this.hideEpisodePopup();
-            });
+            if (this.supportsHoverInteractions) {
+                episodesList.addEventListener('mouseover', (e) => {
+                    this.handleEpisodeListMouseOver(e);
+                });
+                episodesList.addEventListener('mouseout', (e) => {
+                    this.handleEpisodeListMouseOut(e);
+                });
+                episodesList.addEventListener('mouseleave', () => {
+                    this.hideEpisodePopup();
+                });
+            }
         }
     }
 
     initializeEpisodeListVirtualizer() {
         const container = document.getElementById('episodes-list');
-        if (!container || typeof VirtualList === 'undefined') {
+        if (!container || !this.useVirtualizedEpisodeList || typeof VirtualList === 'undefined') {
             return;
         }
 
         this.episodeListVirtualizer = new VirtualList({
             container,
-            overscan: 8,
+            overscan: this.useStableMobileVirtualization ? 18 : 8,
+            enableDynamicMeasurement: !this.useStableMobileVirtualization,
+            rangeStrategy: this.useStableMobileVirtualization ? 'chunked' : 'viewport',
+            chunkSize: this.useStableMobileVirtualization ? 28 : 24,
             getItemKey: (row) => row.key,
             getItemEstimatedHeight: (row) => {
                 if (!row) return 96;
-                if (row.type === 'group') return 92;
-                if (row.type === 'empty') return 96;
-                return 98;
+                if (row.type === 'group') {
+                    return this.useStableMobileVirtualization ? 108 : 92;
+                }
+                if (row.type === 'empty') {
+                    return 96;
+                }
+                return this.useStableMobileVirtualization ? 104 : 98;
             },
             renderItem: (row) => this.renderEpisodeListRow(row)
         });
@@ -419,6 +447,10 @@ class LatestEpisodesApp {
     }
 
     handleEpisodeListMouseOver(event) {
+        if (!this.supportsHoverInteractions) {
+            return;
+        }
+
         const item = event.target.closest('.episode-item[data-index]');
         if (!item) {
             return;
@@ -438,6 +470,10 @@ class LatestEpisodesApp {
     }
 
     handleEpisodeListMouseOut(event) {
+        if (!this.supportsHoverInteractions) {
+            return;
+        }
+
         const item = event.target.closest('.episode-item[data-index]');
         if (!item) {
             return;
@@ -1199,6 +1235,8 @@ class LatestEpisodesApp {
         const malStatus = this.getEpisodeMalStatus(episode);
         const combinedStatusClass = this.getCombinedEpisodeStatusClass(watchStatus, malStatus);
         const isSelected = this.isEpisodeSelected(episode);
+        const imageLoading = this.useStableMobileVirtualization ? 'eager' : 'lazy';
+        const imageDecoding = this.useStableMobileVirtualization ? 'sync' : 'async';
         const downloadDate = new Date(episode.download_date);
         const episodeTitle = episode.metadata.episode_title || `Episode ${episode.metadata.episode}`;
         const seriesEpisodes = this.getSeriesEpisodes(episode.metadata.title);
@@ -1213,7 +1251,7 @@ class LatestEpisodesApp {
                   <div class="episode-item ${combinedStatusClass} ${isSelected ? 'selected' : ''}" data-index="${index}">
                 <div class="episode-thumbnail">
                     ${staticUrl ? 
-                        `<img src="${imgSrc}" alt="Episode thumbnail" loading="lazy" decoding="async" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">` : 
+                        `<img src="${imgSrc}" alt="Episode thumbnail" loading="${imageLoading}" decoding="${imageDecoding}" fetchpriority="high" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">` : 
                         ''}
                     <div style="${staticUrl ? 'display: none;' : 'display: flex;'} width: 100%; height: 100%; align-items: center; justify-content: center;">
                         ${episode.metadata.episode || '?'}

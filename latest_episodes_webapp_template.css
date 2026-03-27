@@ -333,6 +333,9 @@ html, body {
   flex: 1;
   overflow-y: auto;
   padding: 0.5rem;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
 }
 
 .virtual-list-top-spacer,
@@ -921,6 +924,17 @@ html, body {
   font-size: 0.7rem;
   font-weight: 400;
   white-space: nowrap;
+}
+
+@media (pointer: coarse) {
+  .series-group-header {
+    min-height: 96px;
+  }
+
+  .series-tags {
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
 }
 
 .series-rating {

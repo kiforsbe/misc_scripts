@@ -12,6 +12,9 @@
                 ? options.getItemEstimatedHeight
                 : (() => 96);
             this.overscan = Number.isFinite(options.overscan) ? Math.max(1, options.overscan) : 6;
+            this.enableDynamicMeasurement = options.enableDynamicMeasurement !== false;
+            this.rangeStrategy = options.rangeStrategy === 'chunked' ? 'chunked' : 'viewport';
+            this.chunkSize = Number.isFinite(options.chunkSize) ? Math.max(4, options.chunkSize) : 24;
             this.items = [];
             this.offsets = [];
             this.heights = [];
@@ -125,7 +128,7 @@
         handleScrollIdle() {
             this.scrollIdleTimer = null;
             this.isScrollActive = false;
-            this.scheduleRender(true);
+            this.scheduleRender(this.enableDynamicMeasurement);
         }
 
         handleResize() {
@@ -213,14 +216,25 @@
             const scrollTop = this.container.scrollTop || 0;
             const viewportHeight = this.container.clientHeight || 0;
             const viewportBottom = scrollTop + viewportHeight;
-            const start = Math.max(0, this.findStartIndex(scrollTop) - this.overscan);
-            let end = start;
+            const firstVisibleIndex = this.findStartIndex(scrollTop);
+            let end = firstVisibleIndex;
 
             while (end < this.items.length && this.offsets[end] < viewportBottom) {
                 end += 1;
             }
 
-            end = Math.min(this.items.length - 1, end + this.overscan);
+            const lastVisibleIndex = Math.min(this.items.length - 1, Math.max(firstVisibleIndex, end));
+            let start;
+
+            if (this.rangeStrategy === 'chunked') {
+                const firstChunk = Math.floor(firstVisibleIndex / this.chunkSize);
+                const lastChunk = Math.floor(lastVisibleIndex / this.chunkSize);
+                start = Math.max(0, (firstChunk - 1) * this.chunkSize);
+                end = Math.min(this.items.length - 1, ((lastChunk + 2) * this.chunkSize) - 1);
+            } else {
+                start = Math.max(0, firstVisibleIndex - this.overscan);
+                end = Math.min(this.items.length - 1, end + this.overscan);
+            }
 
             const topOffset = this.offsets[start] || 0;
             const renderedHeight = end >= start
@@ -245,7 +259,10 @@
             const range = this.getVisibleRange();
             const rangeKey = `${range.start}:${range.end}:${range.topOffset}:${range.bottomOffset}`;
 
-            if (!force && rangeKey === this.lastRangeKey) {
+            if (rangeKey === this.lastRangeKey) {
+                if (force && this.enableDynamicMeasurement) {
+                    this.measureVisibleItems();
+                }
                 return;
             }
 
@@ -259,7 +276,7 @@
             }
 
             this.content.innerHTML = html;
-            if (!this.isScrollActive || force) {
+            if (this.enableDynamicMeasurement && (!this.isScrollActive || force)) {
                 this.measureVisibleItems();
             }
         }
