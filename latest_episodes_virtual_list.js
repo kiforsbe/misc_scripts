@@ -20,9 +20,13 @@
             this.lastRangeKey = '';
             this.renderScheduled = false;
             this.forceRenderScheduled = false;
+            this.isScrollActive = false;
+            this.scrollIdleDelay = Number.isFinite(options.scrollIdleDelay) ? Math.max(50, options.scrollIdleDelay) : 120;
+            this.scrollIdleTimer = null;
 
             this.handleScroll = this.handleScroll.bind(this);
             this.handleResize = this.handleResize.bind(this);
+            this.handleScrollIdle = this.handleScrollIdle.bind(this);
 
             this.createStructure();
             this.attachEvents();
@@ -53,6 +57,10 @@
         destroy() {
             this.container.removeEventListener('scroll', this.handleScroll);
             window.removeEventListener('resize', this.handleResize);
+            if (this.scrollIdleTimer) {
+                clearTimeout(this.scrollIdleTimer);
+                this.scrollIdleTimer = null;
+            }
         }
 
         setItems(items) {
@@ -106,7 +114,18 @@
         }
 
         handleScroll() {
+            this.isScrollActive = true;
+            if (this.scrollIdleTimer) {
+                clearTimeout(this.scrollIdleTimer);
+            }
+            this.scrollIdleTimer = setTimeout(this.handleScrollIdle, this.scrollIdleDelay);
             this.scheduleRender(false);
+        }
+
+        handleScrollIdle() {
+            this.scrollIdleTimer = null;
+            this.isScrollActive = false;
+            this.scheduleRender(true);
         }
 
         handleResize() {
@@ -240,7 +259,9 @@
             }
 
             this.content.innerHTML = html;
-            this.measureVisibleItems();
+            if (!this.isScrollActive || force) {
+                this.measureVisibleItems();
+            }
         }
 
         measureVisibleItems() {

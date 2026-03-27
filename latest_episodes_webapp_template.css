@@ -339,14 +339,17 @@ html, body {
 .virtual-list-bottom-spacer {
   height: 0;
   pointer-events: none;
+  overflow-anchor: none;
 }
 
 .virtual-list-content {
   min-height: 0;
+  overflow-anchor: none;
 }
 
 .virtual-list-row {
   width: 100%;
+  overflow-anchor: none;
 }
 
 .episode-list-empty {
