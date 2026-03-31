@@ -1,0 +1,363 @@
+:root {
+    --bg: #f4efe7;
+    --panel: #fffdf9;
+    --panel-soft: #faf6ef;
+    --panel-warm: #f6efe4;
+    --line: rgba(88, 73, 56, 0.16);
+    --text: #2c2218;
+    --muted: #6f6052;
+    --accent: #aa5b2f;
+    --accent-strong: #7f3f1d;
+    --accent-soft: rgba(170, 91, 47, 0.12);
+    --shadow: 0 16px 44px rgba(58, 42, 28, 0.1);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    color: var(--text);
+    background:
+        radial-gradient(circle at top left, rgba(229, 188, 126, 0.24), transparent 28%),
+        radial-gradient(circle at top right, rgba(113, 156, 162, 0.16), transparent 26%),
+        linear-gradient(180deg, #fbf8f2 0%, var(--bg) 100%);
+}
+
+.header,
+.summary-grid,
+.treegrid-shell {
+    width: min(1480px, calc(100vw - 32px));
+    margin: 18px auto 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    box-shadow: var(--shadow);
+}
+
+.header {
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.eyebrow {
+    margin: 0 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--accent);
+    font-size: 0.78rem;
+}
+
+.header h1 {
+    margin: 0;
+    font-size: clamp(2rem, 4vw, 3.2rem);
+    line-height: 1;
+}
+
+.hero-copy {
+    margin: 10px 0 0;
+    max-width: 800px;
+    color: var(--muted);
+    font-size: 1rem;
+}
+
+.header-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
+.header-info span {
+    padding: 10px 12px;
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+}
+
+.summary-grid {
+    padding: 18px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+}
+
+.summary-card {
+    padding: 16px;
+    background: var(--panel-soft);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+}
+
+.summary-card span,
+#resultCount,
+.details,
+.toolbar label span,
+.path-meta,
+.breadcrumb,
+.toolbar-status,
+.name-subline {
+    color: var(--muted);
+    font-size: 0.86rem;
+}
+
+.summary-card strong {
+    font-size: 1.6rem;
+}
+
+.search-bar {
+    display: flex;
+    gap: 10px;
+    max-width: 760px;
+}
+
+input,
+select,
+button {
+    font: inherit;
+}
+
+input,
+select {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 11px 12px;
+    background: #fffdfa;
+    color: var(--text);
+}
+
+.search-bar input {
+    flex: 1;
+}
+
+.ghost-button,
+.search-button {
+    border: 1px solid var(--line);
+    background: #fff8ed;
+    color: var(--accent-strong);
+    border-radius: 999px;
+    padding: 10px 14px;
+    cursor: pointer;
+}
+
+.ghost-button:hover,
+.search-button:hover,
+th button:hover,
+.tree-toggle:hover,
+.breadcrumb-item:hover {
+    background: var(--accent-soft);
+}
+
+.treegrid-shell {
+    overflow: hidden;
+}
+
+.toolbar,
+.content-panel {
+    padding: 16px 18px;
+}
+
+.toolbar,
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.toolbar {
+    border-bottom: 1px solid var(--line);
+    background: #fcf9f4;
+    flex-wrap: wrap;
+}
+
+.toolbar-controls {
+    display: flex;
+    gap: 10px;
+    align-items: end;
+    flex-wrap: wrap;
+}
+
+.toolbar label {
+    display: grid;
+    gap: 6px;
+    min-width: 160px;
+}
+
+.toolbar-status {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    text-align: right;
+}
+
+.breadcrumb {
+    flex: 1;
+    min-width: 220px;
+    text-align: right;
+}
+
+.breadcrumb-item {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--panel-soft);
+}
+
+.breadcrumb-separator {
+    margin: 0 4px;
+}
+
+.content-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 640px;
+}
+
+.panel-header {
+    margin-bottom: 14px;
+    align-items: center;
+}
+
+.treegrid-wrap {
+    flex: 1;
+    overflow: auto;
+}
+
+.treegrid {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fffdfa;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+th,
+td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+    text-align: left;
+}
+
+th {
+    position: sticky;
+    top: 0;
+    background: #fdf5eb;
+    z-index: 1;
+}
+
+th button {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0;
+}
+
+tbody tr:hover {
+    background: rgba(219, 163, 95, 0.08);
+}
+
+.ancestor-row {
+    background: rgba(170, 91, 47, 0.04);
+}
+
+.tree-row[data-entry-type="d"] .tree-name-text {
+    font-weight: 700;
+}
+
+.tree-name-cell {
+    min-width: 460px;
+}
+
+.tree-name-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.tree-indent {
+    flex: 0 0 auto;
+    width: 0;
+}
+
+.tree-toggle {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-warm);
+    color: var(--accent-strong);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tree-toggle.placeholder {
+    visibility: hidden;
+}
+
+.tree-name-block {
+    min-width: 0;
+}
+
+.tree-name-text {
+    font-weight: 600;
+}
+
+.name-subline {
+    margin-top: 4px;
+}
+
+.details {
+    margin-top: 4px;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    font-size: 0.8rem;
+}
+
+.empty-state {
+    padding: 30px 16px;
+    text-align: center;
+    color: var(--muted);
+}
+
+@media (max-width: 980px) {
+    .header,
+    .summary-grid,
+    .treegrid-shell {
+        width: min(100vw - 16px, 100%);
+    }
+
+    .toolbar-status,
+    .panel-header,
+    .breadcrumb {
+        justify-content: flex-start;
+        text-align: left;
+    }
+
+    .tree-name-cell {
+        min-width: 300px;
+    }
+}

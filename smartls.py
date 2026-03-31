@@ -715,6 +715,7 @@ def load_template_asset(file_name: str) -> str:
 
 def build_webapp_payload(scan_result: ScanResult, matched_entries: Sequence[Entry], args: argparse.Namespace) -> dict[str, object]:
     visible_paths = compute_visible_tree(scan_result.entries, matched_entries) if matched_entries else {scan_result.root}
+    matched_paths = {entry.path for entry in matched_entries}
     visible_directories = [
         entry for entry in scan_result.entries.values()
         if entry.entry_type == "d" and entry.path in visible_paths
@@ -724,6 +725,7 @@ def build_webapp_payload(scan_result: ScanResult, matched_entries: Sequence[Entr
     entries_payload: list[dict[str, object]] = []
     for entry in matched_entries:
         item = entry.to_dict(scan_result.root, absolute=not args.relative_paths)
+        item["matched"] = True
         item["parent_path"] = (
             display_path(entry.parent, scan_result.root, absolute=not args.relative_paths, is_dir=True)
             if entry.parent is not None and entry.parent in scan_result.entries
@@ -734,23 +736,16 @@ def build_webapp_payload(scan_result: ScanResult, matched_entries: Sequence[Entr
 
     directories_payload: list[dict[str, object]] = []
     for entry in visible_directories:
-        directories_payload.append(
-            {
-                "path": display_path(entry.path, scan_result.root, absolute=not args.relative_paths, is_dir=True),
-                "parent_path": (
-                    display_path(entry.parent, scan_result.root, absolute=not args.relative_paths, is_dir=True)
-                    if entry.parent is not None and entry.parent in scan_result.entries
-                    else None
-                ),
-                "name": entry.name,
-                "depth": entry.depth,
-                "direct_files": entry.direct_files,
-                "direct_dirs": entry.direct_dirs,
-                "size_bytes": entry.size_bytes,
-                "is_empty": entry.is_empty,
-                "is_sparse": entry.is_sparse,
-            }
+        item = entry.to_dict(scan_result.root, absolute=not args.relative_paths)
+        item["matched"] = entry.path in matched_paths
+        item["path"] = display_path(entry.path, scan_result.root, absolute=not args.relative_paths, is_dir=True)
+        item["name_path"] = item["path"]
+        item["parent_path"] = (
+            display_path(entry.parent, scan_result.root, absolute=not args.relative_paths, is_dir=True)
+            if entry.parent is not None and entry.parent in scan_result.entries
+            else None
         )
+        directories_payload.append(item)
 
     return {
         "meta": {
