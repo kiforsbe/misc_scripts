@@ -12,11 +12,13 @@
         { key: "recursive_files", label: "Recursive files", sortKey: "recursive_files", className: "col-meta-field", type: "number" },
         { key: "mime", label: "Mime", sortKey: "mime_type", className: "col-meta-field", type: "text" },
         { key: "extension", label: "Extension", sortKey: "extension", className: "col-meta-field", type: "text" },
+        { key: "relative_path", label: "Relative path", sortKey: "path", className: "col-path", type: "text" },
         { key: "full_path", label: "Full path", sortKey: "absolute_path", className: "col-path", type: "text" },
         { key: "owner", label: "Owner", sortKey: "owner", className: "col-meta-field", type: "text" },
         { key: "group", label: "Group", sortKey: "group", className: "col-meta-field", type: "text" },
         { key: "permissions", label: "Permissions", sortKey: "permissions_text", className: "col-meta-field", type: "text" },
     ];
+    const defaultColumnOrder = optionalColumns.map((column) => column.key);
     const state = {
         query: "",
         type: "all",
@@ -25,6 +27,8 @@
         sortDirection: "asc",
         expanded: new Set(),
         shownColumns: new Set(["type", "size", "modified"]),
+        columnOrder: [...defaultColumnOrder],
+        draggingColumnKey: null,
     };
 
     const elements = {
@@ -38,7 +42,6 @@
         resetFilters: document.getElementById("resetFilters"),
         expandAll: document.getElementById("expandAll"),
         collapseAll: document.getElementById("collapseAll"),
-        columnPickerButton: document.getElementById("columnPickerButton"),
         columnPickerMenu: document.getElementById("columnPickerMenu"),
         columnOptions: document.getElementById("columnOptions"),
         treegridColgroup: document.getElementById("treegridColgroup"),
@@ -58,6 +61,10 @@
             .replace(/>/g, "&gt;")
             .replace(/\"/g, "&quot;")
             .replace(/'/g, "&#39;");
+    }
+
+    function displayPath(value) {
+        return String(value ?? "").replace(/\\/g, "/");
     }
 
     function formatSize(sizeBytes) {
@@ -115,7 +122,16 @@
     }
 
     function visibleOptionalColumns() {
-        return optionalColumns.filter((option) => state.shownColumns.has(option.key));
+        return state.columnOrder
+            .map((key) => optionalColumns.find((option) => option.key === key))
+            .filter(Boolean)
+            .filter((option) => state.shownColumns.has(option.key));
+    }
+
+    function orderedOptionalColumns() {
+        return state.columnOrder
+            .map((key) => optionalColumns.find((option) => option.key === key))
+            .filter(Boolean);
     }
 
     function sortLabelForKey(key) {
@@ -135,6 +151,45 @@
             return "";
         }
         return `<span class="sort-chevron sort-chevron-${direction}" aria-hidden="true"></span>`;
+    }
+
+    function moveColumnBefore(sourceKey, targetKey) {
+        if (!sourceKey || !targetKey || sourceKey === targetKey) {
+            return;
+        }
+        const sourceIndex = state.columnOrder.indexOf(sourceKey);
+        const targetIndex = state.columnOrder.indexOf(targetKey);
+        if (sourceIndex < 0 || targetIndex < 0) {
+            return;
+        }
+        const nextOrder = [...state.columnOrder];
+        nextOrder.splice(sourceIndex, 1);
+        const insertIndex = nextOrder.indexOf(targetKey);
+        nextOrder.splice(insertIndex, 0, sourceKey);
+        state.columnOrder = nextOrder;
+    }
+
+    function clearDragState() {
+        state.draggingColumnKey = null;
+        elements.treegridHeaderRow.querySelectorAll(".optional-column-header").forEach((header) => {
+            header.classList.remove("drag-over");
+        });
+    }
+
+    function closeColumnMenu() {
+        elements.columnPickerMenu.hidden = true;
+    }
+
+    function openColumnMenu(clientX, clientY) {
+        elements.columnPickerMenu.hidden = false;
+        const menu = elements.columnPickerMenu;
+        menu.style.left = "0px";
+        menu.style.top = "0px";
+        const rect = menu.getBoundingClientRect();
+        const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+        const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+        menu.style.left = `${Math.min(clientX, maxLeft)}px`;
+        menu.style.top = `${Math.min(clientY, maxTop)}px`;
     }
 
     const summaryCards = [
@@ -191,7 +246,7 @@
     }
 
     function populateStaticSections() {
-        elements.rootPath.textContent = `Root: ${report.meta.root_path}`;
+        elements.rootPath.textContent = `Root: ${displayPath(report.meta.root_path)}`;
         const generatedAt = formatShortDate(report.meta.generated_at_ts);
         elements.generatedAt.textContent = `Generated: ${generatedAt.primary} ${generatedAt.secondary}`.trim();
         elements.generatedAt.title = generatedAt.full;
@@ -207,7 +262,7 @@
     }
 
     function renderColumnOptions() {
-        elements.columnOptions.innerHTML = optionalColumns.map((option) => `
+        elements.columnOptions.innerHTML = orderedOptionalColumns().map((option) => `
             <label class="column-option">
                 <input type="checkbox" value="${escapeHtml(option.key)}" ${state.shownColumns.has(option.key) ? "checked" : ""}>
                 <span>${escapeHtml(option.label)}</span>
@@ -237,8 +292,8 @@
             ...visibleColumns.map((column) => {
                 const sortDirection = state.sortKey === column.sortKey ? state.sortDirection : "none";
                 return `
-                <th>
-                    <button type="button" class="sort-button" data-sort="${escapeHtml(column.sortKey)}" aria-sort="${sortDirection}" title="Sort by ${escapeHtml(column.label)}">
+                <th class="optional-column-header" data-column-key="${escapeHtml(column.key)}">
+                    <button type="button" class="sort-button draggable-column-button" data-sort="${escapeHtml(column.sortKey)}" data-column-key="${escapeHtml(column.key)}" draggable="true" aria-sort="${sortDirection}" title="Sort by ${escapeHtml(column.label)}">
                         <span class="sort-label">${escapeHtml(column.label)}</span>
                         ${sortIndicatorMarkup(sortDirection)}
                     </button>
@@ -255,7 +310,7 @@
             return;
         }
         elements.breadcrumb.innerHTML = [
-            `<span class="breadcrumb-item">${escapeHtml(rootDirectory.path)}</span>`,
+            `<span class="breadcrumb-item">${escapeHtml(displayPath(rootDirectory.path))}</span>`,
             '<span class="breadcrumb-separator">/</span>',
             '<span>Use folder rows to expand or collapse descendants</span>',
         ].join("");
@@ -267,7 +322,8 @@
         const extMatches = state.ext === "all" || node.extension === state.ext;
         const queryMatches = !query || [
             node.name_path,
-            node.absolute_path,
+            displayPath(node.absolute_path),
+            displayPath(node.path),
             node.extension,
             node.mime_type,
             node.owner,
@@ -292,7 +348,7 @@
             return Number(node.recursive_files ?? 0);
         }
         if (key === "absolute_path") {
-            return node.absolute_path || node.path || node.name_path || "";
+            return displayPath(node.absolute_path || node.path || node.name_path || "");
         }
         return node[key];
     }
@@ -309,7 +365,7 @@
         if (node.name) {
             return String(node.name);
         }
-        return String(node.name_path || node.path || "-");
+        return displayPath(node.name_path || node.path || "-");
     }
 
     function iconForNode(node) {
@@ -350,23 +406,28 @@
             return `<td><span class="badge">${node.entryType === "d" ? "Directory" : "File"}</span></td>`;
         }
         if (column.type === "size") {
-            return `<td class="meta-cell" title="${escapeHtml(String(node.size_bytes ?? 0))}">${formatSize(node.size_bytes)}</td>`;
+            return `<td class="meta-cell numeric-cell" title="${escapeHtml(String(node.size_bytes ?? 0))}">${formatSize(node.size_bytes)}</td>`;
         }
         if (column.type === "date") {
             return renderDateCell(sortValue(node, column.sortKey));
         }
 
         let value = "-";
+        let cellClass = "meta-cell";
         if (column.key === "children") {
             value = node.direct_children ?? 0;
+            cellClass = "meta-cell numeric-cell";
         } else if (column.key === "recursive_files") {
             value = node.recursive_files ?? 0;
+            cellClass = "meta-cell numeric-cell";
         } else if (column.key === "mime") {
             value = node.mime_type || "-";
         } else if (column.key === "extension") {
             value = node.extension || "-";
+        } else if (column.key === "relative_path") {
+            value = displayPath(node.path || "-");
         } else if (column.key === "full_path") {
-            value = node.absolute_path || "-";
+            value = displayPath(node.absolute_path || "-");
         } else if (column.key === "owner") {
             value = node.owner || "-";
         } else if (column.key === "group") {
@@ -374,7 +435,7 @@
         } else if (column.key === "permissions") {
             value = node.permissions_text || node.permissions_octal || "-";
         }
-        return `<td class="meta-cell" title="${escapeHtml(String(value))}">${escapeHtml(value)}</td>`;
+        return `<td class="${cellClass}" title="${escapeHtml(String(value))}">${escapeHtml(value)}</td>`;
     }
 
     function collectVisibleRows() {
@@ -446,11 +507,11 @@
             const hasChildren = node.entryType === "d" && node.children.length > 0;
             const expanded = state.expanded.has(node.key);
             const toggle = hasChildren
-                ? `<button type="button" class="tree-toggle" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(node.name_path || node.path)}">${expanded ? "−" : "+"}</button>`
+                ? `<button type="button" class="tree-toggle" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(displayPath(node.name_path || node.path))}">${expanded ? "−" : "+"}</button>`
                 : '<span class="tree-toggle placeholder">+</span>';
             const rowClass = ancestorOnly ? "tree-row ancestor-row" : "tree-row";
             const nameContent = hasChildren
-                ? `<button type="button" class="tree-name-button" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(node.name_path || node.path)}"><span class="entry-icon" aria-hidden="true">${iconForNode(node)}</span><span>${escapeHtml(displayName(node))}</span>${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}</button>`
+                ? `<button type="button" class="tree-name-button" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(displayPath(node.name_path || node.path))}"><span class="entry-icon" aria-hidden="true">${iconForNode(node)}</span><span>${escapeHtml(displayName(node))}</span>${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}</button>`
                 : `<div class="tree-name-text"><span class="entry-icon" aria-hidden="true">${iconForNode(node)}</span><span>${escapeHtml(displayName(node))}</span>${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}</div>`;
             return `
                 <tr class="${rowClass}" data-entry-type="${escapeHtml(node.entryType)}">
@@ -507,6 +568,7 @@
             state.sortKey = "name_path";
             state.sortDirection = "asc";
             state.shownColumns = new Set(["type", "size", "modified"]);
+            state.columnOrder = [...defaultColumnOrder];
             elements.searchInput.value = "";
             elements.typeFilter.value = "all";
             elements.extFilter.value = "all";
@@ -544,10 +606,48 @@
             renderTable();
         });
 
-        elements.columnPickerButton.addEventListener("click", () => {
-            const isOpen = !elements.columnPickerMenu.hidden;
-            elements.columnPickerMenu.hidden = isOpen;
-            elements.columnPickerButton.setAttribute("aria-expanded", String(!isOpen));
+        elements.treegridHeaderRow.addEventListener("dragstart", (event) => {
+            const button = event.target.closest("button[data-column-key]");
+            if (!button) {
+                return;
+            }
+            state.draggingColumnKey = button.dataset.columnKey || null;
+            if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", state.draggingColumnKey || "");
+            }
+        });
+
+        elements.treegridHeaderRow.addEventListener("dragover", (event) => {
+            const header = event.target.closest("th.optional-column-header");
+            if (!header || !state.draggingColumnKey) {
+                return;
+            }
+            event.preventDefault();
+            elements.treegridHeaderRow.querySelectorAll(".optional-column-header").forEach((candidate) => {
+                candidate.classList.toggle("drag-over", candidate === header);
+            });
+        });
+
+        elements.treegridHeaderRow.addEventListener("drop", (event) => {
+            const header = event.target.closest("th.optional-column-header");
+            if (!header || !state.draggingColumnKey) {
+                return;
+            }
+            event.preventDefault();
+            moveColumnBefore(state.draggingColumnKey, header.dataset.columnKey || "");
+            clearDragState();
+            renderColumnOptions();
+            renderTable();
+        });
+
+        elements.treegridHeaderRow.addEventListener("dragend", () => {
+            clearDragState();
+        });
+
+        elements.treegridHeaderRow.addEventListener("contextmenu", (event) => {
+            event.preventDefault();
+            openColumnMenu(event.clientX, event.clientY);
         });
 
         elements.columnOptions.addEventListener("change", (event) => {
@@ -565,9 +665,14 @@
         });
 
         document.addEventListener("click", (event) => {
-            if (!elements.columnPickerMenu.hidden && !event.target.closest("#columnPicker")) {
-                elements.columnPickerMenu.hidden = true;
-                elements.columnPickerButton.setAttribute("aria-expanded", "false");
+            if (!elements.columnPickerMenu.hidden && !event.target.closest("#columnPickerMenu")) {
+                closeColumnMenu();
+            }
+        });
+
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeColumnMenu();
             }
         });
     }

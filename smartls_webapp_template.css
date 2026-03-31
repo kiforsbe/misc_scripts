@@ -185,13 +185,9 @@ th button:hover,
     flex-wrap: wrap;
 }
 
-.column-picker {
-    position: relative;
-}
-
 .column-picker-menu {
-    position: absolute;
-    top: calc(100% + 8px);
+    position: fixed;
+    top: 0;
     left: 0;
     min-width: 220px;
     padding: 12px;
@@ -353,6 +349,18 @@ th button {
     justify-content: space-between;
     gap: 8px;
     text-align: left;
+}
+
+.draggable-column-button {
+    cursor: grab;
+}
+
+.draggable-column-button:active {
+    cursor: grabbing;
+}
+
+.optional-column-header.drag-over {
+    box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .sort-label {
@@ -524,6 +532,11 @@ tbody tr:hover {
     font-size: 0.86rem;
     line-height: 1.35;
     white-space: nowrap;
+}
+
+.numeric-cell {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 .date-cell {

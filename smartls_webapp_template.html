@@ -45,13 +45,6 @@
                         <option value="all">All extensions</option>
                     </select>
                 </label>
-                <div class="column-picker" id="columnPicker">
-                    <button id="columnPickerButton" class="ghost-button" type="button" aria-expanded="false">Columns</button>
-                    <div id="columnPickerMenu" class="column-picker-menu" hidden>
-                        <p class="column-picker-title">Visible columns</p>
-                        <div id="columnOptions" class="column-options"></div>
-                    </div>
-                </div>
             </div>
             <div class="toolbar-status">
                 <span id="folderCount"></span>
@@ -78,6 +71,11 @@
             </div>
         </section>
     </section>
+
+    <div id="columnPickerMenu" class="column-picker-menu" hidden>
+        <p class="column-picker-title">Visible columns</p>
+        <div id="columnOptions" class="column-options"></div>
+    </div>
 
     <script>
         const SMARTLS_REPORT = /*SMARTLS_JSON*/;
