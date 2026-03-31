@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import fnmatch
 import hashlib
 import json
@@ -124,6 +125,17 @@ class ScanResult:
     root: Path
     entries: dict[Path, Entry]
     errors: list[ScanError]
+
+
+@dataclass(slots=True)
+class SummaryStats:
+    folders_scanned: int
+    folders_matched: int
+    files_listed: int
+    total_size_bytes: int
+    avg_files_per_folder: float
+    emptiest_folder: str | None
+    largest_file: str | None
 
 
 class SmartLSJSONEncoder(json.JSONEncoder):
@@ -349,40 +361,46 @@ class FilterFactory:
     def build(flag: str, values: Sequence[str]) -> Filter:
         value = values[0] if values else None
         if flag == "--count":
-            matcher = parse_numeric_expr(value)
+            matcher = parse_numeric_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: entry.entry_type == "d" and matcher(entry.direct_children))
         if flag == "--files":
-            matcher = parse_numeric_expr(value)
+            matcher = parse_numeric_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: entry.entry_type == "d" and matcher(entry.direct_files))
         if flag == "--dirs":
-            matcher = parse_numeric_expr(value)
+            matcher = parse_numeric_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: entry.entry_type == "d" and matcher(entry.direct_dirs))
         if flag == "--size":
-            matcher = parse_size_expr(value)
+            matcher = parse_size_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: matcher(entry.size_bytes))
         if flag == "--mtime":
-            matcher = parse_time_expr(value)
+            matcher = parse_time_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: matcher(age_seconds(entry.modified_ts)))
         if flag == "--ctime":
-            matcher = parse_time_expr(value)
+            matcher = parse_time_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: matcher(age_seconds(entry.created_ts)))
         if flag == "--name":
-            pattern = value
+            pattern = _require_filter_value(flag, value)
             return PredicateFilter(lambda entry: fnmatch.fnmatch(entry.name, pattern))
         if flag == "--ext":
-            allowed = {normalize_extension(part) for part in value.split(",") if part.strip()}
+            allowed = {normalize_extension(part) for part in _require_filter_value(flag, value).split(",") if part.strip()}
             return PredicateFilter(lambda entry: entry.entry_type == "f" and normalize_extension(entry.path.suffix) in allowed)
         if flag == "--depth-filter":
-            matcher = parse_numeric_expr(value)
+            matcher = parse_numeric_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: matcher(entry.depth))
         if flag == "--type":
-            wanted = value.lower()
+            wanted = _require_filter_value(flag, value).lower()
             return PredicateFilter(lambda entry: entry.entry_type == wanted)
         if flag == "--empty":
             return PredicateFilter(lambda entry: entry.entry_type == "d" and entry.direct_files == 0)
         if flag == "--sparse":
             return PredicateFilter(lambda entry: entry.entry_type == "d" and entry.direct_files <= 3)
         raise ValueError(f"Unknown filter flag: {flag}")
+
+
+def _require_filter_value(flag: str, value: str | None) -> str:
+    if value is None:
+        raise ValueError(f"Missing value for {flag}")
+    return value
 
 
 def normalize_extension(extension: str) -> str:
@@ -586,6 +604,7 @@ class SmartLSArgumentParser:
         parser.add_argument("--limit", type=int, metavar="N", help="Limit results after filtering and sorting")
         parser.add_argument("--group-by", choices=["d", "ext", "mtime-day"], help="Group flat output by depth, extension, or modification day")
         parser.add_argument("--hash", nargs="?", const="both", choices=["md5", "sha256", "both"], help="Compute file hashes")
+        parser.add_argument("--export-html", metavar="FILE", type=Path, help="Write a self-contained HTML report")
         parser.add_argument("--skip-errors", action="store_true", default=True, help="Continue past filesystem errors")
         parser.add_argument("--show-errors", action="store_true", help="Print collected scan errors to stderr")
         return parser
@@ -670,6 +689,115 @@ def group_entries(entries: Sequence[Entry], group_by: str | None) -> list[tuple[
     return [(key, buckets[key]) for key in sorted(buckets)]
 
 
+def build_summary_stats(scan_result: ScanResult, matched_entries: Sequence[Entry], args: argparse.Namespace) -> SummaryStats:
+    matched_dirs = [entry for entry in matched_entries if entry.entry_type == "d"]
+    matched_files = [entry for entry in matched_entries if entry.entry_type == "f"]
+    scanned_dirs = sum(1 for entry in scan_result.entries.values() if entry.entry_type == "d")
+    total_size = sum(entry.size_bytes for entry in matched_files)
+    avg_files = (sum(entry.direct_files for entry in matched_dirs) / len(matched_dirs)) if matched_dirs else 0.0
+    emptiest = min(matched_dirs, key=lambda entry: (entry.direct_files, entry.name.lower()), default=None)
+    largest = max(matched_files, key=lambda entry: entry.size_bytes, default=None)
+    return SummaryStats(
+        folders_scanned=scanned_dirs,
+        folders_matched=len(matched_dirs),
+        files_listed=len(matched_files),
+        total_size_bytes=total_size,
+        avg_files_per_folder=avg_files,
+        emptiest_folder=(display_path(emptiest.path, scan_result.root, absolute=not args.relative_paths, is_dir=True) if emptiest else None),
+        largest_file=(display_path(largest.path, scan_result.root, absolute=not args.relative_paths) if largest else None),
+    )
+
+
+def load_template_asset(file_name: str) -> str:
+    asset_path = Path(__file__).with_name(file_name)
+    return asset_path.read_text(encoding="utf-8")
+
+
+def build_webapp_payload(scan_result: ScanResult, matched_entries: Sequence[Entry], args: argparse.Namespace) -> dict[str, object]:
+    visible_paths = compute_visible_tree(scan_result.entries, matched_entries) if matched_entries else {scan_result.root}
+    visible_directories = [
+        entry for entry in scan_result.entries.values()
+        if entry.entry_type == "d" and entry.path in visible_paths
+    ]
+    visible_directories = sort_entries(visible_directories, "depth")
+    summary = build_summary_stats(scan_result, matched_entries, args)
+    entries_payload: list[dict[str, object]] = []
+    for entry in matched_entries:
+        item = entry.to_dict(scan_result.root, absolute=not args.relative_paths)
+        item["parent_path"] = (
+            display_path(entry.parent, scan_result.root, absolute=not args.relative_paths, is_dir=True)
+            if entry.parent is not None and entry.parent in scan_result.entries
+            else None
+        )
+        item["name_path"] = display_path(entry.path, scan_result.root, absolute=not args.relative_paths, is_dir=entry.entry_type == "d")
+        entries_payload.append(item)
+
+    directories_payload: list[dict[str, object]] = []
+    for entry in visible_directories:
+        directories_payload.append(
+            {
+                "path": display_path(entry.path, scan_result.root, absolute=not args.relative_paths, is_dir=True),
+                "parent_path": (
+                    display_path(entry.parent, scan_result.root, absolute=not args.relative_paths, is_dir=True)
+                    if entry.parent is not None and entry.parent in scan_result.entries
+                    else None
+                ),
+                "name": entry.name,
+                "depth": entry.depth,
+                "direct_files": entry.direct_files,
+                "direct_dirs": entry.direct_dirs,
+                "size_bytes": entry.size_bytes,
+                "is_empty": entry.is_empty,
+                "is_sparse": entry.is_sparse,
+            }
+        )
+
+    return {
+        "meta": {
+            "title": "smartls web report",
+            "root_path": str(scan_result.root),
+            "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "sort": args.sort,
+            "group_by": args.group_by,
+            "relative_paths": args.relative_paths,
+            "human_sizes": args.human_sizes,
+        },
+        "summary": {
+            "folders_scanned": summary.folders_scanned,
+            "folders_matched": summary.folders_matched,
+            "files_listed": summary.files_listed,
+            "total_size_bytes": summary.total_size_bytes,
+            "avg_files_per_folder": round(summary.avg_files_per_folder, 2),
+            "emptiest_folder": summary.emptiest_folder,
+            "largest_file": summary.largest_file,
+        },
+        "entries": entries_payload,
+        "directories": directories_payload,
+        "errors": [{"path": str(error.path), "message": error.message} for error in scan_result.errors],
+    }
+
+
+def render_webapp_html(payload: dict[str, object]) -> str:
+    template = load_template_asset("smartls_webapp_template.html")
+    css = load_template_asset("smartls_webapp_template.css")
+    script = load_template_asset("smartls_webapp_template.js")
+    serialized = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    return (
+        template
+        .replace("/*SMARTLS_CSS*/", css)
+        .replace("/*SMARTLS_JSON*/", serialized)
+        .replace("/*SMARTLS_JS*/", script)
+    )
+
+
+def export_webapp_report(scan_result: ScanResult, matched_entries: Sequence[Entry], args: argparse.Namespace) -> Path:
+    output_path = args.export_html.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    html = render_webapp_html(build_webapp_payload(scan_result, matched_entries, args))
+    output_path.write_text(html, encoding="utf-8")
+    return output_path
+
+
 def make_entry_line(entry: Entry, root: Path, args: argparse.Namespace, include_path: bool = True) -> str:
     absolute = not args.relative_paths
     label = display_path(entry.path, root, absolute=absolute, is_dir=entry.entry_type == "d") if include_path else entry.name
@@ -735,6 +863,10 @@ class OutputRenderer:
             self._render_flat(matched_entries)
         else:
             self._render_tree(matched_entries)
+
+        if self.args.export_html:
+            output_path = export_webapp_report(self.scan_result, matched_entries, self.args)
+            print(f"Exported web report to {output_path}", file=sys.stderr)
 
         if self.args.stats:
             self._render_stats(matched_entries)
@@ -803,22 +935,16 @@ class OutputRenderer:
             writer.writerow(entry.to_dict(self.scan_result.root, absolute=True))
 
     def _render_stats(self, matched_entries: Sequence[Entry]) -> None:
-        matched_dirs = [entry for entry in matched_entries if entry.entry_type == "d"]
-        matched_files = [entry for entry in matched_entries if entry.entry_type == "f"]
-        scanned_dirs = sum(1 for entry in self.scan_result.entries.values() if entry.entry_type == "d")
-        total_size = sum(entry.size_bytes for entry in matched_files)
-        avg_files = (sum(entry.direct_files for entry in matched_dirs) / len(matched_dirs)) if matched_dirs else 0.0
-        emptiest = min(matched_dirs, key=lambda entry: (entry.direct_files, entry.name.lower()), default=None)
-        largest = max(matched_files, key=lambda entry: entry.size_bytes, default=None)
+        summary = build_summary_stats(self.scan_result, matched_entries, self.args)
 
         print("── Summary ─────────────────────────────")
-        print(f"  Folders scanned : {scanned_dirs}")
-        print(f"  Folders matched : {len(matched_dirs)}")
-        print(f"  Files listed    : {len(matched_files)}")
-        print(f"  Total size      : {format_size(total_size, self.args.human_sizes)}")
-        print(f"  Avg files/folder: {avg_files:.1f}")
-        print(f"  Emptiest folder : {display_path(emptiest.path, self.scan_result.root, absolute=not self.args.relative_paths, is_dir=True) if emptiest else '-'}")
-        print(f"  Largest file    : {display_path(largest.path, self.scan_result.root, absolute=not self.args.relative_paths) if largest else '-'}")
+        print(f"  Folders scanned : {summary.folders_scanned}")
+        print(f"  Folders matched : {summary.folders_matched}")
+        print(f"  Files listed    : {summary.files_listed}")
+        print(f"  Total size      : {format_size(summary.total_size_bytes, self.args.human_sizes)}")
+        print(f"  Avg files/folder: {summary.avg_files_per_folder:.1f}")
+        print(f"  Emptiest folder : {summary.emptiest_folder or '-'}")
+        print(f"  Largest file    : {summary.largest_file or '-'}")
 
     def _render_errors(self) -> None:
         for error in self.scan_result.errors:

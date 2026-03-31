@@ -132,7 +132,7 @@ A smart directory explorer for querying files and folders with composable filter
 - Numeric expression syntax for exact matches, inequalities, ranges, enumerations, modulo checks, and approximate values
 - Directory metadata including direct file and directory counts, recursive file counts, total descendant size, empty and sparse flags, and deepest nesting
 - File metadata including size, timestamps, MIME type, symlink details, and optional MD5 or SHA256 hashing
-- Output modes for tree view, flat list, JSON, CSV, and summary statistics
+- Output modes for tree view, flat list, JSON, CSV, self-contained HTML web reports, and summary statistics
 - Sorting, limiting, grouping, relative or absolute paths, human-readable or raw byte sizes, optional icons, and ANSI color control
 
 #### Usage Examples
@@ -151,12 +151,16 @@ python smartls.py ./src --ext py,js --not --name "*test*" --long
 
 # Export matching directories to JSON
 python smartls.py --type d --files =0 --json
+
+# Export a self-contained HTML report
+python smartls.py --type f --size >=10MB --export-html smartls-report.html
 ```
 
 #### Notes
 - `--or` separates filter groups and `--not` negates only the next filter
 - In tree mode, matching descendants keep their ancestor path visible for context
-- Presets, config files, HTML export, and parallel traversal are not included in the first implementation
+- The HTML export is self-contained and can be opened directly in a browser without external assets
+- Presets, config files, and parallel traversal are not included in this implementation
 
 ### series_info_tool.py
 A comprehensive tool to extract and display series information for video files, with MyAnimeList integration. Groups video files by series title, retrieves metadata from anime and movie databases, and provides convenient ways to access online information. Designed for Windows shell:sendto and drag-drop operations.
