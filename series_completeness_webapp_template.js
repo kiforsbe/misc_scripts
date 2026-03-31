@@ -5,17 +5,167 @@ class SeriesCompletenessApp {
         this.data = SERIES_DATA;
         this.filteredSeries = [];
         this.selectedSeries = null;
+        this.selectedSeriesKey = null;
         this.searchTerm = '';
+        this.combinedQuery = '';
         this.statusFilter = 'all';
         this.malStatusFilter = 'all';
         this.watchStatusFilter = 'all';
         this.groupBy = 'none';
-        // --- Thumbnail directory for hash-based lookup ---
+        this.seriesTitles = [];
+        this.seriesTags = [];
+        this.seriesGenres = [];
+        this.seriesTypes = [];
+        this.activeSuggestionIndex = -1;
+        this.lastSuggestionKey = '';
+        this.suppressNextSearchFocusOpen = false;
+        this.searchDebounceMs = 300;
+        this.searchDebounceTimer = null;
+        this.mobileBreakpoint = 768;
+        this.supportsHoverInteractions = this.detectHoverSupport();
         this.thumbnailDir = SERIES_DATA.thumbnail_dir || 'thumbnails';
+        this.hostSubnetIp = SERIES_DATA.host_subnet_ip || '127.0.0.1';
         this.popupTimeout = null;
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
+        this.normalizeSeriesData();
         this.init();
+    }
+
+    detectHoverSupport() {
+        if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+            return true;
+        }
+
+        return window.matchMedia('(hover: hover)').matches;
+    }
+
+    isMobile() {
+        return typeof window !== 'undefined' && window.innerWidth <= this.mobileBreakpoint;
+    }
+
+    normalizeSeriesData() {
+        if (!this.data || !this.data.groups || typeof this.data.groups !== 'object') {
+            return;
+        }
+
+        const seriesSet = new Set();
+        const tagSet = new Set();
+        const genreSet = new Set();
+        const typeSet = new Set();
+
+        Object.entries(this.data.groups).forEach(([key, series]) => {
+            series.key = key;
+            this.cacheSeriesFilterFields(series);
+
+            if (series._displayTitle) {
+                seriesSet.add(series._displayTitle);
+            }
+
+            (series._filterTags || []).forEach((tag) => tagSet.add(tag));
+            (series._filterGenres || []).forEach((genre) => genreSet.add(genre));
+
+            if (series._filterTypeLabel) {
+                typeSet.add(series._filterTypeLabel);
+            }
+        });
+
+        this.seriesTitles = Array.from(seriesSet).sort((left, right) => left.localeCompare(right));
+        this.seriesTags = Array.from(tagSet).sort((left, right) => left.localeCompare(right));
+        this.seriesGenres = Array.from(genreSet).sort((left, right) => left.localeCompare(right));
+        this.seriesTypes = Array.from(typeSet).sort((left, right) => left.localeCompare(right));
+    }
+
+    getTitleMetadata(series) {
+        const files = series.files || [];
+        const firstFile = files[0] || {};
+        const metadataId = series.title_id || series.metadata_id || firstFile.metadata_id || '';
+        return this.data.title_metadata?.[metadataId] || {};
+    }
+
+    getSeriesType(series, titleMetadata = this.getTitleMetadata(series)) {
+        const titleType = typeof titleMetadata.type === 'string' ? titleMetadata.type : '';
+        const firstFile = (series.files || [])[0] || {};
+        const fileType = Array.isArray(firstFile.type) ? firstFile.type.join(' ') : (firstFile.type || '');
+        return titleType || fileType || 'Series';
+    }
+
+    getSeriesDisplayTitle(series) {
+        return series.title + (series.season ? ` S${String(series.season).padStart(2, '0')}` : '');
+    }
+
+    normalizeStatusValue(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[_\s]+/g, '-')
+            .replace(/[^a-z0-9-]/g, '');
+    }
+
+    toStatusClass(value) {
+        return this.normalizeStatusValue(value).replace(/^-+|-+$/g, '') || 'unknown';
+    }
+
+    getNormalizedMalStatus(series) {
+        const status = series.myanimelist_watch_status?.my_status;
+        return status ? this.normalizeStatusValue(status) : 'no-mal-data';
+    }
+
+    getNormalizedWatchStatus(series) {
+        const watchStatus = series.watch_status || {};
+        const watchedEpisodes = watchStatus.watched_episodes || 0;
+        const partiallyWatchedEpisodes = watchStatus.partially_watched_episodes || 0;
+        const episodesFound = series.episodes_found || 0;
+
+        if (episodesFound > 0 && watchedEpisodes >= episodesFound) {
+            return 'fully-watched';
+        }
+
+        if (partiallyWatchedEpisodes > 0 || watchedEpisodes > 0) {
+            return 'partially-watched';
+        }
+
+        return 'not-watched';
+    }
+
+    buildSeriesSearchIndex(series, titleMetadata) {
+        const tags = Array.isArray(titleMetadata.tags) ? titleMetadata.tags.join(' ') : '';
+        const genres = Array.isArray(titleMetadata.genres) ? titleMetadata.genres.join(' ') : '';
+        const sources = Array.isArray(titleMetadata.sources) ? titleMetadata.sources.map((source) => this.getSourceName(source)).join(' ') : '';
+        const filenames = Array.isArray(series.files)
+            ? series.files.map((file) => file.filename || file.file_path || file.path || '').join(' ')
+            : '';
+        const completenessTerms = [
+            this.formatStatus(series.status),
+            this.getSeriesType(series, titleMetadata),
+            series.title || '',
+            series.season || '',
+            series.myanimelist_watch_status?.my_status || '',
+            this.getNormalizedWatchStatus(series),
+            filenames,
+            tags,
+            genres,
+            sources,
+            titleMetadata.plot || ''
+        ];
+
+        return completenessTerms.join(' ').toLowerCase();
+    }
+
+    cacheSeriesFilterFields(series) {
+        const titleMetadata = this.getTitleMetadata(series);
+        const typeLabel = this.getSeriesType(series, titleMetadata);
+
+        series._displayTitle = this.getSeriesDisplayTitle(series);
+        series._filterStatus = series.status;
+        series._filterStatusLabel = this.formatStatus(series.status);
+        series._filterWatchStatus = this.getNormalizedWatchStatus(series);
+        series._filterMalStatus = this.getNormalizedMalStatus(series);
+        series._filterTypeLabel = typeLabel;
+        series._filterType = this.normalizeStatusValue(typeLabel);
+        series._filterTags = Array.isArray(titleMetadata.tags) ? titleMetadata.tags : [];
+        series._filterGenres = Array.isArray(titleMetadata.genres) ? titleMetadata.genres : [];
+        series._filterSearchIndex = this.buildSeriesSearchIndex(series, titleMetadata);
     }
 
     // Calculate SHA256 hash of a string (for thumbnail lookup)
@@ -113,48 +263,138 @@ class SeriesCompletenessApp {
     init() {
         this.setupEventListeners();
         this.updateHeaderStats();
+        this.syncSearchContainerState('');
         this.filterAndDisplaySeries();
+        this.showListOnMobile();
     }
     
     setupEventListeners() {
-        // Search functionality
         const searchInput = document.getElementById('search-input');
+        const suggestionsContainer = document.getElementById('series-suggestions');
+        const dropdownIndicator = document.querySelector('.search-dropdown-indicator');
+        const clearBtn = document.getElementById('search-clear-btn');
+
         searchInput.addEventListener('input', (e) => {
-            this.searchTerm = e.target.value.toLowerCase();
-            this.filterAndDisplaySeries();
+            this.handleSearchInput(e.target.value);
         });
+
+        searchInput.addEventListener('focus', () => {
+            if (this.suppressNextSearchFocusOpen) {
+                this.suppressNextSearchFocusOpen = false;
+                return;
+            }
+
+            this.renderSeriesSuggestions(searchInput.value);
+        });
+
+        searchInput.addEventListener('click', () => {
+            this.renderSeriesSuggestions(searchInput.value);
+        });
+
+        searchInput.addEventListener('blur', () => {
+            window.setTimeout(() => this.hideSeriesSuggestions(), 120);
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') {
+                if (this.areSeriesSuggestionsVisible()) {
+                    e.preventDefault();
+                    this.moveSuggestionSelection(1);
+                }
+            } else if (e.key === 'ArrowUp') {
+                if (this.areSeriesSuggestionsVisible()) {
+                    e.preventDefault();
+                    this.moveSuggestionSelection(-1);
+                }
+            } else if (e.key === 'Enter') {
+                if (this.areSeriesSuggestionsVisible() && this.activeSuggestionIndex >= 0) {
+                    e.preventDefault();
+                    this.selectActiveSuggestion();
+                }
+            } else if (e.key === 'Escape') {
+                this.hideSeriesSuggestions();
+            }
+        });
+
+        if (suggestionsContainer) {
+            suggestionsContainer.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+            });
+        }
+
+        if (dropdownIndicator) {
+            dropdownIndicator.addEventListener('click', () => {
+                this.toggleSeriesSuggestions();
+            });
+        }
+
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                searchInput.value = '';
+                this.applySearchNow('');
+                searchInput.focus();
+            });
+        }
         
-        // Status filter
         const statusFilter = document.getElementById('status-filter');
         statusFilter.addEventListener('change', (e) => {
             this.statusFilter = e.target.value;
             this.filterAndDisplaySeries();
         });
         
-        // MAL status filter
         const malStatusFilter = document.getElementById('mal-status-filter');
         malStatusFilter.addEventListener('change', (e) => {
             this.malStatusFilter = e.target.value;
             this.filterAndDisplaySeries();
         });
         
-        // Watch status filter
         const watchStatusFilter = document.getElementById('watch-status-filter');
         watchStatusFilter.addEventListener('change', (e) => {
             this.watchStatusFilter = e.target.value;
             this.filterAndDisplaySeries();
         });
         
-        // Group by filter
         const groupBySelect = document.getElementById('group-by-select');
         groupBySelect.addEventListener('change', (e) => {
             this.groupBy = e.target.value;
             this.filterAndDisplaySeries();
         });
+
+        const filterToggle = document.getElementById('filter-toggle');
+        if (filterToggle) {
+            filterToggle.addEventListener('click', () => {
+                const filterControls = document.getElementById('filter-controls');
+                const expanded = filterToggle.getAttribute('aria-expanded') !== 'false';
+                filterToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+                filterControls.classList.toggle('collapsed', expanded);
+            });
+        }
+
+        const mobileBackButton = document.getElementById('mobile-back-btn');
+        if (mobileBackButton) {
+            mobileBackButton.addEventListener('click', () => {
+                this.showListOnMobile();
+            });
+        }
+
+        window.addEventListener('resize', () => {
+            this.hideSeriesSuggestions();
+            if (!this.isMobile()) {
+                this.showDesktopLayout();
+            } else if (this.selectedSeriesKey) {
+                this.showMainOnMobile();
+            }
+        }, { passive: true });
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.search-container')) {
+                this.hideSeriesSuggestions();
+                this.clearInputTypeMarker();
+            }
+        });
         
-        // Keyboard navigation
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && document.activeElement?.id !== 'search-input') {
                 e.preventDefault();
                 this.navigateList(e.key === 'ArrowDown' ? 1 : -1);
             } else if (e.key === 'Enter') {
@@ -164,6 +404,224 @@ class SeriesCompletenessApp {
                 }
             }
         });
+    }
+
+    clearPendingSearchDebounce() {
+        if (this.searchDebounceTimer) {
+            window.clearTimeout(this.searchDebounceTimer);
+            this.searchDebounceTimer = null;
+        }
+    }
+
+    syncSearchContainerState(rawValue) {
+        const container = document.querySelector('.search-container');
+        if (!container) {
+            return;
+        }
+
+        container.classList.toggle('has-value', Boolean((rawValue || '').trim()));
+    }
+
+    setCombinedQuery(value) {
+        this.searchTerm = value || '';
+        this.combinedQuery = (value || '').trim().toLowerCase();
+        this.syncSearchContainerState(value);
+    }
+
+    applySearchNow(value) {
+        this.clearPendingSearchDebounce();
+        this.setCombinedQuery(value);
+        this.filterAndDisplaySeries();
+        this.renderSeriesSuggestions(value);
+        if (!value.trim()) {
+            this.clearInputTypeMarker();
+        }
+    }
+
+    handleSearchInput(value) {
+        this.syncSearchContainerState(value);
+        this.clearPendingSearchDebounce();
+        this.searchDebounceTimer = window.setTimeout(() => {
+            this.applySearchNow(value);
+        }, this.searchDebounceMs);
+    }
+
+    getHighlightedText(value, inputValue) {
+        if (!inputValue) {
+            return this.escapeHtml(value);
+        }
+
+        const lowerValue = value.toLowerCase();
+        const lowerInput = inputValue.toLowerCase();
+        const matchIndex = lowerValue.indexOf(lowerInput);
+        if (matchIndex === -1) {
+            return this.escapeHtml(value);
+        }
+
+        const before = this.escapeHtml(value.slice(0, matchIndex));
+        const match = this.escapeHtml(value.slice(matchIndex, matchIndex + inputValue.length));
+        const after = this.escapeHtml(value.slice(matchIndex + inputValue.length));
+        return `${before}<span class="match-highlight">${match}</span>${after}`;
+    }
+
+    renderSeriesSuggestions(rawValue) {
+        const container = document.getElementById('series-suggestions');
+        if (!container) {
+            return;
+        }
+
+        const raw = (rawValue || '').trim();
+        const suggestionKey = raw.toLowerCase();
+        if (container.style.display === 'block' && suggestionKey === this.lastSuggestionKey) {
+            return;
+        }
+
+        let forcedType = null;
+        let filterText = suggestionKey;
+        const prefixMatch = suggestionKey.match(/^(series|tag|genre|type):\s*(.*)$/);
+        if (prefixMatch) {
+            forcedType = prefixMatch[1];
+            filterText = prefixMatch[2].trim();
+            this.showInputTypeMarker(forcedType);
+        } else {
+            this.clearInputTypeMarker();
+        }
+
+        const suggestions = [];
+        const pushMatches = (items, typeLabel, prefixLabel) => {
+            items.forEach((item) => {
+                if (!filterText || item.toLowerCase().includes(filterText)) {
+                    suggestions.push({
+                        value: item,
+                        type: typeLabel,
+                        prefix: prefixLabel
+                    });
+                }
+            });
+        };
+
+        if (!forcedType || forcedType === 'series') {
+            pushMatches(this.seriesTitles, 'Series', 'series');
+        }
+        if (!forcedType || forcedType === 'tag') {
+            pushMatches(this.seriesTags, 'Tag', 'tag');
+        }
+        if (!forcedType || forcedType === 'genre') {
+            pushMatches(this.seriesGenres, 'Genre', 'genre');
+        }
+        if (!forcedType || forcedType === 'type') {
+            pushMatches(this.seriesTypes, 'Type', 'type');
+        }
+
+        const deduped = Array.from(new Map(suggestions.map((item) => [`${item.prefix}:${item.value.toLowerCase()}`, item])).values()).slice(0, 32);
+
+        if (deduped.length === 0) {
+            container.innerHTML = '';
+            container.style.display = 'none';
+            this.activeSuggestionIndex = -1;
+            this.lastSuggestionKey = suggestionKey;
+            return;
+        }
+
+        container.innerHTML = deduped.map((item, index) => `
+            <div class="series-suggestion-item${index === 0 ? ' active' : ''}" data-index="${index}" data-value="${this.escapeHtml(item.value)}" data-prefix="${item.prefix}" data-type="${item.type}" role="option" aria-selected="${index === 0 ? 'true' : 'false'}">
+                <span>${this.getHighlightedText(item.value, filterText)}</span>
+                <span class="match-hint">${item.type}</span>
+            </div>
+        `).join('');
+        container.style.display = 'block';
+        this.activeSuggestionIndex = 0;
+        this.lastSuggestionKey = suggestionKey;
+
+        container.querySelectorAll('.series-suggestion-item').forEach((item) => {
+            item.addEventListener('click', () => {
+                this.applySuggestion(item.getAttribute('data-value') || '', item.getAttribute('data-prefix') || 'series');
+            });
+        });
+    }
+
+    hideSeriesSuggestions() {
+        const container = document.getElementById('series-suggestions');
+        if (!container) {
+            return;
+        }
+
+        container.style.display = 'none';
+        this.activeSuggestionIndex = -1;
+        this.lastSuggestionKey = '';
+    }
+
+    areSeriesSuggestionsVisible() {
+        const container = document.getElementById('series-suggestions');
+        return Boolean(container && container.style.display === 'block');
+    }
+
+    toggleSeriesSuggestions() {
+        if (this.areSeriesSuggestionsVisible()) {
+            this.hideSeriesSuggestions();
+            return;
+        }
+
+        const searchInput = document.getElementById('search-input');
+        this.renderSeriesSuggestions(searchInput ? searchInput.value : '');
+    }
+
+    showInputTypeMarker(type) {
+        const container = document.querySelector('.search-container');
+        if (!container) {
+            return;
+        }
+
+        let marker = container.querySelector('.input-type-hint');
+        if (!marker) {
+            marker = document.createElement('span');
+            marker.className = 'input-type-hint';
+            container.appendChild(marker);
+        }
+
+        marker.className = `input-type-hint input-type-${type}`;
+        marker.textContent = `${type.charAt(0).toUpperCase()}${type.slice(1)} search`;
+    }
+
+    clearInputTypeMarker() {
+        const marker = document.querySelector('.search-container .input-type-hint');
+        if (marker) {
+            marker.remove();
+        }
+    }
+
+    moveSuggestionSelection(delta) {
+        const items = Array.from(document.querySelectorAll('.series-suggestion-item'));
+        if (items.length === 0) {
+            return;
+        }
+
+        this.activeSuggestionIndex = (this.activeSuggestionIndex + delta + items.length) % items.length;
+        items.forEach((item, index) => {
+            item.classList.toggle('active', index === this.activeSuggestionIndex);
+            item.setAttribute('aria-selected', index === this.activeSuggestionIndex ? 'true' : 'false');
+        });
+    }
+
+    selectActiveSuggestion() {
+        const activeItem = document.querySelector('.series-suggestion-item.active');
+        if (!activeItem) {
+            return;
+        }
+
+        this.applySuggestion(activeItem.getAttribute('data-value') || '', activeItem.getAttribute('data-prefix') || 'series');
+    }
+
+    applySuggestion(value, prefix) {
+        const query = `${prefix}:${value}`;
+        const searchInput = document.getElementById('search-input');
+        if (searchInput) {
+            searchInput.value = query;
+        }
+
+        this.suppressNextSearchFocusOpen = true;
+        this.applySearchNow(query);
+        this.hideSeriesSuggestions();
     }
     
     updateHeaderStats() {
@@ -178,84 +636,118 @@ class SeriesCompletenessApp {
             : '0';
         document.getElementById('completion-rate').textContent = `${completionRate}%`;
     }
+
+    matchesCombinedQuery(series) {
+        if (!this.combinedQuery) {
+            return true;
+        }
+
+        const prefixMatch = this.combinedQuery.match(/^(series|tag|genre|type):\s*(.*)$/);
+        if (prefixMatch) {
+            const prefix = prefixMatch[1];
+            const value = prefixMatch[2].trim();
+            if (!value) {
+                return true;
+            }
+
+            if (prefix === 'series') {
+                return series._displayTitle.toLowerCase().includes(value);
+            }
+            if (prefix === 'tag') {
+                return series._filterTags.some((tag) => tag.toLowerCase().includes(value));
+            }
+            if (prefix === 'genre') {
+                return series._filterGenres.some((genre) => genre.toLowerCase().includes(value));
+            }
+            if (prefix === 'type') {
+                return series._filterTypeLabel.toLowerCase().includes(value);
+            }
+        }
+
+        const terms = this.combinedQuery.split(/\s+/).filter(Boolean);
+        return terms.every((term) => series._filterSearchIndex.includes(term));
+    }
     
     async filterAndDisplaySeries() {
         const groups = this.data.groups;
         this.filteredSeries = [];
         
         for (const [key, series] of Object.entries(groups)) {
-            // Apply search filter
-            const matchesSearch = !this.searchTerm || 
-                series.title.toLowerCase().includes(this.searchTerm) ||
-                (series.season && series.season.toString().includes(this.searchTerm));
-            
-            // --- Movie status handling for filtering ---
-            // Derive isMovie from title_metadata.type or files[0].type
-            const files = series.files || [];
-            const firstFile = files[0] || {};
-            // Use series.title_id for season-specific metadata, fallback to first file's metadata_id
-            const metadata_id = series.title_id || firstFile.metadata_id || '';
-            const title_metadata = this.data.title_metadata && this.data.title_metadata[metadata_id] || {};
-            let isMovie = false;
-            if (title_metadata.type && typeof title_metadata.type === 'string' && title_metadata.type.toLowerCase().includes('movie')) {
-                isMovie = true;
-            }
-            if (!isMovie && firstFile.type && typeof firstFile.type === 'string' && firstFile.type.toLowerCase().includes('movie')) {
-                isMovie = true;
-            }
-            // --- End movie status handling ---
-
-            // Apply status filter, treating movies as "complete"
-            const matchesStatus = this.statusFilter === 'all' ||
-                (isMovie && this.statusFilter === 'complete') ||
-                (!isMovie && series.status === this.statusFilter);
-
-            // --- Watch status filter ---
-            // Determine watch status for the group
-            const ws = series.watch_status || {};
-            let watchStatus = 'not-watched';
-            if ((ws.watched_episodes || 0) === (series.episodes_found || 0) && (series.episodes_found || 0) > 0) {
-                watchStatus = 'fully-watched';
-            } else if ((ws.partially_watched_episodes || 0) > 0 || (ws.watched_episodes || 0) > 0) {
-                watchStatus = 'partially-watched';
-            }
-            
-            // Apply watch status filter
-            const matchesWatch = this.watchStatusFilter === 'all' || watchStatus === this.watchStatusFilter;
-            // --- End new ---
-
-            // Apply MAL status filter
-            let matchesMalStatus = true;
-            if (this.malStatusFilter !== 'all') {
-                const malStatus = series.myanimelist_watch_status;
-                if (this.malStatusFilter === 'no-mal-data') {
-                    matchesMalStatus = !malStatus || !malStatus.my_status;
-                } else {
-                    const malStatusMap = {
-                        'watching': 'Watching',
-                        'completed': 'Completed',
-                        'on-hold': 'On-Hold',
-                        'dropped': 'Dropped',
-                        'plan-to-watch': 'Plan to Watch'
-                    };
-                    const expectedStatus = malStatusMap[this.malStatusFilter];
-                    matchesMalStatus = malStatus && malStatus.my_status === expectedStatus;
-                }
-            }
+            const matchesSearch = this.matchesCombinedQuery(series);
+            const matchesStatus = this.statusFilter === 'all' || series._filterStatus === this.statusFilter;
+            const matchesWatch = this.watchStatusFilter === 'all' || series._filterWatchStatus === this.watchStatusFilter;
+            const matchesMalStatus = this.malStatusFilter === 'all' || series._filterMalStatus === this.malStatusFilter;
 
             if (matchesSearch && matchesStatus && matchesWatch && matchesMalStatus) {
                 this.filteredSeries.push({ key, ...series });
             }
         }
         
-        // Sort by title
         this.filteredSeries.sort((a, b) => {
-            const titleA = a.title + (a.season ? ` S${a.season.toString().padStart(2, '0')}` : '');
-            const titleB = b.title + (b.season ? ` S${b.season.toString().padStart(2, '0')}` : '');
-            return titleA.localeCompare(titleB);
+            return a._displayTitle.localeCompare(b._displayTitle);
         });
         
         await this.renderSeriesList();
+
+        if (this.selectedSeriesKey) {
+            const stillVisible = this.filteredSeries.some((series) => series.key === this.selectedSeriesKey);
+            if (!stillVisible) {
+                this.selectedSeriesKey = null;
+                this.selectedSeries = null;
+                document.getElementById('series-details').innerHTML = `
+                    <div class="welcome-message">
+                        <i class="bi bi-collection-play display-1 text-muted"></i>
+                        <h3 class="text-muted">Select a series to inspect coverage</h3>
+                        <p class="text-muted">Choose a series from the list to review completeness, watch progress, Plex activity, and MyAnimeList metadata in one place.</p>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    showMainOnMobile() {
+        const contentContainer = document.querySelector('.content-container');
+        const header = document.querySelector('.header');
+        const mobileBackButton = document.getElementById('mobile-back-btn');
+        if (contentContainer) {
+            contentContainer.classList.add('mobile-show-main');
+        }
+        if (header) {
+            header.classList.add('mobile-showing-main');
+        }
+        if (mobileBackButton) {
+            mobileBackButton.style.display = 'inline-flex';
+        }
+    }
+
+    showListOnMobile() {
+        const contentContainer = document.querySelector('.content-container');
+        const header = document.querySelector('.header');
+        const mobileBackButton = document.getElementById('mobile-back-btn');
+        if (contentContainer) {
+            contentContainer.classList.remove('mobile-show-main');
+        }
+        if (header) {
+            header.classList.remove('mobile-showing-main');
+        }
+        if (mobileBackButton) {
+            mobileBackButton.style.display = 'none';
+        }
+    }
+
+    showDesktopLayout() {
+        const contentContainer = document.querySelector('.content-container');
+        const header = document.querySelector('.header');
+        const mobileBackButton = document.getElementById('mobile-back-btn');
+        if (contentContainer) {
+            contentContainer.classList.remove('mobile-show-main');
+        }
+        if (header) {
+            header.classList.remove('mobile-showing-main');
+        }
+        if (mobileBackButton) {
+            mobileBackButton.style.display = 'none';
+        }
     }
     
     async renderSeriesList() {
@@ -298,6 +790,13 @@ class SeriesCompletenessApp {
         }
         
         container.innerHTML = html;
+
+        if (this.selectedSeriesKey) {
+            const selectedItem = container.querySelector(`[data-series-key="${this.selectedSeriesKey}"]`);
+            if (selectedItem) {
+                selectedItem.classList.add('selected');
+            }
+        }
     }
     
     groupSeries(series) {
@@ -307,14 +806,9 @@ class SeriesCompletenessApp {
             let groupName = 'Other';
             
             if (this.groupBy === 'status') {
-                groupName = this.formatStatus(s.status);
+                groupName = s._filterStatusLabel;
             } else if (this.groupBy === 'mal-status') {
-                const malStatus = s.myanimelist_watch_status;
-                if (malStatus && malStatus.my_status) {
-                    groupName = malStatus.my_status;
-                } else {
-                    groupName = 'No MAL Data';
-                }
+                groupName = s.myanimelist_watch_status?.my_status || 'No MAL Data';
             }
             
             if (!groups[groupName]) {
@@ -328,47 +822,26 @@ class SeriesCompletenessApp {
     
     async renderSeriesItems(seriesList) {
         const items = await Promise.all(seriesList.map(async (series) => {
-            const titleWithSeason = series.title + (series.season ? ` S${series.season.toString().padStart(2, '0')}` : '');
-            const statusClass = `status-${series.status}`;
+            const titleWithSeason = series._displayTitle;
+            const statusClass = `status-${this.toStatusClass(series._filterStatus)}`;
             const statusIcon = this.getStatusIcon(series.status);
-
-            // Calculate watch progress
             const watchStatus = series.watch_status || {};
             const watchedPercent = watchStatus.completion_percent || 0;
-
-            // --- Movie status handling (updated) ---
-            // Derive isMovie from title_metadata.type or files[0].type
             const files = series.files || [];
             const firstFile = files[0] || {};
-            // Use series.title_id for season-specific metadata, fallback to first file's metadata_id
-            const metadata_id = series.title_id || firstFile.metadata_id || '';
-            const title_metadata = this.data.title_metadata && this.data.title_metadata[metadata_id] || {};
-            let isMovie = false;
-            // Check title_metadata.type
-            if (title_metadata.type && typeof title_metadata.type === 'string' && title_metadata.type.toLowerCase().includes('movie')) {
-                isMovie = true;
-            }
-            // Or check files[0].type
-            if (!isMovie && firstFile.type && typeof firstFile.type === 'string' && firstFile.type.toLowerCase().includes('movie')) {
-                isMovie = true;
-            }
-            // ---
-
-            let statusDisplay = '';
-            let episodeDisplay = '';
-            if (isMovie) {
-                statusDisplay = `<span class="series-status status-movie">🎬 Movie</span>`;
-                episodeDisplay = `<span class="episode-count">Movie</span>`;
-            } else {
-                statusDisplay = `<span class="series-status ${statusClass}">
-                    ${statusIcon} ${this.formatStatus(series.status)}
-                </span>`;
-                episodeDisplay = `<span class="watch-count">${watchStatus.watched_episodes}</span>
-                    <span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>`;
-            }
-            // --- 
-
-            // MAL status display
+            const titleMetadata = this.getTitleMetadata(series);
+            const isMovie = series._filterType === 'movie';
+            const statusDisplay = isMovie
+                ? `<span class="series-status status-movie">🎬 Movie</span>`
+                : `<span class="series-status ${statusClass}">${statusIcon} ${series._filterStatusLabel}</span>`;
+            const episodeDisplay = isMovie
+                ? `<span class="episode-count">Movie</span>`
+                : `<span class="episode-count">${series.episodes_found}/${series.episodes_expected || '?'}</span>`;
+            const subtitleBits = [
+                series._filterTypeLabel,
+                titleMetadata.year ? String(titleMetadata.year) : '',
+                titleMetadata.genres?.slice(0, 2).join(' • ') || ''
+            ].filter(Boolean);
             const malStatus = series.myanimelist_watch_status;
             let malStatusDisplay = '';
             if (malStatus && malStatus.my_status) {
@@ -383,7 +856,12 @@ class SeriesCompletenessApp {
                 malStatusDisplay = `<span class="mal-status" title="MyAnimeList: ${malStatus.my_status}">${icon} ${malStatus.my_status}</span>`;
             }
 
-            // Get thumbnail for first episode (await the async call)
+            const quickMeta = [`<span class="watch-count">${watchStatus.watched_episodes || 0} watched</span>`, episodeDisplay, `<span>${watchedPercent.toFixed(0)}%</span>`].join('');
+            const tags = (series._filterTags || []).slice(0, 3);
+            const tagMarkup = tags.length > 0
+                ? `<div class="series-tags-inline">${tags.map((tag) => `<span class="series-tag-pill">${this.escapeHtml(tag)}</span>`).join('')}</div>`
+                : '';
+
             const thumb = firstFile ? await this.getThumbnailData(firstFile) : null;
             const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : '';
             const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : '';
@@ -399,20 +877,25 @@ class SeriesCompletenessApp {
                 : '<div class="series-thumbnail-placeholder">📺</div>';
 
             return `
-                <div class="series-item" data-series-key="${series.key}" 
+                <div class="series-item watch-${series._filterWatchStatus} mal-${series._filterMalStatus}" data-series-key="${series.key}" 
                      onclick="app.selectSeries('${series.key}')" 
-                     onmouseenter="app.showSeriesPopup(event, '${series.key}')" 
-                     onmouseleave="app.hideSeriesPopup()">
+                     onmouseenter="${this.supportsHoverInteractions ? `app.showSeriesPopup(event, '${series.key}')` : ''}" 
+                     onmouseleave="${this.supportsHoverInteractions ? 'app.hideSeriesPopup()' : ''}">
                     ${thumbnailHtml}
                     <div class="series-info">
                         <div class="series-title">${this.escapeHtml(titleWithSeason)}</div>
-                        <div class="series-meta">
-                            ${statusDisplay}
-                            ${malStatusDisplay}
-                            <div>
-                              ${episodeDisplay}
+                        ${subtitleBits.length > 0 ? `<div class="episode-ratings">${subtitleBits.map((bit) => this.escapeHtml(bit)).join(' • ')}</div>` : ''}
+                        <div class="series-meta series-meta-primary">
+                            <div class="series-meta-statuses">
+                                ${statusDisplay}
+                                ${malStatusDisplay}
                             </div>
+                            <div class="series-progress-indicator">${watchedPercent.toFixed(0)}%</div>
                         </div>
+                        <div class="series-meta">
+                            ${quickMeta}
+                        </div>
+                        ${tagMarkup}
                     </div>
                 </div>
             `;
@@ -421,7 +904,6 @@ class SeriesCompletenessApp {
     }
     
     async selectSeries(seriesKey) {
-        // Update visual selection
         document.querySelectorAll('.series-item').forEach(item => {
             item.classList.remove('selected');
         });
@@ -431,9 +913,44 @@ class SeriesCompletenessApp {
             selectedItem.classList.add('selected');
         }
         
-        // Store selection and render details
+        this.selectedSeriesKey = seriesKey;
         this.selectedSeries = this.data.groups[seriesKey];
         await this.renderSeriesDetails();
+
+        if (this.isMobile()) {
+            this.showMainOnMobile();
+        }
+    }
+
+    getPreferredPlexFile(series) {
+        const files = Array.isArray(series.files) ? series.files : [];
+        return files.find((file) => file?.plex_watch_status?.server_hash && file?.plex_watch_status?.metadata_item_id) || files[0] || null;
+    }
+
+    buildPlexUrl(plexWatchStatus) {
+        if (!plexWatchStatus?.server_hash || !plexWatchStatus?.metadata_item_id) {
+            return null;
+        }
+
+        return `http://${this.hostSubnetIp}:32400/web/index.html#!/server/${plexWatchStatus.server_hash}/details?key=%2Flibrary%2Fmetadata%2F${plexWatchStatus.metadata_item_id}`;
+    }
+
+    renderSourceLinks(sources, plexUrl) {
+        const sourceLinks = Array.isArray(sources) ? sources : [];
+        if (sourceLinks.length === 0 && !plexUrl) {
+            return '';
+        }
+
+        const sourceHtml = sourceLinks.map((source) => {
+            const sourceName = this.getSourceName(source);
+            const linkClass = sourceName === 'MyAnimeList' ? 'mal-link' : (sourceName === 'IMDb' ? 'imdb-link' : 'external-link');
+            return `<a href="${source}" target="_blank" rel="noopener noreferrer" class="external-link ${linkClass}">${this.escapeHtml(sourceName)}</a>`;
+        }).join('');
+        const plexHtml = plexUrl
+            ? `<a href="${plexUrl}" target="_blank" rel="noopener noreferrer" class="plex-link"><span class="plex-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4l8 8-8 8z"></path></svg></span><span>Plex</span></a>`
+            : '';
+
+        return `<div class="external-links">${sourceHtml}${plexHtml}</div>`;
     }
     
     async renderSeriesDetails() {
@@ -441,39 +958,28 @@ class SeriesCompletenessApp {
         
         const series = this.selectedSeries;
         const titleWithSeason = series.title + (series.season ? ` Season ${series.season}` : '');
-        const statusClass = `status-${series.status}`;
+        const statusClass = `status-${this.toStatusClass(series.status)}`;
         const statusIcon = this.getStatusIcon(series.status);
-
-        // Use series.title_id for season-specific metadata, fallback to first file's metadata_id
-        const metadata_id = series.title_id || series.files[0].metadata_id || '';
-        const title_metadata = this.data.title_metadata[metadata_id] || {};
-
-        // Get thumbnail for first episode (await the async call)
-        const firstFile = series.files && series.files[0];
+        const title_metadata = this.getTitleMetadata(series);
+        const firstFile = this.getPreferredPlexFile(series);
         const thumbnailData = firstFile ? await this.getThumbnailData(firstFile) : null;
         const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
-
-        // Get all available sources
         const sources = title_metadata.sources || [];
         const hasMultipleSources = sources.length > 1;
         const hasSources = sources.length > 0;
-        
-        // Get MyAnimeList source if available as default
         const myanimeList_source_url = sources.find(source => 
             source.toLowerCase().includes('myanimelist')
         ) || null;
+        const plexUrl = this.buildPlexUrl(firstFile?.plex_watch_status);
+        const metaSummary = [series._filterTypeLabel, title_metadata.year ? String(title_metadata.year) : ''].filter(Boolean).join(' • ');
         
-        // Determine what to display for the title
         let titleHtml;
         if (!hasSources) {
-            // No sources available - just show title without link
             titleHtml = `<h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2>`;
         } else if (!hasMultipleSources) {
-            // Single source - direct link
             titleHtml = `<a href="${sources[0]}" target="_blank" rel="noopener noreferrer"><h2 class="details-title">${this.escapeHtml(titleWithSeason)}</h2></a>`;
         } else {
-            // Multiple sources - show dropdown button with default link
             const defaultUrl = myanimeList_source_url || sources[0];
             titleHtml = `
                 <div class="title-with-sources">
@@ -493,6 +999,9 @@ class SeriesCompletenessApp {
             `;
         }
 
+        const subtitle = `${series.episodes_found} episodes found${series.episodes_expected ? ` of ${series.episodes_expected} expected` : ''}`;
+        const sourceLinks = this.renderSourceLinks(sources, plexUrl);
+
         const container = document.getElementById('series-details');
         container.innerHTML = `
             <div class="details-header" style="position: relative;">
@@ -508,12 +1017,16 @@ class SeriesCompletenessApp {
                         </div>
                     </div>
                 ` : ''}
-                ${titleHtml}
-                <div class="details-subtitle">
-                    ${series.episodes_found} episodes found${series.episodes_expected ? ` of ${series.episodes_expected} expected` : ''}
-                </div>
-                <div class="status-badge ${statusClass}">
-                    ${statusIcon} ${this.formatStatus(series.status)}
+                <div class="details-heading-block">
+                    ${titleHtml}
+                    ${metaSummary ? `<div class="episode-ratings">${this.escapeHtml(metaSummary)}</div>` : ''}
+                    <div class="details-subtitle">${subtitle}</div>
+                    <div class="details-badges-row">
+                        <div class="status-badge ${statusClass}">${statusIcon} ${this.formatStatus(series.status)}</div>
+                        <div class="status-badge status-${series._filterWatchStatus}">${this.getWatchStatusLabel(series._filterWatchStatus)}</div>
+                        ${series.myanimelist_watch_status?.my_status ? `<div class="status-badge status-${series._filterMalStatus}">${this.escapeHtml(series.myanimelist_watch_status.my_status)}</div>` : ''}
+                    </div>
+                    ${sourceLinks}
                 </div>
             </div>
             
@@ -549,6 +1062,15 @@ class SeriesCompletenessApp {
                 ${await this.renderFilesList(series)}
             </div>
         `;
+    }
+
+    getWatchStatusLabel(status) {
+        const labels = {
+            'fully-watched': 'Fully Watched',
+            'partially-watched': 'In Progress',
+            'not-watched': 'Not Watched'
+        };
+        return labels[status] || 'Unknown';
     }
     
     renderCompletionInfo(series) {
@@ -589,8 +1111,10 @@ class SeriesCompletenessApp {
         const partially = watchStatus.partially_watched_episodes || 0;
         const unwatched = watchStatus.unwatched_episodes || series.episodes_found;
         const percent = watchStatus.completion_percent || 0;
-        
-        return `
+        const plexFile = this.getPreferredPlexFile(series);
+        const plexWatchStatus = plexFile?.plex_watch_status || null;
+        const plexUrl = this.buildPlexUrl(plexWatchStatus);
+        let content = `
             <div class="progress-container">
                 <div class="progress-label">
                     <span>Watched: ${watched}/${series.episodes_found}</span>
@@ -620,8 +1144,20 @@ class SeriesCompletenessApp {
                 </div>
             </div>
         `;
-        
-        // Add rating information
+
+        if (plexWatchStatus) {
+            content += `
+                <div class="mt-3 file-info">
+                    <div><strong>Plex Plays:</strong> ${plexWatchStatus.watch_count || 0}</div>
+                    ${plexWatchStatus.last_watched ? `<div><strong>Last Watched:</strong> ${this.escapeHtml(String(plexWatchStatus.last_watched))}</div>` : ''}
+                    ${plexWatchStatus.progress_percent > 0 && !plexWatchStatus.watched ? `<div><strong>Plex Progress:</strong> ${plexWatchStatus.progress_percent.toFixed(1)}%</div>` : ''}
+                </div>
+            `;
+            if (plexUrl) {
+                content += `<div class="external-links"><a href="${plexUrl}" target="_blank" rel="noopener noreferrer" class="plex-link"><span class="plex-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4l8 8-8 8z"></path></svg></span><span>Open in Plex</span></a></div>`;
+            }
+        }
+
         const ratingInfo = this.renderSeriesRatingInfo(series);
         if (ratingInfo) {
             content += `<div class="mt-3">${ratingInfo}</div>`;
@@ -667,6 +1203,10 @@ class SeriesCompletenessApp {
             timestampHtml += '</div>';
         }
         
+        const genresHtml = hasGenres
+            ? `<div><strong>Genres:</strong> <span>${title_metadata.genres.map(g => this.escapeHtml(g)).join(', ')}</span></div>`
+            : '';
+
         return `
             <div class="details-card">
                 <h4 class="card-title">
@@ -675,7 +1215,7 @@ class SeriesCompletenessApp {
                 </h4>
                 ${hasType ? `<p><strong>Type:</strong> ${this.escapeHtml(title_metadata.type)}</p>` : ''}
                 ${hasYear ? `<p><strong>Year:</strong> ${title_metadata.year}</p>` : ''}
-                ${hasGenres ? `<p><strong>Genres:</strong> ${title_metadata.genres.map(g => this.escapeHtml(g)).join(', ')}</p>` : ''}
+                ${genresHtml}
                 ${hasTags ? this.renderTagsWithPopup(title_metadata.tags) : ''}
                 ${hasPlot ? `<p><strong>Plot:</strong> ${this.escapeHtml(title_metadata.plot)}</p>` : ''}
                 ${timestampHtml}
@@ -914,16 +1454,12 @@ class SeriesCompletenessApp {
             return '<p class="text-muted">No files found</p>';
         }
         
-        // Render all file items in parallel
         const fileItemsHtml = await Promise.all(series.files.map(async (file, idx) => {
-            //Use the basic watch-status, and if available, use the partial watch-status from Plex
             const watchIndicator = file.episode_watched ? 'watched' : (file.plex_watch_status?.view_offset > 0 ? 'partially-watched' : 'unwatched');
             const thumb = await this.getThumbnailData(file);
             const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
             const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
-            // Give the image a unique id for lookup
             const imgId = `file-thumb-img-${idx}`;
-            // --- Add episode type label if type:extra or type:movie ---
             let typeLabel = '';
             let fileType = file.type;
             const typeLabels = [];
@@ -937,7 +1473,10 @@ class SeriesCompletenessApp {
                 }
             });
             typeLabel = typeLabels.join(' ');
-            // Attach mouse events to the file-item div
+            const plexUrl = this.buildPlexUrl(file.plex_watch_status);
+            const plexSummary = file.plex_watch_status
+                ? [`${file.plex_watch_status.watch_count || 0} plays`, file.plex_watch_status.progress_percent > 0 && !file.plex_watch_status.watched ? `${file.plex_watch_status.progress_percent.toFixed(0)}% progress` : '', file.plex_watch_status.last_watched ? `Last ${this.escapeHtml(String(file.plex_watch_status.last_watched))}` : ''].filter(Boolean).join(' • ')
+                : '';
             return `
                 <div class="file-item file-item-with-thumb"
                     ${animUrl ? `
@@ -965,6 +1504,7 @@ class SeriesCompletenessApp {
                             ${file.duration ? `<span><i class="bi bi-clock"></i>${this.formatDuration(file.duration)}</span>` : ''}
                             ${this.renderRatingInfo(file, 'compact')}
                         </div>
+                        ${plexSummary ? `<div class="file-meta file-meta-plex"><span><i class="bi bi-badge-hd"></i>${plexSummary}</span>${plexUrl ? `<a href="${plexUrl}" target="_blank" rel="noopener noreferrer" class="plex-link"><span class="plex-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4l8 8-8 8z"></path></svg></span><span>Plex</span></a>` : ''}</div>` : ''}
                         <div class="file-meta" style="margin-top: 4px; font-size: 0.85em;">
                             ${file.created_time ? `<span title="Created"><i class="bi bi-calendar-plus"></i>${this.formatTimestamp(file.created_time)}</span>` : ''}
                             ${file.modified_time ? `<span title="Modified"><i class="bi bi-pencil"></i>${this.formatTimestamp(file.modified_time)}</span>` : ''}
@@ -1279,10 +1819,12 @@ class SeriesCompletenessApp {
         if (tags.length <= maxVisible) {
             return `<p><strong>Tags:</strong> ${this.escapeHtml(visibleTagsText)}</p>`;
         }
+
+        const encodedHiddenTags = encodeURIComponent(hiddenTagsText);
         
         return `
             <p><strong>Tags:</strong> 
-                ${this.escapeHtml(visibleTagsText)}${hiddenCount > 0 ? `, <span class="tags-more" onmouseenter="app.showTagsPopup(event, '${this.escapeHtml(hiddenTagsText).replace(/'/g, "\\'")}'${hiddenCount})" onmouseleave="app.hideTagsPopup()" style="color: var(--primary-color); cursor: help; text-decoration: underline;">+${hiddenCount} more</span>` : ''}
+                ${this.escapeHtml(visibleTagsText)}${hiddenCount > 0 ? `, <span class="tags-more" onmouseenter="app.showTagsPopup(event, decodeURIComponent('${encodedHiddenTags}'), ${hiddenCount})" onmouseleave="app.hideTagsPopup()">+${hiddenCount} more</span>` : ''}
             </p>
         `;
     }

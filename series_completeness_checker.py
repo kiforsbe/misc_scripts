@@ -1268,7 +1268,21 @@ class SeriesCompletenessChecker:
     def export_webapp(self, results: Dict[str, Any], output_path: str, use_relative_thumbnails: bool = False, thumbnail_relative_path: str = None) -> None:
         """Export analysis results as a standalone HTML webapp."""
         import os
+        import socket
         from pathlib import Path
+
+        def _detect_host_subnet_ip() -> str:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.connect(('8.8.8.8', 80))
+                return sock.getsockname()[0]
+            except Exception:
+                return '127.0.0.1'
+            finally:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
         
         # Get the directory of this script to find template files
         script_dir = Path(__file__).parent
@@ -1296,6 +1310,10 @@ class SeriesCompletenessChecker:
         else:
             # For standalone exports, use absolute path or default
             results['thumbnail_dir'] = results.get('thumbnail_dir') or os.path.expanduser('~/.video_thumbnail_cache')
+
+        if not results.get('host_subnet_ip'):
+            results['host_subnet_ip'] = _detect_host_subnet_ip()
+
         # Prepare data for embedding (minify JSON)
         json_data = json.dumps(results, separators=(',', ':'), cls=CustomJSONEncoder)
         
