@@ -186,7 +186,7 @@ class SeriesArchiver:
                 files = group_data.get('files', [])
                 if files:
                     details['release_group'] = files[0].get('release_group', 'Unknown')
-                    details['screen_size'] = files[0].get('screen_size', 'Unknown')
+                    details['screen_size'] = self._get_group_screen_size(group_data)
                     details['folder_name'] = self.generate_folder_name(group_data)
             
             group_list.append((group_key, details))
@@ -230,6 +230,51 @@ class SeriesArchiver:
                     return f"{start_str}-{end_str}"
             else:
                 return f"{start_ep:02d}-{end_ep:02d}"
+
+    def _extract_resolution_from_text(self, text: str) -> Optional[str]:
+        """Extract a resolution token like 720p or 1920x1080 from text."""
+        if not text:
+            return None
+
+        patterns = [
+            r'(?<!\d)(\d{3,4}p)(?!\d)',
+            r'(?<!\d)(\d{3,4}x\d{3,4})(?!\d)'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1).lower()
+
+        return None
+
+    def _get_group_screen_size(self, group_data: Dict) -> str:
+        """Resolve the best available resolution for a group."""
+        files = group_data.get('files', [])
+        if not files:
+            return "Unknown"
+
+        preferred_keys = (
+            'screen_size',
+            'resolution',
+            'video_resolution',
+            'display_resolution'
+        )
+
+        for file_info in files:
+            for key in preferred_keys:
+                value = file_info.get(key)
+                if value:
+                    return str(value)
+
+        for file_info in files:
+            for key in ('filename', 'filepath', 'file_path'):
+                value = file_info.get(key)
+                if value:
+                    resolution = self._extract_resolution_from_text(str(value))
+                    if resolution:
+                        return resolution
+
+        return "Unknown"
     
     def generate_folder_name(self, group_data: Dict) -> str:
         """Generate folder name following the pattern: [Release Group] Series Name (YYYY) (xx-yy) (Resolution)"""
@@ -243,7 +288,7 @@ class SeriesArchiver:
         title = group_data.get('title', 'Unknown')
         year = group_data.get('year') or first_file.get('year')
         season = group_data.get('season') or first_file.get('season')
-        screen_size = first_file.get('screen_size', 'Unknown')
+        screen_size = self._get_group_screen_size(group_data)
         
         # Determine if this is a movie
         is_movie = False
