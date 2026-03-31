@@ -1856,20 +1856,6 @@ def _refresh_myanimelist_metadata(results: Dict[str, Any], myanimelist_xml_path:
                             analysis['myanimelist_watch_status'] = mal_metadata
                             groups_unchanged += 1
                         
-                        # Always recalculate watch_status based on MAL data when refreshing
-                        # This ensures the UI reflects MAL watch status
-                        episodes_found = analysis.get('episodes_found', 0)
-                        mal_watched = mal_metadata.get('my_watched_episodes', 0)
-                        
-                        old_watch_status = analysis.get('watch_status', {})
-                        new_watch_status = {
-                            'watched_episodes': mal_watched,
-                            'partially_watched_episodes': 0,
-                            'unwatched_episodes': max(0, episodes_found - mal_watched),
-                            'total_watch_count': mal_watched,
-                            'completion_percent': (mal_watched / episodes_found * 100) if episodes_found > 0 else 0
-                        }
-                        analysis['watch_status'] = new_watch_status
                     else:
                         # Clear existing MAL metadata if not found
                         if 'myanimelist_watch_status' in analysis:

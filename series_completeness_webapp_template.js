@@ -44,6 +44,13 @@ class SeriesCompletenessApp {
         return typeof window !== 'undefined' && window.innerWidth <= this.mobileBreakpoint;
     }
 
+    sortSuggestionValues(values) {
+        return Array.from(values).sort((left, right) => left.localeCompare(right, undefined, {
+            numeric: true,
+            sensitivity: 'base'
+        }));
+    }
+
     normalizeSeriesData() {
         if (!this.data || !this.data.groups || typeof this.data.groups !== 'object') {
             return;
@@ -70,17 +77,28 @@ class SeriesCompletenessApp {
             }
         });
 
-        this.seriesTitles = Array.from(seriesSet).sort((left, right) => left.localeCompare(right));
-        this.seriesTags = Array.from(tagSet).sort((left, right) => left.localeCompare(right));
-        this.seriesGenres = Array.from(genreSet).sort((left, right) => left.localeCompare(right));
-        this.seriesTypes = Array.from(typeSet).sort((left, right) => left.localeCompare(right));
+        this.seriesTitles = this.sortSuggestionValues(seriesSet);
+        this.seriesTags = this.sortSuggestionValues(tagSet);
+        this.seriesGenres = this.sortSuggestionValues(genreSet);
+        this.seriesTypes = this.sortSuggestionValues(typeSet);
     }
 
     getTitleMetadata(series) {
         const files = series.files || [];
         const firstFile = files[0] || {};
         const metadataId = series.title_id || series.metadata_id || firstFile.metadata_id || '';
-        return this.data.title_metadata?.[metadataId] || {};
+        const titleMetadata = this.data.title_metadata?.[metadataId] || {};
+        const seriesMetadata = firstFile.series_metadata || {};
+        const groupMetadata = series.group_metadata || {};
+
+        return {
+            ...seriesMetadata,
+            ...groupMetadata,
+            ...titleMetadata,
+            tags: titleMetadata.tags || groupMetadata.tags || seriesMetadata.tags || [],
+            genres: titleMetadata.genres || groupMetadata.genres || seriesMetadata.genres || [],
+            sources: titleMetadata.sources || groupMetadata.sources || seriesMetadata.sources || []
+        };
     }
 
     getSeriesType(series, titleMetadata = this.getTitleMetadata(series)) {
@@ -487,33 +505,36 @@ class SeriesCompletenessApp {
             this.clearInputTypeMarker();
         }
 
-        const suggestions = [];
-        const pushMatches = (items, typeLabel, prefixLabel) => {
-            items.forEach((item) => {
-                if (!filterText || item.toLowerCase().includes(filterText)) {
-                    suggestions.push({
-                        value: item,
-                        type: typeLabel,
-                        prefix: prefixLabel
-                    });
-                }
-            });
+        const suggestionGroups = [];
+        const collectMatches = (items, typeLabel, prefixLabel) => {
+            return items
+                .filter((item) => !filterText || item.toLowerCase().includes(filterText))
+                .map((item) => ({
+                    value: item,
+                    type: typeLabel,
+                    prefix: prefixLabel
+                }));
         };
 
         if (!forcedType || forcedType === 'series') {
-            pushMatches(this.seriesTitles, 'Series', 'series');
+            suggestionGroups.push(collectMatches(this.seriesTitles, 'Series', 'series'));
         }
         if (!forcedType || forcedType === 'tag') {
-            pushMatches(this.seriesTags, 'Tag', 'tag');
+            suggestionGroups.push(collectMatches(this.seriesTags, 'Tag', 'tag'));
         }
         if (!forcedType || forcedType === 'genre') {
-            pushMatches(this.seriesGenres, 'Genre', 'genre');
+            suggestionGroups.push(collectMatches(this.seriesGenres, 'Genre', 'genre'));
         }
         if (!forcedType || forcedType === 'type') {
-            pushMatches(this.seriesTypes, 'Type', 'type');
+            suggestionGroups.push(collectMatches(this.seriesTypes, 'Type', 'type'));
         }
 
-        const deduped = Array.from(new Map(suggestions.map((item) => [`${item.prefix}:${item.value.toLowerCase()}`, item])).values()).slice(0, 32);
+        const suggestions = [];
+        suggestionGroups.forEach((group) => {
+            suggestions.push(...group);
+        });
+
+        const deduped = Array.from(new Map(suggestions.map((item) => [`${item.prefix}:${item.value.toLowerCase()}`, item])).values());
 
         if (deduped.length === 0) {
             container.innerHTML = '';
@@ -524,13 +545,13 @@ class SeriesCompletenessApp {
         }
 
         container.innerHTML = deduped.map((item, index) => `
-            <div class="series-suggestion-item${index === 0 ? ' active' : ''}" data-index="${index}" data-value="${this.escapeHtml(item.value)}" data-prefix="${item.prefix}" data-type="${item.type}" role="option" aria-selected="${index === 0 ? 'true' : 'false'}">
+            <div class="series-suggestion-item" data-index="${index}" data-value="${this.escapeHtml(item.value)}" data-prefix="${item.prefix}" data-type="${item.type}" role="option" aria-selected="false">
                 <span>${this.getHighlightedText(item.value, filterText)}</span>
                 <span class="match-hint">${item.type}</span>
             </div>
         `).join('');
         container.style.display = 'block';
-        this.activeSuggestionIndex = 0;
+        this.activeSuggestionIndex = -1;
         this.lastSuggestionKey = suggestionKey;
 
         container.querySelectorAll('.series-suggestion-item').forEach((item) => {
@@ -596,7 +617,12 @@ class SeriesCompletenessApp {
             return;
         }
 
-        this.activeSuggestionIndex = (this.activeSuggestionIndex + delta + items.length) % items.length;
+        if (this.activeSuggestionIndex === -1) {
+            this.activeSuggestionIndex = delta > 0 ? 0 : items.length - 1;
+        } else {
+            this.activeSuggestionIndex = (this.activeSuggestionIndex + delta + items.length) % items.length;
+        }
+
         items.forEach((item, index) => {
             item.classList.toggle('active', index === this.activeSuggestionIndex);
             item.setAttribute('aria-selected', index === this.activeSuggestionIndex ? 'true' : 'false');
@@ -622,6 +648,22 @@ class SeriesCompletenessApp {
         this.suppressNextSearchFocusOpen = true;
         this.applySearchNow(query);
         this.hideSeriesSuggestions();
+    }
+
+    applyTagFilter(tag) {
+        const normalizedTag = String(tag || '').trim();
+        if (!normalizedTag) {
+            return;
+        }
+
+        const searchInput = document.getElementById('search-input');
+        if (searchInput) {
+            searchInput.value = `tag:${normalizedTag}`;
+            searchInput.focus();
+        }
+
+        this.applySearchNow(`tag:${normalizedTag}`);
+        this.showListOnMobile();
     }
     
     updateHeaderStats() {
@@ -935,6 +977,25 @@ class SeriesCompletenessApp {
         return `http://${this.hostSubnetIp}:32400/web/index.html#!/server/${plexWatchStatus.server_hash}/details?key=%2Flibrary%2Fmetadata%2F${plexWatchStatus.metadata_item_id}`;
     }
 
+    getPreferredInfoSource(series) {
+        const titleMetadata = this.getTitleMetadata(series);
+        const sources = Array.isArray(titleMetadata.sources) ? [...titleMetadata.sources] : [];
+        const firstFileSource = this.getPreferredPlexFile(series)?.source_url;
+        if (firstFileSource && !sources.includes(firstFileSource)) {
+            sources.push(firstFileSource);
+        }
+
+        const preferredSource = sources.find((source) => source.includes('myanimelist.net'))
+            || sources.find((source) => source.includes('imdb.com'))
+            || sources[0]
+            || null;
+
+        return preferredSource ? {
+            url: preferredSource,
+            name: this.getSourceName(preferredSource)
+        } : null;
+    }
+
     renderSourceLinks(sources, plexUrl) {
         const sourceLinks = Array.isArray(sources) ? sources : [];
         if (sourceLinks.length === 0 && !plexUrl) {
@@ -1167,8 +1228,7 @@ class SeriesCompletenessApp {
     }
     
     renderSeriesInfo(series) {
-        const metadata_id = series.title_id || (series.files && series.files[0] && series.files[0].metadata_id) || '';
-        const title_metadata = this.data.title_metadata[metadata_id] || {};
+        const title_metadata = this.getTitleMetadata(series);
         const group_metadata = series.group_metadata || {};
         
         // Check if we have any metadata to show
@@ -1230,38 +1290,15 @@ class SeriesCompletenessApp {
             return ''; // Don't show the card if no MAL data
         }
         
-        // Calculate season-specific MAL status based on actual watch progress
-        const watchStatus = series.watch_status || {};
-        const watchedEpisodes = watchStatus.watched_episodes || 0;
-        const totalEpisodes = series.episodes_found || 0;
-        
-        // Determine season-specific status
-        let seasonSpecificStatus = malStatus.my_status;
-        let seasonSpecificIcon = malStatus.my_status;
-        let seasonSpecificColor = malStatus.my_status;
-        
-        if (totalEpisodes > 0) {
-            if (watchedEpisodes === 0) {
-                // No episodes watched in this season - show as "Plan to Watch" regardless of series MAL status
-                seasonSpecificStatus = 'Plan to Watch';
-                seasonSpecificIcon = 'Plan to Watch';
-                seasonSpecificColor = 'Plan to Watch';
-            } else if (watchedEpisodes === totalEpisodes) {
-                // All episodes watched in this season - show as "Completed"
-                seasonSpecificStatus = 'Completed';
-                seasonSpecificIcon = 'Completed';
-                seasonSpecificColor = 'Completed';
-            } else {
-                // Partially watched - show as "Watching"
-                seasonSpecificStatus = 'Watching';
-                seasonSpecificIcon = 'Watching';
-                seasonSpecificColor = 'Watching';
-            }
-        }
+        const seasonSpecificStatus = malStatus.my_status;
+        const seasonSpecificIcon = malStatus.my_status;
+        const seasonSpecificColor = malStatus.my_status;
+        const preferredInfoSource = this.getPreferredInfoSource(series);
         
         const statusIcons = {
             'Watching': '👁️',
             'Completed': '✅',
+            'Completed (Season)': '✅',
             'On-Hold': '⏸️',
             'Dropped': '❌',
             'Plan to Watch': '📋'
@@ -1270,6 +1307,7 @@ class SeriesCompletenessApp {
         const statusColors = {
             'Watching': 'text-primary',
             'Completed': 'text-success', 
+            'Completed (Season)': 'text-success',
             'On-Hold': 'text-warning',
             'Dropped': 'text-danger',
             'Plan to Watch': 'text-info'
@@ -1289,11 +1327,7 @@ class SeriesCompletenessApp {
                         <span class="mal-icon">${icon}</span>
                         <span class="mal-status-text">${seasonSpecificStatus}</span>
                     </div>
-                    ${seasonSpecificStatus !== malStatus.my_status ? `
-                    <div class="mal-season-note">
-                        <small class="text-muted">Season-specific status (Series: ${malStatus.my_status})</small>
-                    </div>
-                    ` : ''}
+                    ${preferredInfoSource ? `<div class="external-links"><a href="${preferredInfoSource.url}" target="_blank" rel="noopener noreferrer" class="external-link ${preferredInfoSource.name === 'MyAnimeList' ? 'mal-link' : (preferredInfoSource.name === 'IMDb' ? 'imdb-link' : '')}">Open on ${this.escapeHtml(preferredInfoSource.name)}</a></div>` : ''}
                     ${malStatus.my_score > 0 ? `
                     <div class="mal-score">
                         <strong>Score:</strong> <span class="score-value">${malStatus.my_score}/10</span>
@@ -1301,7 +1335,7 @@ class SeriesCompletenessApp {
                     ` : ''}
                     ${malStatus.my_watched_episodes !== undefined && malStatus.my_watched_episodes >= 0 ? `
                     <div class="mal-episodes">
-                        <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes} (Series Total)
+                        <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes}${malStatus.series_episodes ? ` / ${malStatus.series_episodes}` : ''}
                     </div>
                     ` : ''}
                     ${malStatus.comments ? `
@@ -1812,20 +1846,18 @@ class SeriesCompletenessApp {
         const visibleTags = tags.slice(0, maxVisible);
         const hiddenTags = tags.slice(maxVisible);
         const hiddenCount = hiddenTags.length;
-        
-        const visibleTagsText = visibleTags.join(', ');
         const hiddenTagsText = hiddenTags.join(', ');
-        
+
         if (tags.length <= maxVisible) {
-            return `<p><strong>Tags:</strong> ${this.escapeHtml(visibleTagsText)}</p>`;
+            return `<div><strong>Tags:</strong> <span class="tags-inline-list">${visibleTags.map((tag) => `<button type="button" class="tags-more tag-filter-chip" onclick="app.applyTagFilter(decodeURIComponent('${encodeURIComponent(tag)}'))">${this.escapeHtml(tag)}</button>`).join(' ')}</span></div>`;
         }
 
         const encodedHiddenTags = encodeURIComponent(hiddenTagsText);
         
         return `
-            <p><strong>Tags:</strong> 
-                ${this.escapeHtml(visibleTagsText)}${hiddenCount > 0 ? `, <span class="tags-more" onmouseenter="app.showTagsPopup(event, decodeURIComponent('${encodedHiddenTags}'), ${hiddenCount})" onmouseleave="app.hideTagsPopup()">+${hiddenCount} more</span>` : ''}
-            </p>
+            <div><strong>Tags:</strong> 
+                <span class="tags-inline-list">${visibleTags.map((tag) => `<button type="button" class="tags-more tag-filter-chip" onclick="app.applyTagFilter(decodeURIComponent('${encodeURIComponent(tag)}'))">${this.escapeHtml(tag)}</button>`).join(' ')}</span>${hiddenCount > 0 ? ` <span class="tags-more" onmouseenter="app.showTagsPopup(event, decodeURIComponent('${encodedHiddenTags}'), ${hiddenCount})" onmouseleave="app.hideTagsPopup()">+${hiddenCount} more</span>` : ''}
+            </div>
         `;
     }
     
