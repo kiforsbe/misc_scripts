@@ -45,6 +45,13 @@
                         <option value="all">All extensions</option>
                     </select>
                 </label>
+                <div class="column-picker" id="columnPicker">
+                    <button id="columnPickerButton" class="ghost-button" type="button" aria-expanded="false">Columns</button>
+                    <div id="columnPickerMenu" class="column-picker-menu" hidden>
+                        <p class="column-picker-title">Visible columns</p>
+                        <div id="columnOptions" class="column-options"></div>
+                    </div>
+                </div>
             </div>
             <div class="toolbar-status">
                 <span id="folderCount"></span>
@@ -62,16 +69,9 @@
             </div>
             <div class="treegrid-wrap">
                 <table class="treegrid" aria-label="Filesystem tree grid">
+                    <colgroup id="treegridColgroup"></colgroup>
                     <thead>
-                        <tr>
-                            <th><button type="button" data-sort="name_path">Name</button></th>
-                            <th><button type="button" data-sort="type">Type</button></th>
-                            <th><button type="button" data-sort="size_bytes">Size</button></th>
-                            <th><button type="button" data-sort="modified">Modified</button></th>
-                            <th><button type="button" data-sort="created">Created</button></th>
-                            <th><button type="button" data-sort="depth">Depth</button></th>
-                            <th>Metadata</th>
-                        </tr>
+                        <tr id="treegridHeaderRow"></tr>
                     </thead>
                     <tbody id="resultBody"></tbody>
                 </table>

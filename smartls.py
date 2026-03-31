@@ -98,6 +98,9 @@ class Entry:
             "depth": self.depth,
             "size_bytes": self.size_bytes,
             "raw_size_bytes": self.raw_size_bytes,
+            "created_ts": self.created_ts,
+            "modified_ts": self.modified_ts,
+            "accessed_ts": self.accessed_ts,
             "created": format_timestamp(self.created_ts),
             "modified": format_timestamp(self.modified_ts),
             "accessed": format_timestamp(self.accessed_ts),
@@ -364,8 +367,9 @@ class FilterFactory:
             matcher = parse_numeric_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: entry.entry_type == "d" and matcher(entry.direct_children))
         if flag == "--files":
-            matcher = parse_numeric_expr(_require_filter_value(flag, value))
-            return PredicateFilter(lambda entry: entry.entry_type == "d" and matcher(entry.direct_files))
+            raw_value = _require_filter_value(flag, value)
+            matcher = parse_numeric_expr(raw_value)
+            return PredicateFilter(lambda entry: entry.entry_type == "d" and matcher(entry.recursive_files))
         if flag == "--dirs":
             matcher = parse_numeric_expr(_require_filter_value(flag, value))
             return PredicateFilter(lambda entry: entry.entry_type == "d" and matcher(entry.direct_dirs))
@@ -391,9 +395,9 @@ class FilterFactory:
             wanted = _require_filter_value(flag, value).lower()
             return PredicateFilter(lambda entry: entry.entry_type == wanted)
         if flag == "--empty":
-            return PredicateFilter(lambda entry: entry.entry_type == "d" and entry.direct_files == 0)
+            return PredicateFilter(lambda entry: entry.entry_type == "d" and entry.recursive_files == 0)
         if flag == "--sparse":
-            return PredicateFilter(lambda entry: entry.entry_type == "d" and entry.direct_files <= 3)
+            return PredicateFilter(lambda entry: entry.entry_type == "d" and entry.recursive_files <= 3)
         raise ValueError(f"Unknown filter flag: {flag}")
 
 
@@ -560,7 +564,7 @@ class SmartLSArgumentParser:
         parser.add_argument("root", nargs="?", default=Path.cwd(), type=Path, help="Root path to scan")
         parser.add_argument("--depth", type=int, default=None, metavar="N", help="Maximum traversal depth")
         parser.add_argument("--count", metavar="EXPR", help="Filter directories by direct child count")
-        parser.add_argument("--files", metavar="EXPR", help="Filter directories by direct file count")
+        parser.add_argument("--files", metavar="EXPR", help="Filter directories by recursive file count")
         parser.add_argument("--dirs", metavar="EXPR", help="Filter directories by direct subdirectory count")
         parser.add_argument("--size", metavar="EXPR", help="Filter by total size")
         parser.add_argument("--mtime", metavar="EXPR", help="Filter by age since modification time")
@@ -569,7 +573,7 @@ class SmartLSArgumentParser:
         parser.add_argument("--ext", metavar="LIST", help="Filter files by comma-separated extensions")
         parser.add_argument("--depth-filter", metavar="EXPR", help="Filter by entry depth")
         parser.add_argument("--empty", action="store_true", help="Shorthand for --files =0")
-        parser.add_argument("--sparse", action="store_true", help="Shorthand for --files <=3")
+        parser.add_argument("--sparse", action="store_true", help="Shorthand for --files <=3 using recursive file count")
         parser.add_argument("--type", choices=["f", "d"], help="Show only files or directories")
         parser.add_argument("--or", action="store_true", dest="or_flag", help="OR-combine adjacent filter groups")
         parser.add_argument("--not", action="store_true", dest="not_flag", help="Negate the next filter")
@@ -752,6 +756,7 @@ def build_webapp_payload(scan_result: ScanResult, matched_entries: Sequence[Entr
             "title": "smartls web report",
             "root_path": str(scan_result.root),
             "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "generated_at_ts": time_now(),
             "sort": args.sort,
             "group_by": args.group_by,
             "relative_paths": args.relative_paths,

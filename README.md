@@ -128,7 +128,7 @@ A smart directory explorer for querying files and folders with composable filter
 
 #### Features
 - Recursive traversal with optional depth limiting
-- Composable filters for direct child counts, direct file counts, direct directory counts, sizes, ages, names, extensions, entry type, and depth
+- Composable filters for direct child counts, recursive file counts, direct directory counts, sizes, ages, names, extensions, entry type, and depth
 - Numeric expression syntax for exact matches, inequalities, ranges, enumerations, modulo checks, and approximate values
 - Directory metadata including direct file and directory counts, recursive file counts, total descendant size, empty and sparse flags, and deepest nesting
 - File metadata including size, timestamps, MIME type, symlink details, and optional MD5 or SHA256 hashing
