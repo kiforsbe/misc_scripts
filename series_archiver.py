@@ -964,6 +964,88 @@ def _parse_smart_datetime(value: str) -> Tuple[Optional[datetime], bool]:
     return None, False
 
 
+def _parse_numeric_expression(expression: str, argument_name: str) -> Tuple[str, int]:
+    """Parse expressions like '<12' or '>=24' for integer filters."""
+    expr = (expression or '').strip()
+    match = re.match(r'^(<=|>=|<|>|==|=|!=)\s*(.+)$', expr)
+
+    if match:
+        operator = match.group(1)
+        raw_value = match.group(2).strip()
+    else:
+        operator = '='
+        raw_value = expr
+
+    if not re.fullmatch(r'-?\d+', raw_value):
+        raise ValueError(
+            f"Invalid {argument_name} expression '{expression}'. "
+            f"Use integer values like '<12', '>=24', or '=13'."
+        )
+
+    return operator, int(raw_value)
+
+
+def _parse_numeric_conditions(expression: str, argument_name: str) -> List[Tuple[str, int]]:
+    """Parse integer filters into one or more conditions."""
+    expr = (expression or '').strip()
+    if not expr:
+        raise ValueError(f"{argument_name} cannot be empty")
+
+    if '..' in expr:
+        parts = expr.split('..')
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid {argument_name} range '{expression}'. "
+                "Use format like '12..24'."
+            )
+
+        start_raw, end_raw = parts[0].strip(), parts[1].strip()
+        if not start_raw or not end_raw:
+            raise ValueError(
+                f"Invalid {argument_name} range '{expression}'. "
+                "Both start and end values are required."
+            )
+
+        start_condition = _parse_numeric_expression(f">={start_raw}", argument_name)
+        end_condition = _parse_numeric_expression(f"<={end_raw}", argument_name)
+
+        lower_bound = start_condition[1]
+        upper_bound = end_condition[1]
+        if lower_bound > upper_bound:
+            raise ValueError(
+                f"Invalid {argument_name} range '{expression}'. "
+                "Range start must be less than or equal to range end."
+            )
+
+        return [start_condition, end_condition]
+
+    if ',' in expr:
+        parts = [part.strip() for part in expr.split(',') if part.strip()]
+        if not parts:
+            raise ValueError(f"{argument_name} cannot be empty")
+        return [_parse_numeric_expression(part, argument_name) for part in parts]
+
+    return [_parse_numeric_expression(expr, argument_name)]
+
+
+def _matches_numeric_expression(value: int, operator: str, target_value: int) -> bool:
+    """Evaluate a parsed numeric expression against an integer value."""
+    if operator in ('=', '=='):
+        return value == target_value
+    if operator == '!=':
+        return value != target_value
+    if operator == '<':
+        return value < target_value
+    if operator == '<=':
+        return value <= target_value
+    if operator == '>':
+        return value > target_value
+    if operator == '>=':
+        return value >= target_value
+
+    return False
+
+
 def _parse_modified_expression(expression: str) -> Tuple[str, datetime, bool]:
     """Parse expressions like '<2026-01-01' or '>=2026-01-01T12:00'."""
     expr = (expression or '').strip()
@@ -1219,6 +1301,40 @@ def cmd_list(args):
             ):
                 filtered_indexed_groups.append((original_index, group_key, details))
         indexed_groups = filtered_indexed_groups
+
+    if hasattr(args, 'episodes_found') and args.episodes_found:
+        try:
+            episodes_found_conditions = _parse_numeric_conditions(args.episodes_found, '--episodes-found')
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+
+        filtered_indexed_groups = []
+        for original_index, group_key, details in indexed_groups:
+            episodes_found = int(details.get('episodes_found', 0) or 0)
+            if all(
+                _matches_numeric_expression(episodes_found, op, target_value)
+                for op, target_value in episodes_found_conditions
+            ):
+                filtered_indexed_groups.append((original_index, group_key, details))
+        indexed_groups = filtered_indexed_groups
+
+    if hasattr(args, 'episodes_expected') and args.episodes_expected:
+        try:
+            episodes_expected_conditions = _parse_numeric_conditions(args.episodes_expected, '--episodes-expected')
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+
+        filtered_indexed_groups = []
+        for original_index, group_key, details in indexed_groups:
+            episodes_expected = int(details.get('episodes_expected', 0) or 0)
+            if all(
+                _matches_numeric_expression(episodes_expected, op, target_value)
+                for op, target_value in episodes_expected_conditions
+            ):
+                filtered_indexed_groups.append((original_index, group_key, details))
+        indexed_groups = filtered_indexed_groups
     
     # Sort alphabetically if requested while preserving original indices
     if hasattr(args, 'sort') and args.sort:
@@ -1453,6 +1569,12 @@ def main():
                            help='Filter by modified datetime. Supports single expressions like "<2026-01-01" or ">=2026-01-01T12:00", '
                                'closed ranges like "2026-01-01..2026-01-31", and combined conditions like ">=2026-01-01, <2026-02-01". '
                                'ISO format is preferred, but common date formats are also accepted.')
+    list_parser.add_argument('--episodes-found', metavar='EXPR',
+                            help='Filter by the number of episodes found in a group. Supports single expressions like "12" or ">=12", '
+                                 'closed ranges like "12..24", and combined conditions like ">=12, <25".')
+    list_parser.add_argument('--episodes-expected', metavar='EXPR',
+                            help='Filter by the expected episode count from metadata. Supports single expressions like "12" or "<=24", '
+                                 'closed ranges like "12..24", and combined conditions like ">=12, <25".')
     list_parser.add_argument('--no-color', action='store_true',
                             help='Disable color formatting in output')
     
