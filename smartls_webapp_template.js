@@ -1,5 +1,6 @@
 (function () {
     const report = JSON.parse(document.getElementById("smartlsReport").textContent);
+    const FILTER_INPUT_DEBOUNCE_MS = 800;
     const nodeMap = new Map();
     const nameColumn = { key: "name_path", label: "Name", className: "col-name" };
     const optionalColumns = [
@@ -24,6 +25,7 @@
         compiledFilter: (node) => Boolean(node.matched),
         filterSummary: "Smart filter ready",
         filterError: "",
+        filterInputTimer: null,
         sortKey: "name_path",
         sortDirection: "asc",
         expanded: new Set(),
@@ -712,6 +714,19 @@
         elements.filterStatus.title = state.filterError || state.filterSummary;
     }
 
+    function applySmartFilterQuery(nextQuery) {
+        state.query = nextQuery;
+        try {
+            const compiled = compileSmartFilter(state.query);
+            state.compiledFilter = compiled.predicate;
+            state.filterSummary = compiled.summary;
+            state.filterError = "";
+        } catch (error) {
+            state.filterError = error instanceof Error ? error.message : String(error);
+        }
+        renderTable();
+    }
+
     function buildNodeTree() {
         nodeMap.clear();
 
@@ -1106,20 +1121,25 @@
 
     function wireControls() {
         elements.searchInput.addEventListener("input", (event) => {
-            state.query = event.target.value;
-            try {
-                const compiled = compileSmartFilter(state.query);
-                state.compiledFilter = compiled.predicate;
-                state.filterSummary = compiled.summary;
-                state.filterError = "";
-            } catch (error) {
-                state.filterError = error instanceof Error ? error.message : String(error);
+            const nextQuery = event.target.value;
+            if (state.filterInputTimer) {
+                window.clearTimeout(state.filterInputTimer);
             }
-            renderTable();
+            state.filterSummary = nextQuery.trim() ? "Waiting for typing to pause..." : "Smart filter ready";
+            state.filterError = "";
+            renderFilterStatus();
+            state.filterInputTimer = window.setTimeout(() => {
+                state.filterInputTimer = null;
+                applySmartFilterQuery(nextQuery);
+            }, FILTER_INPUT_DEBOUNCE_MS);
         });
 
         if (elements.resetFilters) {
             elements.resetFilters.addEventListener("click", () => {
+                if (state.filterInputTimer) {
+                    window.clearTimeout(state.filterInputTimer);
+                    state.filterInputTimer = null;
+                }
                 state.query = "";
                 state.compiledFilter = (node) => Boolean(node.matched);
                 state.filterSummary = "Smart filter ready";
