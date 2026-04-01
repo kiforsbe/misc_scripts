@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Sequence, cast
 
 from utils import (
     Colors,
@@ -139,6 +139,33 @@ class SummaryStats:
     avg_files_per_folder: float
     emptiest_folder: str | None
     largest_file: str | None
+
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+NAME_COLUMN_MAX_WIDTH = 64
+SMARTLS_DIRECTORY_COLOR = Colors.CYAN
+CONSOLE_COLUMN_SPECS: dict[str, dict[str, object]] = {
+    "type": {"header": "Type", "align": "left", "max_width": 9},
+    "size": {"header": "Size", "align": "right", "max_width": 12},
+    "modified": {"header": "Modified", "align": "left", "max_width": 19},
+    "created": {"header": "Created", "align": "left", "max_width": 19},
+    "accessed": {"header": "Accessed", "align": "left", "max_width": 19},
+    "children": {"header": "Children", "align": "right", "max_width": 8},
+    "recursive_files": {"header": "Recursive files", "align": "right", "max_width": 15},
+    "mime": {"header": "Mime", "align": "left", "max_width": 24},
+    "extension": {"header": "Extension", "align": "left", "max_width": 12},
+    "relative_path": {"header": "Relative path", "align": "left", "max_width": 44},
+    "full_path": {"header": "Full path", "align": "left", "max_width": 56},
+    "owner": {"header": "Owner", "align": "left", "max_width": 16},
+    "group": {"header": "Group", "align": "left", "max_width": 16},
+    "permissions": {"header": "Permissions", "align": "left", "max_width": 12},
+}
+CONSOLE_COLUMN_ALIASES = {
+    "recursivefiles": "recursive_files",
+    "relativepath": "relative_path",
+    "fullpath": "full_path",
+    "path": "relative_path",
+}
 
 
 class SmartLSJSONEncoder(json.JSONEncoder):
@@ -308,6 +335,7 @@ class FilterFactory:
         "--sort": 1,
         "--limit": 1,
         "--group-by": 1,
+        "--columns": 1,
         "--color": 0,
         "--no-color": 0,
         "--icons": 0,
@@ -559,6 +587,7 @@ class SmartLSArgumentParser:
                 "  %(prog)s --type d --files 1..3 --sort -size --stats\n"
                 "  %(prog)s ./src --ext py,js --not --name '*test*' --long\n"
                 "  %(prog)s --type f --size >=50MB --mtime <7d --flat\n"
+                "  %(prog)s --type f --flat --columns type,size,modified,relative-path\n"
             ),
         )
         parser.add_argument("root", nargs="?", default=Path.cwd(), type=Path, help="Root path to scan")
@@ -608,6 +637,14 @@ class SmartLSArgumentParser:
         parser.add_argument("--limit", type=int, metavar="N", help="Limit results after filtering and sorting")
         parser.add_argument("--group-by", choices=["d", "ext", "mtime-day"], help="Group flat output by depth, extension, or modification day")
         parser.add_argument("--hash", nargs="?", const="both", choices=["md5", "sha256", "both"], help="Compute file hashes")
+        parser.add_argument(
+            "--columns",
+            metavar="LIST",
+            help=(
+                "Render console output as a table with comma-separated metadata columns: "
+                "type,size,modified,created,accessed,children,recursive_files,mime,extension,relative_path,full_path,owner,group,permissions"
+            ),
+        )
         parser.add_argument("--export-html", metavar="FILE", type=Path, help="Write a self-contained HTML report")
         parser.add_argument("--skip-errors", action="store_true", default=True, help="Continue past filesystem errors")
         parser.add_argument("--show-errors", action="store_true", help="Print collected scan errors to stderr")
@@ -621,6 +658,16 @@ class SmartLSArgumentParser:
             self.parser.error("--limit must be > 0")
         if args.group_by and not args.flat:
             self.parser.error("--group-by requires --flat")
+        if args.columns and (args.json or args.csv):
+            self.parser.error("--columns is only supported for console tree or flat output")
+        if args.columns:
+            try:
+                args.columns, args.column_widths = parse_console_columns(args.columns)
+            except ValueError as exc:
+                self.parser.error(str(exc))
+        else:
+            args.columns = []
+            args.column_widths = {}
         if not args.root.exists():
             self.parser.error(f"Root path does not exist: {args.root}")
         return args
@@ -639,6 +686,79 @@ def normalize_cli_argv(argv: Sequence[str]) -> list[str]:
         normalized.append(token)
         index += 1
     return normalized
+
+
+def normalize_console_path(text: str) -> str:
+    return text.replace("\\", "/")
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def visible_text_width(text: str) -> int:
+    return len(strip_ansi(text))
+
+
+def pad_console_cell(text: str, width: int, align: str) -> str:
+    padding = max(0, width - visible_text_width(text))
+    if align == "right":
+        return f"{' ' * padding}{text}"
+    return f"{text}{' ' * padding}"
+
+
+def truncate_console_text(text: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    if len(text) <= max_width:
+        return text
+    if max_width <= 3:
+        return text[:max_width]
+    return f"{text[:max_width - 3]}..."
+
+
+def parse_console_columns(value: str) -> tuple[list[str], dict[str, int]]:
+    columns: list[str] = []
+    seen: set[str] = set()
+    widths: dict[str, int] = {}
+    for index, part in enumerate(value.split(",")):
+        item = part.strip()
+        if not item:
+            continue
+        width_override: int | None = None
+        raw_key = item
+        if ":" in item:
+            raw_key, width_text = item.rsplit(":", 1)
+            width_text = width_text.strip()
+            if not re.fullmatch(r"\d+", width_text):
+                raise ValueError(f"Invalid width in column spec '{item}'. Use column:n, for example type:12")
+            width_override = int(width_text)
+            if width_override <= 0:
+                raise ValueError(f"Column width must be > 0 in '{item}'")
+        key = raw_key.strip().lower().replace("-", "_")
+        if not key:
+            raise ValueError(f"Missing column name in '{item}'")
+        if key == "name":
+            if index != 0:
+                raise ValueError("The name column may only be specified in the first position")
+            if width_override is not None:
+                widths["name"] = width_override
+            continue
+        normalized = CONSOLE_COLUMN_ALIASES.get(key, key)
+        if normalized not in CONSOLE_COLUMN_SPECS:
+            allowed = ", ".join(sorted(CONSOLE_COLUMN_SPECS))
+            raise ValueError(f"Unsupported column '{raw_key.strip()}'. Choose from: {allowed}")
+        if normalized in seen:
+            if width_override is not None:
+                widths[normalized] = width_override
+            continue
+        seen.add(normalized)
+        columns.append(normalized)
+        if width_override is not None:
+            widths[normalized] = width_override
+    if not columns:
+        raise ValueError("--columns requires at least one column")
+    return columns, widths
 
 
 def matches_filters(entry: Entry, groups: Sequence[Sequence[Filter]]) -> bool:
@@ -807,7 +927,7 @@ def make_entry_line(entry: Entry, root: Path, args: argparse.Namespace, include_
     if args.short:
         text = f"{icon}{label}"
         if entry.entry_type == "d":
-            return colorize(text, Colors.BLUE, use_color)
+            return colorize(text, SMARTLS_DIRECTORY_COLOR, use_color)
         return text
 
     if entry.entry_type == "d":
@@ -826,7 +946,7 @@ def make_entry_line(entry: Entry, root: Path, args: argparse.Namespace, include_
             if entry.permissions_text:
                 parts.append(f"perm {entry.permissions_text}")
         text = f"{icon}{label}  [{' | '.join(parts)}]"
-        return colorize(text, Colors.BLUE, use_color)
+        return colorize(text, SMARTLS_DIRECTORY_COLOR, use_color)
 
     parts = [format_size(entry.size_bytes, args.human_sizes)]
     if entry.path.suffix:
@@ -853,12 +973,18 @@ class OutputRenderer:
     def __init__(self, scan_result: ScanResult, args: argparse.Namespace):
         self.scan_result = scan_result
         self.args = args
+        self.use_color = should_use_color(args.use_color)
 
     def render(self, matched_entries: Sequence[Entry]) -> None:
         if self.args.json:
             self._render_json(matched_entries)
         elif self.args.csv:
             self._render_csv(matched_entries)
+        elif self.args.columns:
+            if self.args.flat:
+                self._render_flat_table(matched_entries)
+            else:
+                self._render_tree_table(matched_entries)
         elif self.args.flat:
             self._render_flat(matched_entries)
         else:
@@ -889,12 +1015,137 @@ class OutputRenderer:
         for child in sort_entries(children, self.args.sort):
             self._render_tree_node(child.path, visible, level + 1)
 
+    def _render_tree_table(self, matched_entries: Sequence[Entry]) -> None:
+        visible = compute_visible_tree(self.scan_result.entries, matched_entries)
+        if not visible:
+            return
+        rows: list[tuple[int, Entry]] = []
+
+        def visit(path: Path, level: int) -> None:
+            if path not in visible:
+                return
+            entry = self.scan_result.entries[path]
+            rows.append((level, entry))
+            children = [self.scan_result.entries[child_path] for child_path in entry.children if child_path in visible]
+            for child in sort_entries(children, self.args.sort):
+                visit(child.path, level + 1)
+
+        visit(self.scan_result.root, 0)
+        self._print_table_rows(rows)
+
     def _render_flat(self, matched_entries: Sequence[Entry]) -> None:
         for group_name, group_entries_list in group_entries(matched_entries, self.args.group_by):
             if group_name:
                 print(group_name)
             for entry in group_entries_list:
                 print(make_entry_line(entry, self.scan_result.root, self.args))
+
+    def _render_flat_table(self, matched_entries: Sequence[Entry]) -> None:
+        grouped = group_entries(matched_entries, self.args.group_by)
+        for group_name, group_entries_list in grouped:
+            if group_name:
+                print(group_name)
+            self._print_table_rows([(0, entry) for entry in group_entries_list])
+
+    def _print_table_rows(self, rows: Sequence[tuple[int, Entry]]) -> None:
+        if not rows:
+            return
+        headers = ["Name", *(str(CONSOLE_COLUMN_SPECS[key]["header"]) for key in self.args.columns)]
+        alignments = ["left", *(str(CONSOLE_COLUMN_SPECS[key]["align"]) for key in self.args.columns)]
+        max_widths = [
+            self.args.column_widths.get("name", NAME_COLUMN_MAX_WIDTH),
+            *(
+                self.args.column_widths.get(key, cast(int, CONSOLE_COLUMN_SPECS[key]["max_width"]))
+                for key in self.args.columns
+            ),
+        ]
+        row_models = [
+            {
+                "entry": entry,
+                "cells": [self._format_name_cell(entry, level), *(self._format_column_cell(entry, key) for key in self.args.columns)],
+            }
+            for level, entry in rows
+        ]
+        widths = [min(visible_text_width(header), max_widths[index]) for index, header in enumerate(headers)]
+        for row in row_models:
+            for index, cell in enumerate(row["cells"]):
+                widths[index] = min(max(widths[index], len(cell)), max_widths[index])
+
+        print(self._render_table_line(headers, widths, alignments))
+        print(self._render_table_separator(widths, alignments))
+        for row in row_models:
+            formatted_cells: list[str] = []
+            for index, cell in enumerate(row["cells"]):
+                fitted = pad_console_cell(truncate_console_text(cell, widths[index]), widths[index], alignments[index])
+                if index == 0 and row["entry"].entry_type == "d":
+                    fitted = colorize(fitted, SMARTLS_DIRECTORY_COLOR, self.use_color)
+                formatted_cells.append(fitted)
+            print(self._render_table_line(formatted_cells, widths, alignments, preformatted=True))
+
+    def _render_table_line(
+        self,
+        values: Sequence[str],
+        widths: Sequence[int],
+        alignments: Sequence[str],
+        *,
+        preformatted: bool = False,
+    ) -> str:
+        cells = []
+        for index, value in enumerate(values):
+            if preformatted:
+                cells.append(value)
+            else:
+                fitted = pad_console_cell(truncate_console_text(value, widths[index]), widths[index], alignments[index])
+                cells.append(fitted)
+        return f"| {' | '.join(cells)} |"
+
+    def _render_table_separator(self, widths: Sequence[int], alignments: Sequence[str]) -> str:
+        segments: list[str] = []
+        for width, alignment in zip(widths, alignments):
+            segment_width = max(3, width)
+            if alignment == "right":
+                segment = f"{'-' * (segment_width - 1)}:"
+            else:
+                segment = f":{'-' * (segment_width - 1)}"
+            segments.append(segment)
+        return f"| {' | '.join(segments)} |"
+
+    def _format_name_cell(self, entry: Entry, level: int) -> str:
+        indent = "" if self.args.flat else "  " * level
+        icon = icon_for_entry(entry.entry_type, entry.path.suffix.lower(), self.args.icons)
+        label = entry.name or normalize_console_path(str(entry.path))
+        return f"{indent}{icon}{label}"
+
+    def _format_column_cell(self, entry: Entry, key: str) -> str:
+        if key == "type":
+            return "Directory" if entry.entry_type == "d" else "File"
+        if key == "size":
+            return format_size(entry.size_bytes, self.args.human_sizes)
+        if key == "modified":
+            return format_timestamp(entry.modified_ts)
+        if key == "created":
+            return format_timestamp(entry.created_ts)
+        if key == "accessed":
+            return format_timestamp(entry.accessed_ts)
+        if key == "children":
+            return str(entry.direct_children)
+        if key == "recursive_files":
+            return str(entry.recursive_files)
+        if key == "mime":
+            return entry.mime_type or "-"
+        if key == "extension":
+            return entry.path.suffix.lower() or "-"
+        if key == "relative_path":
+            return normalize_console_path(display_path(entry.path, self.scan_result.root, absolute=False, is_dir=entry.entry_type == "d"))
+        if key == "full_path":
+            return normalize_console_path(str(entry.path))
+        if key == "owner":
+            return entry.owner or "-"
+        if key == "group":
+            return entry.group or "-"
+        if key == "permissions":
+            return entry.permissions_text or entry.permissions_octal or "-"
+        raise ValueError(f"Unsupported console column: {key}")
 
     def _render_json(self, matched_entries: Sequence[Entry]) -> None:
         payload = [entry.to_dict(self.scan_result.root, absolute=not self.args.relative_paths) for entry in matched_entries]
