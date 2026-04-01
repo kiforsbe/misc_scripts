@@ -7,30 +7,34 @@
     <style>/*SMARTLS_CSS*/</style>
 </head>
 <body>
-    <div class="header">
-        <div>
-            <p class="eyebrow">smartls</p>
-            <h1>Filesystem Report</h1>
-            <p class="hero-copy">A self-contained treegrid browser for matched files and folders, keeping hierarchy and metadata together in one navigable table.</p>
-        </div>
-        <div class="header-info">
-            <span id="rootPath"></span>
-            <span id="generatedAt"></span>
-            <span id="sortMode"></span>
-        </div>
-        <div class="search-bar">
-            <input id="searchInput" type="search" placeholder="Search files and folders...">
-            <button id="resetFilters" class="search-button" type="button">Clear</button>
-        </div>
-    </div>
-
-    <section class="summary-grid" id="summaryGrid"></section>
-
-    <section class="treegrid-shell">
-        <div class="toolbar">
-            <div class="toolbar-controls">
+    <div class="app-window">
+        <header class="window-toolbar">
+            <div class="window-toolbar-group">
                 <button id="expandAll" class="ghost-button" type="button">Expand all</button>
                 <button id="collapseAll" class="ghost-button" type="button">Collapse all</button>
+                <button id="columnPickerButton" class="ghost-button" type="button">Columns</button>
+            </div>
+            <div class="window-toolbar-group window-toolbar-meta">
+                <span id="generatedAt"></span>
+                <span id="sortMode"></span>
+            </div>
+        </header>
+
+        <div class="window-pathbar">
+            <div class="address-shell">
+                <span class="address-label">Location</span>
+                <div class="address-value">
+                    <span id="rootPath"></span>
+                </div>
+            </div>
+            <div class="search-shell">
+                <input id="searchInput" type="search" placeholder="Search files and folders...">
+                <button id="resetFilters" class="search-button" type="button">Clear</button>
+            </div>
+        </div>
+
+        <div class="window-subtoolbar">
+            <div class="toolbar-controls">
                 <label>
                     <span>Type</span>
                     <select id="typeFilter">
@@ -52,34 +56,50 @@
             </div>
         </div>
 
-        <section class="content-panel">
-            <div class="panel-header">
-                <div>
-                    <h2 id="currentPath">Filesystem Tree</h2>
-                    <p id="resultCount"></p>
+        <div class="workspace-shell">
+            <section class="tree-pane">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Files</p>
+                        <h1 id="currentPath">Filesystem Tree</h1>
+                        <p id="resultCount"></p>
+                    </div>
+                    <div class="breadcrumb" id="breadcrumb"></div>
                 </div>
-                <div class="breadcrumb" id="breadcrumb"></div>
-            </div>
-            <div class="treegrid-wrap">
-                <table class="treegrid" aria-label="Filesystem tree grid">
-                    <colgroup id="treegridColgroup"></colgroup>
-                    <thead>
-                        <tr id="treegridHeaderRow"></tr>
-                    </thead>
-                    <tbody id="resultBody"></tbody>
-                </table>
-            </div>
-        </section>
-    </section>
+
+                <section class="treegrid-shell">
+                    <div class="treegrid-wrap">
+                        <table class="treegrid" aria-label="Filesystem tree grid">
+                            <colgroup id="treegridColgroup"></colgroup>
+                            <thead>
+                                <tr id="treegridHeaderRow"></tr>
+                            </thead>
+                            <tbody id="resultBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
+
+            <aside class="details-pane">
+                <div class="details-pane-header">
+                    <p class="eyebrow">Details</p>
+                    <h2>Report Summary</h2>
+                </div>
+                <section class="summary-grid" id="summaryGrid"></section>
+                <section class="selection-panel">
+                    <p class="details-section-label">Selection</p>
+                    <div id="selectionDetails" class="selection-details"></div>
+                </section>
+            </aside>
+        </div>
+    </div>
 
     <div id="columnPickerMenu" class="column-picker-menu" hidden>
         <p class="column-picker-title">Visible columns</p>
         <div id="columnOptions" class="column-options"></div>
     </div>
 
-    <script>
-        const SMARTLS_REPORT = /*SMARTLS_JSON*/;
-    </script>
+    <script id="smartlsReport" type="application/json">/*SMARTLS_JSON*/</script>
     <script>/*SMARTLS_JS*/</script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 (function () {
-    const report = SMARTLS_REPORT;
+    const report = JSON.parse(document.getElementById("smartlsReport").textContent);
     const nodeMap = new Map();
     const nameColumn = { key: "name_path", label: "Name", className: "col-name" };
     const optionalColumns = [
@@ -29,6 +29,7 @@
         shownColumns: new Set(["type", "size", "modified"]),
         columnOrder: [...defaultColumnOrder],
         draggingColumnKey: null,
+        selectedKey: null,
     };
 
     const elements = {
@@ -36,12 +37,14 @@
         generatedAt: document.getElementById("generatedAt"),
         sortMode: document.getElementById("sortMode"),
         summaryGrid: document.getElementById("summaryGrid"),
+        selectionDetails: document.getElementById("selectionDetails"),
         searchInput: document.getElementById("searchInput"),
         typeFilter: document.getElementById("typeFilter"),
         extFilter: document.getElementById("extFilter"),
         resetFilters: document.getElementById("resetFilters"),
         expandAll: document.getElementById("expandAll"),
         collapseAll: document.getElementById("collapseAll"),
+        columnPickerButton: document.getElementById("columnPickerButton"),
         columnPickerMenu: document.getElementById("columnPickerMenu"),
         columnOptions: document.getElementById("columnOptions"),
         treegridColgroup: document.getElementById("treegridColgroup"),
@@ -153,6 +156,36 @@
         return `<span class="sort-chevron sort-chevron-${direction}" aria-hidden="true"></span>`;
     }
 
+    function rootDirectories() {
+        return report.directories.filter((directory) => directory.parent_path === null);
+    }
+
+    function defaultExpandedPaths() {
+        return new Set(rootDirectories().map((directory) => directory.path));
+    }
+
+    function selectedNode() {
+        return state.selectedKey ? nodeMap.get(state.selectedKey) || null : null;
+    }
+
+    function selectedDirectoryNode() {
+        const node = selectedNode();
+        if (!node) {
+            return null;
+        }
+        if (node.entryType === "d") {
+            return node;
+        }
+        return node.parent_path ? nodeMap.get(node.parent_path) || null : null;
+    }
+
+    function setSelectedKey(key) {
+        if (!key || !nodeMap.has(key)) {
+            return;
+        }
+        state.selectedKey = key;
+    }
+
     function moveColumnBefore(sourceKey, targetKey) {
         if (!sourceKey || !targetKey || sourceKey === targetKey) {
             return;
@@ -242,16 +275,20 @@
             }
         });
 
-        state.expanded = new Set(report.directories.map((directory) => directory.path));
+        if (!state.selectedKey) {
+            const firstRoot = rootDirectories()[0];
+            state.selectedKey = firstRoot ? firstRoot.path : report.entries[0]?.name_path || null;
+        }
+
+        state.expanded = defaultExpandedPaths();
     }
 
     function populateStaticSections() {
-        elements.rootPath.textContent = `Root: ${displayPath(report.meta.root_path)}`;
+        elements.rootPath.textContent = displayPath(report.meta.root_path);
         const generatedAt = formatShortDate(report.meta.generated_at_ts);
-        elements.generatedAt.textContent = `Generated: ${generatedAt.primary} ${generatedAt.secondary}`.trim();
+        elements.generatedAt.textContent = `Generated ${generatedAt.primary} ${generatedAt.secondary}`.trim();
         elements.generatedAt.title = generatedAt.full;
         updateSortDisplay();
-        elements.folderCount.textContent = `${report.directories.length} folders in tree`;
         elements.summaryGrid.innerHTML = summaryCards.map(([label, value]) => `
             <article class="summary-card">
                 <span>${escapeHtml(label)}</span>
@@ -259,6 +296,39 @@
             </article>
         `).join("");
         elements.extFilter.innerHTML += extValues.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
+    }
+
+    function selectionItems(node) {
+        if (!node) {
+            return [["Selection", "Nothing selected"]];
+        }
+
+        const modified = formatShortDate(node.modified_ts);
+        const items = [
+            ["Name", displayName(node)],
+            ["Type", node.entryType === "d" ? "Directory" : "File"],
+            ["Path", displayPath(node.absolute_path || node.path || node.name_path || "-")],
+        ];
+
+        if (node.entryType === "d") {
+            items.push(["Children", String(node.direct_children ?? 0)]);
+            items.push(["Recursive files", String(node.recursive_files ?? 0)]);
+        } else {
+            items.push(["Size", formatSize(node.size_bytes)]);
+            items.push(["Extension", node.extension || "-"]);
+        }
+
+        items.push(["Modified", `${modified.primary} ${modified.secondary}`.trim()]);
+        return items;
+    }
+
+    function renderSelectionDetails() {
+        elements.selectionDetails.innerHTML = selectionItems(selectedNode()).map(([label, value]) => `
+            <div class="selection-row">
+                <span class="selection-label">${escapeHtml(label)}</span>
+                <span class="selection-value">${escapeHtml(value)}</span>
+            </div>
+        `).join("");
     }
 
     function renderColumnOptions() {
@@ -304,16 +374,22 @@
     }
 
     function buildBreadcrumb() {
-        const rootDirectory = report.directories.find((directory) => directory.parent_path === null) || report.directories[0];
-        if (!rootDirectory) {
+        const node = selectedDirectoryNode() || selectedNode();
+        if (!node) {
             elements.breadcrumb.innerHTML = "";
             return;
         }
-        elements.breadcrumb.innerHTML = [
-            `<span class="breadcrumb-item">${escapeHtml(displayPath(rootDirectory.path))}</span>`,
-            '<span class="breadcrumb-separator">/</span>',
-            '<span>Use folder rows to expand or collapse descendants</span>',
-        ].join("");
+
+        const chain = [];
+        let current = node;
+        while (current) {
+            chain.unshift(current);
+            current = current.parent_path ? nodeMap.get(current.parent_path) || null : null;
+        }
+
+        elements.breadcrumb.innerHTML = chain.map((item, index) => `
+            <button type="button" class="breadcrumb-item" data-select-path="${escapeHtml(item.key)}" title="${escapeHtml(displayPath(item.absolute_path || item.path || item.key))}">${escapeHtml(displayName(item))}</button>${index < chain.length - 1 ? '<span class="breadcrumb-separator">/</span>' : ''}
+        `).join("");
     }
 
     function nodeMatches(node) {
@@ -365,31 +441,33 @@
         if (node.name) {
             return String(node.name);
         }
-        return displayPath(node.name_path || node.path || "-");
+        const pathValue = displayPath(node.name_path || node.path || "-");
+        const parts = pathValue.split("/").filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : pathValue;
     }
 
     function iconForNode(node) {
         if (node.entryType === "d") {
-            return state.expanded.has(node.key) ? "📂" : "📁";
+            return "folder";
         }
         const extension = String(node.extension || "").toLowerCase();
         const mime = String(node.mime_type || "").toLowerCase();
         if ([".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".html", ".css", ".md", ".sh", ".ps1", ".bat", ".yml", ".yaml", ".toml"].includes(extension)) {
-            return "🧩";
+            return "code";
         }
         if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(extension) || mime.startsWith("image/")) {
-            return "🖼️";
+            return "image";
         }
         if ([".mp3", ".flac", ".wav", ".m4a", ".ogg"].includes(extension) || mime.startsWith("audio/")) {
-            return "🎵";
+            return "audio";
         }
         if ([".mp4", ".mkv", ".avi", ".mov", ".webm"].includes(extension) || mime.startsWith("video/")) {
-            return "🎬";
+            return "video";
         }
         if ([".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"].includes(extension)) {
-            return "🗜️";
+            return "archive";
         }
-        return "📄";
+        return "file";
     }
 
     function renderDateCell(timestamp) {
@@ -491,10 +569,17 @@
     function renderTable() {
         const { rows, directMatchCount } = collectVisibleRows();
         renderTableColumns();
-        elements.resultCount.textContent = `${rows.length} visible rows · ${directMatchCount} direct matches`;
-        elements.activeDirectory.textContent = `${state.expanded.size} expanded folders`;
-        elements.currentPath.textContent = "Filesystem Tree";
+        const selected = selectedNode();
+        const selectedDirectory = selectedDirectoryNode();
+        elements.resultCount.textContent = `${rows.length} visible items · ${directMatchCount} direct matches`;
+        elements.folderCount.textContent = `${report.directories.length} folders`;
+        elements.activeDirectory.textContent = selectedDirectory
+            ? `Selected folder: ${displayPath(selectedDirectory.path || selectedDirectory.name_path || "-")}`
+            : `${state.expanded.size} expanded folders`;
+        elements.currentPath.textContent = selected ? displayName(selected) : "Filesystem Tree";
         updateSortDisplay();
+        buildBreadcrumb();
+        renderSelectionDetails();
 
         const visibleColumns = visibleOptionalColumns();
 
@@ -509,12 +594,19 @@
             const toggle = hasChildren
                 ? `<button type="button" class="tree-toggle" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(displayPath(node.name_path || node.path))}">${expanded ? "−" : "+"}</button>`
                 : '<span class="tree-toggle placeholder">+</span>';
-            const rowClass = ancestorOnly ? "tree-row ancestor-row" : "tree-row";
-            const nameContent = hasChildren
-                ? `<button type="button" class="tree-name-button" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(displayPath(node.name_path || node.path))}"><span class="entry-icon" aria-hidden="true">${iconForNode(node)}</span><span>${escapeHtml(displayName(node))}</span>${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}</button>`
-                : `<div class="tree-name-text"><span class="entry-icon" aria-hidden="true">${iconForNode(node)}</span><span>${escapeHtml(displayName(node))}</span>${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}</div>`;
+            const iconType = iconForNode(node);
+            const rowClass = ["tree-row", ancestorOnly ? "ancestor-row" : "", node.key === state.selectedKey ? "selected-row" : ""]
+                .filter(Boolean)
+                .join(" ");
+            const nameContent = `
+                <button type="button" class="tree-name-button" data-select-path="${escapeHtml(node.key)}" title="${escapeHtml(displayPath(node.absolute_path || node.path || node.key))}">
+                    <span class="entry-icon entry-icon-${escapeHtml(iconType)}" aria-hidden="true"></span>
+                    <span class="entry-name">${escapeHtml(displayName(node))}</span>
+                    ${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}
+                </button>
+            `;
             return `
-                <tr class="${rowClass}" data-entry-type="${escapeHtml(node.entryType)}">
+                <tr class="${rowClass}" data-entry-type="${escapeHtml(node.entryType)}" data-entry-key="${escapeHtml(node.key)}" aria-selected="${node.key === state.selectedKey ? "true" : "false"}">
                     <td class="tree-name-cell">
                         <div class="tree-name-content">
                             <span class="tree-indent" style="width: ${depth * 22}px"></span>
@@ -529,20 +621,9 @@
             `;
         }).join("");
 
-        elements.resultBody.querySelectorAll("[data-toggle]").forEach((button) => {
-            button.addEventListener("click", () => {
-                const key = button.dataset.toggle;
-                if (!key) {
-                    return;
-                }
-                if (state.expanded.has(key)) {
-                    state.expanded.delete(key);
-                } else {
-                    state.expanded.add(key);
-                }
-                renderTable();
-            });
-        });
+        if (!state.selectedKey && rows[0]) {
+            setSelectedKey(rows[0].node.key);
+        }
     }
 
     function wireControls() {
@@ -572,7 +653,7 @@
             elements.searchInput.value = "";
             elements.typeFilter.value = "all";
             elements.extFilter.value = "all";
-            state.expanded = new Set(report.directories.map((directory) => directory.path));
+            state.expanded = defaultExpandedPaths();
             renderColumnOptions();
             renderTable();
         });
@@ -583,9 +664,17 @@
         });
 
         elements.collapseAll.addEventListener("click", () => {
-            const rootPaths = report.directories.filter((directory) => !directory.parent_path).map((directory) => directory.path);
-            state.expanded = new Set(rootPaths);
+            state.expanded = defaultExpandedPaths();
             renderTable();
+        });
+
+        elements.columnPickerButton.addEventListener("click", () => {
+            if (!elements.columnPickerMenu.hidden) {
+                closeColumnMenu();
+                return;
+            }
+            const rect = elements.columnPickerButton.getBoundingClientRect();
+            openColumnMenu(rect.left, rect.bottom + 6);
         });
 
         elements.treegridHeaderRow.addEventListener("click", (event) => {
@@ -664,8 +753,69 @@
             renderTable();
         });
 
+        elements.resultBody.addEventListener("click", (event) => {
+            const toggle = event.target.closest("[data-toggle]");
+            if (toggle) {
+                const key = toggle.dataset.toggle;
+                if (!key) {
+                    return;
+                }
+                setSelectedKey(key);
+                if (state.expanded.has(key)) {
+                    state.expanded.delete(key);
+                } else {
+                    state.expanded.add(key);
+                }
+                renderTable();
+                return;
+            }
+
+            const selectTarget = event.target.closest("[data-select-path]");
+            if (selectTarget) {
+                const key = selectTarget.dataset.selectPath;
+                if (key) {
+                    setSelectedKey(key);
+                    renderTable();
+                }
+                return;
+            }
+
+            const row = event.target.closest("tr[data-entry-key]");
+            if (row?.dataset.entryKey) {
+                setSelectedKey(row.dataset.entryKey);
+                renderTable();
+            }
+        });
+
+        elements.resultBody.addEventListener("dblclick", (event) => {
+            const row = event.target.closest("tr[data-entry-key]");
+            if (!row?.dataset.entryKey) {
+                return;
+            }
+            const node = nodeMap.get(row.dataset.entryKey);
+            if (!node || node.entryType !== "d") {
+                return;
+            }
+            setSelectedKey(node.key);
+            if (state.expanded.has(node.key)) {
+                state.expanded.delete(node.key);
+            } else {
+                state.expanded.add(node.key);
+            }
+            renderTable();
+        });
+
+        elements.breadcrumb.addEventListener("click", (event) => {
+            const button = event.target.closest("[data-select-path]");
+            if (!button?.dataset.selectPath) {
+                return;
+            }
+            setSelectedKey(button.dataset.selectPath);
+            renderTable();
+        });
+
         document.addEventListener("click", (event) => {
-            if (!elements.columnPickerMenu.hidden && !event.target.closest("#columnPickerMenu")) {
+            if (!elements.columnPickerMenu.hidden && !event.target.closest("#columnPickerMenu") && !event.target.closest("#columnPickerButton")) {
                 closeColumnMenu();
             }
         });
@@ -680,7 +830,6 @@
     buildNodeTree();
     populateStaticSections();
     renderColumnOptions();
-    buildBreadcrumb();
     wireControls();
     renderTable();
 })();
