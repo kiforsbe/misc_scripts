@@ -787,17 +787,72 @@
     .column-option {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         min-width: 0;
         font-size: 0.88rem;
         cursor: pointer;
+        user-select: none;
     }
 
-    .column-option input {
+    .column-toggle-input {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    .column-toggle {
+        position: relative;
         flex: 0 0 auto;
-        width: auto;
-        min-height: auto;
-        margin: 0;
+        width: 2.2rem;
+        height: 1.3rem;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        background: #e7eaee;
+        transition: background 150ms ease, border-color 150ms ease;
+    }
+
+    .column-toggle::after {
+        content: "";
+        position: absolute;
+        top: 1px;
+        left: 1px;
+        width: calc(1.3rem - 4px);
+        height: calc(1.3rem - 4px);
+        border-radius: 50%;
+        background: #ffffff;
+        box-shadow: 0 1px 3px rgba(16, 24, 40, 0.18);
+        transition: transform 150ms ease;
+    }
+
+    .column-option-label {
+        min-width: 0;
+        color: var(--muted);
+        transition: color 150ms ease, font-weight 150ms ease;
+    }
+
+    .column-toggle-input:checked + .column-toggle {
+        background: rgba(10, 100, 201, 0.84);
+        border-color: rgba(10, 100, 201, 0.84);
+    }
+
+    .column-toggle-input:checked + .column-toggle::after {
+        transform: translateX(0.9rem);
+    }
+
+    .column-toggle-input:checked + .column-toggle + .column-option-label {
+        color: var(--text);
+        font-weight: 600;
+    }
+
+    .column-toggle-input:focus-visible + .column-toggle {
+        box-shadow: 0 0 0 3px rgba(10, 100, 201, 0.16);
     }
 
     .empty-state {

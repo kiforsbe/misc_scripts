@@ -832,8 +832,9 @@
     function renderColumnOptions() {
         elements.columnOptions.innerHTML = orderedOptionalColumns().map((option) => `
             <label class="column-option">
-                <input type="checkbox" value="${escapeHtml(option.key)}" ${state.shownColumns.has(option.key) ? "checked" : ""}>
-                <span>${escapeHtml(option.label)}</span>
+                <input class="column-toggle-input" type="checkbox" value="${escapeHtml(option.key)}" ${state.shownColumns.has(option.key) ? "checked" : ""}>
+                <span class="column-toggle" aria-hidden="true"></span>
+                <span class="column-option-label">${escapeHtml(option.label)}</span>
             </label>
         `).join("");
         renderTableColumns();
