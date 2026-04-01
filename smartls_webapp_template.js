@@ -1,6 +1,8 @@
 (function () {
     const report = JSON.parse(document.getElementById("smartlsReport").textContent);
     const FILTER_INPUT_DEBOUNCE_MS = 800;
+    const VIRTUAL_ROW_OVERSCAN = 10;
+    const VIRTUAL_ROW_ESTIMATE = 44;
     const nodeMap = new Map();
     const nameColumn = { key: "name_path", label: "Name", className: "col-name" };
     const optionalColumns = [
@@ -33,6 +35,14 @@
         columnOrder: [...defaultColumnOrder],
         draggingColumnKey: null,
         selectedKey: null,
+        virtualRows: [],
+        virtualRowOffsets: [],
+        virtualRowHeights: [],
+        virtualHeightCache: new Map(),
+        virtualTotalHeight: 0,
+        virtualRenderScheduled: false,
+        virtualForceRenderScheduled: false,
+        lastVirtualRangeKey: "",
     };
 
     const elements = {
@@ -51,6 +61,7 @@
         columnOptions: document.getElementById("columnOptions"),
         treegridColgroup: document.getElementById("treegridColgroup"),
         treegridHeaderRow: document.getElementById("treegridHeaderRow"),
+        treegridWrap: document.querySelector(".treegrid-wrap"),
         resultBody: document.getElementById("resultBody"),
         resultCount: document.getElementById("resultCount"),
         activeDirectory: document.getElementById("activeDirectory"),
@@ -131,6 +142,10 @@
             .map((key) => optionalColumns.find((option) => option.key === key))
             .filter(Boolean)
             .filter((option) => state.shownColumns.has(option.key));
+    }
+
+    function visibleColumnKeys() {
+        return visibleOptionalColumns().map((column) => column.key).join("|");
     }
 
     function orderedOptionalColumns() {
@@ -837,6 +852,8 @@
                 <span class="column-option-label">${escapeHtml(option.label)}</span>
             </label>
         `).join("");
+        state.virtualHeightCache.clear();
+        state.lastVirtualRangeKey = "";
         renderTableColumns();
     }
 
@@ -998,6 +1015,202 @@
         return `<td class="${cellClass}" title="${escapeHtml(String(value))}">${escapeHtml(value)}</td>`;
     }
 
+    function virtualRowCacheKey(row) {
+        return `${row.node.key}|${row.depth}|${row.ancestorOnly ? 1 : 0}|${visibleColumnKeys()}`;
+    }
+
+    function virtualRowHeight(row) {
+        return state.virtualHeightCache.get(virtualRowCacheKey(row)) || VIRTUAL_ROW_ESTIMATE;
+    }
+
+    function recalculateVirtualMetrics() {
+        const offsets = new Array(state.virtualRows.length);
+        const heights = new Array(state.virtualRows.length);
+        let runningOffset = 0;
+
+        for (let index = 0; index < state.virtualRows.length; index += 1) {
+            const row = state.virtualRows[index];
+            const height = virtualRowHeight(row);
+            offsets[index] = runningOffset;
+            heights[index] = height;
+            runningOffset += height;
+        }
+
+        state.virtualRowOffsets = offsets;
+        state.virtualRowHeights = heights;
+        state.virtualTotalHeight = runningOffset;
+    }
+
+    function findVirtualStartIndex(scrollTop) {
+        let low = 0;
+        let high = state.virtualRowOffsets.length - 1;
+        let result = 0;
+
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const itemTop = state.virtualRowOffsets[mid];
+            const itemBottom = itemTop + state.virtualRowHeights[mid];
+
+            if (itemBottom >= scrollTop) {
+                result = mid;
+                high = mid - 1;
+            } else {
+                low = mid + 1;
+            }
+        }
+
+        return result;
+    }
+
+    function currentVirtualRange() {
+        if (!state.virtualRows.length) {
+            return { start: 0, end: -1, topOffset: 0, bottomOffset: 0 };
+        }
+
+        const scrollTop = elements.treegridWrap ? elements.treegridWrap.scrollTop || 0 : 0;
+        const viewportHeight = elements.treegridWrap ? elements.treegridWrap.clientHeight || 0 : 0;
+        const viewportBottom = scrollTop + viewportHeight;
+        const firstVisibleIndex = findVirtualStartIndex(scrollTop);
+        let end = firstVisibleIndex;
+
+        while (end < state.virtualRows.length && state.virtualRowOffsets[end] < viewportBottom) {
+            end += 1;
+        }
+
+        const start = Math.max(0, firstVisibleIndex - VIRTUAL_ROW_OVERSCAN);
+        const finalEnd = Math.min(state.virtualRows.length - 1, end + VIRTUAL_ROW_OVERSCAN);
+        const topOffset = state.virtualRowOffsets[start] || 0;
+        const renderedHeight = finalEnd >= start
+            ? (state.virtualRowOffsets[finalEnd] + state.virtualRowHeights[finalEnd]) - topOffset
+            : 0;
+        const bottomOffset = Math.max(0, state.virtualTotalHeight - topOffset - renderedHeight);
+
+        return { start, end: finalEnd, topOffset, bottomOffset };
+    }
+
+    function scheduleVirtualRender(force) {
+        if (force) {
+            state.virtualForceRenderScheduled = true;
+        }
+
+        if (state.virtualRenderScheduled) {
+            return;
+        }
+
+        state.virtualRenderScheduled = true;
+        requestAnimationFrame(() => {
+            const shouldForce = state.virtualForceRenderScheduled;
+            state.virtualRenderScheduled = false;
+            state.virtualForceRenderScheduled = false;
+            renderVirtualBody(shouldForce);
+        });
+    }
+
+    function measureVisibleRows() {
+        const renderedRows = elements.resultBody.querySelectorAll("tr[data-virtual-index]");
+        let hasChanged = false;
+
+        renderedRows.forEach((rowElement) => {
+            const index = Number(rowElement.dataset.virtualIndex);
+            if (!Number.isInteger(index) || index < 0 || index >= state.virtualRows.length) {
+                return;
+            }
+
+            const row = state.virtualRows[index];
+            const key = virtualRowCacheKey(row);
+            const measuredHeight = Math.ceil(rowElement.getBoundingClientRect().height);
+            if (!measuredHeight) {
+                return;
+            }
+
+            if (state.virtualHeightCache.get(key) !== measuredHeight) {
+                state.virtualHeightCache.set(key, measuredHeight);
+                hasChanged = true;
+            }
+        });
+
+        if (hasChanged) {
+            scheduleVirtualRender(true);
+        }
+    }
+
+    function renderVirtualRow(row, index, visibleColumns) {
+        const { node, depth, ancestorOnly } = row;
+        const hasChildren = node.entryType === "d" && node.children.length > 0;
+        const expanded = state.expanded.has(node.key);
+        const toggle = hasChildren
+            ? `<button type="button" class="tree-toggle" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(displayPath(node.name_path || node.path))}">${expanded ? "−" : "+"}</button>`
+            : '<span class="tree-toggle placeholder">+</span>';
+        const iconType = iconForNode(node);
+        const rowClass = ["tree-row", ancestorOnly ? "ancestor-row" : "", node.key === state.selectedKey ? "selected-row" : ""]
+            .filter(Boolean)
+            .join(" ");
+        const nameContent = `
+            <button type="button" class="tree-name-button" data-select-path="${escapeHtml(node.key)}" title="${escapeHtml(displayPath(node.absolute_path || node.path || node.key))}">
+                <span class="entry-icon entry-icon-${escapeHtml(iconType)}" aria-hidden="true"></span>
+                <span class="entry-name">${escapeHtml(displayName(node))}</span>
+                ${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}
+            </button>
+        `;
+
+        return `
+            <tr class="${rowClass}" data-entry-type="${escapeHtml(node.entryType)}" data-entry-key="${escapeHtml(node.key)}" data-virtual-index="${index}" aria-selected="${node.key === state.selectedKey ? "true" : "false"}">
+                <td class="tree-name-cell">
+                    <div class="tree-name-content">
+                        <span class="tree-indent" style="width: ${depth * 22}px"></span>
+                        ${toggle}
+                        <div class="tree-name-block">
+                            ${nameContent}
+                        </div>
+                    </div>
+                </td>
+                ${visibleColumns.map((column) => renderOptionalCell(node, column)).join("")}
+            </tr>
+        `;
+    }
+
+    function renderVirtualBody(forceMeasurement) {
+        recalculateVirtualMetrics();
+        const visibleColumns = visibleOptionalColumns();
+        const colSpan = 1 + visibleColumns.length;
+
+        if (!state.virtualRows.length) {
+            elements.resultBody.innerHTML = `<tr><td colspan="${colSpan}"><div class="empty-state">No entries match the current browser filters.</div></td></tr>`;
+            return;
+        }
+
+        const range = currentVirtualRange();
+        const rangeKey = `${range.start}:${range.end}:${range.topOffset}:${range.bottomOffset}:${state.selectedKey || ""}`;
+        if (!forceMeasurement && rangeKey === state.lastVirtualRangeKey) {
+            return;
+        }
+
+        state.lastVirtualRangeKey = rangeKey;
+
+        let html = "";
+        if (range.topOffset > 0) {
+            html += `<tr class="virtual-spacer-row" aria-hidden="true"><td class="virtual-spacer-cell" colspan="${colSpan}" style="height:${range.topOffset}px"></td></tr>`;
+        }
+
+        for (let index = range.start; index <= range.end; index += 1) {
+            html += renderVirtualRow(state.virtualRows[index], index, visibleColumns);
+        }
+
+        if (range.bottomOffset > 0) {
+            html += `<tr class="virtual-spacer-row" aria-hidden="true"><td class="virtual-spacer-cell" colspan="${colSpan}" style="height:${range.bottomOffset}px"></td></tr>`;
+        }
+
+        elements.resultBody.innerHTML = html;
+
+        if (forceMeasurement) {
+            measureVisibleRows();
+        } else {
+            requestAnimationFrame(() => {
+                measureVisibleRows();
+            });
+        }
+    }
+
     function collectVisibleRows() {
         const hasFilter = Boolean(state.query.trim());
         const rows = [];
@@ -1051,6 +1264,8 @@
     function renderTable() {
         const { rows, directMatchCount } = collectVisibleRows();
         renderTableColumns();
+        state.virtualRows = rows;
+        state.lastVirtualRangeKey = "";
         const selected = selectedNode();
         const selectedDirectory = selectedDirectoryNode();
         if (elements.resultCount) {
@@ -1075,49 +1290,11 @@
         renderSelectionDetails();
         renderFilterStatus();
 
-        const visibleColumns = visibleOptionalColumns();
-
-        if (!rows.length) {
-            elements.resultBody.innerHTML = `<tr><td colspan="${1 + visibleColumns.length}"><div class="empty-state">No entries match the current browser filters.</div></td></tr>`;
-            return;
-        }
-
-        elements.resultBody.innerHTML = rows.map(({ node, depth, ancestorOnly }) => {
-            const hasChildren = node.entryType === "d" && node.children.length > 0;
-            const expanded = state.expanded.has(node.key);
-            const toggle = hasChildren
-                ? `<button type="button" class="tree-toggle" data-toggle="${escapeHtml(node.key)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(displayPath(node.name_path || node.path))}">${expanded ? "−" : "+"}</button>`
-                : '<span class="tree-toggle placeholder">+</span>';
-            const iconType = iconForNode(node);
-            const rowClass = ["tree-row", ancestorOnly ? "ancestor-row" : "", node.key === state.selectedKey ? "selected-row" : ""]
-                .filter(Boolean)
-                .join(" ");
-            const nameContent = `
-                <button type="button" class="tree-name-button" data-select-path="${escapeHtml(node.key)}" title="${escapeHtml(displayPath(node.absolute_path || node.path || node.key))}">
-                    <span class="entry-icon entry-icon-${escapeHtml(iconType)}" aria-hidden="true"></span>
-                    <span class="entry-name">${escapeHtml(displayName(node))}</span>
-                    ${ancestorOnly ? '<span class="ancestor-pill">Ancestor context</span>' : ""}
-                </button>
-            `;
-            return `
-                <tr class="${rowClass}" data-entry-type="${escapeHtml(node.entryType)}" data-entry-key="${escapeHtml(node.key)}" aria-selected="${node.key === state.selectedKey ? "true" : "false"}">
-                    <td class="tree-name-cell">
-                        <div class="tree-name-content">
-                            <span class="tree-indent" style="width: ${depth * 22}px"></span>
-                            ${toggle}
-                            <div class="tree-name-block">
-                                ${nameContent}
-                            </div>
-                        </div>
-                    </td>
-                    ${visibleColumns.map((column) => renderOptionalCell(node, column)).join("")}
-                </tr>
-            `;
-        }).join("");
-
         if (!state.selectedKey && rows[0]) {
             setSelectedKey(rows[0].node.key);
         }
+
+        renderVirtualBody(true);
     }
 
     function wireControls() {
@@ -1180,6 +1357,18 @@
                 openColumnMenu(rect.left, rect.bottom + 6);
             });
         }
+
+        if (elements.treegridWrap) {
+            elements.treegridWrap.addEventListener("scroll", () => {
+                scheduleVirtualRender(false);
+            }, { passive: true });
+        }
+
+        window.addEventListener("resize", () => {
+            state.virtualHeightCache.clear();
+            state.lastVirtualRangeKey = "";
+            scheduleVirtualRender(true);
+        });
 
         elements.treegridHeaderRow.addEventListener("click", (event) => {
             const button = event.target.closest("button[data-sort]");
