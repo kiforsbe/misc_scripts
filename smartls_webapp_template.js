@@ -34,7 +34,7 @@
     };
 
     const elements = {
-        rootPath: document.getElementById("rootPath"),
+        addressValue: document.getElementById("addressValue"),
         generatedAt: document.getElementById("generatedAt"),
         sortMode: document.getElementById("sortMode"),
         summaryGrid: document.getElementById("summaryGrid"),
@@ -146,7 +146,9 @@
     }
 
     function updateSortDisplay() {
-        elements.sortMode.textContent = `Sort: ${sortLabelForKey(state.sortKey)} (${state.sortDirection})`;
+        if (elements.sortMode) {
+            elements.sortMode.textContent = `Sort: ${sortLabelForKey(state.sortKey)} (${state.sortDirection})`;
+        }
     }
 
     function sortIndicatorMarkup(direction) {
@@ -702,6 +704,9 @@
     }
 
     function renderFilterStatus() {
+        if (!elements.filterStatus) {
+            return;
+        }
         elements.filterStatus.classList.toggle("is-error", Boolean(state.filterError));
         elements.filterStatus.textContent = state.filterError || state.filterSummary;
         elements.filterStatus.title = state.filterError || state.filterSummary;
@@ -754,19 +759,18 @@
     }
 
     function populateStaticSections() {
-        elements.rootPath.textContent = displayPath(report.meta.root_path);
+        elements.addressValue.title = displayPath(report.meta.root_path);
         const generatedAt = formatShortDate(report.meta.generated_at_ts);
-        elements.generatedAt.textContent = `Generated ${generatedAt.primary} ${generatedAt.secondary}`.trim();
-        elements.generatedAt.title = generatedAt.full;
+        if (elements.generatedAt) {
+            elements.generatedAt.textContent = `Generated ${generatedAt.primary} ${generatedAt.secondary}`.trim();
+            elements.generatedAt.title = generatedAt.full;
+        }
         updateSortDisplay();
         const summaryCards = [
             { label: "Folders scanned", value: String(report.summary.folders_scanned), title: String(report.summary.folders_scanned) },
             { label: "Folders matched", value: String(report.summary.folders_matched), title: String(report.summary.folders_matched) },
             { label: "Files listed", value: String(report.summary.files_listed), title: String(report.summary.files_listed) },
             { label: "Total size", value: formatSize(report.summary.total_size_bytes), title: String(report.summary.total_size_bytes ?? 0) },
-            { label: "Avg files/folder", value: String(report.summary.avg_files_per_folder), title: String(report.summary.avg_files_per_folder) },
-            { label: "Emptiest folder", value: compactDisplayValue(report.summary.emptiest_folder || "-", 2), title: displayPath(report.summary.emptiest_folder || "-") },
-            { label: "Largest file", value: compactDisplayValue(report.summary.largest_file || "-", 2), title: displayPath(report.summary.largest_file || "-") },
         ];
         elements.summaryGrid.innerHTML = summaryCards.map(({ label, value, title }) => `
             <article class="summary-card">
@@ -867,7 +871,7 @@
         }
 
         elements.breadcrumb.innerHTML = chain.map((item, index) => `
-            <button type="button" class="breadcrumb-item" data-select-path="${escapeHtml(item.key)}" title="${escapeHtml(displayPath(item.absolute_path || item.path || item.key))}">${escapeHtml(displayName(item))}</button>${index < chain.length - 1 ? '<span class="breadcrumb-separator">/</span>' : ''}
+            <button type="button" class="breadcrumb-item ${index === chain.length - 1 ? "current" : ""}" data-select-path="${escapeHtml(item.key)}" title="${escapeHtml(displayPath(item.absolute_path || item.path || item.key))}" aria-current="${index === chain.length - 1 ? "location" : "false"}">${escapeHtml(displayName(item))}</button>${index < chain.length - 1 ? '<span class="breadcrumb-separator">/</span>' : ''}
         `).join("");
     }
 
@@ -1033,15 +1037,23 @@
         renderTableColumns();
         const selected = selectedNode();
         const selectedDirectory = selectedDirectoryNode();
-        elements.resultCount.textContent = `${rows.length} visible items · ${directMatchCount} direct matches`;
-        elements.folderCount.textContent = `${report.directories.length} folders`;
-        elements.activeDirectory.textContent = selectedDirectory
-            ? `Selected: ${compactDisplayValue(selectedDirectory.path || selectedDirectory.name_path || "-", 2)}`
-            : `${state.expanded.size} expanded folders`;
-        elements.activeDirectory.title = selectedDirectory
-            ? displayPath(selectedDirectory.path || selectedDirectory.name_path || "-")
-            : `${state.expanded.size} expanded folders`;
-        elements.currentPath.textContent = selected ? displayName(selected) : "Filesystem Tree";
+        if (elements.resultCount) {
+            elements.resultCount.textContent = `${rows.length} visible items · ${directMatchCount} direct matches`;
+        }
+        if (elements.folderCount) {
+            elements.folderCount.textContent = `${report.directories.length} folders`;
+        }
+        if (elements.activeDirectory) {
+            elements.activeDirectory.textContent = selectedDirectory
+                ? `Selected: ${compactDisplayValue(selectedDirectory.path || selectedDirectory.name_path || "-", 2)}`
+                : `${state.expanded.size} expanded folders`;
+            elements.activeDirectory.title = selectedDirectory
+                ? displayPath(selectedDirectory.path || selectedDirectory.name_path || "-")
+                : `${state.expanded.size} expanded folders`;
+        }
+        if (elements.currentPath) {
+            elements.currentPath.textContent = selected ? displayName(selected) : "Filesystem Tree";
+        }
         updateSortDisplay();
         buildBreadcrumb();
         renderSelectionDetails();
@@ -1106,39 +1118,47 @@
             renderTable();
         });
 
-        elements.resetFilters.addEventListener("click", () => {
-            state.query = "";
-            state.compiledFilter = (node) => Boolean(node.matched);
-            state.filterSummary = "Smart filter ready";
-            state.filterError = "";
-            state.sortKey = "name_path";
-            state.sortDirection = "asc";
-            state.shownColumns = new Set(["type", "size", "modified"]);
-            state.columnOrder = [...defaultColumnOrder];
-            elements.searchInput.value = "";
-            state.expanded = defaultExpandedPaths();
-            renderColumnOptions();
-            renderTable();
-        });
+        if (elements.resetFilters) {
+            elements.resetFilters.addEventListener("click", () => {
+                state.query = "";
+                state.compiledFilter = (node) => Boolean(node.matched);
+                state.filterSummary = "Smart filter ready";
+                state.filterError = "";
+                state.sortKey = "name_path";
+                state.sortDirection = "asc";
+                state.shownColumns = new Set(["type", "size", "modified"]);
+                state.columnOrder = [...defaultColumnOrder];
+                elements.searchInput.value = "";
+                state.expanded = defaultExpandedPaths();
+                renderColumnOptions();
+                renderTable();
+            });
+        }
 
-        elements.expandAll.addEventListener("click", () => {
-            state.expanded = new Set(report.directories.map((directory) => directory.path));
-            renderTable();
-        });
+        if (elements.expandAll) {
+            elements.expandAll.addEventListener("click", () => {
+                state.expanded = new Set(report.directories.map((directory) => directory.path));
+                renderTable();
+            });
+        }
 
-        elements.collapseAll.addEventListener("click", () => {
-            state.expanded = defaultExpandedPaths();
-            renderTable();
-        });
+        if (elements.collapseAll) {
+            elements.collapseAll.addEventListener("click", () => {
+                state.expanded = defaultExpandedPaths();
+                renderTable();
+            });
+        }
 
-        elements.columnPickerButton.addEventListener("click", () => {
-            if (!elements.columnPickerMenu.hidden) {
-                closeColumnMenu();
-                return;
-            }
-            const rect = elements.columnPickerButton.getBoundingClientRect();
-            openColumnMenu(rect.left, rect.bottom + 6);
-        });
+        if (elements.columnPickerButton) {
+            elements.columnPickerButton.addEventListener("click", () => {
+                if (!elements.columnPickerMenu.hidden) {
+                    closeColumnMenu();
+                    return;
+                }
+                const rect = elements.columnPickerButton.getBoundingClientRect();
+                openColumnMenu(rect.left, rect.bottom + 6);
+            });
+        }
 
         elements.treegridHeaderRow.addEventListener("click", (event) => {
             const button = event.target.closest("button[data-sort]");

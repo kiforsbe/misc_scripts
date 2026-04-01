@@ -11,43 +11,20 @@
         <div class="window-pathbar">
             <div class="address-shell">
                 <span class="address-label">Location</span>
-                <div class="address-value">
-                    <span id="rootPath"></span>
+                <div class="address-value" id="addressValue">
+                    <div class="breadcrumb address-breadcrumb" id="breadcrumb"></div>
                 </div>
             </div>
             <div class="smart-filter-shell">
                 <label class="smart-filter-label" for="searchInput">Smart filter</label>
                 <div class="smart-filter-row">
                     <input id="searchInput" type="search" placeholder="Try: name:*mkv size:>700MB mtime:<7d type:file or mime:video/*">
-                    <button id="expandAll" class="ghost-button" type="button">Expand</button>
-                    <button id="collapseAll" class="ghost-button" type="button">Collapse</button>
-                    <button id="columnPickerButton" class="ghost-button" type="button">Columns</button>
-                    <button id="resetFilters" class="search-button" type="button">Clear</button>
-                </div>
-                <div class="smart-filter-meta">
-                    <p id="filterHint" class="filter-hint">Supports smartls-style expressions such as name, size, mtime, ctime, ext, type, mime, owner, group, permissions, empty, sparse, not, and or.</p>
-                    <div class="toolbar-status">
-                        <span id="filterStatus"></span>
-                        <span id="generatedAt"></span>
-                        <span id="sortMode"></span>
-                        <span id="folderCount"></span>
-                        <span id="activeDirectory"></span>
-                    </div>
                 </div>
             </div>
         </div>
 
         <div class="workspace-shell">
             <section class="tree-pane">
-                <div class="panel-header">
-                    <div>
-                        <p class="eyebrow">Files</p>
-                        <h1 id="currentPath">Filesystem Tree</h1>
-                        <p id="resultCount"></p>
-                    </div>
-                    <div class="breadcrumb" id="breadcrumb"></div>
-                </div>
-
                 <section class="treegrid-shell">
                     <div class="treegrid-wrap">
                         <table class="treegrid" aria-label="Filesystem tree grid">

@@ -83,6 +83,8 @@
 
     .window-pathbar {
         display: grid;
+        grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr);
+        align-items: start;
         gap: 12px;
         padding: 14px;
         border-bottom: 1px solid var(--line);
@@ -158,6 +160,7 @@
 
     .smart-filter-shell {
         gap: 8px;
+        min-width: 0;
     }
 
     .address-label,
@@ -175,8 +178,8 @@
     .address-value {
         display: flex;
         align-items: center;
-        min-height: 36px;
-        padding: 0 12px;
+        min-height: 40px;
+        padding: 4px 8px;
         border: 1px solid var(--line);
         border-radius: 8px;
         background: #ffffff;
@@ -184,19 +187,45 @@
         overflow: hidden;
     }
 
-    #rootPath {
-        display: inline-block;
+    .address-breadcrumb {
+        width: 100%;
         min-width: 0;
+        justify-content: flex-start;
+        gap: 2px;
+        color: var(--text);
+        font-size: 0.88rem;
+    }
+
+    .address-breadcrumb .breadcrumb-item {
+        min-width: 0;
+        max-width: 220px;
+        padding: 5px 9px;
+        background: var(--panel-soft);
+        border-color: transparent;
+        font-weight: 500;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
+    .address-breadcrumb .breadcrumb-item:hover {
+        background: var(--panel-strong);
+        border-color: var(--line);
+    }
+
+    .address-breadcrumb .breadcrumb-item.current {
+        background: #ffffff;
+        border-color: var(--line);
+        font-weight: 600;
+    }
+
+    .address-breadcrumb .breadcrumb-separator {
+        padding: 0 2px;
+        font-size: 0.72rem;
+    }
+
     .smart-filter-row {
-        display: grid;
-        grid-template-columns: minmax(280px, 1fr) repeat(4, auto);
-        gap: 8px;
-        align-items: center;
+        display: block;
     }
 
     .smart-filter-row input {
@@ -335,10 +364,7 @@
     }
 
     .panel-header {
-        display: flex;
-        justify-content: space-between;
-        gap: 14px;
-        align-items: flex-start;
+        display: block;
         padding: 14px 16px 10px;
         border-bottom: 1px solid var(--line);
         background: #ffffff;
@@ -354,10 +380,9 @@
     .breadcrumb {
         display: flex;
         flex-wrap: wrap;
-        justify-content: flex-end;
         align-items: center;
         gap: 4px;
-        min-width: 220px;
+        min-width: 0;
     }
 
     .breadcrumb-item {
@@ -801,6 +826,10 @@
             padding: 8px;
         }
 
+        .window-pathbar {
+            grid-template-columns: 1fr;
+        }
+
         .window-pathbar,
         .panel-header,
         .details-pane {
@@ -811,15 +840,6 @@
         .panel-header {
             flex-direction: column;
             align-items: stretch;
-        }
-
-        .smart-filter-row {
-            grid-template-columns: 1fr 1fr;
-        }
-
-        .breadcrumb {
-            justify-content: flex-start;
-            min-width: 0;
         }
 
         .smart-filter-meta,
@@ -833,8 +853,8 @@
     }
 
     @media (max-width: 640px) {
-        .smart-filter-row {
-            grid-template-columns: 1fr;
+        .address-breadcrumb .breadcrumb-item {
+            max-width: 140px;
         }
 
         .summary-grid {
