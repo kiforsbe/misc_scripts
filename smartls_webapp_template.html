@@ -8,18 +8,6 @@
 </head>
 <body>
     <div class="app-window">
-        <header class="window-toolbar">
-            <div class="window-toolbar-group">
-                <button id="expandAll" class="ghost-button" type="button">Expand all</button>
-                <button id="collapseAll" class="ghost-button" type="button">Collapse all</button>
-                <button id="columnPickerButton" class="ghost-button" type="button">Columns</button>
-            </div>
-            <div class="window-toolbar-group window-toolbar-meta">
-                <span id="generatedAt"></span>
-                <span id="sortMode"></span>
-            </div>
-        </header>
-
         <div class="window-pathbar">
             <div class="address-shell">
                 <span class="address-label">Location</span>
@@ -27,32 +15,25 @@
                     <span id="rootPath"></span>
                 </div>
             </div>
-            <div class="search-shell">
-                <input id="searchInput" type="search" placeholder="Search files and folders...">
-                <button id="resetFilters" class="search-button" type="button">Clear</button>
-            </div>
-        </div>
-
-        <div class="window-subtoolbar">
-            <div class="toolbar-controls">
-                <label>
-                    <span>Type</span>
-                    <select id="typeFilter">
-                        <option value="all">All entries</option>
-                        <option value="f">Files</option>
-                        <option value="d">Directories</option>
-                    </select>
-                </label>
-                <label>
-                    <span>Extension</span>
-                    <select id="extFilter">
-                        <option value="all">All extensions</option>
-                    </select>
-                </label>
-            </div>
-            <div class="toolbar-status">
-                <span id="folderCount"></span>
-                <span id="activeDirectory"></span>
+            <div class="smart-filter-shell">
+                <label class="smart-filter-label" for="searchInput">Smart filter</label>
+                <div class="smart-filter-row">
+                    <input id="searchInput" type="search" placeholder="Try: name:*mkv size:>700MB mtime:<7d type:file or mime:video/*">
+                    <button id="expandAll" class="ghost-button" type="button">Expand</button>
+                    <button id="collapseAll" class="ghost-button" type="button">Collapse</button>
+                    <button id="columnPickerButton" class="ghost-button" type="button">Columns</button>
+                    <button id="resetFilters" class="search-button" type="button">Clear</button>
+                </div>
+                <div class="smart-filter-meta">
+                    <p id="filterHint" class="filter-hint">Supports smartls-style expressions such as name, size, mtime, ctime, ext, type, mime, owner, group, permissions, empty, sparse, not, and or.</p>
+                    <div class="toolbar-status">
+                        <span id="filterStatus"></span>
+                        <span id="generatedAt"></span>
+                        <span id="sortMode"></span>
+                        <span id="folderCount"></span>
+                        <span id="activeDirectory"></span>
+                    </div>
+                </div>
             </div>
         </div>
 

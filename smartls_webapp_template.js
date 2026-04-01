@@ -21,8 +21,9 @@
     const defaultColumnOrder = optionalColumns.map((column) => column.key);
     const state = {
         query: "",
-        type: "all",
-        ext: "all",
+        compiledFilter: (node) => Boolean(node.matched),
+        filterSummary: "Smart filter ready",
+        filterError: "",
         sortKey: "name_path",
         sortDirection: "asc",
         expanded: new Set(),
@@ -39,8 +40,7 @@
         summaryGrid: document.getElementById("summaryGrid"),
         selectionDetails: document.getElementById("selectionDetails"),
         searchInput: document.getElementById("searchInput"),
-        typeFilter: document.getElementById("typeFilter"),
-        extFilter: document.getElementById("extFilter"),
+        filterStatus: document.getElementById("filterStatus"),
         resetFilters: document.getElementById("resetFilters"),
         expandAll: document.getElementById("expandAll"),
         collapseAll: document.getElementById("collapseAll"),
@@ -225,17 +225,487 @@
         menu.style.top = `${Math.min(clientY, maxTop)}px`;
     }
 
-    const summaryCards = [
-        ["Folders scanned", report.summary.folders_scanned],
-        ["Folders matched", report.summary.folders_matched],
-        ["Files listed", report.summary.files_listed],
-        ["Total size", formatSize(report.summary.total_size_bytes)],
-        ["Avg files/folder", report.summary.avg_files_per_folder],
-        ["Emptiest folder", report.summary.emptiest_folder || "-"],
-        ["Largest file", report.summary.largest_file || "-"],
-    ];
+    function parseNumericValue(token) {
+        return /^-?\d+$/.test(token) ? Number.parseInt(token, 10) : Number.parseFloat(token);
+    }
 
-    const extValues = [...new Set(report.entries.map((entry) => entry.extension).filter(Boolean))].sort();
+    function parseNumericExpr(expr) {
+        const trimmed = String(expr || "").trim();
+        const approxMatch = trimmed.match(/^~\s*(-?\d+(?:\.\d+)?)\s*(?:±|\+\/-)\s*(\d+(?:\.\d+)?)$/);
+        if (approxMatch) {
+            const center = Number.parseFloat(approxMatch[1]);
+            const delta = Number.parseFloat(approxMatch[2]);
+            return (value) => center - delta <= value && value <= center + delta;
+        }
+
+        const moduloMatch = trimmed.match(/^%\s*(\d+)$/);
+        if (moduloMatch) {
+            const divisor = Number.parseInt(moduloMatch[1], 10);
+            if (divisor === 0) {
+                throw new Error("Modulo divisor cannot be zero");
+            }
+            return (value) => value % divisor === 0;
+        }
+
+        const rangeMatch = trimmed.match(/^\s*(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)\s*$/);
+        if (rangeMatch) {
+            const lower = parseNumericValue(rangeMatch[1]);
+            const upper = parseNumericValue(rangeMatch[2]);
+            if (lower > upper) {
+                throw new Error("Range lower bound cannot exceed upper bound");
+            }
+            return (value) => lower <= value && value <= upper;
+        }
+
+        if (trimmed.includes(",")) {
+            const values = new Set(trimmed.split(",").map((part) => part.trim()).filter(Boolean).map(parseNumericValue));
+            if (!values.size) {
+                throw new Error("Empty enumeration expression");
+            }
+            return (value) => values.has(value);
+        }
+
+        const comparisonMatch = trimmed.match(/^(<=|>=|!=|=|<|>)\s*(-?\d+(?:\.\d+)?)$/);
+        if (comparisonMatch) {
+            const operator = comparisonMatch[1];
+            const threshold = parseNumericValue(comparisonMatch[2]);
+            if (operator === "=") {
+                return (value) => value === threshold;
+            }
+            if (operator === "!=") {
+                return (value) => value !== threshold;
+            }
+            if (operator === ">") {
+                return (value) => value > threshold;
+            }
+            if (operator === ">=") {
+                return (value) => value >= threshold;
+            }
+            if (operator === "<") {
+                return (value) => value < threshold;
+            }
+            return (value) => value <= threshold;
+        }
+
+        if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+            const exact = parseNumericValue(trimmed);
+            return (value) => value === exact;
+        }
+
+        throw new Error(`Unsupported numeric expression: ${trimmed}`);
+    }
+
+    function normalizeSizeToken(token) {
+        const match = String(token || "").trim().match(/^(-?\d+(?:\.\d+)?)(B|KB|MB|GB|TB)?$/i);
+        if (!match) {
+            throw new Error(`Invalid size token: ${token}`);
+        }
+        const value = Number.parseFloat(match[1]);
+        const unit = (match[2] || "B").toUpperCase();
+        const units = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 };
+        return Math.trunc(value * units[unit]);
+    }
+
+    function normalizeDurationToken(token) {
+        const match = String(token || "").trim().match(/^(-?\d+(?:\.\d+)?)([smhdw])$/i);
+        if (!match) {
+            throw new Error(`Invalid time token: ${token}`);
+        }
+        const value = Number.parseFloat(match[1]);
+        const unit = match[2].toLowerCase();
+        const secondsPerUnit = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
+        return value * secondsPerUnit[unit];
+    }
+
+    function transformNumericExpr(expr, valueTransform) {
+        const trimmed = String(expr || "").trim();
+        const approxMatch = trimmed.match(/^~\s*([^±]+?)\s*(?:±|\+\/-)\s*(.+)$/);
+        if (approxMatch) {
+            return `~${valueTransform(approxMatch[1].trim())}±${valueTransform(approxMatch[2].trim())}`;
+        }
+
+        const moduloMatch = trimmed.match(/^%\s*(.+)$/);
+        if (moduloMatch) {
+            const value = valueTransform(moduloMatch[1].trim());
+            if (!Number.isInteger(value)) {
+                throw new Error("Modulo expressions require integer values");
+            }
+            return `%${value}`;
+        }
+
+        const rangeMatch = trimmed.match(/^(.+?)\.\.(.+)$/);
+        if (rangeMatch) {
+            return `${valueTransform(rangeMatch[1].trim())}..${valueTransform(rangeMatch[2].trim())}`;
+        }
+
+        const comparisonMatch = trimmed.match(/^(<=|>=|!=|=|<|>)(.+)$/);
+        if (comparisonMatch) {
+            return `${comparisonMatch[1]}${valueTransform(comparisonMatch[2].trim())}`;
+        }
+
+        if (trimmed.includes(",")) {
+            return trimmed.split(",").map((part) => valueTransform(part.trim())).join(",");
+        }
+
+        return String(valueTransform(trimmed));
+    }
+
+    function parseSizeExpr(expr) {
+        return parseNumericExpr(transformNumericExpr(expr, normalizeSizeToken));
+    }
+
+    function parseTimeExpr(expr) {
+        return parseNumericExpr(transformNumericExpr(expr, normalizeDurationToken));
+    }
+
+    function ageSeconds(timestamp) {
+        if (!timestamp) {
+            return Number.POSITIVE_INFINITY;
+        }
+        return Math.max(0, (Date.now() / 1000) - Number(timestamp));
+    }
+
+    function normalizeExtension(extension) {
+        const value = String(extension || "").trim().toLowerCase();
+        if (!value) {
+            return "";
+        }
+        return value.startsWith(".") ? value : `.${value}`;
+    }
+
+    function tokenizeQuery(text) {
+        const tokens = [];
+        let current = "";
+        let quote = null;
+
+        for (const character of String(text || "")) {
+            if (quote) {
+                if (character === quote) {
+                    quote = null;
+                } else {
+                    current += character;
+                }
+                continue;
+            }
+
+            if (character === '"' || character === "'") {
+                quote = character;
+                continue;
+            }
+
+            if (/\s/.test(character)) {
+                if (current) {
+                    tokens.push(current);
+                    current = "";
+                }
+                continue;
+            }
+
+            current += character;
+        }
+
+        if (current) {
+            tokens.push(current);
+        }
+
+        return tokens;
+    }
+
+    function globToRegExp(pattern) {
+        const source = String(pattern || "")
+            .replace(/[|\\{}()[\]^$+?.]/g, "\\$&")
+            .replace(/\*/g, ".*")
+            .replace(/\?/g, ".");
+        return new RegExp(`^${source}$`, "i");
+    }
+
+    function createStringMatcher(rawValue) {
+        const value = String(rawValue || "").trim();
+        if (!value) {
+            throw new Error("Filter value cannot be empty");
+        }
+        if (value.includes("*") || value.includes("?")) {
+            const regex = globToRegExp(value);
+            return (candidate) => regex.test(String(candidate || ""));
+        }
+        const lowered = value.toLowerCase();
+        return (candidate) => String(candidate || "").toLowerCase().includes(lowered);
+    }
+
+    function pathTail(value, segmentCount) {
+        const normalized = displayPath(value || "");
+        const parts = normalized.split("/").filter(Boolean);
+        if (!parts.length) {
+            return normalized || "-";
+        }
+        return parts.slice(-segmentCount).join("/");
+    }
+
+    function searchBlob(node) {
+        return [
+            displayName(node),
+            node.name_path,
+            displayPath(node.absolute_path),
+            displayPath(node.path),
+            node.extension,
+            node.mime_type,
+            node.owner,
+            node.group,
+            node.permissions_text,
+            node.permissions_octal,
+        ].filter(Boolean).join(" ").toLowerCase();
+    }
+
+    function normalizeTypeToken(value) {
+        const lowered = String(value || "").trim().toLowerCase();
+        if (["f", "file", "files"].includes(lowered)) {
+            return "f";
+        }
+        if (["d", "dir", "dirs", "directory", "directories", "folder", "folders"].includes(lowered)) {
+            return "d";
+        }
+        throw new Error(`Unknown type filter: ${value}`);
+    }
+
+    function buildFieldPredicate(fieldName, rawValue) {
+        const field = ({
+            modified: "mtime",
+            mtime: "mtime",
+            created: "ctime",
+            ctime: "ctime",
+            accessed: "atime",
+            atime: "atime",
+            extension: "ext",
+            ext: "ext",
+            depth: "depth",
+            "depth-filter": "depth",
+            count: "count",
+            children: "count",
+            files: "files",
+            dirs: "dirs",
+            type: "type",
+            name: "name",
+            size: "size",
+            empty: "empty",
+            sparse: "sparse",
+            mime: "mime",
+            owner: "owner",
+            group: "group",
+            permissions: "permissions",
+            permission: "permissions",
+            perm: "permissions",
+            path: "path",
+            full: "path",
+            relative: "relative",
+        })[String(fieldName || "").trim().toLowerCase()];
+
+        if (!field) {
+            throw new Error(`Unknown filter field: ${fieldName}`);
+        }
+
+        if (["empty", "sparse"].includes(field)) {
+            if (rawValue) {
+                throw new Error(`${field} does not take a value`);
+            }
+        }
+
+        if (field === "count") {
+            const matcher = parseNumericExpr(rawValue);
+            return (node) => node.entryType === "d" && matcher(Number(node.direct_children ?? 0));
+        }
+        if (field === "files") {
+            const matcher = parseNumericExpr(rawValue);
+            return (node) => node.entryType === "d" && matcher(Number(node.recursive_files ?? 0));
+        }
+        if (field === "dirs") {
+            const matcher = parseNumericExpr(rawValue);
+            return (node) => node.entryType === "d" && matcher(Number(node.direct_dirs ?? 0));
+        }
+        if (field === "size") {
+            const matcher = parseSizeExpr(rawValue);
+            return (node) => matcher(Number(node.size_bytes ?? 0));
+        }
+        if (field === "mtime") {
+            const matcher = parseTimeExpr(rawValue);
+            return (node) => matcher(ageSeconds(node.modified_ts));
+        }
+        if (field === "ctime") {
+            const matcher = parseTimeExpr(rawValue);
+            return (node) => matcher(ageSeconds(node.created_ts));
+        }
+        if (field === "atime") {
+            const matcher = parseTimeExpr(rawValue);
+            return (node) => matcher(ageSeconds(node.accessed_ts));
+        }
+        if (field === "name") {
+            const matcher = createStringMatcher(rawValue);
+            return (node) => matcher(displayName(node));
+        }
+        if (field === "ext") {
+            const allowed = new Set(String(rawValue || "").split(",").map((part) => normalizeExtension(part)).filter(Boolean));
+            if (!allowed.size) {
+                throw new Error("Extension filter cannot be empty");
+            }
+            return (node) => node.entryType === "f" && allowed.has(normalizeExtension(node.extension));
+        }
+        if (field === "depth") {
+            const matcher = parseNumericExpr(rawValue);
+            return (node) => matcher(Number(node.depth ?? 0));
+        }
+        if (field === "type") {
+            const expected = normalizeTypeToken(rawValue);
+            return (node) => node.entryType === expected;
+        }
+        if (field === "empty") {
+            return (node) => node.entryType === "d" && Number(node.recursive_files ?? 0) === 0;
+        }
+        if (field === "sparse") {
+            return (node) => node.entryType === "d" && Number(node.recursive_files ?? 0) <= 3;
+        }
+        if (field === "mime") {
+            const matcher = createStringMatcher(rawValue);
+            return (node) => matcher(node.mime_type || "");
+        }
+        if (field === "owner") {
+            const matcher = createStringMatcher(rawValue);
+            return (node) => matcher(node.owner || "");
+        }
+        if (field === "group") {
+            const matcher = createStringMatcher(rawValue);
+            return (node) => matcher(node.group || "");
+        }
+        if (field === "permissions") {
+            const matcher = createStringMatcher(rawValue);
+            return (node) => matcher(node.permissions_text || node.permissions_octal || "");
+        }
+        if (field === "path") {
+            const matcher = createStringMatcher(rawValue);
+            return (node) => matcher(displayPath(node.absolute_path || node.path || node.name_path || ""));
+        }
+        if (field === "relative") {
+            const matcher = createStringMatcher(rawValue);
+            return (node) => matcher(displayPath(node.path || node.name_path || ""));
+        }
+        throw new Error(`Unsupported filter field: ${fieldName}`);
+    }
+
+    function buildFreeTextPredicate(token) {
+        const lowered = String(token || "").trim().toLowerCase();
+        if (!lowered) {
+            return () => true;
+        }
+        return (node) => searchBlob(node).includes(lowered);
+    }
+
+    function compileSmartFilter(text) {
+        const trimmed = String(text || "").trim();
+        if (!trimmed) {
+            return {
+                predicate: (node) => Boolean(node.matched),
+                summary: "Smart filter ready",
+            };
+        }
+
+        const tokens = tokenizeQuery(trimmed);
+        const groups = [[]];
+        let negateNext = false;
+        let clauseCount = 0;
+
+        for (let index = 0; index < tokens.length; index += 1) {
+            const token = tokens[index];
+            const lowered = token.toLowerCase();
+
+            if (["or", "||", "--or"].includes(lowered)) {
+                if (!groups[groups.length - 1].length) {
+                    throw new Error("or must follow a filter term");
+                }
+                groups.push([]);
+                continue;
+            }
+
+            if (["not", "!", "--not"].includes(lowered)) {
+                negateNext = !negateNext;
+                continue;
+            }
+
+            let predicate;
+            if (token.startsWith("--")) {
+                const fieldName = token.slice(2);
+                const canonicalField = ({
+                    modified: "mtime",
+                    created: "ctime",
+                    accessed: "atime",
+                    extension: "ext",
+                    permission: "permissions",
+                    perm: "permissions",
+                })[fieldName.toLowerCase()] || fieldName.toLowerCase();
+                const isValueLess = ["empty", "sparse"].includes(canonicalField);
+                let rawValue = "";
+                if (!isValueLess) {
+                    if (index + 1 >= tokens.length) {
+                        throw new Error(`Missing value for --${fieldName}`);
+                    }
+                    rawValue = tokens[index + 1];
+                    index += 1;
+                }
+                predicate = buildFieldPredicate(canonicalField, rawValue);
+            } else {
+                const separatorIndex = token.indexOf(":");
+                if (separatorIndex > 0) {
+                    const fieldName = token.slice(0, separatorIndex);
+                    const rawValue = token.slice(separatorIndex + 1);
+                    const knownField = [
+                        "name", "size", "mtime", "modified", "ctime", "created", "atime", "accessed", "ext", "extension", "depth", "depth-filter", "type",
+                        "count", "children", "files", "dirs", "empty", "sparse", "mime", "owner", "group", "permissions", "permission", "perm", "path", "full", "relative",
+                    ].includes(fieldName.toLowerCase());
+                    if (knownField) {
+                        predicate = buildFieldPredicate(fieldName, rawValue);
+                    } else {
+                        predicate = buildFreeTextPredicate(token);
+                    }
+                } else {
+                    predicate = buildFreeTextPredicate(token);
+                }
+            }
+
+            if (negateNext) {
+                const inner = predicate;
+                predicate = (node) => !inner(node);
+                negateNext = false;
+            }
+
+            groups[groups.length - 1].push(predicate);
+            clauseCount += 1;
+        }
+
+        if (negateNext) {
+            throw new Error("not must be followed by a filter");
+        }
+
+        if (!groups.every((group) => group.length)) {
+            throw new Error("or cannot terminate a filter");
+        }
+
+        return {
+            predicate: (node) => Boolean(node.matched) && groups.some((group) => group.every((filter) => filter(node))),
+            summary: `${clauseCount} clause${clauseCount === 1 ? "" : "s"} active${groups.length > 1 ? ` across ${groups.length} groups` : ""}`,
+        };
+    }
+
+    function compactDisplayValue(value, segmentCount) {
+        const normalized = displayPath(value || "");
+        if (!normalized) {
+            return "-";
+        }
+        const tail = pathTail(normalized, segmentCount);
+        return tail.length < normalized.length ? `.../${tail}` : tail;
+    }
+
+    function renderFilterStatus() {
+        elements.filterStatus.classList.toggle("is-error", Boolean(state.filterError));
+        elements.filterStatus.textContent = state.filterError || state.filterSummary;
+        elements.filterStatus.title = state.filterError || state.filterSummary;
+    }
 
     function buildNodeTree() {
         nodeMap.clear();
@@ -289,13 +759,22 @@
         elements.generatedAt.textContent = `Generated ${generatedAt.primary} ${generatedAt.secondary}`.trim();
         elements.generatedAt.title = generatedAt.full;
         updateSortDisplay();
-        elements.summaryGrid.innerHTML = summaryCards.map(([label, value]) => `
+        const summaryCards = [
+            { label: "Folders scanned", value: String(report.summary.folders_scanned), title: String(report.summary.folders_scanned) },
+            { label: "Folders matched", value: String(report.summary.folders_matched), title: String(report.summary.folders_matched) },
+            { label: "Files listed", value: String(report.summary.files_listed), title: String(report.summary.files_listed) },
+            { label: "Total size", value: formatSize(report.summary.total_size_bytes), title: String(report.summary.total_size_bytes ?? 0) },
+            { label: "Avg files/folder", value: String(report.summary.avg_files_per_folder), title: String(report.summary.avg_files_per_folder) },
+            { label: "Emptiest folder", value: compactDisplayValue(report.summary.emptiest_folder || "-", 2), title: displayPath(report.summary.emptiest_folder || "-") },
+            { label: "Largest file", value: compactDisplayValue(report.summary.largest_file || "-", 2), title: displayPath(report.summary.largest_file || "-") },
+        ];
+        elements.summaryGrid.innerHTML = summaryCards.map(({ label, value, title }) => `
             <article class="summary-card">
                 <span>${escapeHtml(label)}</span>
-                <strong>${escapeHtml(value)}</strong>
+                <strong title="${escapeHtml(title)}">${escapeHtml(value)}</strong>
             </article>
         `).join("");
-        elements.extFilter.innerHTML += extValues.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
+        renderFilterStatus();
     }
 
     function selectionItems(node) {
@@ -326,7 +805,7 @@
         elements.selectionDetails.innerHTML = selectionItems(selectedNode()).map(([label, value]) => `
             <div class="selection-row">
                 <span class="selection-label">${escapeHtml(label)}</span>
-                <span class="selection-value">${escapeHtml(value)}</span>
+                <span class="selection-value" title="${escapeHtml(value)}">${escapeHtml(value)}</span>
             </div>
         `).join("");
     }
@@ -393,24 +872,7 @@
     }
 
     function nodeMatches(node) {
-        const query = state.query.trim().toLowerCase();
-        const typeMatches = state.type === "all" || node.entryType === state.type;
-        const extMatches = state.ext === "all" || node.extension === state.ext;
-        const queryMatches = !query || [
-            node.name_path,
-            displayPath(node.absolute_path),
-            displayPath(node.path),
-            node.extension,
-            node.mime_type,
-            node.owner,
-            node.group,
-            node.permissions_text,
-        ]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase()
-            .includes(query);
-        return Boolean(node.matched) && typeMatches && extMatches && queryMatches;
+        return state.compiledFilter(node);
     }
 
     function sortValue(node, key) {
@@ -517,7 +979,7 @@
     }
 
     function collectVisibleRows() {
-        const hasFilter = Boolean(state.query.trim()) || state.type !== "all" || state.ext !== "all";
+        const hasFilter = Boolean(state.query.trim());
         const rows = [];
         const directMatchCount = { value: 0 };
         const direction = state.sortDirection === "asc" ? 1 : -1;
@@ -574,12 +1036,16 @@
         elements.resultCount.textContent = `${rows.length} visible items · ${directMatchCount} direct matches`;
         elements.folderCount.textContent = `${report.directories.length} folders`;
         elements.activeDirectory.textContent = selectedDirectory
-            ? `Selected folder: ${displayPath(selectedDirectory.path || selectedDirectory.name_path || "-")}`
+            ? `Selected: ${compactDisplayValue(selectedDirectory.path || selectedDirectory.name_path || "-", 2)}`
+            : `${state.expanded.size} expanded folders`;
+        elements.activeDirectory.title = selectedDirectory
+            ? displayPath(selectedDirectory.path || selectedDirectory.name_path || "-")
             : `${state.expanded.size} expanded folders`;
         elements.currentPath.textContent = selected ? displayName(selected) : "Filesystem Tree";
         updateSortDisplay();
         buildBreadcrumb();
         renderSelectionDetails();
+        renderFilterStatus();
 
         const visibleColumns = visibleOptionalColumns();
 
@@ -629,30 +1095,27 @@
     function wireControls() {
         elements.searchInput.addEventListener("input", (event) => {
             state.query = event.target.value;
-            renderTable();
-        });
-
-        elements.typeFilter.addEventListener("change", (event) => {
-            state.type = event.target.value;
-            renderTable();
-        });
-
-        elements.extFilter.addEventListener("change", (event) => {
-            state.ext = event.target.value;
+            try {
+                const compiled = compileSmartFilter(state.query);
+                state.compiledFilter = compiled.predicate;
+                state.filterSummary = compiled.summary;
+                state.filterError = "";
+            } catch (error) {
+                state.filterError = error instanceof Error ? error.message : String(error);
+            }
             renderTable();
         });
 
         elements.resetFilters.addEventListener("click", () => {
             state.query = "";
-            state.type = "all";
-            state.ext = "all";
+            state.compiledFilter = (node) => Boolean(node.matched);
+            state.filterSummary = "Smart filter ready";
+            state.filterError = "";
             state.sortKey = "name_path";
             state.sortDirection = "asc";
             state.shownColumns = new Set(["type", "size", "modified"]);
             state.columnOrder = [...defaultColumnOrder];
             elements.searchInput.value = "";
-            elements.typeFilter.value = "all";
-            elements.extFilter.value = "all";
             state.expanded = defaultExpandedPaths();
             renderColumnOptions();
             renderTable();
