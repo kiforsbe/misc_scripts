@@ -123,6 +123,28 @@ python compare_package_versions.py --no-color "requests==2.31.0"
 #### Requires
 - packaging
 
+### media-to-mp3.py
+Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.
+
+#### Usage Examples
+```bash
+# Convert one file
+python media-to-mp3.py video.mkv
+
+# Convert multiple files
+python media-to-mp3.py file1.mkv file2.mp4 file3.webm
+
+# Convert using wildcard patterns (quoted so the script expands them itself)
+python media-to-mp3.py "*.mkv" "subfolder/**/*.mp4"
+
+# Overwrite existing MP3 outputs
+python media-to-mp3.py --force file1.mkv file2.mp4
+```
+
+#### Requires
+- FFmpeg (`ffmpeg` and `ffprobe` on PATH)
+- tqdm (optional, for a richer progress bar)
+
 ### smartls.py
 A smart directory explorer for querying files and folders with composable filters, metadata-aware sorting, and multiple output modes. It scans a filesystem tree once, aggregates directory metadata, and can render the filtered result set as a tree, flat list, JSON, or CSV.
 
