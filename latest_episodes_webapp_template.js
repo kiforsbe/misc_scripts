@@ -8,7 +8,7 @@
 // - Automatic scrolling to selected episodes
 // - Filter state preservation in URLs
 //
-// URL Format: ?series=SeriesName&season=1&episode=5&search=term&watchStatus=watched
+// URL Format: ?series=SeriesName&season=1&episode=5&version=2&search=term&watchStatus=watched
 // Legacy Hash Format: #episode:SeriesName:1:5
 
 const ENABLE_EPISODE_NAME_SEARCH = false;
@@ -16,6 +16,7 @@ const ENABLE_EPISODE_NAME_SEARCH = false;
 class LatestEpisodesApp {
     constructor() {
         this.data = EPISODES_DATA;
+        this.episodeVersionGroups = new Map();
         this.normalizeEpisodeData();
         this.filteredEpisodes = [];
         this.virtualRows = [];
@@ -72,18 +73,85 @@ class LatestEpisodesApp {
         }
 
         const seriesCountByTitle = new Map();
+        const versionGroups = new Map();
+
         this.data.episodes.forEach((episode) => {
             const title = episode?.metadata?.title || 'Unknown';
+            const season = this.getEpisodeSeasonNumber(episode);
+            const canonicalEpisode = this.getCanonicalEpisodeNumber(episode);
+            const versionNumber = this.getEpisodeVersionNumber(episode);
+            const versionGroupKey = this.getEpisodeVersionGroupKey(title, season, canonicalEpisode);
+
             seriesCountByTitle.set(title, (seriesCountByTitle.get(title) || 0) + 1);
+
+            if (!versionGroups.has(versionGroupKey)) {
+                versionGroups.set(versionGroupKey, []);
+            }
+
+            versionGroups.get(versionGroupKey).push(episode);
         });
+
+        this.episodeVersionGroups = new Map(
+            Array.from(versionGroups.entries()).map(([groupKey, episodes]) => {
+                const hasExplicitVersionInfo = episodes.some((episode) => this.hasExplicitEpisodeVersion(episode));
+                const labelByFilePath = new Map();
+                const versionNumbers = Array.from(new Set(episodes.map((episode) => this.getEpisodeVersionNumber(episode)))).sort((a, b) => a - b);
+                let familyBadges = [];
+
+                if (!hasExplicitVersionInfo && episodes.length > 1) {
+                    const sortedDuplicates = [...episodes].sort((a, b) => this.compareEpisodesByVariantDate(a, b));
+                    familyBadges = sortedDuplicates.map((episode, index) => {
+                        const label = `d${index + 1}`;
+                        labelByFilePath.set(episode.file_path, label);
+                        return label;
+                    });
+                } else {
+                    familyBadges = versionNumbers.length > 1
+                        ? versionNumbers.map((value) => `v${value}`)
+                        : (versionNumbers[0] > 1 ? [`v${versionNumbers[0]}`] : []);
+
+                    episodes.forEach((episode) => {
+                        const label = familyBadges.length ? `v${this.getEpisodeVersionNumber(episode)}` : '';
+                        if (label) {
+                            labelByFilePath.set(episode.file_path, label);
+                        }
+                    });
+                }
+
+                return [
+                    groupKey,
+                    {
+                        familyBadges,
+                        versionNumbers,
+                        labelByFilePath,
+                        hasExplicitVersionInfo
+                    }
+                ];
+            })
+        );
 
         this.data.episodes.forEach((episode) => {
             const metadata = episode.metadata || {};
             const title = metadata.title || 'Unknown';
+            const season = this.getEpisodeSeasonNumber(episode);
+            const canonicalEpisode = this.getCanonicalEpisodeNumber(episode);
+            const versionNumber = this.getEpisodeVersionNumber(episode);
+            const versionGroupKey = this.getEpisodeVersionGroupKey(title, season, canonicalEpisode);
+            const versionFamily = this.episodeVersionGroups.get(versionGroupKey) || null;
+            const versionNumbers = versionFamily?.versionNumbers || [versionNumber];
 
             if (episode.series_episode_count == null) {
                 episode.series_episode_count = seriesCountByTitle.get(title) || 0;
             }
+
+            episode._episodeSeasonNumber = season;
+            episode._canonicalEpisodeNumber = canonicalEpisode;
+            episode._episodeVersionNumber = versionNumber;
+            episode._episodeVersionGroupKey = versionGroupKey;
+            episode._episodeVersionNumbers = versionNumbers;
+            episode._episodeVersionBadges = versionFamily?.familyBadges || [];
+            episode._episodeVariantLabel = versionFamily?.labelByFilePath?.get(episode.file_path) || '';
+            episode._hasMultipleVersions = episode._episodeVersionBadges.length > 1;
 
             if (!episode.series_metadata && metadata.series_metadata) {
                 episode.series_metadata = metadata.series_metadata;
@@ -111,6 +179,178 @@ class LatestEpisodesApp {
 
             this.cacheEpisodeFilterFields(episode);
         });
+    }
+
+    getPositiveInteger(value, fallback) {
+        const parsed = Number.parseInt(value, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    getEpisodeSeasonNumber(episode) {
+        return this.getPositiveInteger(episode?.metadata?.season, 1);
+    }
+
+    getCanonicalEpisodeNumber(episode) {
+        const metadata = episode?.metadata || {};
+        return this.getPositiveInteger(metadata.original_episode, this.getPositiveInteger(metadata.episode, 0));
+    }
+
+    getEpisodeVersionNumber(episode) {
+        return this.getPositiveInteger(episode?.metadata?.version, 1);
+    }
+
+    hasExplicitEpisodeVersion(episode) {
+        return episode?.metadata?.version != null && episode.metadata.version !== '';
+    }
+
+    getEpisodeVersionGroupKey(seriesTitle, season, episodeNumber) {
+        return [seriesTitle || 'Unknown', season || 1, episodeNumber || 0].join('::');
+    }
+
+    getEpisodeVariantTimestamp(episode) {
+        const metadata = episode?.metadata || {};
+        const created = Number(metadata.created_time);
+        const modified = Number(metadata.modified_time);
+        const downloaded = Number(episode?.download_timestamp);
+        const primary = Number.isFinite(created) ? created : (Number.isFinite(modified) ? modified : downloaded);
+        const secondary = Number.isFinite(modified) ? modified : (Number.isFinite(created) ? created : downloaded);
+
+        return {
+            primary: Number.isFinite(primary) ? primary : 0,
+            secondary: Number.isFinite(secondary) ? secondary : 0
+        };
+    }
+
+    compareEpisodesByVariantDate(a, b) {
+        const aTime = this.getEpisodeVariantTimestamp(a);
+        const bTime = this.getEpisodeVariantTimestamp(b);
+
+        if (aTime.primary !== bTime.primary) {
+            return aTime.primary - bTime.primary;
+        }
+
+        if (aTime.secondary !== bTime.secondary) {
+            return aTime.secondary - bTime.secondary;
+        }
+
+        return String(a.file_path || '').localeCompare(String(b.file_path || ''));
+    }
+
+    getEpisodeVariantLabel(episode) {
+        return episode?._episodeVariantLabel || '';
+    }
+
+    getEpisodeVersionBadges(episode) {
+        if (!episode || !Array.isArray(episode._episodeVersionBadges)) {
+            return [];
+        }
+
+        return episode._episodeVersionBadges;
+    }
+
+    renderEpisodeVersionBadges(episode, containerClass = 'episode-version-badges') {
+        const versionBadges = this.getEpisodeVersionBadges(episode);
+        if (!versionBadges.length) {
+            return '';
+        }
+
+        return `
+            <div class="${containerClass}">
+                ${versionBadges.map((label) => `<span class="badge episode-version-badge">${this.escapeHtml(label)}</span>`).join('')}
+            </div>
+        `;
+    }
+
+    renderEpisodeDateBlock(episode, dateText, blockClass = 'episode-date-block') {
+        const versionBadges = this.renderEpisodeVersionBadges(episode);
+        if (!versionBadges) {
+            return `<div class="episode-date">${this.escapeHtml(dateText)}</div>`;
+        }
+
+        return `
+            <div class="${blockClass}">
+                <div class="episode-date">${this.escapeHtml(dateText)}</div>
+                ${versionBadges}
+            </div>
+        `;
+    }
+
+    renderDetailsVersionBlock(episode) {
+        const versionBadges = this.renderEpisodeVersionBadges(episode, 'episode-version-badges details-version-badges');
+        if (!versionBadges) {
+            return '';
+        }
+
+        return `
+            <div class="details-version-row">
+                <strong>Versions:</strong>
+                ${versionBadges}
+            </div>
+        `;
+    }
+
+    compareEpisodesBySeriesOrder(a, b) {
+        const seasonDifference = this.getEpisodeSeasonNumber(a) - this.getEpisodeSeasonNumber(b);
+        if (seasonDifference !== 0) {
+            return seasonDifference;
+        }
+
+        const episodeDifference = this.getCanonicalEpisodeNumber(a) - this.getCanonicalEpisodeNumber(b);
+        if (episodeDifference !== 0) {
+            return episodeDifference;
+        }
+
+        const versionDifference = this.getEpisodeVersionNumber(a) - this.getEpisodeVersionNumber(b);
+        if (versionDifference !== 0) {
+            return versionDifference;
+        }
+
+        return this.compareEpisodesByVariantDate(a, b);
+    }
+
+    findEpisodeIndexByIdentity(episodes, seriesTitle, season, episodeNumber, versionNumber = null, variantLabel = null) {
+        let matchedIndex = -1;
+        let fallbackIndex = -1;
+        let fallbackVersion = -1;
+        let fallbackTimestamp = -1;
+
+        episodes.forEach((episode, index) => {
+            const matchesSeries = episode.metadata.title === seriesTitle;
+            const matchesSeason = this.getEpisodeSeasonNumber(episode) === season;
+            const matchesEpisode = this.getCanonicalEpisodeNumber(episode) === episodeNumber;
+
+            if (!matchesSeries || !matchesSeason || !matchesEpisode) {
+                return;
+            }
+
+            const currentVersion = this.getEpisodeVersionNumber(episode);
+            const currentTimestamp = this.getEpisodeVariantTimestamp(episode).primary;
+
+            if (variantLabel) {
+                if (this.getEpisodeVariantLabel(episode) === variantLabel && matchedIndex === -1) {
+                    matchedIndex = index;
+                }
+                return;
+            }
+
+            if (versionNumber != null) {
+                if (currentVersion === versionNumber && matchedIndex === -1) {
+                    matchedIndex = index;
+                }
+                return;
+            }
+
+            if (
+                currentVersion > fallbackVersion ||
+                (currentVersion === fallbackVersion && currentTimestamp > fallbackTimestamp)
+            ) {
+                fallbackIndex = index;
+                fallbackVersion = currentVersion;
+                fallbackTimestamp = currentTimestamp;
+            }
+        });
+
+        return matchedIndex !== -1 ? matchedIndex : fallbackIndex;
     }
 
     buildEpisodeSearchIndex(episode) {
@@ -1514,7 +1754,10 @@ class LatestEpisodesApp {
             ? (rawEpisodeTitle || episode.metadata.title)
             : episode.metadata.title;
         const seriesEpisodes = this.getSeriesEpisodes(episode.metadata.title);
+        const hasMultipleSeasons = new Set(seriesEpisodes.map((seriesEpisode) => this.getEpisodeSeasonNumber(seriesEpisode))).size > 1;
         const episodeCount = seriesEpisodes.length;
+        const seasonNumber = this.getEpisodeSeasonNumber(episode);
+        const episodeNumber = this.getCanonicalEpisodeNumber(episode);
         const thumbnailData = this.getThumbnailData(episode);
         const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
         const animUrl = thumbnailData && thumbnailData.animated_thumbnail ? thumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
@@ -1528,18 +1771,18 @@ class LatestEpisodesApp {
                         `<img src="${imgSrc}" alt="Episode thumbnail" loading="${imageLoading}" decoding="${imageDecoding}" fetchpriority="high" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.375rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">` : 
                         ''}
                     <div style="${staticUrl ? 'display: none;' : 'display: flex;'} width: 100%; height: 100%; align-items: center; justify-content: center;">
-                        ${episode.metadata.episode || '?'}
+                        ${episodeNumber || '?'}
                     </div>
                 </div>
                 <div class="episode-content">
                     <div class="episode-series">
-                        ${this.escapeHtml(displayTitle)}
+                        ${this.escapeHtml(displayTitle)}${hasMultipleSeasons ? ` <span class="episode-series-season">S${seasonNumber}</span>` : ''}
                     </div>
                     <div class="episode-meta">
-                        <span>Episode ${episode.metadata.episode}${this.getEpisodeCountDisplay(episode, episodeCount)}</span>
+                        <span>Season ${seasonNumber} - Episode ${episodeNumber}${this.getEpisodeCountDisplay(episode, episodeCount)}</span>
                     </div>
                     ${this.renderRatingInfo(episode, 'compact')}
-                    <div class="episode-date">${downloadDate.toLocaleDateString()}</div>
+                    ${this.renderEpisodeDateBlock(episode, downloadDate.toLocaleDateString())}
                 </div>
             </div>
         `;
@@ -1627,7 +1870,9 @@ class LatestEpisodesApp {
         const container = document.getElementById('episode-details');
 
         const downloadDate = new Date(episode.download_date);
-        const episodeTitle = episode.metadata.episode_title || `Episode ${episode.metadata.episode}`;
+        const seasonNumber = this.getEpisodeSeasonNumber(episode);
+        const episodeNumber = this.getCanonicalEpisodeNumber(episode);
+        const episodeTitle = episode.metadata.episode_title || `Episode ${episodeNumber}`;
         const seriesTitle = episode.metadata.title;
         const thumbnailData = this.getThumbnailData(episode);
         const staticUrl = thumbnailData && thumbnailData.static_thumbnail ? thumbnailData.static_thumbnail.replace(/\\/g, '/') : null;
@@ -1648,13 +1893,13 @@ class LatestEpisodesApp {
                              onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" 
                              data-anim-url="${imgAnim || ''}" data-static-url="${imgSrc}">
                         <div style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center;">
-                            ${episode.metadata.episode || '?'}
+                            ${episodeNumber || '?'}
                         </div>
                     </div>
                 ` : ''}
                 <h2 class="details-title">${this.escapeHtml(seriesTitle)}</h2>
-                <p class="details-subtitle">Season ${episode.metadata.season || 1}, Episode ${episode.metadata.episode}</p>
-                ${episodeTitle !== `Episode ${episode.metadata.episode}` ? `<p class="episode-subtitle">${this.escapeHtml(episodeTitle)}</p>` : ''}
+                <p class="details-subtitle">Season ${seasonNumber}, Episode ${episodeNumber}</p>
+                ${episodeTitle !== `Episode ${episodeNumber}` ? `<p class="episode-subtitle">${this.escapeHtml(episodeTitle)}</p>` : ''}
             </div>
             
             <div class="details-grid">
@@ -1665,7 +1910,8 @@ class LatestEpisodesApp {
                     </h4>
                     <p><strong>Downloaded:</strong> ${downloadDate.toLocaleString()}</p>
                     <p><strong>File Size:</strong> ${this.formatFileSize(episode.file_size)}</p>
-                    <p><strong>Episode:</strong> S${episode.metadata.season || 1}E${episode.metadata.episode}</p>
+                    <p><strong>Episode:</strong> S${seasonNumber}E${episodeNumber}</p>
+                    ${this.renderDetailsVersionBlock(episode)}
         `;
         
         // Add episode metadata if available
@@ -1806,7 +2052,9 @@ class LatestEpisodesApp {
                 const epAnimUrl = epThumbnailData && epThumbnailData.animated_thumbnail ? epThumbnailData.animated_thumbnail.replace(/\\/g, '/') : null;
                 const epImgSrc = epStaticUrl ? this.buildUrl(epStaticUrl) : '';
                 const epImgAnim = epAnimUrl ? this.buildUrl(epAnimUrl) : '';
-                const epTitle = ep.metadata.episode_title || `Episode ${ep.metadata.episode}`;
+                const epSeasonNumber = this.getEpisodeSeasonNumber(ep);
+                const epEpisodeNumber = this.getCanonicalEpisodeNumber(ep);
+                const epTitle = ep.metadata.episode_title || `Episode ${epEpisodeNumber}`;
                 const epDownloadDate = new Date(ep.download_date);
                 
                 detailsHtml += `
@@ -1818,7 +2066,7 @@ class LatestEpisodesApp {
                                 `<img src="${epImgSrc}" alt="Episode thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" style="width: 100%; height: 100%; border-radius: 0.25rem;" onmouseenter="if(this.dataset.animUrl) this.src=this.dataset.animUrl" onmouseleave="if(this.dataset.animUrl) this.src=this.dataset.staticUrl" data-anim-url="${epImgAnim || ''}" data-static-url="${epImgSrc}">` : 
                                 ''}
                             <div style="${epStaticUrl ? 'display: none;' : 'display: flex;'} width: 100%; height: 100%; align-items: center; justify-content: center;">
-                                ${ep.metadata.episode || '?'}
+                                ${epEpisodeNumber || '?'}
                             </div>
                         </div>
                         <div class="series-episode-info">
@@ -1827,7 +2075,11 @@ class LatestEpisodesApp {
                                 ${this.escapeHtml(epTitle)}
                             </div>
                             <div class="series-episode-meta">
-                                S${ep.metadata.season || 1}E${ep.metadata.episode} • ${epDownloadDate.toLocaleDateString()}
+                                <div class="series-episode-code">S${epSeasonNumber}E${epEpisodeNumber}</div>
+                                <div class="episode-date-block series-episode-date-block">
+                                    <div class="episode-date series-episode-date">${epDownloadDate.toLocaleDateString()}</div>
+                                    ${this.renderEpisodeVersionBadges(ep, 'episode-version-badges series-episode-version-badges')}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1840,11 +2092,30 @@ class LatestEpisodesApp {
             `;
         }
         
+        const episodeFiles = this.getEpisodeVersions(episode);
+
         // File Information
         detailsHtml += `
             <div class="file-info">
                 <h5><i class="bi bi-file-play"></i> File Information</h5>
-                <div class="file-path">${this.escapeHtml(episode.file_path)}</div>
+                ${episodeFiles.length > 1 ? `
+                    <div class="episode-file-list">
+                        ${episodeFiles.map((episodeFile) => {
+                            const variantLabel = this.getEpisodeVariantLabel(episodeFile) || `v${this.getEpisodeVersionNumber(episodeFile)}`;
+                            const isSelectedFile = episodeFile.file_path === episode.file_path;
+
+                            return `
+                                <div class="episode-file-entry${isSelectedFile ? ' current' : ''}">
+                                    <div class="episode-file-entry-header">
+                                        <span class="badge episode-version-badge">${this.escapeHtml(variantLabel)}</span>
+                                        ${isSelectedFile ? '<span class="episode-file-current-label">Current</span>' : ''}
+                                    </div>
+                                    <div class="file-path">${this.escapeHtml(episodeFile.file_path)}</div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                ` : `<div class="file-path">${this.escapeHtml(episode.file_path)}</div>`}
                 <div style="margin-top: 1rem;">
                     <button class="btn btn-outline-primary btn-sm" onclick="app.copyEpisodeUrl()" title="Copy shareable link to this episode">
                         <i class="bi bi-share"></i> Share Episode
@@ -1904,12 +2175,17 @@ class LatestEpisodesApp {
     
     getSeriesEpisodes(seriesTitle) {
         return this.data.episodes.filter(ep => ep.metadata.title === seriesTitle)
-            .sort((a, b) => {
-                const aSeason = a.metadata.season || 1;
-                const bSeason = b.metadata.season || 1;
-                if (aSeason !== bSeason) return aSeason - bSeason;
-                return (a.metadata.episode || 0) - (b.metadata.episode || 0);
-            });
+            .sort((a, b) => this.compareEpisodesBySeriesOrder(a, b));
+    }
+
+    getEpisodeVersions(episode) {
+        if (!episode || !episode._episodeVersionGroupKey) {
+            return episode ? [episode] : [];
+        }
+
+        return this.data.episodes
+            .filter((candidate) => candidate._episodeVersionGroupKey === episode._episodeVersionGroupKey)
+            .sort((a, b) => this.compareEpisodesBySeriesOrder(a, b));
     }
     
     getEpisodeCountDisplay(episode, availableCount) {
@@ -2015,11 +2291,15 @@ class LatestEpisodesApp {
         if (!episode) return;
         
         const urlParams = new URLSearchParams();
+        const versionNumber = this.getEpisodeVersionNumber(episode);
+        const variantLabel = this.getEpisodeVariantLabel(episode);
         
         // Add episode identification
         urlParams.set('series', encodeURIComponent(episode.metadata.title));
-        urlParams.set('season', episode.metadata.season || 1);
-        urlParams.set('episode', episode.metadata.episode);
+        urlParams.set('season', this.getEpisodeSeasonNumber(episode));
+        urlParams.set('episode', this.getCanonicalEpisodeNumber(episode));
+        urlParams.set('version', versionNumber);
+        if (variantLabel) urlParams.set('variant', variantLabel);
         
         // Add current filters to maintain state
         if (this.combinedQuery) urlParams.set('search', this.combinedQuery);
@@ -2031,8 +2311,10 @@ class LatestEpisodesApp {
         const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
         const state = {
             series: episode.metadata.title,
-            season: episode.metadata.season || 1,
-            episode: episode.metadata.episode,
+            season: this.getEpisodeSeasonNumber(episode),
+            episode: this.getCanonicalEpisodeNumber(episode),
+            version: versionNumber,
+            variant: variantLabel,
             filters: {
                 search: this.combinedQuery,
                 watchStatus: this.watchStatusFilter,
@@ -2052,8 +2334,10 @@ class LatestEpisodesApp {
         const urlParams = new URLSearchParams();
         if (episode && episode.metadata && episode.metadata.title) {
             urlParams.set('list', encodeURIComponent(episode.metadata.title));
-            urlParams.set('season', episode.metadata.season || 1);
-            urlParams.set('episode', episode.metadata.episode);
+            urlParams.set('season', this.getEpisodeSeasonNumber(episode));
+            urlParams.set('episode', this.getCanonicalEpisodeNumber(episode));
+            urlParams.set('version', this.getEpisodeVersionNumber(episode));
+            if (this.getEpisodeVariantLabel(episode)) urlParams.set('variant', this.getEpisodeVariantLabel(episode));
         }
 
         if (this.combinedQuery) urlParams.set('search', this.combinedQuery);
@@ -2065,8 +2349,10 @@ class LatestEpisodesApp {
         const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
         const state = {
             list: episode && episode.metadata ? episode.metadata.title : null,
-            season: episode && episode.metadata ? (episode.metadata.season || 1) : null,
-            episode: episode && episode.metadata ? episode.metadata.episode : null,
+            season: episode && episode.metadata ? this.getEpisodeSeasonNumber(episode) : null,
+            episode: episode && episode.metadata ? this.getCanonicalEpisodeNumber(episode) : null,
+            version: episode && episode.metadata ? this.getEpisodeVersionNumber(episode) : null,
+            variant: episode && episode.metadata ? this.getEpisodeVariantLabel(episode) : null,
             filters: {
                 search: this.combinedQuery,
                 watchStatus: this.watchStatusFilter,
@@ -2142,7 +2428,7 @@ class LatestEpisodesApp {
             if (state.episode) {
                 if (this.isMobile()) this.showListOnMobile();
                 // When URL uses `list`, on mobile we want to keep the list view visible
-                this.navigateToEpisode(state.list, state.season || 1, state.episode, this.isMobile());
+                this.navigateToEpisode(state.list, state.season || 1, state.episode, this.isMobile(), state.version ?? null, state.variant ?? null);
             } else {
                 // list-only: apply filters and clear selection
                 this.applyFilters(state.filters || {});
@@ -2163,7 +2449,7 @@ class LatestEpisodesApp {
         } else if (state.series) {
             if (state.episode) {
                 if (this.isMobile()) this.showMainOnMobile();
-                this.navigateToEpisode(state.series, state.season || 1, state.episode);
+                this.navigateToEpisode(state.series, state.season || 1, state.episode, false, state.version ?? null, state.variant ?? null);
             } else {
                 // series-only without episode -> treat as list view default
                 this.applyFilters(state.filters || {});
@@ -2263,6 +2549,8 @@ class LatestEpisodesApp {
         const series = decodeURIComponent(urlParams.get(paramName));
         const season = parseInt(urlParams.get('season')) || 1;
         const episode = parseInt(urlParams.get('episode'));
+        const version = urlParams.has('version') ? (parseInt(urlParams.get('version')) || 1) : null;
+        const variant = urlParams.get('variant') || null;
 
         // On mobile, `list` indicates we should show the list view instead
         if (this.isMobile() && paramName === 'list') {
@@ -2271,7 +2559,7 @@ class LatestEpisodesApp {
             this.showMainOnMobile();
         }
 
-        this.navigateToEpisode(series, season, episode);
+        this.navigateToEpisode(series, season, episode, false, version, variant);
     }
 
     navigateUsingUrlParams(urlParams) {
@@ -2281,6 +2569,8 @@ class LatestEpisodesApp {
         const title = decodeURIComponent(urlParams.get(param));
         const season = parseInt(urlParams.get('season')) || 1;
         const episode = parseInt(urlParams.get('episode'));
+        const version = urlParams.has('version') ? (parseInt(urlParams.get('version')) || 1) : null;
+        const variant = urlParams.get('variant') || null;
 
         if (this.isMobile()) {
             if (isList) {
@@ -2293,15 +2583,18 @@ class LatestEpisodesApp {
         }
 
         // If this is a `list` URL on mobile, suppress switching to main view when selecting the episode
-        this.navigateToEpisode(title, season, episode, (isList && this.isMobile()));
+        this.navigateToEpisode(title, season, episode, (isList && this.isMobile()), version, variant);
     }
     
-    navigateToEpisode(seriesTitle, season, episodeNumber, suppressMobileToggle = false) {
+    navigateToEpisode(seriesTitle, season, episodeNumber, suppressMobileToggle = false, versionNumber = null, variantLabel = null) {
         // Find the episode in filtered results
-        const episodeIndex = this.filteredEpisodes.findIndex(ep => 
-            ep.metadata.title === seriesTitle && 
-            (ep.metadata.season || 1) === season && 
-            ep.metadata.episode === episodeNumber
+        const episodeIndex = this.findEpisodeIndexByIdentity(
+            this.filteredEpisodes,
+            seriesTitle,
+            season,
+            episodeNumber,
+            versionNumber,
+            variantLabel
         );
         
         if (episodeIndex !== -1) {
@@ -2311,10 +2604,13 @@ class LatestEpisodesApp {
         } else {
             // Episode not found, might be filtered out
             // Try to find in all episodes
-            const allEpisodeIndex = this.data.episodes.findIndex(ep => 
-                ep.metadata.title === seriesTitle && 
-                (ep.metadata.season || 1) === season && 
-                ep.metadata.episode === episodeNumber
+            const allEpisodeIndex = this.findEpisodeIndexByIdentity(
+                this.data.episodes,
+                seriesTitle,
+                season,
+                episodeNumber,
+                versionNumber,
+                variantLabel
             );
             
             if (allEpisodeIndex !== -1) {
@@ -2323,10 +2619,13 @@ class LatestEpisodesApp {
                 this.filterAndDisplayEpisodes();
                 
                 // Try to find again after clearing filters
-                const newIndex = this.filteredEpisodes.findIndex(ep => 
-                    ep.metadata.title === seriesTitle && 
-                    (ep.metadata.season || 1) === season && 
-                    ep.metadata.episode === episodeNumber
+                const newIndex = this.findEpisodeIndexByIdentity(
+                    this.filteredEpisodes,
+                    seriesTitle,
+                    season,
+                    episodeNumber,
+                    versionNumber,
+                    variantLabel
                 );
                 
                 if (newIndex !== -1) {
@@ -2404,8 +2703,10 @@ class LatestEpisodesApp {
         
         const urlParams = new URLSearchParams();
         urlParams.set('series', encodeURIComponent(episode.metadata.title));
-        urlParams.set('season', episode.metadata.season || 1);
-        urlParams.set('episode', episode.metadata.episode);
+        urlParams.set('season', this.getEpisodeSeasonNumber(episode));
+        urlParams.set('episode', this.getCanonicalEpisodeNumber(episode));
+        urlParams.set('version', this.getEpisodeVersionNumber(episode));
+        if (this.getEpisodeVariantLabel(episode)) urlParams.set('variant', this.getEpisodeVariantLabel(episode));
         
         return `${window.location.origin}${window.location.pathname}?${urlParams.toString()}`;
     }

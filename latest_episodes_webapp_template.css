@@ -571,6 +571,12 @@ body.mobile-search-active .main-container {
   white-space: nowrap;
 }
 
+.episode-series-season {
+  font-size: 0.78em;
+  font-weight: 600;
+  color: #6c757d;
+}
+
 .episode-item {
   padding: 0.25rem 0.5rem;
   margin-bottom: 0.25rem;
@@ -609,6 +615,12 @@ body.mobile-search-active .main-container {
   color: rgba(255, 255, 255, 0.8);
 }
 
+.episode-item.selected .episode-version-badge {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: white;
+}
+
 /* Combined watch/MAL status shown as left band on episode card */
 .episode-item.status-watched {
   border-left: 0.5rem solid var(--success-color);
@@ -645,6 +657,31 @@ body.mobile-search-active .main-container {
 .episode-date {
   font-size: 0.75rem;
   color: #6c757d;
+}
+
+.episode-date-block {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.episode-version-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.episode-version-badge {
+  background: rgba(111, 66, 193, 0.12);
+  border: 1px solid rgba(111, 66, 193, 0.2);
+  border-radius: 999px;
+  color: #5b2aa1;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.28rem 0.48rem;
 }
 
 .main-content {
@@ -692,6 +729,17 @@ body.mobile-search-active .main-container {
   border: 1px solid #dee2e6;
   border-radius: 0.5rem;
   padding: 1.5rem;
+}
+
+.details-version-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.details-version-badges {
+  margin-top: -0.05rem;
 }
 
 .card-title {
@@ -782,6 +830,38 @@ body.mobile-search-active .main-container {
   font-size: 0.85rem;
   word-break: break-all;
   color: var(--secondary-color);
+}
+
+.episode-file-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.episode-file-entry {
+  padding: 0.75rem;
+  background: white;
+  border: 1px solid #dee2e6;
+  border-radius: 0.5rem;
+}
+
+.episode-file-entry.current {
+  border-color: rgba(111, 66, 193, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(111, 66, 193, 0.15);
+}
+
+.episode-file-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.episode-file-current-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--primary-color);
 }
 
 .status-badge {
@@ -883,6 +963,12 @@ body.mobile-search-active .main-container {
   border-color: var(--primary-color);
 }
 
+.series-episode-card.current .episode-version-badge {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: white;
+}
+
 .series-episode-thumbnail {
   width: 40px;
   height: 30px;
@@ -914,7 +1000,31 @@ body.mobile-search-active .main-container {
 
 .series-episode-meta {
   font-size: 0.75rem;
-  opacity: 0.8;
+  color: rgba(73, 80, 87, 0.84);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.series-episode-card.current .series-episode-meta {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.series-episode-code {
+  white-space: nowrap;
+}
+
+.series-episode-date-block {
+  min-width: 0;
+}
+
+.series-episode-date {
+  white-space: nowrap;
+}
+
+.series-episode-version-badges {
+  opacity: 1;
 }
 
 .watch-indicator {
