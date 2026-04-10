@@ -251,6 +251,17 @@ series_info_tool.py --log-level DEBUG2 file1.mkv
 - file_grouper (local module)
 - browser_utils (local module)
 
+### netflix_watch_status.py
+Reads a Netflix viewing history CSV, splits entries into movies vs. series episodes using a Netflix-specific title parser, and aggregates a basic watch summary of unique movies and unique series. It can optionally reuse the IMDb and anime metadata providers to improve classification for ambiguous titles.
+
+#### Usage Examples
+```bash
+python netflix_watch_status.py path/to/NetflixViewingHistory.csv
+python netflix_watch_status.py path/to/NetflixViewingHistory.csv --json
+python netflix_watch_status.py path/to/NetflixViewingHistory.csv --table
+python netflix_watch_status.py path/to/NetflixViewingHistory.csv --no-metadata
+```
+
 ### srt_to_transcript.py
 Saves contents of the specified `.srt` files to a plain text transcripts.
 
