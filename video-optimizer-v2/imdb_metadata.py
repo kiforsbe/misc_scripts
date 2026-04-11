@@ -285,11 +285,19 @@ class IMDbDataProvider(BaseMetadataProvider):
 
             cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
             episodes_count = cursor.fetchone()[0]
+
+            cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
+            episode_titles_count = cursor.fetchone()[0]
+
+            cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
+            akas_count = cursor.fetchone()[0]
             
             logging.info(f"Data integrity check:")
             logging.info(f"  title_basics: {basics_count}")
             logging.info(f"  title_ratings: {ratings_count}")
             logging.info(f"  title_episodes: {episodes_count}")
+            logging.info(f"  episode_titles: {episode_titles_count}")
+            logging.info(f"  title_akas: {akas_count}")
             
             # Check for orphaned ratings
             cursor = conn.execute("""
@@ -304,9 +312,23 @@ class IMDbDataProvider(BaseMetadataProvider):
                 WHERE NOT EXISTS (SELECT 1 FROM title_basics b WHERE b.id = e.parent_id)
             """)
             orphaned_episodes = cursor.fetchone()[0]
+
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM episode_titles t
+                WHERE NOT EXISTS (SELECT 1 FROM title_episodes e WHERE e.id = t.id)
+            """)
+            orphaned_episode_titles = cursor.fetchone()[0]
+
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM title_akas a
+                WHERE NOT EXISTS (SELECT 1 FROM title_basics b WHERE b.id = a.titleId)
+            """)
+            orphaned_akas = cursor.fetchone()[0]
             
             logging.info(f"  Orphaned ratings: {orphaned_ratings}")
             logging.info(f"  Orphaned episodes: {orphaned_episodes}")
+            logging.info(f"  Orphaned episode titles: {orphaned_episode_titles}")
+            logging.info(f"  Orphaned AKAs: {orphaned_akas}")
 
     def _ensure_data_loaded(self) -> None:
         """Ensure database contains current IMDb data"""
@@ -326,11 +348,15 @@ class IMDbDataProvider(BaseMetadataProvider):
         # 2. title.ratings second (filtered by MIN_VOTES_THRESHOLD)
         # 3. Then purge basics entries that didn't meet the vote threshold
         # 4. title.episode and title.akas last (only for surviving titles)
+        # 5. Prune child tables against the final surviving title set
         #
         # Note: episodes and akas are implicitly filtered by the vote threshold
         # because they load processed_tconst_ints from the already-purged
         # title_basics table. _compress_row checks parent IDs against this set,
-        # so episodes/akas for low-vote titles are never inserted.
+        # so episodes/akas for low-vote titles are never inserted. Compact
+        # episode titles are staged from title.basics earlier in the pipeline,
+        # so they are pruned after title.episode establishes the surviving
+        # episode id set.
         self._load_dataset_to_db("title.basics")
         self._load_dataset_to_db("title.ratings")
         
@@ -342,6 +368,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         
         self._load_dataset_to_db("title.episode")
         self._load_dataset_to_db("title.akas")
+        self._prune_child_tables()
         
         # Verify data integrity
         self._verify_data_integrity()
@@ -373,6 +400,54 @@ class IMDbDataProvider(BaseMetadataProvider):
             after_count = cursor.fetchone()[0]
             removed = before_count - after_count
             logging.info(f"Purged {removed} low-vote titles ({before_count} -> {after_count} remaining)")
+
+    def _prune_child_tables(self) -> None:
+        """Remove child rows that do not point at the surviving filtered title set."""
+        logging.info("Pruning child tables against surviving title_basics rows...")
+        with sqlite3.connect(self._db_path, timeout=60.0) as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+            episode_before = cursor.fetchone()[0]
+            cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
+            episode_titles_before = cursor.fetchone()[0]
+            cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
+            akas_before = cursor.fetchone()[0]
+
+            conn.execute(
+                """
+                DELETE FROM title_episodes
+                WHERE parent_id NOT IN (SELECT id FROM title_basics)
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM episode_titles
+                WHERE id NOT IN (SELECT id FROM title_episodes)
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM title_akas
+                WHERE titleId NOT IN (SELECT id FROM title_basics)
+                """
+            )
+            conn.commit()
+
+            cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+            episode_after = cursor.fetchone()[0]
+            cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
+            episode_titles_after = cursor.fetchone()[0]
+            cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
+            akas_after = cursor.fetchone()[0]
+
+            logging.info(
+                "Pruned child rows: title_episodes %s -> %s, episode_titles %s -> %s, title_akas %s -> %s",
+                episode_before,
+                episode_after,
+                episode_titles_before,
+                episode_titles_after,
+                akas_before,
+                akas_after,
+            )
 
     def _load_dataset_to_db(self, dataset_name: str) -> None:
         """Load a dataset into the database"""
