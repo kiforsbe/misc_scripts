@@ -329,6 +329,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             cursor = conn.execute("""
                 SELECT COUNT(*) FROM title_akas a
                 WHERE NOT EXISTS (SELECT 1 FROM title_basics b WHERE b.id = a.titleId)
+                AND NOT EXISTS (SELECT 1 FROM title_episodes e WHERE e.id = a.titleId)
             """)
             orphaned_akas = cursor.fetchone()[0]
             
@@ -339,7 +340,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _ensure_data_loaded(self) -> None:
         """Ensure database contains current IMDb data"""
-        if self._is_data_current() and self._has_episode_title_data() and self._has_compact_aka_layout():
+        if self._is_data_current() and self._has_episode_title_data() and self._has_compact_aka_layout() and self._has_episode_aka_data():
             logging.info("Database contains current IMDb data")
             return
 
@@ -347,6 +348,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             logging.info("IMDb cache is current but lacks compact episode title data. Reloading datasets.")
         elif self._is_data_current() and not self._has_compact_aka_layout():
             logging.info("IMDb cache is current but still uses the legacy AKA layout. Reloading datasets.")
+        elif self._is_data_current() and not self._has_episode_aka_data():
+            logging.info("IMDb cache is current but lacks episode-linked AKA data. Reloading datasets.")
 
         logging.info("Loading IMDb datasets into database...")
         
@@ -435,6 +438,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 """
                 DELETE FROM title_akas
                 WHERE titleId NOT IN (SELECT id FROM title_basics)
+                AND titleId NOT IN (SELECT id FROM title_episodes)
                 """
             )
             conn.commit()
@@ -532,12 +536,10 @@ class IMDbDataProvider(BaseMetadataProvider):
                 
                 # Track processed tconst integers for cross-dataset linking
                 processed_tconst_ints = set()
-                
+
                 # Load existing tconst integers if this isn't the first dataset
                 if dataset_name != "title.basics":
-                    cursor = conn.execute("SELECT id FROM title_basics")
-                    for row in cursor.fetchall():
-                        processed_tconst_ints.add(row[0])
+                    processed_tconst_ints = self._load_linkable_tconst_ints(conn, dataset_name)
                     logging.info(f"Loaded {len(processed_tconst_ints)} existing tconst integers for {dataset_name}")
                 
                 # Read and process data in chunks with aggressive filtering
@@ -811,6 +813,20 @@ class IMDbDataProvider(BaseMetadataProvider):
         
         return None
 
+    def _load_linkable_tconst_ints(self, conn: sqlite3.Connection, dataset_name: str) -> set[int]:
+        processed_tconst_ints: set[int] = set()
+
+        cursor = conn.execute("SELECT id FROM title_basics")
+        for row in cursor.fetchall():
+            processed_tconst_ints.add(row[0])
+
+        if dataset_name == "title.akas":
+            cursor = conn.execute("SELECT id FROM title_episodes")
+            for row in cursor.fetchall():
+                processed_tconst_ints.add(row[0])
+
+        return processed_tconst_ints
+
     def _insert_episode_title_batch(self, conn: sqlite3.Connection, batch: List[Tuple]) -> None:
         """Insert compact episode title rows."""
         conn.executemany(
@@ -933,6 +949,22 @@ class IMDbDataProvider(BaseMetadataProvider):
                 aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_akas)").fetchall()]
                 fts_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_fts)").fetchall()]
                 return aka_columns == ["titleId", "title", "title_key"] and fts_columns == ["title", "titleId"]
+        except Exception:
+            return False
+
+    def _has_episode_aka_data(self) -> bool:
+        """Return True when at least one AKA row is linked to an episode id."""
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM title_akas a
+                    WHERE EXISTS (SELECT 1 FROM title_episodes e WHERE e.id = a.titleId)
+                    LIMIT 1
+                    """
+                ).fetchone()
+                return row is not None
         except Exception:
             return False
 
@@ -1406,14 +1438,31 @@ class IMDbDataProvider(BaseMetadataProvider):
         finally:
             self._return_connection(conn)
 
+    @staticmethod
+    def _normalize_episode_lookup_title(text: Optional[str]) -> str:
+        normalized = re.sub(r"[^\w\s]", " ", (text or "").lower())
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @classmethod
+    def _score_episode_title_match(cls, normalized_query: str, candidate_title: Optional[str]) -> Optional[int]:
+        normalized_title = cls._normalize_episode_lookup_title(candidate_title)
+        if not normalized_title:
+            return None
+
+        score = fuzz.ratio(normalized_query, normalized_title)
+        if normalized_query == normalized_title:
+            score += 100
+        elif normalized_query in normalized_title or normalized_title in normalized_query:
+            score += 25
+        return score
+
     def find_episode_by_title(
         self, parent_id: str, episode_title: str, season: Optional[int] = None
     ) -> Optional[EpisodeInfo]:
         """Find episode information by episode title, optionally constrained to a season."""
         self._ensure_data_loaded()
 
-        normalized_query = re.sub(r"[^\w\s]", " ", (episode_title or "").lower())
-        normalized_query = re.sub(r"\s+", " ", normalized_query).strip()
+        normalized_query = self._normalize_episode_lookup_title(episode_title)
         if not normalized_query:
             return None
 
@@ -1437,15 +1486,19 @@ class IMDbDataProvider(BaseMetadataProvider):
         try:
             params = [internal_parent_id]
             sql = """
-                SELECT e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes
+                SELECT e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes,
+                GROUP_CONCAT(a.title, '<<<AKA>>>') AS aka_titles
                 FROM title_episodes e
                 LEFT JOIN episode_titles t ON e.id = t.id
                 LEFT JOIN title_ratings r ON e.id = r.id
+                LEFT JOIN title_akas a ON e.id = a.titleId
                 WHERE e.parent_id = ?
             """
             if season is not None:
                 sql += " AND e.season = ?"
                 params.append(season)
+
+            sql += " GROUP BY e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes"
 
             cursor = conn.execute(sql, tuple(params))
             candidates = cursor.fetchall()
@@ -1455,17 +1508,27 @@ class IMDbDataProvider(BaseMetadataProvider):
             best_row = None
             best_score = -1
             for row in candidates:
-                row_title = row["title"] or ""
-                normalized_title = re.sub(r"[^\w\s]", " ", row_title.lower())
-                normalized_title = re.sub(r"\s+", " ", normalized_title).strip()
-                if not normalized_title:
-                    continue
+                candidate_titles: List[str] = []
+                if row["title"]:
+                    candidate_titles.append(row["title"])
 
-                score = fuzz.ratio(normalized_query, normalized_title)
-                if normalized_query == normalized_title:
-                    score += 100
-                elif normalized_query in normalized_title or normalized_title in normalized_query:
-                    score += 25
+                aka_titles = row["aka_titles"] or ""
+                if aka_titles:
+                    for aka_title in aka_titles.split('<<<AKA>>>'):
+                        if aka_title:
+                            candidate_titles.append(aka_title)
+
+                score = max(
+                    (
+                        candidate_score
+                        for candidate_score in (
+                            self._score_episode_title_match(normalized_query, candidate_title)
+                            for candidate_title in candidate_titles
+                        )
+                        if candidate_score is not None
+                    ),
+                    default=-1,
+                )
 
                 if score > best_score:
                     best_score = score
