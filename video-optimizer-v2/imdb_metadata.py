@@ -38,7 +38,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "ordering", "title", "language"],
+        "title.akas": ["titleId", "ordering", "title", "region", "language", "types", "attributes", "isOriginalTitle"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
@@ -49,6 +49,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     RECENT_YEAR_CUTOFF = 1900     # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = False  # Filter out adult content keywords (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
+    FILTER_AKA_BY_LANGUAGE = False  # False = keep AKA rows from all regions/languages during import
     AKA_ALLOWED_LANGUAGES = ("en", "jp")  # Keep only these AKA languages during import (None = keep all)
 
     MAX_RETRIES = 3
@@ -167,6 +168,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                         titleId INTEGER NOT NULL,
                         title TEXT NOT NULL,
                         title_key TEXT NOT NULL,
+                        region TEXT,
+                        language TEXT,
+                        types TEXT,
+                        attributes TEXT,
+                        is_original_title INTEGER,
                         PRIMARY KEY (titleId, title_key)
                     ) WITHOUT ROWID;
 
@@ -220,9 +226,13 @@ class IMDbDataProvider(BaseMetadataProvider):
     def _drop_legacy_aka_schema(self, conn: sqlite3.Connection) -> None:
         """Drop legacy AKA/FTS tables when their schema no longer matches the compact layout."""
         aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_akas)").fetchall()]
-        if aka_columns and aka_columns != ["titleId", "title", "title_key"]:
+        if aka_columns and aka_columns != ["titleId", "title", "title_key", "region", "language", "types", "attributes", "is_original_title"]:
             conn.execute("DROP TABLE IF EXISTS title_fts")
             conn.execute("DROP TABLE IF EXISTS title_akas")
+
+        raw_aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(raw_title_akas)").fetchall()]
+        if raw_aka_columns and raw_aka_columns != ["titleId", "ordering", "title", "title_key", "region", "language", "types", "attributes", "is_original_title"]:
+            conn.execute("DROP TABLE IF EXISTS raw_title_akas")
 
         fts_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_fts)").fetchall()]
         if fts_columns and fts_columns != ["title", "titleId"]:
@@ -563,7 +573,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                     aka_title_id_idx = header.index("titleId") if dataset_name == "title.akas" else -1
                     aka_ordering_idx = header.index("ordering") if dataset_name == "title.akas" else -1
                     aka_title_idx = header.index("title") if dataset_name == "title.akas" else -1
+                    aka_region_idx = header.index("region") if dataset_name == "title.akas" else -1
                     aka_language_idx = header.index("language") if dataset_name == "title.akas" else -1
+                    aka_types_idx = header.index("types") if dataset_name == "title.akas" else -1
+                    aka_attributes_idx = header.index("attributes") if dataset_name == "title.akas" else -1
+                    aka_is_original_title_idx = header.index("isOriginalTitle") if dataset_name == "title.akas" else -1
                     
                     batch = []
                     episode_title_batch = []
@@ -585,7 +599,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                                 aka_title_id_idx,
                                 aka_ordering_idx,
                                 aka_title_idx,
+                                aka_region_idx,
                                 aka_language_idx,
+                                aka_types_idx,
+                                aka_attributes_idx,
+                                aka_is_original_title_idx,
                                 processed_tconst_ints,
                             )
                             if language_filtered:
@@ -708,7 +726,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     logging.info(f"Total AKAs in database: {count}")
                     allowed_aka_languages = self._get_allowed_aka_languages()
                     logging.info(
-                        "IMDb AKA language filter active: configured=%s normalized=%s kept_by_language=%s filtered_by_language=%s",
+                        "IMDb AKA language filter enabled=%s configured=%s normalized=%s kept_by_language=%s filtered_by_language=%s",
+                        self.FILTER_AKA_BY_LANGUAGE,
                         ", ".join(self.AKA_ALLOWED_LANGUAGES) if self.AKA_ALLOWED_LANGUAGES else "<all>",
                         ", ".join(allowed_aka_languages) if allowed_aka_languages else "<all>",
                         aka_language_kept_counts,
@@ -770,6 +789,8 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     @classmethod
     def _get_allowed_aka_languages(cls) -> Optional[Tuple[str, ...]]:
+        if not cls.FILTER_AKA_BY_LANGUAGE:
+            return None
         if cls.AKA_ALLOWED_LANGUAGES is None:
             return None
         normalized_languages = []
@@ -797,9 +818,13 @@ class IMDbDataProvider(BaseMetadataProvider):
         title_id_idx: int,
         ordering_idx: int,
         title_idx: int,
+        region_idx: int,
         language_idx: int,
+        types_idx: int,
+        attributes_idx: int,
+        is_original_title_idx: int,
         processed_tconst_ints: set,
-    ) -> Tuple[Optional[Tuple[int, int, str, str]], Optional[str], bool]:
+    ) -> Tuple[Optional[Tuple[int, int, str, str, Optional[str], Optional[str], Optional[str], Optional[str], Optional[int]]], Optional[str], bool]:
         language_value = fields[language_idx] if language_idx < len(fields) else None
         if language_value in (None, "", "\\N"):
             normalized_language = None
@@ -828,11 +853,28 @@ class IMDbDataProvider(BaseMetadataProvider):
         if not normalized_title:
             return None, normalized_language, False
 
+        region_value = self._normalize_space_collapsed_text(fields[region_idx]) if region_idx < len(fields) and fields[region_idx] not in (None, "", "\\N") else None
+        types_value = self._normalize_space_collapsed_text(fields[types_idx]) if types_idx < len(fields) and fields[types_idx] not in (None, "", "\\N") else None
+        attributes_value = self._normalize_space_collapsed_text(fields[attributes_idx]) if attributes_idx < len(fields) and fields[attributes_idx] not in (None, "", "\\N") else None
+        is_original_title_value = fields[is_original_title_idx] if is_original_title_idx < len(fields) else None
+        if is_original_title_value in (None, "", "\\N"):
+            normalized_is_original_title = None
+        else:
+            try:
+                normalized_is_original_title = int(is_original_title_value)
+            except (ValueError, TypeError):
+                normalized_is_original_title = None
+
         return (
             title_id_int,
             ordering_int,
             normalized_title,
             self._normalize_title_key(normalized_title),
+            region_value,
+            normalized_language,
+            types_value,
+            attributes_value,
+            normalized_is_original_title,
         ), normalized_language, False
 
     @staticmethod
@@ -991,6 +1033,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                 ordering INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 title_key TEXT NOT NULL,
+                region TEXT,
+                language TEXT,
+                types TEXT,
+                attributes TEXT,
+                is_original_title INTEGER,
                 PRIMARY KEY (titleId, ordering)
             ) WITHOUT ROWID
             """
@@ -1001,8 +1048,8 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn.execute("DELETE FROM title_akas")
         conn.execute(
             """
-            INSERT OR IGNORE INTO title_akas (titleId, title, title_key)
-            SELECT titleId, title, title_key
+            INSERT OR IGNORE INTO title_akas (titleId, title, title_key, region, language, types, attributes, is_original_title)
+            SELECT titleId, title, title_key, region, language, types, attributes, is_original_title
             FROM raw_title_akas
             ORDER BY titleId, ordering
             """
@@ -1028,7 +1075,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             )
         elif dataset_name == "title.akas":
             conn.executemany(
-                "INSERT OR REPLACE INTO raw_title_akas (titleId, ordering, title, title_key) VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO raw_title_akas (titleId, ordering, title, title_key, region, language, types, attributes, is_original_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 batch
             )
 
@@ -1116,7 +1163,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             with sqlite3.connect(self._db_path, timeout=5.0) as conn:
                 aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_akas)").fetchall()]
                 fts_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_fts)").fetchall()]
-                return aka_columns == ["titleId", "title", "title_key"] and fts_columns == ["title", "titleId"]
+                return aka_columns == ["titleId", "title", "title_key", "region", "language", "types", "attributes", "is_original_title"] and fts_columns == ["title", "titleId"]
         except Exception:
             return False
 
