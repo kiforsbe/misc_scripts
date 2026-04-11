@@ -23,7 +23,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     #   title.basics: (none removed - all columns included for completeness)
     #   title.episode: (none removed - all are essential)
     #   title.ratings: (none removed - all are essential) 
-    #   title.akas: ordering, language, attributes, types (not needed for basic title lookup)
+    #   title.akas: deduplicated unique titles only; drop ordering/language metadata
     REQUIRED_COLUMNS = {
         "title.basics": [
             "tconst",
@@ -38,7 +38,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "ordering", "title", "region", "language", "isOriginalTitle"],
+        "title.akas": ["titleId", "title"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
@@ -117,6 +117,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 conn.execute("PRAGMA temp_store=MEMORY")
                 conn.execute("PRAGMA page_size=32768")  # Larger pages for better compression
                 conn.execute("PRAGMA auto_vacuum=INCREMENTAL")  # Reclaim space when data is deleted
+                self._drop_legacy_aka_schema(conn)
                 
                 # Create tables with optimized schema - compressed storage
                 conn.executescript(
@@ -147,14 +148,18 @@ class IMDbDataProvider(BaseMetadataProvider):
                         episode INTEGER
                     ) WITHOUT ROWID;
 
+                    CREATE TABLE IF NOT EXISTS episode_titles (
+                        id INTEGER PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        title_lower TEXT NOT NULL,
+                        year INTEGER
+                    ) WITHOUT ROWID;
+
                     CREATE TABLE IF NOT EXISTS title_akas (
                         titleId INTEGER NOT NULL,
-                        ordering INTEGER NOT NULL,
                         title TEXT NOT NULL,
-                        region TEXT NOT NULL,
-                        language TEXT NOT NULL,
-                        isOriginalTitle INTEGER NOT NULL,
-                        PRIMARY KEY (titleId, ordering)
+                        title_key TEXT NOT NULL,
+                        PRIMARY KEY (titleId, title_key)
                     ) WITHOUT ROWID;
 
                     CREATE TABLE IF NOT EXISTS data_version (
@@ -180,11 +185,10 @@ class IMDbDataProvider(BaseMetadataProvider):
                     FROM title_basics b
                     LEFT JOIN title_ratings r ON b.id = r.id;
                     
-                    -- FTS5 virtual table for fast title searching (now using title_akas as content)
+                    -- Standalone FTS5 virtual table for fast title searching across deduplicated AKAs.
                     CREATE VIRTUAL TABLE IF NOT EXISTS title_fts USING fts5(
                         title,
-                        content='title_akas',
-                        content_rowid='titleId',
+                        titleId UNINDEXED,
                         tokenize='porter unicode61'
                     );
                 """
@@ -203,6 +207,17 @@ class IMDbDataProvider(BaseMetadataProvider):
         except Exception as e:
             logging.error(f"Failed to initialize database: {str(e)}")
             raise
+
+    def _drop_legacy_aka_schema(self, conn: sqlite3.Connection) -> None:
+        """Drop legacy AKA/FTS tables when their schema no longer matches the compact layout."""
+        aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_akas)").fetchall()]
+        if aka_columns and aka_columns != ["titleId", "title", "title_key"]:
+            conn.execute("DROP TABLE IF EXISTS title_fts")
+            conn.execute("DROP TABLE IF EXISTS title_akas")
+
+        fts_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_fts)").fetchall()]
+        if fts_columns and fts_columns != ["title", "titleId"]:
+            conn.execute("DROP TABLE IF EXISTS title_fts")
 
     def _load_cache_duration(self) -> None:
         try:
@@ -295,12 +310,14 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _ensure_data_loaded(self) -> None:
         """Ensure database contains current IMDb data"""
-        if self._is_data_current() and self._has_episode_title_data():
+        if self._is_data_current() and self._has_episode_title_data() and self._has_compact_aka_layout():
             logging.info("Database contains current IMDb data")
             return
 
         if self._is_data_current() and not self._has_episode_title_data():
-            logging.info("IMDb cache is current but lacks episode title data. Reloading datasets.")
+            logging.info("IMDb cache is current but lacks compact episode title data. Reloading datasets.")
+        elif self._is_data_current() and not self._has_compact_aka_layout():
+            logging.info("IMDb cache is current but still uses the legacy AKA layout. Reloading datasets.")
 
         logging.info("Loading IMDb datasets into database...")
         
@@ -422,12 +439,14 @@ class IMDbDataProvider(BaseMetadataProvider):
                 # Clear existing data
                 if dataset_name == "title.basics":
                     conn.execute("DELETE FROM title_basics")
+                    conn.execute("DELETE FROM episode_titles")
                 elif dataset_name == "title.ratings":
                     conn.execute("DELETE FROM title_ratings")
                 elif dataset_name == "title.episode":
                     conn.execute("DELETE FROM title_episodes")
                 elif dataset_name == "title.akas":
                     conn.execute("DELETE FROM title_akas")
+                    conn.execute("DELETE FROM title_fts")
                 
                 # Track processed tconst integers for cross-dataset linking
                 processed_tconst_ints = set()
@@ -453,6 +472,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     ]
                     
                     batch = []
+                    episode_title_batch = []
                     pbar = tqdm(desc=f"Processing {dataset_name}", unit="rows")
 
                     for line in f:
@@ -469,7 +489,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                                 value = fields[col_idx]
                                 if value == "\\N" or value == "":
                                     value = None
-                                elif required_cols[i] in ["startYear", "endYear", "runtimeMinutes", "seasonNumber", "episodeNumber", "numVotes", "ordering"]:
+                                elif required_cols[i] in ["startYear", "endYear", "runtimeMinutes", "seasonNumber", "episodeNumber", "numVotes"]:
                                     try:
                                         value = int(value) if value else None
                                     except (ValueError, TypeError):
@@ -484,11 +504,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                                         value = float(value) if value else None
                                     except (ValueError, TypeError):
                                         value = None
-                                elif required_cols[i] == "isOriginalTitle":
-                                    try:
-                                        value = int(value) if value in ["0", "1"] else 0
-                                    except (ValueError, TypeError):
-                                        value = 0
                             else:
                                 value = None
                             row_data.append(value)
@@ -502,24 +517,38 @@ class IMDbDataProvider(BaseMetadataProvider):
                         # Convert to compressed format
                         compressed_row = self._compress_row(dataset_name, row_data, required_cols, processed_tconst_ints)
                         if compressed_row:
-                            batch.append(compressed_row['row'])
-                            if len(batch) >= chunk_size:
-                                self._insert_compressed_batch(conn, dataset_name, batch)
-                                batch = []
-                                pbar.update(chunk_size)
+                            if dataset_name == "title.basics" and compressed_row.get("episode_row"):
+                                episode_title_batch.append(compressed_row["episode_row"])
+                            elif compressed_row.get("row"):
+                                batch.append(compressed_row['row'])
+
+                            pending_rows = len(batch) + len(episode_title_batch)
+                            if pending_rows >= chunk_size:
+                                inserted_rows = len(batch) + len(episode_title_batch)
+                                if batch:
+                                    self._insert_compressed_batch(conn, dataset_name, batch)
+                                    batch = []
+                                if episode_title_batch:
+                                    self._insert_episode_title_batch(conn, episode_title_batch)
+                                    episode_title_batch = []
+                                pbar.update(inserted_rows)
 
                     # Insert remaining batches
                     if batch:
                         self._insert_compressed_batch(conn, dataset_name, batch)
                         pbar.update(len(batch))
+                    if episode_title_batch:
+                        self._insert_episode_title_batch(conn, episode_title_batch)
+                        pbar.update(len(episode_title_batch))
 
                     pbar.close()
 
                 # Update version metadata used by cache freshness/status checks.
                 self._upsert_dataset_version(conn, dataset_name, source_last_modified_ts)
 
-                # After all akas are inserted, rebuild the FTS table from the content table (like anime_metadata.py)
-                conn.execute("INSERT INTO title_fts(title_fts) VALUES('rebuild')")
+                # Rebuild FTS only after deduplicated AKA rows are populated.
+                if dataset_name == "title.akas":
+                    self._rebuild_title_fts(conn)
                 
                 conn.commit()
                 logging.info(f"Loaded {kept_rows}/{processed_rows} rows from {dataset_name} (filtered {processed_rows - kept_rows})")
@@ -537,6 +566,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                     cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
                     count = cursor.fetchone()[0]
                     logging.info(f"Total titles in database: {count}")
+                    cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
+                    episode_title_count = cursor.fetchone()[0]
+                    logging.info(f"Total compact episode titles in database: {episode_title_count}")
                 elif dataset_name == "title.akas":
                     cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
                     count = cursor.fetchone()[0]
@@ -553,7 +585,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             data_dict = dict(zip(required_cols, row_data))
             title_type = data_dict.get('titleType', '')
 
-            # Keep episode rows so we can resolve episode numbers by title later.
+            # Keep episode rows in a dedicated compact table for episode title lookup.
             if title_type == 'tvEpisode':
                 return True
             
@@ -602,8 +634,18 @@ class IMDbDataProvider(BaseMetadataProvider):
             if tconst_int is None:
                 return None
             
+            if data_dict['titleType'] == 'tvEpisode':
+                return {
+                    'episode_row': (
+                        tconst_int,
+                        data_dict['primaryTitle'] or '',
+                        (data_dict['primaryTitle'] or '').lower(),
+                        data_dict['startYear'],
+                    )
+                }
+
             # Map title type to integer
-            type_map = {'movie': 1, 'tvSeries': 2, 'tvMiniSeries': 3, 'tvEpisode': 4}
+            type_map = {'movie': 1, 'tvSeries': 2, 'tvMiniSeries': 3}
             type_int = type_map.get(data_dict['titleType'], 1)
             
             # Compress genres - only keep first 3, joined with commas
@@ -657,8 +699,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                 parent_tconst_int = None
             
             if parent_tconst_int and parent_tconst_int in processed_tconst_ints and tconst_int:
-                processed_tconst_ints.add(tconst_int)
-                
                 return {
                     'row': (tconst_int, parent_tconst_int,
                            data_dict.get('seasonNumber'), data_dict.get('episodeNumber'))
@@ -676,16 +716,32 @@ class IMDbDataProvider(BaseMetadataProvider):
             # Only keep akas for titles we have in basics
             if titleId_int not in processed_tconst_ints:
                 return None
+            normalized_title = re.sub(r"\s+", " ", (data_dict.get('title', '') or '').strip())
+            if not normalized_title:
+                return None
             return {
-                'row': (titleId_int,
-                       data_dict.get('ordering', 1) or 1,
-                       data_dict.get('title', '') or '',
-                       data_dict.get('region', '') or '',
-                       data_dict.get('language', '') or '',
-                       data_dict.get('isOriginalTitle', 0) or 0)
+                'row': (
+                    titleId_int,
+                    normalized_title,
+                    normalized_title.casefold(),
+                )
             }
         
         return None
+
+    def _insert_episode_title_batch(self, conn: sqlite3.Connection, batch: List[Tuple]) -> None:
+        """Insert compact episode title rows."""
+        conn.executemany(
+            "INSERT OR REPLACE INTO episode_titles (id, title, title_lower, year) VALUES (?, ?, ?, ?)",
+            batch,
+        )
+
+    def _rebuild_title_fts(self, conn: sqlite3.Connection) -> None:
+        """Rebuild the standalone FTS table from deduplicated AKA rows."""
+        conn.execute("DELETE FROM title_fts")
+        conn.execute(
+            "INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas"
+        )
     
     def _insert_compressed_batch(self, conn: sqlite3.Connection, dataset_name: str, batch: List[Tuple]) -> None:
         """Insert compressed batch data"""        
@@ -706,7 +762,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             )
         elif dataset_name == "title.akas":
             conn.executemany(
-                "INSERT OR REPLACE INTO title_akas (titleId, ordering, title, region, language, isOriginalTitle) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO title_akas (titleId, title, title_key) VALUES (?, ?, ?)",
                 batch
             )
 
@@ -743,11 +799,13 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                 -- Additional index for fast episode lookup by id
                 CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episodes(id);
-                CREATE INDEX IF NOT EXISTS idx_title_episode_titles ON title_basics(type, title_lower);
+                CREATE INDEX IF NOT EXISTS idx_episode_titles_lower ON episode_titles(title_lower);
 
                 -- Indexes for akas
                 CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
                 CREATE INDEX IF NOT EXISTS idx_akas_title ON title_akas(title);
+
+                DROP INDEX IF EXISTS idx_title_episode_titles;
                 """
             )
             
@@ -760,22 +818,38 @@ class IMDbDataProvider(BaseMetadataProvider):
             
             # Optimize database file
             conn.execute("PRAGMA optimize")
-            conn.execute("PRAGMA incremental_vacuum")
             
             # Analyze tables for better query planning
             conn.execute("ANALYZE")
-            
+
+            conn.commit()
+
+            # Rebuild the file after full reload so deleted large tables/indexes actually shrink on disk.
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("VACUUM")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("INSERT INTO title_fts(title_fts) VALUES('optimize')")
             conn.commit()
             logging.info("Database optimization complete")
 
     def _has_episode_title_data(self) -> bool:
-        """Return True when the cache includes tvEpisode title rows required for title-based episode lookup."""
+        """Return True when the cache includes compact episode title rows required for title-based episode lookup."""
         try:
             with sqlite3.connect(self._db_path, timeout=5.0) as conn:
                 row = conn.execute(
-                    "SELECT 1 FROM title_basics WHERE type = 4 AND title IS NOT NULL AND title != '' LIMIT 1"
+                    "SELECT 1 FROM episode_titles WHERE title IS NOT NULL AND title != '' LIMIT 1"
                 ).fetchone()
                 return row is not None
+        except Exception:
+            return False
+
+    def _has_compact_aka_layout(self) -> bool:
+        """Return True when the cache uses the deduplicated AKA schema and standalone FTS layout."""
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_akas)").fetchall()]
+                fts_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_fts)").fetchall()]
+                return aka_columns == ["titleId", "title", "title_key"] and fts_columns == ["title", "titleId"]
         except Exception:
             return False
 
@@ -875,14 +949,15 @@ class IMDbDataProvider(BaseMetadataProvider):
             if year:
                 cursor = conn.execute(
                     """
-                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           bm25(title_fts, 10.0) AS score
+                          SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                              MIN(bm25(title_fts, 10.0)) AS score
                     FROM title_fts f
-                    JOIN search_view s ON f.rowid = s.id
+                    JOIN search_view s ON f.titleId = s.id
                     WHERE title_fts MATCH ?
                     AND s.type IN (1, 2, 3)
                     AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
                     AND s.votes >= ?
+                    GROUP BY s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes
                     ORDER BY score, s.votes DESC
                     LIMIT ?
                     """,
@@ -891,13 +966,14 @@ class IMDbDataProvider(BaseMetadataProvider):
             else:
                 cursor = conn.execute(
                     """
-                    SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                           bm25(title_fts, 10.0) AS score
+                          SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                              MIN(bm25(title_fts, 10.0)) AS score
                     FROM title_fts f
-                    JOIN search_view s ON f.rowid = s.id
+                    JOIN search_view s ON f.titleId = s.id
                     WHERE title_fts MATCH ?
                     AND s.type IN (1, 2, 3)
                     AND s.votes >= ?
+                    GROUP BY s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes
                     ORDER BY score, s.votes DESC
                     LIMIT ?
                     """,
@@ -995,9 +1071,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                 return None            # Find episode using optimized query
             cursor = conn.execute(
                 """
-                SELECT e.id, b.title, b.year, r.rating, r.votes
+                SELECT e.id, t.title, t.year, r.rating, r.votes
                 FROM title_episodes e
-                LEFT JOIN title_basics b ON e.id = b.id
+                LEFT JOIN episode_titles t ON e.id = t.id
                 LEFT JOIN title_ratings r ON e.id = r.id
                 WHERE e.parent_id = ? AND e.season = ? AND e.episode = ?
                 LIMIT 1
@@ -1059,9 +1135,9 @@ class IMDbDataProvider(BaseMetadataProvider):
         try:
             params = [internal_parent_id]
             sql = """
-                SELECT e.id, e.season, e.episode, b.title, b.year, r.rating, r.votes
+                SELECT e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes
                 FROM title_episodes e
-                LEFT JOIN title_basics b ON e.id = b.id
+                LEFT JOIN episode_titles t ON e.id = t.id
                 LEFT JOIN title_ratings r ON e.id = r.id
                 WHERE e.parent_id = ?
             """
