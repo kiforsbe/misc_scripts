@@ -903,16 +903,31 @@ def _row_thumbnail_payload(row: WatchTableRow) -> Dict[str, str]:
     }
 
 
+def _strip_unwatched_suffix(text: str) -> str:
+    return text[:-2] if text.endswith(" *") else text
+
+
+def _row_watch_state(row: WatchTableRow) -> str:
+    if row.item_type == "episode":
+        return "unwatched" if row.views == "0" else "watched"
+    return "aggregate"
+
+
 def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:
+    display_title = _strip_unwatched_suffix(row.title)
+    display_episode_title = _strip_unwatched_suffix(row.episode_title)
+    watch_state = _row_watch_state(row)
     search_text = " ".join(
         part for part in [
             row.item_type,
             row.title,
+            display_title,
             row.year,
             row.season,
             row.season_title,
             row.episode,
             row.episode_title,
+            display_episode_title,
             row.views,
             row.watch_dates,
         ] if part
@@ -923,14 +938,17 @@ def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:
         "level": row.level,
         "item_type": row.item_type,
         "title": row.title,
+        "display_title": display_title,
         "year": row.year,
         "season": row.season,
         "season_title": row.season_title,
         "episode": row.episode,
         "episode_title": row.episode_title,
+        "display_episode_title": display_episode_title,
         "views": row.views,
         "watch_dates": row.watch_dates,
         "has_children": row.has_children,
+        "watch_state": watch_state,
         "thumbnail": _row_thumbnail_payload(row),
         "search_text": search_text,
     }

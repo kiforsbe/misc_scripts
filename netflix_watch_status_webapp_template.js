@@ -21,8 +21,6 @@
 
     const elements = {
         sourceCsv: document.getElementById("sourceCsv"),
-        generatedAt: document.getElementById("generatedAt"),
-        visibleCount: document.getElementById("visibleCount"),
         searchInput: document.getElementById("searchInput"),
         treegridHeaderRow: document.getElementById("treegridHeaderRow"),
         resultBody: document.getElementById("resultBody"),
@@ -51,6 +49,24 @@
             episode: "Episode",
         };
         return labels[value] || "Item";
+    }
+
+    function displayTitle(row) {
+        return row.display_title || row.title || "";
+    }
+
+    function displayEpisodeTitle(row) {
+        return row.display_episode_title || row.episode_title || "";
+    }
+
+    function watchStateIcon(row) {
+        if (row.watch_state === "unwatched") {
+            return "●";
+        }
+        if (row.watch_state === "watched") {
+            return "○";
+        }
+        return "";
     }
 
     function buildAncestors(row) {
@@ -172,19 +188,20 @@
         }
 
         const ancestors = buildAncestors(row);
-        elements.selectionTitle.textContent = row.title || formatItemType(row.item_type);
+        elements.selectionTitle.textContent = displayTitle(row) || formatItemType(row.item_type);
         elements.selectionSubtitle.textContent = subtitleForRow(row, ancestors);
 
         renderPreview(row);
 
         const detailItems = [
             { label: "Type", value: formatItemType(row.item_type) },
-            { label: "Title", value: row.title },
+            { label: "Title", value: displayTitle(row) },
             { label: "Release Year", value: row.year },
             { label: "Season", value: row.season },
             { label: "Season Title", value: row.season_title },
             { label: "Episode", value: row.episode },
-            { label: "Episode Title", value: row.episode_title },
+            { label: "Episode Title", value: displayEpisodeTitle(row) },
+            { label: "Watch Status", value: row.watch_state === "aggregate" ? "Aggregate" : row.watch_state },
             { label: "Views", value: row.views },
             { label: "Watch Years", value: row.watch_dates },
         ];
@@ -199,9 +216,11 @@
     }
 
     function renderHeader() {
-        elements.treegridHeaderRow.innerHTML = columns.map((column, index) => `
+        const gutterHeader = '<th class="gutter-column" aria-hidden="true"></th>';
+        const dataHeaders = columns.map((column, index) => `
             <th class="${column.align === "right" ? "align-right" : ""}">${escapeHtml(column.header || column.key || `Column ${index + 1}`)}</th>
         `).join("");
+        elements.treegridHeaderRow.innerHTML = gutterHeader + dataHeaders;
     }
 
     function toggleRow(rowId) {
@@ -240,14 +259,14 @@
         const expanded = state.expanded.has(row.id);
         const toggleLabel = expanded ? "Collapse" : "Expand";
         return `
-            <div class="treecell" style="--level:${row.level}">
+            <div class="treecell ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" style="--level:${row.level}">
                 <span class="tree-indent"></span>
                 <button class="tree-toggle ${row.has_children ? "" : "is-hidden"}" data-action="toggle" data-row-id="${escapeHtml(row.id)}" aria-label="${escapeHtml(toggleLabel)}">
                     ${row.has_children ? (expanded ? "−" : "+") : ""}
                 </button>
                 <button class="tree-name-button" data-action="select" data-row-id="${escapeHtml(row.id)}">
                     <div class="tree-title-block">
-                        <span class="tree-title">${escapeHtml(row.title)}</span>
+                        <span class="tree-title">${escapeHtml(displayTitle(row))}</span>
                         <span class="tree-subtitle">${escapeHtml(rowSubtitle(row))}</span>
                     </div>
                 </button>
@@ -260,16 +279,28 @@
             return titleCellMarkup(row);
         }
         if (column.key === "episode_title" && row.item_type !== "episode") {
-            return row.episode_title ? escapeHtml(row.episode_title) : `<span class="item-pill type-${escapeHtml(row.item_type)}">${escapeHtml(formatItemType(row.item_type))}</span>`;
+            return displayEpisodeTitle(row) ? escapeHtml(displayEpisodeTitle(row)) : `<span class="item-pill type-${escapeHtml(row.item_type)}">${escapeHtml(formatItemType(row.item_type))}</span>`;
+        }
+        if (column.key === "episode_title") {
+            return escapeHtml(displayEpisodeTitle(row));
+        }
+        if (column.key === "title") {
+            return escapeHtml(displayTitle(row));
         }
         return escapeHtml(row[column.key] || "");
     }
 
+    function gutterCellMarkup(row) {
+        const statusIcon = watchStateIcon(row);
+        const statusLabel = row.watch_state === "aggregate" ? "" : row.watch_state;
+        return `<span class="status-gutter ${statusIcon ? "" : "is-empty"}" aria-label="${escapeHtml(statusLabel)}">${escapeHtml(statusIcon)}</span>`;
+    }
+
     function renderRows() {
         const visibleRows = flattenVisibleRows(null);
-        elements.visibleCount.textContent = String(visibleRows.length);
         elements.resultBody.innerHTML = visibleRows.map((row) => `
-            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""}" data-row-id="${escapeHtml(row.id)}">
+            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" data-row-id="${escapeHtml(row.id)}">
+                <td class="gutter-column">${gutterCellMarkup(row)}</td>
                 ${columns.map((column) => `<td class="${column.align === "right" ? "align-right" : ""}">${cellMarkup(row, column)}</td>`).join("")}
             </tr>
         `).join("");
@@ -304,7 +335,6 @@
     });
 
     elements.sourceCsv.textContent = report.meta && report.meta.source_csv ? report.meta.source_csv : "";
-    elements.generatedAt.textContent = report.meta && report.meta.generated_at ? report.meta.generated_at : "";
     renderHeader();
     renderSummary();
     render();

@@ -133,32 +133,25 @@ input:focus,
 }
 
 .tree-pane {
+    display: flex;
+    flex-direction: column;
     border-right: 1px solid var(--line);
     background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
+    overflow: hidden;
 }
 
 .treegrid-shell {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    height: 100%;
-}
-
-.treegrid-meta {
     display: flex;
-    gap: 18px;
-    flex-wrap: wrap;
-    padding: 14px 16px 10px;
-    border-bottom: 1px solid var(--line);
-}
-
-.treegrid-meta-item {
-    display: grid;
-    gap: 2px;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
 }
 
 .treegrid-wrap {
+    flex: 1 1 auto;
     overflow: auto;
     min-height: 0;
+    min-width: 0;
 }
 
 .treegrid {
@@ -180,6 +173,16 @@ input:focus,
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--muted);
+}
+
+.treegrid thead th.gutter-column,
+.treegrid tbody td.gutter-column {
+    width: 26px;
+    min-width: 26px;
+    max-width: 26px;
+    padding-left: 6px;
+    padding-right: 4px;
+    text-align: center;
 }
 
 .treegrid thead th.align-right,
@@ -210,6 +213,21 @@ input:focus,
     align-items: center;
     gap: 8px;
     min-width: 0;
+}
+
+.status-gutter {
+    width: 18px;
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent-strong);
+    font-size: 0.82rem;
+    line-height: 1;
+}
+
+.status-gutter.is-empty {
+    color: transparent;
 }
 
 .tree-indent {
@@ -263,6 +281,28 @@ input:focus,
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.tree-row.is-unwatched .tree-title,
+.tree-row.is-unwatched .tree-subtitle,
+.treecell.is-unwatched .tree-name-button {
+    color: color-mix(in srgb, var(--text) 48%, white);
+}
+
+.tree-row.is-unwatched td {
+    color: color-mix(in srgb, var(--text) 56%, white);
+}
+
+.tree-row.is-unwatched .status-gutter {
+    color: color-mix(in srgb, var(--muted) 82%, white);
+}
+
+.tree-row.is-selected .gutter-column {
+    background: transparent;
+}
+
+.tree-row.is-unwatched .item-pill {
+    opacity: 0.78;
 }
 
 .item-pill {
