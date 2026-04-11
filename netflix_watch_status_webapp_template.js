@@ -167,6 +167,33 @@
         return subtitle;
     }
 
+    function sourceLinkInfo(row) {
+        const sourceId = String(row.source_id || "").trim();
+        if (!sourceId) {
+            return null;
+        }
+        if (/^tt\d+$/i.test(sourceId)) {
+            return {
+                label: "IMDB",
+                url: `https://www.imdb.com/title/${encodeURIComponent(sourceId)}/`,
+            };
+        }
+        if (/^\d+$/.test(sourceId)) {
+            return {
+                label: "MAL",
+                url: `https://myanimelist.net/anime/${encodeURIComponent(sourceId)}`,
+            };
+        }
+        return null;
+    }
+
+    function sourceBadgeThemeClass(sourceLink) {
+        if (!sourceLink || !sourceLink.label) {
+            return "";
+        }
+        return `source-pill-${String(sourceLink.label).trim().toLowerCase()}`;
+    }
+
     function hasAvailableThumbnails() {
         return rows.some((row) => row.thumbnail && row.thumbnail.url);
     }
@@ -435,6 +462,11 @@
         const expanded = state.expanded.has(row.id);
         const toggleLabel = expanded ? "Collapse" : "Expand";
         const thumbnail = row.thumbnail || {};
+        const subtitle = rowSubtitle(row);
+        const sourceLink = sourceLinkInfo(row);
+        const sourceBadgeMarkup = sourceLink
+            ? `<a class="source-badge-link source-pill ${escapeHtml(sourceBadgeThemeClass(sourceLink))}" href="${escapeHtml(sourceLink.url)}" target="_blank" rel="noreferrer noopener">${escapeHtml(sourceLink.label)}</a>`
+            : "";
         const thumbnailMarkup = state.showListThumbnails
             ? (thumbnail.url
                 ? `<span class="row-thumbnail-shell"><img class="row-thumbnail" src="${escapeHtml(thumbnail.url)}" alt="${escapeHtml(thumbnail.alt || displayTitle(row))}" loading="lazy"></span>`
@@ -446,13 +478,20 @@
                 <button class="tree-toggle ${row.has_children ? "" : "is-hidden"}" data-action="toggle" data-row-id="${escapeHtml(row.id)}" aria-label="${escapeHtml(toggleLabel)}">
                     ${row.has_children ? (expanded ? "−" : "+") : ""}
                 </button>
-                <button class="tree-name-button" data-action="select" data-row-id="${escapeHtml(row.id)}">
+                <div class="tree-name-button">
                     ${thumbnailMarkup}
-                    <div class="tree-title-block">
-                        <span class="tree-title">${escapeHtml(displayTitle(row))}</span>
-                        <span class="tree-subtitle">${escapeHtml(rowSubtitle(row))}</span>
+                    <div class="tree-text-badge-group">
+                        <div class="tree-title-block">
+                            <div class="tree-title-line">
+                                <button class="tree-title-select tree-title" data-action="select" data-row-id="${escapeHtml(row.id)}">${escapeHtml(displayTitle(row))}</button>
+                            </div>
+                            <div class="tree-subtitle-line">
+                                <span class="tree-subtitle">${escapeHtml(subtitle)}</span>
+                            </div>
+                        </div>
+                        ${sourceBadgeMarkup}
                     </div>
-                </button>
+                </div>
             </div>
         `;
     }
@@ -466,6 +505,13 @@
         }
         if (column.key === "episode_title") {
             return escapeHtml(displayEpisodeTitle(row));
+        }
+        if (column.key === "source_id") {
+            const sourceLink = sourceLinkInfo(row);
+            if (sourceLink) {
+                return `<a class="source-id-link" href="${escapeHtml(sourceLink.url)}" target="_blank" rel="noreferrer noopener">${escapeHtml(row[column.key] || "")}</a>`;
+            }
+            return escapeHtml(row[column.key] || "");
         }
         if (column.key === "genres") {
             return genreBadgesMarkup(row[column.key]);

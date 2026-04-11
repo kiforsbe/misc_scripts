@@ -443,6 +443,38 @@ input:focus,
     font: inherit;
 }
 
+.tree-text-badge-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.tree-title-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.tree-subtitle-line {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.tree-title-select {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+}
+
 .tree-title-block {
     display: grid;
     gap: 2px;
@@ -501,12 +533,68 @@ input:focus,
     font-weight: 600;
 }
 
+.source-badge-link,
+.source-id-link {
+    color: var(--accent-strong);
+    text-decoration: none;
+}
+
+.source-badge-link {
+    flex: 0 0 auto;
+}
+
+.source-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: rgba(178, 7, 16, 0.08);
+    border: 1px solid rgba(178, 7, 16, 0.16);
+    color: var(--accent-strong);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.source-pill-imdb {
+    background: linear-gradient(180deg, rgba(245, 197, 24, 0.26) 0%, rgba(245, 197, 24, 0.16) 100%);
+    border-color: rgba(168, 123, 0, 0.26);
+    color: #6b4d00;
+}
+
+.source-pill-mal {
+    background: linear-gradient(180deg, rgba(46, 81, 162, 0.18) 0%, rgba(46, 81, 162, 0.11) 100%);
+    border-color: rgba(46, 81, 162, 0.26);
+    color: #21408a;
+}
+
+.source-id-link {
+    font-weight: 600;
+}
+
+.source-badge-link:hover,
+.source-id-link:hover {
+    text-decoration: underline;
+}
+
 .tree-subtitle {
+    min-width: 0;
     color: var(--muted);
     font-size: 0.76rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.app-window.list-thumbnails-mode .tree-subtitle-line {
+    align-items: center;
+}
+
+.app-window.list-thumbnails-mode .tree-text-badge-group {
+    align-items: center;
 }
 
 .tree-row.is-unwatched .tree-title,

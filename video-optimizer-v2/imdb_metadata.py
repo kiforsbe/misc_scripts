@@ -1314,11 +1314,13 @@ class IMDbDataProvider(BaseMetadataProvider):
 
             row = cursor.fetchone()
             if row:
+                episode_tconst = f"tt{row['id']:07d}" if row["id"] else None
                 episode_info = EpisodeInfo(
                     title=row["title"],
                     season=season,
                     episode=episode,
                     parent_id=parent_id,
+                    id=episode_tconst,
                     year=row["year"],
                     rating=(
                         float(row["rating"] / 10.0) if row["rating"] else None
@@ -1367,7 +1369,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         try:
             params: List[int] = [internal_parent_id]
             sql = """
-                SELECT e.season, e.episode, t.title, t.year, r.rating, r.votes
+                SELECT e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes
                 FROM title_episodes e
                 LEFT JOIN episode_titles t ON e.id = t.id
                 LEFT JOIN title_ratings r ON e.id = r.id
@@ -1392,6 +1394,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                         season=row_season,
                         episode=row_episode,
                         parent_id=parent_id,
+                        id=f"tt{row['id']:07d}" if row["id"] else None,
                         year=row["year"],
                         rating=(float(row["rating"] / 10.0) if row["rating"] else None),
                         votes=row["votes"],
@@ -1476,6 +1479,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 season=best_row["season"],
                 episode=best_row["episode"],
                 parent_id=parent_id,
+                id=f"tt{best_row['id']:07d}" if best_row["id"] else None,
                 year=best_row["year"],
                 rating=(float(best_row["rating"] / 10.0) if best_row["rating"] else None),
                 votes=best_row["votes"],

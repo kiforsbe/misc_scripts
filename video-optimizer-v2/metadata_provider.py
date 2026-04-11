@@ -37,6 +37,7 @@ class EpisodeInfo:
     season: int
     episode: int
     parent_id: str  # Reference to parent TitleInfo
+    id: Optional[str] = None
     year: Optional[int] = None
     rating: Optional[float] = None
     votes: Optional[int] = None

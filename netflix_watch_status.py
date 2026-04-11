@@ -101,6 +101,7 @@ DEFAULT_TABLE_COLUMNS = ("title", "year", "season", "season_title", "episode", "
 TABLE_COLUMN_DEFINITIONS = {
     "title": {"header": "Title", "align": "left", "max_width": 38},
     "year": {"header": "Year", "align": "right", "max_width": 10},
+    "source_id": {"header": "Source ID", "align": "left", "max_width": 14},
     "title_type": {"header": "Title Type", "align": "left", "max_width": 14},
     "runtime_minutes": {"header": "Runtime", "align": "right", "max_width": 8},
     "genres": {"header": "Genres", "align": "left", "max_width": 28},
@@ -216,6 +217,9 @@ class NetflixHistoryEntry:
     resolved_season: Optional[int] = None
     resolved_episode: Optional[int] = None
     resolved_episode_title: Optional[str] = None
+    resolved_episode_source_id: Optional[str] = None
+    resolved_episode_rating: Optional[float] = None
+    resolved_episode_votes: Optional[int] = None
     resolved_title_year: Optional[int] = None
     resolved_episode_year: Optional[int] = None
     resolved_total_seasons: Optional[int] = None
@@ -238,6 +242,9 @@ class NetflixHistoryEntry:
             "resolved_season": self.resolved_season,
             "resolved_episode": self.resolved_episode,
             "resolved_episode_title": self.resolved_episode_title,
+            "resolved_episode_source_id": self.resolved_episode_source_id,
+            "resolved_episode_rating": self.resolved_episode_rating,
+            "resolved_episode_votes": self.resolved_episode_votes,
             "resolved_title_year": self.resolved_title_year,
             "resolved_episode_year": self.resolved_episode_year,
             "resolved_total_seasons": self.resolved_total_seasons,
@@ -255,6 +262,7 @@ class WatchTableRow:
     level: int
     title: str
     year: str = ""
+    source_id: str = ""
     season: str = ""
     season_title: str = ""
     episode: str = ""
@@ -430,7 +438,7 @@ class NetflixWatchStatusAnalyzer:
             unit="entry",
         ):
             media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources = self._classify_entry(parsed, prefix_counts)
-            resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year = self._resolve_episode_metadata(
+            resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year = self._resolve_episode_metadata(
                 parsed=parsed,
                 media_kind=media_kind,
                 metadata_type=metadata_type,
@@ -452,6 +460,9 @@ class NetflixWatchStatusAnalyzer:
                     resolved_season=resolved_season,
                     resolved_episode=resolved_episode,
                     resolved_episode_title=resolved_episode_title,
+                    resolved_episode_source_id=resolved_episode_source_id,
+                    resolved_episode_rating=resolved_episode_rating,
+                    resolved_episode_votes=resolved_episode_votes,
                     resolved_title_year=resolved_title_year,
                     resolved_episode_year=resolved_episode_year,
                     resolved_total_seasons=resolved_total_seasons,
@@ -537,10 +548,13 @@ class NetflixWatchStatusAnalyzer:
         metadata_parent_id: Optional[str],
         resolved_title: str,
         resolved_total_seasons: Optional[int],
-    ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[int]]:
+    ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[str], Optional[float], Optional[int], Optional[int]]:
         resolved_season = parsed.season
         resolved_episode = parsed.episode
         resolved_episode_title = parsed.episode_title
+        resolved_episode_source_id: Optional[str] = None
+        resolved_episode_rating: Optional[float] = None
+        resolved_episode_votes: Optional[int] = None
         resolved_episode_year: Optional[int] = None
 
         if (
@@ -549,7 +563,7 @@ class NetflixWatchStatusAnalyzer:
             or metadata_provider is None
             or metadata_parent_id is None
         ):
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         lookup_season = resolved_season
         if lookup_season is None and resolved_episode is not None and resolved_total_seasons == 1:
@@ -558,7 +572,6 @@ class NetflixWatchStatusAnalyzer:
         if (
             lookup_season is not None
             and resolved_episode is not None
-            and not resolved_episode_title
             and hasattr(metadata_provider, "get_episode_info")
         ):
             try:
@@ -570,17 +583,21 @@ class NetflixWatchStatusAnalyzer:
             except Exception:
                 episode_info = None
 
-            if episode_info is not None and episode_info.title:
+            if episode_info is not None:
                 resolved_season = episode_info.season
-                resolved_episode_title = episode_info.title
+                if episode_info.title and not resolved_episode_title:
+                    resolved_episode_title = episode_info.title
+                resolved_episode_source_id = getattr(episode_info, "id", None)
+                resolved_episode_rating = getattr(episode_info, "rating", None)
+                resolved_episode_votes = getattr(episode_info, "votes", None)
                 resolved_episode_year = episode_info.year
 
         if resolved_episode is not None or not hasattr(metadata_provider, "find_episode_by_title"):
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         episode_title = self._derive_episode_title_for_lookup(parsed, resolved_title)
         if not episode_title:
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         try:
             episode_info = metadata_provider.find_episode_by_title(
@@ -589,12 +606,20 @@ class NetflixWatchStatusAnalyzer:
                 season=resolved_season,
             )
         except Exception:
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         if episode_info is None:
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
-        return episode_info.season, episode_info.episode, episode_info.title or resolved_episode_title, episode_info.year
+        return (
+            episode_info.season,
+            episode_info.episode,
+            episode_info.title or resolved_episode_title,
+            getattr(episode_info, "id", None),
+            getattr(episode_info, "rating", None),
+            getattr(episode_info, "votes", None),
+            episode_info.year,
+        )
 
     def _derive_episode_title_for_lookup(self, parsed: ParsedNetflixTitle, resolved_title: str) -> Optional[str]:
         if parsed.episode_title:
@@ -851,13 +876,70 @@ def _format_genres(values: Tuple[str, ...]) -> str:
     return ", ".join(values)
 
 
-def _entry_metadata_row_fields(entry: NetflixHistoryEntry) -> Dict[str, str]:
+def _format_year_range(values: List[Optional[int]]) -> str:
+    years = sorted({int(value) for value in values if value is not None})
+    if not years:
+        return ""
+    if len(years) == 1:
+        return str(years[0])
+    return f"{years[0]}-{years[-1]}"
+
+
+def _format_aggregate_rating(values: List[Optional[float]]) -> str:
+    ratings = [float(value) for value in values if value is not None]
+    if not ratings:
+        return ""
+    return _format_average_rating(sum(ratings) / len(ratings))
+
+
+def _format_aggregate_votes(values: List[Optional[int]]) -> str:
+    votes = [int(value) for value in values if value is not None]
+    if not votes:
+        return ""
+    return _format_num_votes(sum(votes))
+
+
+def _format_aggregate_runtime(runtime_minutes: Optional[int], item_count: int) -> str:
+    if runtime_minutes is None or item_count <= 0:
+        return ""
+    return _format_runtime_minutes(runtime_minutes * item_count)
+
+
+def _format_source_id(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+    return str(value).strip()
+
+
+def _entry_metadata_row_fields(
+    entry: NetflixHistoryEntry,
+    *,
+    row_item_type: str,
+    source_id_override: Optional[Any] = None,
+    runtime_minutes_override: Optional[str] = None,
+    average_rating_override: Optional[float] = None,
+    num_votes_override: Optional[int] = None,
+) -> Dict[str, str]:
+    source_id = source_id_override if source_id_override is not None else (
+        entry.resolved_episode_source_id if row_item_type == "episode" else entry.metadata_parent_id
+    )
+    average_rating = average_rating_override if average_rating_override is not None else (
+        entry.resolved_episode_rating if row_item_type == "episode" else entry.metadata_average_rating
+    )
+    num_votes = num_votes_override if num_votes_override is not None else (
+        entry.resolved_episode_votes if row_item_type == "episode" else entry.metadata_num_votes
+    )
     return {
+        "source_id": "" if row_item_type == "season" else _format_source_id(source_id),
         "title_type": entry.metadata_title_type or entry.metadata_type or "",
-        "runtime_minutes": _format_runtime_minutes(entry.metadata_runtime_minutes),
-        "genres": _format_genres(entry.metadata_genres),
-        "average_rating": _format_average_rating(entry.metadata_average_rating),
-        "num_votes": _format_num_votes(entry.metadata_num_votes),
+        "runtime_minutes": runtime_minutes_override if runtime_minutes_override is not None else _format_runtime_minutes(entry.metadata_runtime_minutes),
+        "genres": "" if row_item_type in {"season", "episode"} else _format_genres(entry.metadata_genres),
+        "average_rating": "" if row_item_type == "episode" and average_rating is None else _format_average_rating(average_rating),
+        "num_votes": "" if row_item_type == "episode" and num_votes is None else _format_num_votes(num_votes),
     }
 
 
@@ -1235,6 +1317,7 @@ def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:
             row.title,
             display_title,
             row.year,
+            row.source_id,
             row.season,
             row.season_title,
             row.episode,
@@ -1257,6 +1340,7 @@ def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:
         "title": row.title,
         "display_title": display_title,
         "year": row.year,
+        "source_id": row.source_id,
         "season": row.season,
         "season_title": row.season_title,
         "episode": row.episode,
@@ -1361,7 +1445,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     episode_title="",
                     views=_format_leaf_views(watched_at_values),
                     watch_dates=_format_leaf_watch_dates(watched_at_values),
-                    **_entry_metadata_row_fields(title_entries[0]),
+                    **_entry_metadata_row_fields(title_entries[0], row_item_type="movie"),
                     item_type="movie",
                 )
             )
@@ -1375,7 +1459,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 episode_title="",
                 views=_format_group_views(watched_at_values),
                 watch_dates=_format_group_watch_dates(watched_at_values),
-                **_entry_metadata_row_fields(title_entries[0]),
+                **_entry_metadata_row_fields(title_entries[0], row_item_type="series"),
                 item_type="series",
             )
         )
@@ -1433,9 +1517,10 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
             processed_extra_season_keys: set[tuple[Optional[int], str]] = set()
             for season_number in sorted(metadata_season_map):
                 display_season_title = season_title_overrides.get(season_number) or f"Season {season_number}"
+                season_episode_infos = metadata_season_map[season_number]
                 watched_count = 0
                 season_rows: List[WatchTableRow] = []
-                for episode_info in sorted(metadata_season_map[season_number], key=lambda item: item.episode):
+                for episode_info in sorted(season_episode_infos, key=lambda item: item.episode):
                     key = (season_number, episode_info.episode)
                     group_entries = watched_episode_groups.get(key)
                     if group_entries:
@@ -1454,7 +1539,13 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                                 episode_title=episode_title,
                                 views=_format_leaf_views(watched_at_values),
                                 watch_dates=_format_leaf_watch_dates(watched_at_values),
-                                **_entry_metadata_row_fields(first_entry),
+                                **_entry_metadata_row_fields(
+                                    first_entry,
+                                    row_item_type="episode",
+                                    source_id_override=getattr(episode_info, "id", None) or first_entry.resolved_episode_source_id,
+                                    average_rating_override=getattr(episode_info, "rating", None),
+                                    num_votes_override=getattr(episode_info, "votes", None),
+                                ),
                                 item_type="episode",
                             )
                         )
@@ -1472,7 +1563,13 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                             episode_title=synthetic_title,
                             views="0",
                             watch_dates="",
-                            **_entry_metadata_row_fields(title_entries[0]),
+                            **_entry_metadata_row_fields(
+                                title_entries[0],
+                                row_item_type="episode",
+                                source_id_override=getattr(episode_info, "id", None),
+                                average_rating_override=getattr(episode_info, "rating", None),
+                                num_votes_override=getattr(episode_info, "votes", None),
+                            ),
                             item_type="episode",
                         )
                     )
@@ -1481,12 +1578,19 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     WatchTableRow(
                         level=1,
                         title=display_season_title,
+                        year=_format_year_range([episode_info.year for episode_info in season_episode_infos]),
                         season=str(season_number),
                         episode=_format_progress(watched_count, len(metadata_season_map[season_number])),
                         episode_title="",
                         views=_format_group_views([]),
                         watch_dates=_format_group_watch_dates([]),
-                        **_entry_metadata_row_fields(title_entries[0]),
+                        **_entry_metadata_row_fields(
+                            title_entries[0],
+                            row_item_type="season",
+                            runtime_minutes_override=_format_aggregate_runtime(title_entries[0].metadata_runtime_minutes, len(season_episode_infos)),
+                            average_rating_override=(sum([float(v) for v in [getattr(episode_info, "rating", None) for episode_info in season_episode_infos] if v is not None]) / len([v for v in [getattr(episode_info, "rating", None) for episode_info in season_episode_infos] if v is not None])) if [v for v in [getattr(episode_info, "rating", None) for episode_info in season_episode_infos] if v is not None] else None,
+                            num_votes_override=sum([int(v) for v in [getattr(episode_info, "votes", None) for episode_info in season_episode_infos] if v is not None]) if [v for v in [getattr(episode_info, "votes", None) for episode_info in season_episode_infos] if v is not None] else None,
+                        ),
                         item_type="season",
                     )
                 )
@@ -1512,11 +1616,18 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     WatchTableRow(
                         level=1,
                         title=display_season_title or title,
+                        year=_format_year_range([_entry_episode_year(entry) or _entry_title_year(entry) for entry in season_entries]),
                         season=str(season_number) if season_number is not None else "",
                         episode_title="",
                         views=_format_group_views([entry.watched_at for entry in season_entries]),
                         watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
-                        **_entry_metadata_row_fields(season_entries[0]),
+                        **_entry_metadata_row_fields(
+                            season_entries[0],
+                            row_item_type="season",
+                            runtime_minutes_override=_format_aggregate_runtime(season_entries[0].metadata_runtime_minutes, len(season_entries)),
+                            average_rating_override=(sum([float(v) for v in [entry.resolved_episode_rating for entry in season_entries] if v is not None]) / len([v for v in [entry.resolved_episode_rating for entry in season_entries] if v is not None])) if [v for v in [entry.resolved_episode_rating for entry in season_entries] if v is not None] else None,
+                            num_votes_override=sum([int(v) for v in [entry.resolved_episode_votes for entry in season_entries] if v is not None]) if [v for v in [entry.resolved_episode_votes for entry in season_entries] if v is not None] else None,
+                        ),
                         item_type="season",
                     )
                 )
@@ -1565,11 +1676,18 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 WatchTableRow(
                     level=1,
                     title=display_season_title or title,
+                    year=_format_year_range([_entry_episode_year(entry) or _entry_title_year(entry) for entry in season_entries]),
                     season=str(season_number) if season_number is not None else "",
                     episode_title="",
                     views=_format_group_views([entry.watched_at for entry in season_entries]),
                     watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
-                    **_entry_metadata_row_fields(season_entries[0]),
+                    **_entry_metadata_row_fields(
+                        season_entries[0],
+                        row_item_type="season",
+                        runtime_minutes_override=_format_aggregate_runtime(season_entries[0].metadata_runtime_minutes, len(season_entries)),
+                        average_rating_override=(sum([float(v) for v in [entry.resolved_episode_rating for entry in season_entries] if v is not None]) / len([v for v in [entry.resolved_episode_rating for entry in season_entries] if v is not None])) if [v for v in [entry.resolved_episode_rating for entry in season_entries] if v is not None] else None,
+                        num_votes_override=sum([int(v) for v in [entry.resolved_episode_votes for entry in season_entries] if v is not None]) if [v for v in [entry.resolved_episode_votes for entry in season_entries] if v is not None] else None,
+                    ),
                     item_type="season",
                 )
             )
@@ -1619,7 +1737,7 @@ def _build_episode_rows(
                 episode_title=episode_title,
                 views=_format_leaf_views(watched_at_values),
                 watch_dates=_format_leaf_watch_dates(watched_at_values),
-                **_entry_metadata_row_fields(first_entry),
+                **_entry_metadata_row_fields(first_entry, row_item_type="episode"),
                 item_type="episode",
             )
         )
@@ -1640,6 +1758,7 @@ def render_watch_table(entries: List[NetflixHistoryEntry], selected_columns: Lis
         row_values = {
             "title": f"{'  ' * row.level}{row.title}",
             "year": row.year,
+            "source_id": row.source_id,
             "title_type": row.title_type,
             "runtime_minutes": row.runtime_minutes,
             "genres": row.genres,
