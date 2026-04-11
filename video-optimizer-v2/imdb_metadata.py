@@ -23,7 +23,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     #   title.basics: (none removed - all columns included for completeness)
     #   title.episode: (none removed - all are essential)
     #   title.ratings: (none removed - all are essential) 
-    #   title.akas: deduplicated unique titles only; keep language just long enough to filter imported AKAs
+    #   title.akas: keep ordering for fast raw staging, then materialize a deduplicated lookup table
     REQUIRED_COLUMNS = {
         "title.basics": [
             "tconst",
@@ -38,7 +38,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "title", "language"],
+        "title.akas": ["titleId", "ordering", "title", "language"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
@@ -208,9 +208,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     """
                     -- Essential indexes for data loading
                     CREATE INDEX IF NOT EXISTS idx_episodes_parent_temp ON title_episodes(parent_id);
-                    -- Index for akas
-                    CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
-                    CREATE INDEX IF NOT EXISTS idx_akas_title_key ON title_akas(title_key, titleId);
                     DROP INDEX IF EXISTS idx_akas_title;
                     """
                 )
@@ -538,6 +535,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                 elif dataset_name == "title.akas":
                     conn.execute("DELETE FROM title_akas")
                     conn.execute("DELETE FROM title_fts")
+                    self._create_raw_title_akas_table(conn)
+                    conn.execute("DELETE FROM raw_title_akas")
                 
                 # Track processed tconst integers for cross-dataset linking
                 processed_tconst_ints = set()
@@ -561,10 +560,16 @@ class IMDbDataProvider(BaseMetadataProvider):
                     col_indices = [
                         header.index(col) for col in required_cols if col in header
                     ]
+                    aka_title_id_idx = header.index("titleId") if dataset_name == "title.akas" else -1
+                    aka_ordering_idx = header.index("ordering") if dataset_name == "title.akas" else -1
+                    aka_title_idx = header.index("title") if dataset_name == "title.akas" else -1
+                    aka_language_idx = header.index("language") if dataset_name == "title.akas" else -1
                     
                     batch = []
                     episode_title_batch = []
-                    pbar = tqdm(desc=f"Processing {dataset_name}", unit="rows")
+                    pbar_unit = "source_rows" if dataset_name == "title.akas" else "rows"
+                    pbar = tqdm(desc=f"Processing {dataset_name}", unit=pbar_unit)
+                    processed_rows_since_update = 0
 
                     for line in f:
                         if not line.strip():
@@ -572,6 +577,34 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                         fields = line.rstrip("\n\r").split("\t")
                         processed_rows += 1
+                        processed_rows_since_update += 1
+
+                        if dataset_name == "title.akas":
+                            aka_row, aka_language, language_filtered = self._build_aka_row_from_fields(
+                                fields,
+                                aka_title_id_idx,
+                                aka_ordering_idx,
+                                aka_title_idx,
+                                aka_language_idx,
+                                processed_tconst_ints,
+                            )
+                            if language_filtered:
+                                filtered_aka_language_rows += 1
+                                continue
+                            if aka_row is None:
+                                continue
+
+                            kept_rows += 1
+                            aka_language_label = aka_language or "<none>"
+                            aka_language_kept_counts[aka_language_label] = aka_language_kept_counts.get(aka_language_label, 0) + 1
+                            batch.append(aka_row)
+
+                            if len(batch) >= chunk_size:
+                                self._insert_compressed_batch(conn, dataset_name, batch)
+                                batch = []
+                                pbar.update(processed_rows_since_update)
+                                processed_rows_since_update = 0
+                            continue
 
                         # Extract required fields
                         row_data = []
@@ -599,22 +632,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                                 value = None
                             row_data.append(value)
 
-                        if dataset_name == "title.akas":
-                            aka_language = self._extract_aka_language(row_data, required_cols)
-                            if not self._should_keep_aka_language(aka_language):
-                                filtered_aka_language_rows += 1
-                                continue
-
                         # Apply aggressive filtering
                         should_keep = self._should_keep_title(dataset_name, row_data, required_cols)
                         if not should_keep:
                             continue
 
                         kept_rows += 1
-                        if dataset_name == "title.akas":
-                            aka_language_label = self._extract_aka_language(row_data, required_cols) or "<none>"
-                            aka_language_kept_counts[aka_language_label] = aka_language_kept_counts.get(aka_language_label, 0) + 1
-
                         # Convert to compressed format
                         compressed_row = self._compress_row(dataset_name, row_data, required_cols, processed_tconst_ints)
                         if compressed_row:
@@ -633,14 +656,22 @@ class IMDbDataProvider(BaseMetadataProvider):
                                     self._insert_episode_title_batch(conn, episode_title_batch)
                                     episode_title_batch = []
                                 pbar.update(inserted_rows)
+                                processed_rows_since_update = 0
 
                     # Insert remaining batches
                     if batch:
                         self._insert_compressed_batch(conn, dataset_name, batch)
-                        pbar.update(len(batch))
+                        if dataset_name == "title.akas":
+                            pbar.update(processed_rows_since_update)
+                            processed_rows_since_update = 0
+                        else:
+                            pbar.update(len(batch))
                     if episode_title_batch:
                         self._insert_episode_title_batch(conn, episode_title_batch)
                         pbar.update(len(episode_title_batch))
+
+                    if dataset_name == "title.akas" and processed_rows_since_update:
+                        pbar.update(processed_rows_since_update)
 
                     pbar.close()
 
@@ -649,6 +680,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                 # Rebuild FTS only after deduplicated AKA rows are populated.
                 if dataset_name == "title.akas":
+                    self._materialize_title_akas_from_raw(conn)
                     self._rebuild_title_fts(conn)
                 
                 conn.commit()
@@ -674,10 +706,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                     cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
                     count = cursor.fetchone()[0]
                     logging.info(f"Total AKAs in database: {count}")
+                    allowed_aka_languages = self._get_allowed_aka_languages()
                     logging.info(
                         "IMDb AKA language filter active: configured=%s normalized=%s kept_by_language=%s filtered_by_language=%s",
                         ", ".join(self.AKA_ALLOWED_LANGUAGES) if self.AKA_ALLOWED_LANGUAGES else "<all>",
-                        ", ".join(self._get_allowed_aka_languages()) if self._get_allowed_aka_languages() else "<all>",
+                        ", ".join(allowed_aka_languages) if allowed_aka_languages else "<all>",
                         aka_language_kept_counts,
                         filtered_aka_language_rows,
                     )
@@ -757,6 +790,54 @@ class IMDbDataProvider(BaseMetadataProvider):
         if allowed_languages is None:
             return True
         return language in allowed_languages
+
+    def _build_aka_row_from_fields(
+        self,
+        fields: List[str],
+        title_id_idx: int,
+        ordering_idx: int,
+        title_idx: int,
+        language_idx: int,
+        processed_tconst_ints: set,
+    ) -> Tuple[Optional[Tuple[int, int, str, str]], Optional[str], bool]:
+        language_value = fields[language_idx] if language_idx < len(fields) else None
+        if language_value in (None, "", "\\N"):
+            normalized_language = None
+        else:
+            normalized_language = self._normalize_aka_language(language_value)
+
+        if not self._should_keep_aka_language(normalized_language):
+            return None, normalized_language, True
+
+        title_id_value = fields[title_id_idx] if title_id_idx < len(fields) else None
+        ordering_value = fields[ordering_idx] if ordering_idx < len(fields) else None
+        title_value = fields[title_idx] if title_idx < len(fields) else None
+        if title_id_value in (None, "", "\\N") or ordering_value in (None, "", "\\N"):
+            return None, normalized_language, False
+
+        try:
+            title_id_int = int(title_id_value[2:]) if title_id_value.startswith("tt") else int(title_id_value)
+            ordering_int = int(ordering_value)
+        except (ValueError, TypeError):
+            return None, normalized_language, False
+
+        if title_id_int not in processed_tconst_ints:
+            return None, normalized_language, False
+
+        normalized_title = self._normalize_space_collapsed_text(title_value)
+        if not normalized_title:
+            return None, normalized_language, False
+
+        return (
+            title_id_int,
+            ordering_int,
+            normalized_title,
+            self._normalize_title_key(normalized_title),
+        ), normalized_language, False
+
+    @staticmethod
+    def _normalize_space_collapsed_text(text: Optional[str]) -> str:
+        return " ".join((text or "").split())
 
     def _compress_row(self, dataset_name: str, row_data: List, required_cols: List[str], 
                       processed_tconst_ints: set) -> Optional[Dict]:
@@ -850,19 +931,22 @@ class IMDbDataProvider(BaseMetadataProvider):
         elif dataset_name == "title.akas":
             # Convert titleId to integer
             titleId = data_dict['titleId']
+            ordering = data_dict.get('ordering')
             try:
                 titleId_int = int(titleId[2:]) if isinstance(titleId, str) and titleId.startswith('tt') else int(titleId)
+                ordering_int = int(ordering) if ordering is not None else None
             except (ValueError, TypeError):
                 return None
             # Only keep akas for titles we have in basics
-            if titleId_int not in processed_tconst_ints:
+            if titleId_int not in processed_tconst_ints or ordering_int is None:
                 return None
-            normalized_title = re.sub(r"\s+", " ", (data_dict.get('title', '') or '').strip())
+            normalized_title = self._normalize_space_collapsed_text(data_dict.get('title', ''))
             if not normalized_title:
                 return None
             return {
                 'row': (
                     titleId_int,
+                    ordering_int,
                     normalized_title,
                     self._normalize_title_key(normalized_title),
                 )
@@ -897,6 +981,33 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn.execute(
             "INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas"
         )
+
+    def _create_raw_title_akas_table(self, conn: sqlite3.Connection) -> None:
+        """Create the raw AKA staging table keyed by IMDb's natural row identity."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_title_akas (
+                titleId INTEGER NOT NULL,
+                ordering INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                title_key TEXT NOT NULL,
+                PRIMARY KEY (titleId, ordering)
+            ) WITHOUT ROWID
+            """
+        )
+
+    def _materialize_title_akas_from_raw(self, conn: sqlite3.Connection) -> None:
+        """Collapse raw AKA rows into the compact lookup table and drop the staging table."""
+        conn.execute("DELETE FROM title_akas")
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO title_akas (titleId, title, title_key)
+            SELECT titleId, title, title_key
+            FROM raw_title_akas
+            ORDER BY titleId, ordering
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS raw_title_akas")
     
     def _insert_compressed_batch(self, conn: sqlite3.Connection, dataset_name: str, batch: List[Tuple]) -> None:
         """Insert compressed batch data"""        
@@ -917,7 +1028,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             )
         elif dataset_name == "title.akas":
             conn.executemany(
-                "INSERT OR IGNORE INTO title_akas (titleId, title, title_key) VALUES (?, ?, ?)",
+                "INSERT OR REPLACE INTO raw_title_akas (titleId, ordering, title, title_key) VALUES (?, ?, ?, ?)",
                 batch
             )
 
@@ -1027,7 +1138,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _normalize_title_key(self, title: str) -> str:
         """Normalize a title into the compact key stored for AKA exact matching."""
-        return re.sub(r"\s+", " ", (title or "").casefold()).strip()
+        return " ".join((title or "").casefold().split())
 
     def _apply_candidate_bonuses(self, row: sqlite3.Row | dict, score: float, year: Optional[int]) -> float:
         """Apply common year and popularity bonuses to a candidate score."""
