@@ -295,9 +295,12 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _ensure_data_loaded(self) -> None:
         """Ensure database contains current IMDb data"""
-        if self._is_data_current():
+        if self._is_data_current() and self._has_episode_title_data():
             logging.info("Database contains current IMDb data")
             return
+
+        if self._is_data_current() and not self._has_episode_title_data():
+            logging.info("IMDb cache is current but lacks episode title data. Reloading datasets.")
 
         logging.info("Loading IMDb datasets into database...")
         
@@ -345,7 +348,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             # (i.e. they were filtered out due to low vote count)
             conn.execute("""
                 DELETE FROM title_basics
-                WHERE id NOT IN (SELECT id FROM title_ratings)
+                WHERE type != 4 AND id NOT IN (SELECT id FROM title_ratings)
             """)
             conn.commit()
             
@@ -548,10 +551,14 @@ class IMDbDataProvider(BaseMetadataProvider):
         if dataset_name == "title.basics":
             # Extract data by column name
             data_dict = dict(zip(required_cols, row_data))
+            title_type = data_dict.get('titleType', '')
+
+            # Keep episode rows so we can resolve episode numbers by title later.
+            if title_type == 'tvEpisode':
+                return True
             
             # Filter by title type - configurable list of allowed types
             if self.ALLOWED_TITLE_TYPES is not None:
-                title_type = data_dict.get('titleType', '')
                 if title_type not in self.ALLOWED_TITLE_TYPES:
                     return False
             
@@ -596,7 +603,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 return None
             
             # Map title type to integer
-            type_map = {'movie': 1, 'tvSeries': 2, 'tvMiniSeries': 3}
+            type_map = {'movie': 1, 'tvSeries': 2, 'tvMiniSeries': 3, 'tvEpisode': 4}
             type_int = type_map.get(data_dict['titleType'], 1)
             
             # Compress genres - only keep first 3, joined with commas
@@ -736,6 +743,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                 -- Additional index for fast episode lookup by id
                 CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episodes(id);
+                CREATE INDEX IF NOT EXISTS idx_title_episode_titles ON title_basics(type, title_lower);
 
                 -- Indexes for akas
                 CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
@@ -759,6 +767,17 @@ class IMDbDataProvider(BaseMetadataProvider):
             
             conn.commit()
             logging.info("Database optimization complete")
+
+    def _has_episode_title_data(self) -> bool:
+        """Return True when the cache includes tvEpisode title rows required for title-based episode lookup."""
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM title_basics WHERE type = 4 AND title IS NOT NULL AND title != '' LIMIT 1"
+                ).fetchone()
+                return row is not None
+        except Exception:
+            return False
 
     def find_title(
         self, title: str, year: Optional[int] = None
@@ -861,6 +880,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
+                    AND s.type IN (1, 2, 3)
                     AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
                     AND s.votes >= ?
                     ORDER BY score, s.votes DESC
@@ -876,6 +896,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     FROM title_fts f
                     JOIN search_view s ON f.rowid = s.id
                     WHERE title_fts MATCH ?
+                    AND s.type IN (1, 2, 3)
                     AND s.votes >= ?
                     ORDER BY score, s.votes DESC
                     LIMIT ?
@@ -1006,6 +1027,86 @@ class IMDbDataProvider(BaseMetadataProvider):
             self._return_connection(conn)
 
         return None
+
+    def find_episode_by_title(
+        self, parent_id: str, episode_title: str, season: Optional[int] = None
+    ) -> Optional[EpisodeInfo]:
+        """Find episode information by episode title, optionally constrained to a season."""
+        self._ensure_data_loaded()
+
+        normalized_query = re.sub(r"[^\w\s]", " ", (episode_title or "").lower())
+        normalized_query = re.sub(r"\s+", " ", normalized_query).strip()
+        if not normalized_query:
+            return None
+
+        parent_id_str = str(parent_id)
+        internal_parent_id = None
+        if parent_id_str.startswith("tt"):
+            try:
+                internal_parent_id = int(parent_id_str[2:])
+            except (ValueError, TypeError):
+                internal_parent_id = None
+        else:
+            try:
+                internal_parent_id = int(parent_id_str)
+            except (ValueError, TypeError):
+                internal_parent_id = None
+
+        if not internal_parent_id:
+            return None
+
+        conn = self._get_connection()
+        try:
+            params = [internal_parent_id]
+            sql = """
+                SELECT e.id, e.season, e.episode, b.title, b.year, r.rating, r.votes
+                FROM title_episodes e
+                LEFT JOIN title_basics b ON e.id = b.id
+                LEFT JOIN title_ratings r ON e.id = r.id
+                WHERE e.parent_id = ?
+            """
+            if season is not None:
+                sql += " AND e.season = ?"
+                params.append(season)
+
+            cursor = conn.execute(sql, tuple(params))
+            candidates = cursor.fetchall()
+            if not candidates:
+                return None
+
+            best_row = None
+            best_score = -1
+            for row in candidates:
+                row_title = row["title"] or ""
+                normalized_title = re.sub(r"[^\w\s]", " ", row_title.lower())
+                normalized_title = re.sub(r"\s+", " ", normalized_title).strip()
+                if not normalized_title:
+                    continue
+
+                score = fuzz.ratio(normalized_query, normalized_title)
+                if normalized_query == normalized_title:
+                    score += 100
+                elif normalized_query in normalized_title or normalized_title in normalized_query:
+                    score += 25
+
+                if score > best_score:
+                    best_score = score
+                    best_row = row
+
+            if best_row is None or best_score < 70:
+                return None
+
+            return EpisodeInfo(
+                title=best_row["title"],
+                season=best_row["season"],
+                episode=best_row["episode"],
+                parent_id=parent_id,
+                year=best_row["year"],
+                rating=(float(best_row["rating"] / 10.0) if best_row["rating"] else None),
+                votes=best_row["votes"],
+            )
+        finally:
+            self._return_connection(conn)
     
     def _build_fts_query(self, title: str) -> str:
         """Build FTS5 query from title for fuzzy search"""
