@@ -395,6 +395,14 @@ input:focus,
     background: transparent;
 }
 
+.status-gutter.is-partial::before {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+    background: linear-gradient(90deg, currentColor 0 50%, transparent 50% 100%);
+}
+
 .status-gutter.is-unwatched::before {
     background: currentColor;
 }
@@ -597,6 +605,34 @@ input:focus,
     align-items: center;
 }
 
+.tree-row.is-watched .tree-title,
+.tree-row.is-watched .tree-subtitle,
+.treecell.is-watched .tree-name-button {
+    color: color-mix(in srgb, var(--text) 72%, white);
+}
+
+.tree-row.is-watched td {
+    color: color-mix(in srgb, var(--text) 80%, white);
+}
+
+.tree-row.is-watched .status-gutter {
+    color: color-mix(in srgb, var(--muted) 78%, white);
+}
+
+.tree-row.is-partial .tree-title,
+.tree-row.is-partial .tree-subtitle,
+.treecell.is-partial .tree-name-button {
+    color: color-mix(in srgb, var(--text) 60%, white);
+}
+
+.tree-row.is-partial td {
+    color: color-mix(in srgb, var(--text) 68%, white);
+}
+
+.tree-row.is-partial .status-gutter {
+    color: color-mix(in srgb, var(--muted) 80%, white);
+}
+
 .tree-row.is-unwatched .tree-title,
 .tree-row.is-unwatched .tree-subtitle,
 .treecell.is-unwatched .tree-name-button {
@@ -615,6 +651,8 @@ input:focus,
     background: transparent;
 }
 
+.tree-row.is-watched .item-pill,
+.tree-row.is-partial .item-pill,
 .tree-row.is-unwatched .item-pill {
     opacity: 0.78;
 }
@@ -678,6 +716,8 @@ input:focus,
     white-space: nowrap;
 }
 
+.tree-row.is-watched .genre-badge,
+.tree-row.is-partial .genre-badge,
 .tree-row.is-unwatched .genre-badge {
     opacity: 0.76;
 }

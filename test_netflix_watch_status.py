@@ -7,7 +7,9 @@ from netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_
 from netflix_watch_status import (
     NetflixHistoryEntry,
     NetflixWatchStatusAnalyzer,
+    WatchTableRow,
     _derive_episode_title,
+    _row_watch_state,
     build_watch_table_rows,
     load_episode_title_overrides,
 )
@@ -191,6 +193,13 @@ def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_tit
     assert provider.calls == [
         ("tt1234567", "Midsummer Devil Festival/'Manatsu Oni Matsuri'", None),
     ]
+
+
+def test_row_watch_state_uses_progress_for_series_and_seasons():
+    assert _row_watch_state(WatchTableRow(level=0, title="Show", item_type="series", episode="0/13")) == "unwatched"
+    assert _row_watch_state(WatchTableRow(level=1, title="Season 1", item_type="season", episode="5/13")) == "partial"
+    assert _row_watch_state(WatchTableRow(level=1, title="Season 1", item_type="season", episode="13/13")) == "watched"
+    assert _row_watch_state(WatchTableRow(level=2, title="Episode 1", item_type="episode", views="0")) == "unwatched"
 
 
 def test_series_runtime_aggregates_from_seasons_and_loose_episodes():

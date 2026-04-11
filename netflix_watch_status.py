@@ -1617,10 +1617,34 @@ def _strip_unwatched_suffix(text: str) -> str:
     return text[:-2] if text.endswith(" *") else text
 
 
+def _parse_progress_counts(value: str) -> Tuple[Optional[int], Optional[int]]:
+    if not value or "/" not in value:
+        return None, None
+    left, right = value.split("/", 1)
+    try:
+        watched_count = int(left.strip())
+        total_count = int(right.strip())
+    except ValueError:
+        return None, None
+    if total_count < 0 or watched_count < 0:
+        return None, None
+    return watched_count, total_count
+
+
 def _row_watch_state(row: WatchTableRow) -> str:
     if row.item_type == "episode":
         return "unwatched" if row.views == "0" else "watched"
-    return "aggregate"
+
+    if row.item_type in {"season", "series"}:
+        watched_count, total_count = _parse_progress_counts(row.episode)
+        if watched_count is not None and total_count is not None and total_count > 0:
+            if watched_count == 0:
+                return "unwatched"
+            if watched_count >= total_count:
+                return "watched"
+            return "partial"
+
+    return "watched" if row.views else "aggregate"
 
 
 def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:

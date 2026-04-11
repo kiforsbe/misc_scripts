@@ -359,6 +359,32 @@
         `).join("");
     }
 
+    function watchStateLabel(watchState) {
+        if (watchState === "partial") {
+            return "Partially watched";
+        }
+        if (watchState === "watched") {
+            return "Watched";
+        }
+        if (watchState === "unwatched") {
+            return "Unwatched";
+        }
+        return "Aggregate";
+    }
+
+    function watchStateRowClass(watchState) {
+        if (watchState === "watched") {
+            return "is-watched";
+        }
+        if (watchState === "partial") {
+            return "is-partial";
+        }
+        if (watchState === "unwatched") {
+            return "is-unwatched";
+        }
+        return "";
+    }
+
     function renderColumnOptions() {
         elements.columnOptions.innerHTML = orderedOptionalColumns().map((column) => `
             <label class="column-option">
@@ -410,7 +436,7 @@
             { label: "Season Title", value: row.season_title },
             { label: "Episode", value: row.episode },
             { label: "Episode Title", value: displayEpisodeTitle(row) },
-            { label: "Watch Status", value: row.watch_state === "aggregate" ? "Aggregate" : row.watch_state },
+            { label: "Watch Status", value: watchStateLabel(row.watch_state) },
             { label: "Views", value: row.views },
             { label: "Watch Dates", value: row.watch_dates },
         ];
@@ -472,8 +498,9 @@
                 ? `<span class="row-thumbnail-shell"><img class="row-thumbnail" src="${escapeHtml(thumbnail.url)}" alt="${escapeHtml(thumbnail.alt || displayTitle(row))}" loading="lazy"></span>`
                 : '<span class="row-thumbnail-shell is-empty" aria-hidden="true"></span>')
             : "";
+        const watchStateClass = watchStateRowClass(row.watch_state);
         return `
-            <div class="treecell ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" style="--level:${row.level}">
+            <div class="treecell ${watchStateClass}" style="--level:${row.level}">
                 <span class="tree-indent"></span>
                 <button class="tree-toggle ${row.has_children ? "" : "is-hidden"}" data-action="toggle" data-row-id="${escapeHtml(row.id)}" aria-label="${escapeHtml(toggleLabel)}">
                     ${row.has_children ? (expanded ? "−" : "+") : ""}
@@ -523,9 +550,11 @@
     }
 
     function gutterCellMarkup(row) {
-        const statusLabel = row.watch_state === "aggregate" ? "" : row.watch_state;
+        const statusLabel = row.watch_state === "aggregate" ? "" : watchStateLabel(row.watch_state);
         const statusClass = row.watch_state === "watched"
             ? "is-watched"
+            : row.watch_state === "partial"
+                ? "is-partial"
             : row.watch_state === "unwatched"
                 ? "is-unwatched"
                 : "is-empty";
@@ -656,8 +685,9 @@
     }
 
     function renderVirtualRow(row, index, visibleColumns) {
+        const watchStateClass = watchStateRowClass(row.watch_state);
         return `
-            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" data-row-id="${escapeHtml(row.id)}" data-virtual-index="${index}">
+            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${watchStateClass}" data-row-id="${escapeHtml(row.id)}" data-virtual-index="${index}">
                 <td class="gutter-column">${gutterCellMarkup(row)}</td>
                 <td class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""} ${nameColumn.align === "center" ? "align-center" : ""}">${cellMarkup(row, nameColumn)}</td>
                 ${visibleColumns.map((column) => `<td class="column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""} ${column.align === "center" ? "align-center" : ""}">${cellMarkup(row, column)}</td>`).join("")}
