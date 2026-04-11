@@ -68,6 +68,9 @@ class IMDbDataProvider(BaseMetadataProvider):
     # In-memory search cache limits
     SEARCH_CACHE_MAX = 1000         # Evict when cache exceeds this size
     SEARCH_CACHE_EVICT = 500        # Number of oldest entries to remove on eviction
+    TITLE_CACHE_MAX = 5000          # Cached TitleInfo objects by IMDb id
+    TITLE_CACHE_EVICT = 1000        # Number of cached TitleInfo objects to evict
+    EXACT_MATCH_LIMIT = 50          # Hard cap for exact title and AKA candidate scans
 
     def __init__(self):
         super().__init__("imdb", provider_weight=0.9)
@@ -200,6 +203,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     CREATE INDEX IF NOT EXISTS idx_episodes_parent_temp ON title_episodes(parent_id);
                     -- Index for akas
                     CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
+                    CREATE INDEX IF NOT EXISTS idx_akas_title_key ON title_akas(title_key, titleId);
+                    DROP INDEX IF EXISTS idx_akas_title;
                     """
                 )
 
@@ -798,7 +803,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 'row': (
                     titleId_int,
                     normalized_title,
-                    normalized_title.casefold(),
+                    self._normalize_title_key(normalized_title),
                 )
             }
         
@@ -878,9 +883,10 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                 -- Indexes for akas
                 CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
-                CREATE INDEX IF NOT EXISTS idx_akas_title ON title_akas(title);
+                CREATE INDEX IF NOT EXISTS idx_akas_title_key ON title_akas(title_key, titleId);
 
                 DROP INDEX IF EXISTS idx_title_episode_titles;
+                DROP INDEX IF EXISTS idx_akas_title;
                 """
             )
             
@@ -928,6 +934,97 @@ class IMDbDataProvider(BaseMetadataProvider):
         except Exception:
             return False
 
+    def _normalize_title_key(self, title: str) -> str:
+        """Normalize a title into the compact key stored for AKA exact matching."""
+        return re.sub(r"\s+", " ", (title or "").casefold()).strip()
+
+    def _apply_candidate_bonuses(self, row: sqlite3.Row | dict, score: float, year: Optional[int]) -> float:
+        """Apply common year and popularity bonuses to a candidate score."""
+        total_score = score
+
+        if year and row["year"]:
+            if row["year"] == year:
+                total_score += self.YEAR_EXACT_BONUS
+            elif abs(row["year"] - year) <= 1:
+                total_score += self.YEAR_CLOSE_BONUS
+
+        if row["votes"]:
+            vote_bonus = min(self.VOTE_BONUS_CAP, self.VOTE_BONUS_MULTIPLIER * math.log10(max(1, row["votes"])))
+            total_score += vote_bonus
+
+        return total_score
+
+    def _get_exact_candidates(
+        self, conn: sqlite3.Connection, title_lower: str, title_key: str, year: Optional[int]
+    ) -> List[sqlite3.Row]:
+        """Return exact primary-title or AKA matches before falling back to FTS."""
+        year_clause = ""
+        primary_params: list = [title_lower, self.MIN_VOTES_THRESHOLD or 0]
+        aka_params: list = [title_key, self.MIN_VOTES_THRESHOLD or 0]
+        if year:
+            year_clause = " AND (s.year BETWEEN ? AND ? OR s.year IS NULL)"
+            primary_params.extend([year - self.YEAR_TOLERANCE, year + self.YEAR_TOLERANCE])
+            aka_params.extend([year - self.YEAR_TOLERANCE, year + self.YEAR_TOLERANCE])
+        primary_params.append(self.EXACT_MATCH_LIMIT)
+        aka_params.append(self.EXACT_MATCH_LIMIT)
+
+        primary_cursor = conn.execute(
+            f"""
+            SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                   2 AS match_rank
+            FROM search_view s
+            WHERE s.title_lower = ?
+            AND s.type IN (1, 2, 3)
+            AND s.votes >= ?
+            {year_clause}
+            ORDER BY s.votes DESC
+            LIMIT ?
+            """,
+            tuple(primary_params),
+        )
+        primary_matches = primary_cursor.fetchall()
+        if primary_matches:
+            return primary_matches
+
+        if not title_key:
+            return []
+
+        aka_cursor = conn.execute(
+            f"""
+            SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                   1 AS match_rank
+            FROM title_akas a
+            JOIN search_view s ON a.titleId = s.id
+            WHERE a.title_key = ?
+            AND s.type IN (1, 2, 3)
+            AND s.votes >= ?
+            {year_clause}
+            ORDER BY s.votes DESC
+            LIMIT ?
+            """,
+            tuple(aka_params),
+        )
+        return aka_cursor.fetchall()
+
+    def _select_exact_match(
+        self,
+        candidates: List[sqlite3.Row],
+        conn: sqlite3.Connection,
+        year: Optional[int],
+    ) -> Tuple[Optional[TitleInfo], float]:
+        """Select the best candidate from exact primary-title or AKA matches."""
+        best_match = None
+        best_score = -1.0
+
+        for row in candidates:
+            base_score = 1000.0 if row["match_rank"] == 2 else 925.0
+            total_score = self._apply_candidate_bonuses(row, base_score, year)
+            if total_score > best_score:
+                best_score = total_score
+                best_match = self._create_title_info_from_row_fast(row, conn)
+
+        return best_match, best_score
+
     def find_title(
         self, title: str, year: Optional[int] = None
     ) -> Optional[MatchResult]:
@@ -945,56 +1042,33 @@ class IMDbDataProvider(BaseMetadataProvider):
         # Use connection pooling for better performance
         conn = self._get_connection()
         try:
-            # First try exact match with optimized single query
-            title_lower = title.lower()
-            
-            # Just use fuzzy candidates for simplicity
-            candidates = self._get_fuzzy_candidates(conn, title_lower, year)
+            title_lower = re.sub(r"\s+", " ", title.lower()).strip()
+            title_key = self._normalize_title_key(title)
 
-            # # Create a best match from the first entry in the list, as this is the best match in terms of titles
-            # best_match = self._create_title_info_from_row_fast(candidates[0], conn) if candidates else None
-            # best_score = 1000 if best_match else 0
+            exact_candidates = self._get_exact_candidates(conn, title_lower, title_key, year)
+            if exact_candidates:
+                best_match, best_score = self._select_exact_match(exact_candidates, conn, year)
+            else:
+                candidates = [dict(row) for row in self._get_fuzzy_candidates(conn, title_lower, year)]
 
-            # Change the candidates to a list of dictionaries for easier processing
-            candidates = [dict(row) for row in candidates]
+                search_dict = {r["id"]: r["title"] for r in candidates}
+                candidate_by_id = {r["id"]: r for r in candidates}
 
-            # This is very ineffective for now, as it ignores the scoring from the FTS5 search
-            # We will for now use fuzzy matching on the candidates instead along with additional scorign to get a better match
-            # TODO: Fix this junk and make the FTS5 query take all this stuff into consideration instead
-            # Build lookup maps once to avoid repeated O(n) scans in the hot loop
-            search_dict = {r["id"]: r["title"] for r in candidates}
-            candidate_by_id = {r["id"]: r for r in candidates}
+                title_matches = process.extract(
+                    title, search_dict, scorer=fuzz.ratio, limit=self.FUZZY_MATCH_LIMIT
+                )
 
-            # Perform fuzzy search once with limited candidates
-            title_matches = process.extract(
-                title, search_dict, scorer=fuzz.ratio, limit=self.FUZZY_MATCH_LIMIT
-            )
+                for _matched_title, fuzzy_score, row_id in title_matches:
+                    row = candidate_by_id.get(row_id)
+                    if not row:
+                        continue
 
-            for _matched_title, fuzzy_score, row_id in title_matches:
-                # O(1) row lookup by id
-                row = candidate_by_id.get(row_id)
-                if not row:
-                    continue
+                    total_score = self._apply_candidate_bonuses(row, float(fuzzy_score), year)
+                    row["score"] = total_score
 
-                total_score = fuzzy_score
-
-                # Add year match bonus
-                if year and row["year"]:
-                    if row["year"] == year:
-                        total_score += self.YEAR_EXACT_BONUS
-                    elif abs(row["year"] - year) <= 1:
-                        total_score += self.YEAR_CLOSE_BONUS
-
-                # Add popularity bonus (log-scaled, heavier weight)
-                if row["votes"]:
-                    vote_bonus = min(self.VOTE_BONUS_CAP, self.VOTE_BONUS_MULTIPLIER * math.log10(max(1, row["votes"])))
-                    total_score += vote_bonus
-
-                row["score"] = total_score
-
-                if total_score > best_score:
-                    best_score = total_score
-                    best_match = self._create_title_info_from_row_fast(row, conn)
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_match = self._create_title_info_from_row_fast(row, conn)
 
         finally:
             self._return_connection(conn)
@@ -1020,47 +1094,73 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Get optimized candidate list using FTS5, similar to anime_metadata.py"""
         candidates = []
         try:
-            fts_query = self._build_fts_query(title_lower)
-            if year:
-                cursor = conn.execute(
-                    """
-                          SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                              MIN(bm25(title_fts, 10.0)) AS score
-                    FROM title_fts f
-                    JOIN search_view s ON f.titleId = s.id
-                    WHERE title_fts MATCH ?
-                    AND s.type IN (1, 2, 3)
-                    AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
-                    AND s.votes >= ?
-                    GROUP BY s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes
-                    ORDER BY score, s.votes DESC
-                    LIMIT ?
-                    """,
-                    (fts_query, year - self.YEAR_TOLERANCE, year + self.YEAR_TOLERANCE, self.MIN_VOTES_THRESHOLD or 0, self.FTS_LIMIT_WITH_YEAR),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                          SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
-                              MIN(bm25(title_fts, 10.0)) AS score
-                    FROM title_fts f
-                    JOIN search_view s ON f.titleId = s.id
-                    WHERE title_fts MATCH ?
-                    AND s.type IN (1, 2, 3)
-                    AND s.votes >= ?
-                    GROUP BY s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes
-                    ORDER BY score, s.votes DESC
-                    LIMIT ?
-                    """,
-                    (fts_query, self.MIN_VOTES_THRESHOLD or 0, self.FTS_LIMIT_WITHOUT_YEAR),
-                )
-            candidates = cursor.fetchall()
+            for fts_query in self._build_fts_queries(title_lower):
+                if year:
+                    cursor = conn.execute(
+                        """
+                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes, f.score
+                        FROM (
+                            SELECT titleId, MIN(bm25(title_fts, 10.0)) AS score
+                            FROM title_fts
+                            WHERE title_fts MATCH ?
+                            GROUP BY titleId
+                            ORDER BY score
+                            LIMIT ?
+                        ) f
+                        JOIN search_view s ON f.titleId = s.id
+                        WHERE s.type IN (1, 2, 3)
+                        AND (s.year BETWEEN ? AND ? OR s.year IS NULL)
+                        AND s.votes >= ?
+                        ORDER BY f.score, s.votes DESC
+                        LIMIT ?
+                        """,
+                        (
+                            fts_query,
+                            self.FTS_LIMIT_WITH_YEAR,
+                            year - self.YEAR_TOLERANCE,
+                            year + self.YEAR_TOLERANCE,
+                            self.MIN_VOTES_THRESHOLD or 0,
+                            self.FTS_LIMIT_WITH_YEAR,
+                        ),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes, f.score
+                        FROM (
+                            SELECT titleId, MIN(bm25(title_fts, 10.0)) AS score
+                            FROM title_fts
+                            WHERE title_fts MATCH ?
+                            GROUP BY titleId
+                            ORDER BY score
+                            LIMIT ?
+                        ) f
+                        JOIN search_view s ON f.titleId = s.id
+                        WHERE s.type IN (1, 2, 3)
+                        AND s.votes >= ?
+                        ORDER BY f.score, s.votes DESC
+                        LIMIT ?
+                        """,
+                        (
+                            fts_query,
+                            self.FTS_LIMIT_WITHOUT_YEAR,
+                            self.MIN_VOTES_THRESHOLD or 0,
+                            self.FTS_LIMIT_WITHOUT_YEAR,
+                        ),
+                    )
+                candidates = cursor.fetchall()
+                if candidates:
+                    break
         except Exception as e:
             logging.debug(f"FTS search failed: {e}")
         return candidates[:self.MAX_CANDIDATES]  # Limit total candidates
 
     def _create_title_info_from_row_fast(self, row: sqlite3.Row | dict, conn: sqlite3.Connection) -> TitleInfo:
         """Fast version of _create_title_info_from_row using existing connection"""
+        cached = self._title_cache.get(row["id"])
+        if cached:
+            return cached
+
         # Map type integer back to string
         type_map = {1: 'movie', 2: 'tvSeries', 3: 'tvMiniSeries'}
         title_type = type_map.get(row["type"], 'movie')
@@ -1092,7 +1192,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             else:
                 status = "Continuing"  # or "Unknown" - could be either continuing or just no end year data
 
-        return TitleInfo(
+        title_info = TitleInfo(
             id=tconst or str(row["id"]),
             title=row["title"],
             type=media_type,
@@ -1109,6 +1209,14 @@ class IMDbDataProvider(BaseMetadataProvider):
             sources=[f"https://www.imdb.com/title/{tconst}/"],
             plot=None,  # Plot not available in basic dataset
         )
+
+        self._title_cache[row["id"]] = title_info
+        if len(self._title_cache) > self.TITLE_CACHE_MAX:
+            oldest_keys = list(self._title_cache.keys())[:self.TITLE_CACHE_EVICT]
+            for key in oldest_keys:
+                del self._title_cache[key]
+
+        return title_info
 
     def get_episode_info(
         self, parent_id: str, season: int, episode: int
@@ -1259,8 +1367,8 @@ class IMDbDataProvider(BaseMetadataProvider):
         finally:
             self._return_connection(conn)
     
-    def _build_fts_query(self, title: str) -> str:
-        """Build FTS5 query from title for fuzzy search"""
+    def _build_fts_queries(self, title: str) -> List[str]:
+        """Build primary and fallback FTS5 queries from title for fuzzy search."""
         # Normalize and tokenize
         normalized = title.lower()
         normalized = re.sub(r'\s+', ' ', normalized).strip()
@@ -1276,9 +1384,15 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         # Split into words and build FTS5 query
         words = normalized.split()
-        normalized = ' OR '.join([f'{word}*' for word in words])
+        if not words:
+            return []
 
-        return normalized
+        and_query = ' '.join([f'{word}*' for word in words])
+        if len(words) == 1:
+            return [and_query]
+
+        or_query = ' OR '.join([f'{word}*' for word in words])
+        return [and_query, or_query]
     
     def refresh_data(self) -> None:
         """Invalidate cache and immediately reload/refresh the data"""
