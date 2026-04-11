@@ -92,7 +92,7 @@ DATE_FORMATS = (
 )
 SERIES_METADATA_TYPES = {"tv", "anime_series"}
 MOVIE_METADATA_TYPES = {"movie", "anime_movie"}
-DEFAULT_TABLE_COLUMNS = ("title", "year", "season", "season_title", "episode", "episode_title", "views")
+DEFAULT_TABLE_COLUMNS = ("title", "year", "season", "season_title", "episode", "episode_title", "views", "watch_dates")
 TABLE_COLUMN_DEFINITIONS = {
     "title": {"header": "Title", "align": "left", "max_width": 38},
     "year": {"header": "Year", "align": "right", "max_width": 10},
@@ -100,7 +100,8 @@ TABLE_COLUMN_DEFINITIONS = {
     "season_title": {"header": "Season Title", "align": "left", "max_width": 18},
     "episode": {"header": "Episode", "align": "right", "max_width": 7},
     "episode_title": {"header": "Episode Title", "align": "left", "max_width": 34},
-    "views": {"header": "Views", "align": "left", "max_width": 48},
+    "views": {"header": "Views", "align": "right", "max_width": 7},
+    "watch_dates": {"header": "Watch Dates", "align": "left", "max_width": 24},
 }
 BROKEN_HISTORY_TITLE_RE = re.compile(
     r"^:\s*(?:episode\s+\d+|chapter\s+\d+|\d+(?:st|nd|rd|th)\b.*)$",
@@ -222,6 +223,7 @@ class WatchTableRow:
     episode: str = ""
     episode_title: str = ""
     views: str = ""
+    watch_dates: str = ""
 
 
 @dataclass
@@ -724,18 +726,26 @@ def safe_write_line(text: str = "") -> None:
             raise
 
 
-def _format_date_list(watched_at_values: List[datetime]) -> str:
-    return ", ".join(value.date().isoformat() for value in sorted(watched_at_values))
+def _format_watch_years(watched_at_values: List[datetime]) -> str:
+    years = sorted({value.year for value in watched_at_values})
+    return ", ".join(str(year) for year in years)
 
 
 def _format_leaf_views(watched_at_values: List[datetime]) -> str:
-    count = len(watched_at_values)
-    if count <= 0:
-        return "0"
-    return f"{count} ({_format_date_list(watched_at_values)})"
+    return str(len(watched_at_values))
 
 
 def _format_group_views(watched_at_values: List[datetime]) -> str:
+    return ""
+
+
+def _format_leaf_watch_dates(watched_at_values: List[datetime]) -> str:
+    if not watched_at_values:
+        return ""
+    return _format_watch_years(watched_at_values)
+
+
+def _format_group_watch_dates(watched_at_values: List[datetime]) -> str:
     return ""
 
 
@@ -873,6 +883,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     year=str(_entry_title_year(title_entries[0]) or ""),
                     episode_title="",
                     views=_format_leaf_views(watched_at_values),
+                    watch_dates=_format_leaf_watch_dates(watched_at_values),
                 )
             )
             continue
@@ -884,6 +895,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 year=str(_entry_title_year(title_entries[0]) or ""),
                 episode_title="",
                 views=_format_group_views(watched_at_values),
+                watch_dates=_format_group_watch_dates(watched_at_values),
             )
         )
 
@@ -960,6 +972,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                                 episode=str(episode_info.episode),
                                 episode_title=episode_title,
                                 views=_format_leaf_views(watched_at_values),
+                                watch_dates=_format_leaf_watch_dates(watched_at_values),
                             )
                         )
                         continue
@@ -975,6 +988,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                             episode=str(episode_info.episode),
                             episode_title=synthetic_title,
                             views="0",
+                            watch_dates="",
                         )
                     )
 
@@ -986,6 +1000,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                         episode=_format_progress(watched_count, len(metadata_season_map[season_number])),
                         episode_title="",
                         views=_format_group_views([]),
+                        watch_dates=_format_group_watch_dates([]),
                     )
                 )
                 rows.extend(season_rows)
@@ -1013,6 +1028,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                         season=str(season_number) if season_number is not None else "",
                         episode_title="",
                         views=_format_group_views([entry.watched_at for entry in season_entries]),
+                        watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
                     )
                 )
                 for entry in _build_episode_rows(
@@ -1063,6 +1079,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     season=str(season_number) if season_number is not None else "",
                     episode_title="",
                     views=_format_group_views([entry.watched_at for entry in season_entries]),
+                    watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
                 )
             )
             season_override = season_number if season_number is not None else None
@@ -1110,6 +1127,7 @@ def _build_episode_rows(
                 episode=str(episode_number) if episode_number is not None else "",
                 episode_title=episode_title,
                 views=_format_leaf_views(watched_at_values),
+                watch_dates=_format_leaf_watch_dates(watched_at_values),
             )
         )
     return rows
@@ -1134,6 +1152,7 @@ def render_watch_table(entries: List[NetflixHistoryEntry], selected_columns: Lis
             "episode": row.episode,
             "episode_title": row.episode_title,
             "views": row.views,
+            "watch_dates": row.watch_dates,
         }
         cells = [row_values[column] for column in selected_columns]
         row_cells.append(cells)
