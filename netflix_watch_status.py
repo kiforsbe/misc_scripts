@@ -1017,8 +1017,10 @@ def _resolve_thumbnail_for_sources(
     return last_result, dirty
 
 
-def _thumbnail_url_from_imdb_id(metadata_parent_id: Optional[str]) -> str:
-    if not metadata_parent_id or not re.fullmatch(r"tt\d+", metadata_parent_id):
+def _thumbnail_url_from_imdb_id(metadata_parent_id: Any) -> str:
+    if not isinstance(metadata_parent_id, str):
+        return ""
+    if not re.fullmatch(r"tt\d+", metadata_parent_id):
         return ""
     return f"https://images.metahub.space/poster/medium/{metadata_parent_id}/img"
 
