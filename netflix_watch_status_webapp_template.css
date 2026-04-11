@@ -169,7 +169,8 @@ input:focus,
 }
 
 .treegrid {
-    width: 100%;
+    width: max-content;
+    min-width: 100%;
     border-collapse: separate;
     border-spacing: 0;
     font-size: 0.92rem;
@@ -258,8 +259,18 @@ input:focus,
     text-align: right;
 }
 
-.treegrid thead th.column-year,
-.treegrid tbody td.column-year {
+.treegrid thead th.align-center,
+.treegrid tbody td.align-center {
+    text-align: center;
+}
+
+.treegrid thead th.column-title,
+.treegrid tbody td.column-title {
+    width: 100%;
+}
+
+.treegrid thead th:not(.column-title):not(.gutter-column),
+.treegrid tbody td:not(.column-title):not(.gutter-column) {
     width: 1%;
     white-space: nowrap;
 }
@@ -467,7 +478,7 @@ input:focus,
 
 .details-pane {
     display: grid;
-    grid-template-rows: auto auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
     gap: 14px;
     padding: 18px;
     background: linear-gradient(180deg, #fcfdfe 0%, #f7f9fb 100%);
@@ -492,8 +503,7 @@ input:focus,
 }
 
 .media-preview-shell,
-.selection-panel,
-.summary-grid {
+.selection-panel {
     border: 1px solid var(--line);
     border-radius: 14px;
     background: rgba(255, 255, 255, 0.78);
@@ -536,32 +546,6 @@ input:focus,
 .media-preview-placeholder p {
     margin: 0;
     font-size: 0.84rem;
-}
-
-.summary-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 1px;
-    overflow: hidden;
-    background: var(--line);
-}
-
-.summary-card {
-    padding: 14px;
-    background: #ffffff;
-    display: grid;
-    gap: 4px;
-}
-
-.summary-card strong {
-    font-size: 1.3rem;
-}
-
-.summary-card span {
-    color: var(--muted);
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
 }
 
 .selection-panel {

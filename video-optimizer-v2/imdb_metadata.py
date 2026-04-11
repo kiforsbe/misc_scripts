@@ -174,6 +174,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     ) WITHOUT ROWID;
 
                     -- Compressed view for search operations
+                    DROP VIEW IF EXISTS search_view;
                     CREATE VIEW IF NOT EXISTS search_view AS
                     SELECT 
                         b.id,
@@ -182,6 +183,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                         b.type,
                         b.year,
                         b.end_year,
+                        b.runtime_minutes,
                         b.genres,
                         CASE WHEN r.rating IS NULL THEN NULL ELSE r.rating / 10.0 END as rating,
                         r.votes
@@ -970,7 +972,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         primary_cursor = conn.execute(
             f"""
-            SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                 SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes,
                    2 AS match_rank
             FROM search_view s
             WHERE s.title_lower = ?
@@ -991,7 +993,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         aka_cursor = conn.execute(
             f"""
-            SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes,
+                 SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes,
                    1 AS match_rank
             FROM title_akas a
             JOIN search_view s ON a.titleId = s.id
@@ -1143,7 +1145,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 if year:
                     cursor = conn.execute(
                         """
-                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes, f.score
+                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes, f.score
                         FROM (
                             SELECT titleId, MIN(bm25(title_fts, 10.0)) AS score
                             FROM title_fts
@@ -1171,7 +1173,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 else:
                     cursor = conn.execute(
                         """
-                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.genres, s.rating, s.votes, f.score
+                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes, f.score
                         FROM (
                             SELECT titleId, MIN(bm25(title_fts, 10.0)) AS score
                             FROM title_fts
@@ -1246,6 +1248,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             end_year=row["end_year"] if "end_year" in row.keys() else None,
             rating=float(row["rating"]) if row["rating"] else None,
             votes=row["votes"],
+            runtime_minutes=row["runtime_minutes"] if "runtime_minutes" in row.keys() else None,
             genres=genres,
             tags=[],  # IMDb doesn't provide tags in basic dataset
             status=status,

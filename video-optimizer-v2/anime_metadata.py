@@ -882,6 +882,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             year=row['year'],
             status=status_text,
             rating=row['score'] if 'score' in row.keys() else None,  # Use score from database as rating
+            runtime_minutes=None,
             total_episodes=row['episodes'],
             total_seasons=season_number if type_text == "anime_series" else None,
             tags=tags,

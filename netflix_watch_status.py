@@ -97,6 +97,11 @@ DEFAULT_TABLE_COLUMNS = ("title", "year", "season", "season_title", "episode", "
 TABLE_COLUMN_DEFINITIONS = {
     "title": {"header": "Title", "align": "left", "max_width": 38},
     "year": {"header": "Year", "align": "right", "max_width": 10},
+    "title_type": {"header": "Title Type", "align": "left", "max_width": 14},
+    "runtime_minutes": {"header": "Runtime", "align": "right", "max_width": 8},
+    "genres": {"header": "Genres", "align": "left", "max_width": 28},
+    "average_rating": {"header": "Rating", "align": "center", "max_width": 6},
+    "num_votes": {"header": "Votes", "align": "right", "max_width": 10},
     "season": {"header": "Season", "align": "right", "max_width": 6},
     "season_title": {"header": "Season Title", "align": "left", "max_width": 18},
     "episode": {"header": "Episode", "align": "right", "max_width": 7},
@@ -195,6 +200,11 @@ class NetflixHistoryEntry:
     resolved_title_year: Optional[int] = None
     resolved_episode_year: Optional[int] = None
     resolved_total_seasons: Optional[int] = None
+    metadata_average_rating: Optional[float] = None
+    metadata_num_votes: Optional[int] = None
+    metadata_runtime_minutes: Optional[int] = None
+    metadata_genres: Tuple[str, ...] = field(default_factory=tuple)
+    metadata_title_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -211,6 +221,11 @@ class NetflixHistoryEntry:
             "resolved_title_year": self.resolved_title_year,
             "resolved_episode_year": self.resolved_episode_year,
             "resolved_total_seasons": self.resolved_total_seasons,
+            "metadata_average_rating": self.metadata_average_rating,
+            "metadata_num_votes": self.metadata_num_votes,
+            "metadata_runtime_minutes": self.metadata_runtime_minutes,
+            "metadata_genres": list(self.metadata_genres),
+            "metadata_title_type": self.metadata_title_type,
         }
 
 
@@ -225,6 +240,11 @@ class WatchTableRow:
     episode_title: str = ""
     views: str = ""
     watch_dates: str = ""
+    title_type: str = ""
+    runtime_minutes: str = ""
+    genres: str = ""
+    average_rating: str = ""
+    num_votes: str = ""
     item_type: str = ""
     row_id: str = ""
     parent_id: Optional[str] = None
@@ -305,7 +325,7 @@ class SeriesWatchStatus:
 class NetflixWatchStatusAnalyzer:
     def __init__(self, metadata_manager: Any = None):
         self.metadata_manager = metadata_manager
-        self._metadata_cache: Dict[Tuple[str, Optional[str]], Tuple[Optional[str], Optional[str], Optional[int], Optional[int], Optional[str], Any, Optional[str]]] = {}
+        self._metadata_cache: Dict[Tuple[str, Optional[str]], Tuple[Any, ...]] = {}
 
     def load_entries(self, csv_path: str) -> List[NetflixHistoryEntry]:
         raw_entries: List[Tuple[str, datetime, ParsedNetflixTitle]] = []
@@ -388,7 +408,7 @@ class NetflixWatchStatusAnalyzer:
             desc=desc,
             unit="entry",
         ):
-            media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id = self._classify_entry(parsed, prefix_counts)
+            media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type = self._classify_entry(parsed, prefix_counts)
             resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year = self._resolve_episode_metadata(
                 parsed=parsed,
                 media_kind=media_kind,
@@ -414,6 +434,11 @@ class NetflixWatchStatusAnalyzer:
                     resolved_title_year=resolved_title_year,
                     resolved_episode_year=resolved_episode_year,
                     resolved_total_seasons=resolved_total_seasons,
+                    metadata_average_rating=metadata_average_rating,
+                    metadata_num_votes=metadata_num_votes,
+                    metadata_runtime_minutes=metadata_runtime_minutes,
+                    metadata_genres=metadata_genres,
+                    metadata_title_type=metadata_title_type,
                 )
             )
 
@@ -568,15 +593,15 @@ class NetflixWatchStatusAnalyzer:
 
     def _classify_entry(
         self, parsed: ParsedNetflixTitle, prefix_counts: Dict[str, int]
-    ) -> Tuple[str, str, Optional[int], Optional[int], Optional[str], Any, Optional[str]]:
+    ) -> Tuple[str, str, Optional[int], Optional[int], Optional[str], Any, Optional[str], Optional[float], Optional[int], Optional[int], Tuple[str, ...], Optional[str]]:
         default_kind = "series" if parsed.is_explicit_series else parsed.media_kind
         default_title = parsed.title if parsed.is_explicit_series else parsed.raw_title
         inferred_series_title = self._infer_series_title(parsed, prefix_counts)
 
         if self.metadata_manager is None:
             if inferred_series_title:
-                return "series", inferred_series_title, None, None, None, None, None
-            return default_kind, default_title, None, None, None, None, None
+                return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None
+            return default_kind, default_title, None, None, None, None, None, None, None, None, (), None
 
         queries: List[str] = []
         if parsed.is_explicit_series:
@@ -595,7 +620,7 @@ class NetflixWatchStatusAnalyzer:
                 or parsed.episode_title is not None
                 or inferred_series_title is not None
             ) else None
-            resolved_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id = self._lookup_metadata(
+            resolved_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type = self._lookup_metadata(
                 query,
                 preferred_type=preferred_type,
             )
@@ -610,22 +635,22 @@ class NetflixWatchStatusAnalyzer:
             ):
                 continue
             if parsed.is_explicit_series and resolved_kind == "movie":
-                return "series", parsed.title or resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id
-            return resolved_kind, resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id
+                return "series", parsed.title or resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type
+            return resolved_kind, resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type
 
         if inferred_series_title:
-            return "series", inferred_series_title, None, None, None, None, None
+            return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None
 
-        return default_kind, default_title, None, None, None, None, None
+        return default_kind, default_title, None, None, None, None, None, None, None, None, (), None
 
     def _lookup_metadata(
         self,
         query: str,
         preferred_type: Optional[str] = None,
-    ) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[int], Optional[str], Any, Optional[str]]:
+    ) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[int], Optional[str], Any, Optional[str], Optional[float], Optional[int], Optional[int], Tuple[str, ...], Optional[str]]:
         cache_key = query.casefold().strip()
         if not cache_key:
-            return None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None, None, (), None
 
         metadata_cache_key = (cache_key, preferred_type)
         if metadata_cache_key in self._metadata_cache:
@@ -634,12 +659,12 @@ class NetflixWatchStatusAnalyzer:
         try:
             match = self.metadata_manager.find_title(query, preferred_type=preferred_type)
         except Exception:
-            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None)
-            return None, None, None, None, None, None, None
+            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None)
+            return None, None, None, None, None, None, None, None, None, None, (), None
 
         if not match or not match[0]:
-            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None)
-            return None, None, None, None, None, None, None
+            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None)
+            return None, None, None, None, None, None, None, None, None, None, (), None
 
         title_info = match[0]
         provider = match[1] if len(match) > 1 else None
@@ -655,8 +680,13 @@ class NetflixWatchStatusAnalyzer:
         resolved_title = getattr(title_info, "title", query)
         resolved_title_year = getattr(title_info, "year", None) or getattr(title_info, "start_year", None)
         metadata_parent_id = getattr(title_info, "id", None)
-        self._metadata_cache[metadata_cache_key] = (media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id)
-        return media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id
+        metadata_average_rating = getattr(title_info, "rating", None)
+        metadata_num_votes = getattr(title_info, "votes", None)
+        metadata_runtime_minutes = getattr(title_info, "runtime_minutes", None)
+        metadata_genres = tuple(getattr(title_info, "genres", []) or ())
+        metadata_title_type = getattr(title_info, "type", None)
+        self._metadata_cache[metadata_cache_key] = (media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type)
+        return media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -704,6 +734,10 @@ def pad_console_cell(text: str, width: int, align: str) -> str:
     padding = max(0, width - visible_text_width(text))
     if align == "right":
         return f"{' ' * padding}{text}"
+    if align == "center":
+        left_padding = padding // 2
+        right_padding = padding - left_padding
+        return f"{' ' * left_padding}{text}{' ' * right_padding}"
     return f"{text}{' ' * padding}"
 
 
@@ -764,6 +798,44 @@ def _format_leaf_watch_dates(watched_at_values: List[datetime]) -> str:
 
 def _format_group_watch_dates(watched_at_values: List[datetime]) -> str:
     return ""
+
+
+def _format_average_rating(value: Optional[float]) -> str:
+    if value is None:
+        return ""
+    return f"{value:.1f}"
+
+
+def _format_num_votes(value: Optional[int]) -> str:
+    if value is None:
+        return ""
+    return f"{value:,}"
+
+
+def _format_runtime_minutes(value: Optional[int]) -> str:
+    if value is None:
+        return ""
+    hours, minutes = divmod(value, 60)
+    parts: List[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _format_genres(values: Tuple[str, ...]) -> str:
+    return ", ".join(values)
+
+
+def _entry_metadata_row_fields(entry: NetflixHistoryEntry) -> Dict[str, str]:
+    return {
+        "title_type": entry.metadata_title_type or entry.metadata_type or "",
+        "runtime_minutes": _format_runtime_minutes(entry.metadata_runtime_minutes),
+        "genres": _format_genres(entry.metadata_genres),
+        "average_rating": _format_average_rating(entry.metadata_average_rating),
+        "num_votes": _format_num_votes(entry.metadata_num_votes),
+    }
 
 
 def _format_progress(watched_count: int, total_count: int) -> str:
@@ -935,6 +1007,11 @@ def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:
             display_episode_title,
             row.views,
             row.watch_dates,
+            row.title_type,
+            row.runtime_minutes,
+            row.genres,
+            row.average_rating,
+            row.num_votes,
         ] if part
     ).casefold()
     return {
@@ -952,6 +1029,11 @@ def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:
         "display_episode_title": display_episode_title,
         "views": row.views,
         "watch_dates": row.watch_dates,
+        "title_type": row.title_type,
+        "runtime_minutes": row.runtime_minutes,
+        "genres": row.genres,
+        "average_rating": row.average_rating,
+        "num_votes": row.num_votes,
         "has_children": row.has_children,
         "watch_state": watch_state,
         "thumbnail": _row_thumbnail_payload(row),
@@ -972,7 +1054,7 @@ def build_webapp_payload(
             "header": TABLE_COLUMN_DEFINITIONS[column]["header"],
             "align": TABLE_COLUMN_DEFINITIONS[column]["align"],
         }
-        for column in selected_columns
+        for column in TABLE_COLUMN_DEFINITIONS
     ]
     return {
         "meta": {
@@ -1043,6 +1125,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     episode_title="",
                     views=_format_leaf_views(watched_at_values),
                     watch_dates=_format_leaf_watch_dates(watched_at_values),
+                    **_entry_metadata_row_fields(title_entries[0]),
                     item_type="movie",
                 )
             )
@@ -1056,6 +1139,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 episode_title="",
                 views=_format_group_views(watched_at_values),
                 watch_dates=_format_group_watch_dates(watched_at_values),
+                **_entry_metadata_row_fields(title_entries[0]),
                 item_type="series",
             )
         )
@@ -1134,6 +1218,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                                 episode_title=episode_title,
                                 views=_format_leaf_views(watched_at_values),
                                 watch_dates=_format_leaf_watch_dates(watched_at_values),
+                                **_entry_metadata_row_fields(first_entry),
                                 item_type="episode",
                             )
                         )
@@ -1151,6 +1236,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                             episode_title=synthetic_title,
                             views="0",
                             watch_dates="",
+                            **_entry_metadata_row_fields(title_entries[0]),
                             item_type="episode",
                         )
                     )
@@ -1164,6 +1250,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                         episode_title="",
                         views=_format_group_views([]),
                         watch_dates=_format_group_watch_dates([]),
+                        **_entry_metadata_row_fields(title_entries[0]),
                         item_type="season",
                     )
                 )
@@ -1193,6 +1280,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                         episode_title="",
                         views=_format_group_views([entry.watched_at for entry in season_entries]),
                         watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
+                        **_entry_metadata_row_fields(season_entries[0]),
                         item_type="season",
                     )
                 )
@@ -1245,6 +1333,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     episode_title="",
                     views=_format_group_views([entry.watched_at for entry in season_entries]),
                     watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
+                    **_entry_metadata_row_fields(season_entries[0]),
                     item_type="season",
                 )
             )
@@ -1294,6 +1383,7 @@ def _build_episode_rows(
                 episode_title=episode_title,
                 views=_format_leaf_views(watched_at_values),
                 watch_dates=_format_leaf_watch_dates(watched_at_values),
+                **_entry_metadata_row_fields(first_entry),
                 item_type="episode",
             )
         )
@@ -1314,6 +1404,11 @@ def render_watch_table(entries: List[NetflixHistoryEntry], selected_columns: Lis
         row_values = {
             "title": f"{'  ' * row.level}{row.title}",
             "year": row.year,
+            "title_type": row.title_type,
+            "runtime_minutes": row.runtime_minutes,
+            "genres": row.genres,
+            "average_rating": row.average_rating,
+            "num_votes": row.num_votes,
             "season": row.season,
             "season_title": row.season_title,
             "episode": row.episode,

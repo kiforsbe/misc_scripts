@@ -22,6 +22,7 @@ class TitleInfo:
     end_year: Optional[int] = None
     rating: Optional[float] = None
     votes: Optional[int] = None
+    runtime_minutes: Optional[int] = None
     genres: List[str] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
     status: Optional[str] = None

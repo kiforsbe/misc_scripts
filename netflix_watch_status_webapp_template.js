@@ -5,7 +5,7 @@
     const nameColumn = columns.find((column) => column.key === "title") || { key: "title", header: "Title", align: "left" };
     const optionalColumns = columns.filter((column) => column.key !== nameColumn.key);
     const defaultColumnOrder = optionalColumns.map((column) => column.key);
-    const defaultVisibleColumns = new Set(["year"]);
+    const defaultVisibleColumns = new Set(["year", "runtime_minutes", "average_rating", "genres"]);
     const rowMap = new Map(rows.map((row) => [row.id, row]));
     const childrenMap = new Map();
 
@@ -17,12 +17,16 @@
         childrenMap.get(key).push(row);
     });
 
+    const preferredDefaultColumnOrder = ["year", "runtime_minutes", "average_rating", "genres"];
     const state = {
         query: "",
         selectedId: rows[0] ? rows[0].id : null,
         expanded: new Set(),
         shownColumns: new Set(defaultColumnOrder.filter((key) => defaultVisibleColumns.has(key))),
-        columnOrder: [...defaultColumnOrder],
+        columnOrder: [
+            ...preferredDefaultColumnOrder.filter((key) => defaultColumnOrder.includes(key)),
+            ...defaultColumnOrder.filter((key) => !preferredDefaultColumnOrder.includes(key)),
+        ],
         draggingColumnKey: null,
         dragInsertPosition: "before",
     };
@@ -34,11 +38,9 @@
         columnOptions: document.getElementById("columnOptions"),
         treegridHeaderRow: document.getElementById("treegridHeaderRow"),
         resultBody: document.getElementById("resultBody"),
-        summaryGrid: document.getElementById("summaryGrid"),
         selectionTitle: document.getElementById("selectionTitle"),
         selectionSubtitle: document.getElementById("selectionSubtitle"),
         selectionDetails: document.getElementById("selectionDetails"),
-        selectionContext: document.getElementById("selectionContext"),
         mediaPreview: document.getElementById("mediaPreview"),
     };
 
@@ -238,21 +240,6 @@
         `).join("");
     }
 
-    function renderSummary() {
-        const summary = report.summary || {};
-        const cards = [
-            { label: "Entries", value: summary.entries ?? 0 },
-            { label: "Movies", value: summary.unique_movies ?? 0 },
-            { label: "Series", value: summary.unique_series ?? 0 },
-        ];
-        elements.summaryGrid.innerHTML = cards.map((card) => `
-            <div class="summary-card">
-                <strong>${escapeHtml(card.value)}</strong>
-                <span>${escapeHtml(card.label)}</span>
-            </div>
-        `).join("");
-    }
-
     function renderColumnOptions() {
         elements.columnOptions.innerHTML = orderedOptionalColumns().map((column) => `
             <label class="column-option">
@@ -286,7 +273,6 @@
             elements.selectionTitle.textContent = "No selection";
             elements.selectionSubtitle.textContent = "";
             elements.selectionDetails.innerHTML = '<div class="empty-state">Select a row to inspect its details.</div>';
-            elements.selectionContext.innerHTML = '<div class="empty-state">No selection context.</div>';
             renderPreview({ thumbnail: { status: "not_requested" } });
             return;
         }
@@ -310,25 +296,18 @@
             { label: "Watch Dates", value: row.watch_dates },
         ];
         elements.selectionDetails.innerHTML = selectionItems(detailItems);
-
-        const contextItems = [
-            { label: "Series / Parent", value: ancestors.map((item) => item.title).join(" / ") },
-            { label: "Tree Depth", value: row.level },
-            { label: "Thumbnail Status", value: row.thumbnail && row.thumbnail.status ? row.thumbnail.status : "not_requested" },
-        ];
-        elements.selectionContext.innerHTML = selectionItems(contextItems);
     }
 
     function renderHeader() {
         const gutterHeader = '<th class="gutter-column" aria-hidden="true"></th>';
         const trailingGutterHeader = '<th class="gutter-column right-gutter-column" aria-hidden="true"></th>';
         const fixedHeader = `
-            <th class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""}">
+            <th class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""} ${nameColumn.align === "center" ? "align-center" : ""}">
                 <span class="column-header-button is-fixed">${escapeHtml(nameColumn.header || nameColumn.key)}</span>
             </th>
         `;
         const dataHeaders = visibleOptionalColumns().map((column, index) => `
-            <th class="optional-column-header column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""}" data-column-key="${escapeHtml(column.key)}" draggable="true">
+            <th class="optional-column-header column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""} ${column.align === "center" ? "align-center" : ""}" data-column-key="${escapeHtml(column.key)}" draggable="true">
                 <span class="column-header-button">${escapeHtml(column.header || column.key || `Column ${index + 1}`)}</span>
             </th>
         `).join("");
@@ -411,8 +390,8 @@
         elements.resultBody.innerHTML = visibleRows.map((row) => `
             <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" data-row-id="${escapeHtml(row.id)}">
                 <td class="gutter-column">${gutterCellMarkup(row)}</td>
-                <td class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""}">${cellMarkup(row, nameColumn)}</td>
-                ${visibleColumns.map((column) => `<td class="column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""}">${cellMarkup(row, column)}</td>`).join("")}
+                <td class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""} ${nameColumn.align === "center" ? "align-center" : ""}">${cellMarkup(row, nameColumn)}</td>
+                ${visibleColumns.map((column) => `<td class="column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""} ${column.align === "center" ? "align-center" : ""}">${cellMarkup(row, column)}</td>`).join("")}
                 <td class="gutter-column right-gutter-column"></td>
             </tr>
         `).join("");
@@ -524,6 +503,5 @@
 
     elements.sourceCsv.textContent = report.meta && report.meta.source_csv ? report.meta.source_csv : "";
     renderColumnOptions();
-    renderSummary();
     render();
 }());
