@@ -71,6 +71,70 @@
         return row.display_episode_title || row.episode_title || "";
     }
 
+    function hashString(value) {
+        let hash = 0;
+        for (let index = 0; index < value.length; index += 1) {
+            hash = ((hash << 5) - hash) + value.charCodeAt(index);
+            hash |= 0;
+        }
+        return Math.abs(hash);
+    }
+
+    function genrePalette(genre) {
+        const normalized = String(genre || "").trim().toLowerCase();
+        const paletteMap = {
+            action: { bg: "rgba(178, 7, 16, 0.12)", border: "rgba(178, 7, 16, 0.22)", fg: "#8e1117" },
+            adventure: { bg: "rgba(184, 115, 0, 0.12)", border: "rgba(184, 115, 0, 0.24)", fg: "#8a5a00" },
+            animation: { bg: "rgba(0, 97, 168, 0.12)", border: "rgba(0, 97, 168, 0.22)", fg: "#00548f" },
+            anime: { bg: "rgba(0, 97, 168, 0.12)", border: "rgba(0, 97, 168, 0.22)", fg: "#00548f" },
+            comedy: { bg: "rgba(220, 120, 0, 0.12)", border: "rgba(220, 120, 0, 0.22)", fg: "#9a5600" },
+            crime: { bg: "rgba(79, 70, 229, 0.12)", border: "rgba(79, 70, 229, 0.22)", fg: "#4338ca" },
+            documentary: { bg: "rgba(44, 110, 73, 0.12)", border: "rgba(44, 110, 73, 0.22)", fg: "#235837" },
+            drama: { bg: "rgba(114, 88, 56, 0.12)", border: "rgba(114, 88, 56, 0.22)", fg: "#6a5136" },
+            family: { bg: "rgba(44, 110, 73, 0.12)", border: "rgba(44, 110, 73, 0.22)", fg: "#235837" },
+            fantasy: { bg: "rgba(126, 34, 206, 0.12)", border: "rgba(126, 34, 206, 0.22)", fg: "#7e22ce" },
+            history: { bg: "rgba(120, 53, 15, 0.12)", border: "rgba(120, 53, 15, 0.22)", fg: "#92400e" },
+            horror: { bg: "rgba(17, 24, 39, 0.12)", border: "rgba(17, 24, 39, 0.22)", fg: "#111827" },
+            music: { bg: "rgba(190, 24, 93, 0.12)", border: "rgba(190, 24, 93, 0.22)", fg: "#be185d" },
+            musical: { bg: "rgba(190, 24, 93, 0.12)", border: "rgba(190, 24, 93, 0.22)", fg: "#be185d" },
+            mystery: { bg: "rgba(67, 56, 202, 0.12)", border: "rgba(67, 56, 202, 0.22)", fg: "#4338ca" },
+            romance: { bg: "rgba(225, 29, 72, 0.12)", border: "rgba(225, 29, 72, 0.22)", fg: "#be123c" },
+            'sci-fi': { bg: "rgba(8, 145, 178, 0.12)", border: "rgba(8, 145, 178, 0.22)", fg: "#0f766e" },
+            sciencefiction: { bg: "rgba(8, 145, 178, 0.12)", border: "rgba(8, 145, 178, 0.22)", fg: "#0f766e" },
+            sport: { bg: "rgba(22, 101, 52, 0.12)", border: "rgba(22, 101, 52, 0.22)", fg: "#166534" },
+            thriller: { bg: "rgba(124, 58, 237, 0.12)", border: "rgba(124, 58, 237, 0.22)", fg: "#6d28d9" },
+            war: { bg: "rgba(127, 29, 29, 0.12)", border: "rgba(127, 29, 29, 0.22)", fg: "#991b1b" },
+            western: { bg: "rgba(146, 64, 14, 0.12)", border: "rgba(146, 64, 14, 0.22)", fg: "#92400e" },
+        };
+
+        if (paletteMap[normalized]) {
+            return paletteMap[normalized];
+        }
+
+        const hue = hashString(normalized) % 360;
+        return {
+            bg: `hsla(${hue}, 70%, 92%, 0.96)`,
+            border: `hsla(${hue}, 45%, 58%, 0.34)`,
+            fg: `hsl(${hue}, 60%, 30%)`,
+        };
+    }
+
+    function genreBadgesMarkup(value) {
+        const genres = String(value || "")
+            .split(",")
+            .map((genre) => genre.trim())
+            .filter(Boolean);
+
+        if (!genres.length) {
+            return "";
+        }
+
+        return `<div class="genre-badges">${genres.map((genre) => {
+            const palette = genrePalette(genre);
+            return `<span class="genre-badge" style="--genre-bg:${escapeHtml(palette.bg)}; --genre-border:${escapeHtml(palette.border)}; --genre-fg:${escapeHtml(palette.fg)};">${escapeHtml(genre)}</span>`;
+        }).join("")}</div>`;
+    }
+
     function formatEpisodeTreeSubtitle(row) {
         const parts = [];
 
@@ -367,6 +431,9 @@
         }
         if (column.key === "episode_title") {
             return escapeHtml(displayEpisodeTitle(row));
+        }
+        if (column.key === "genres") {
+            return genreBadgesMarkup(row[column.key]);
         }
         if (column.key === "title") {
             return escapeHtml(displayTitle(row));
