@@ -123,6 +123,7 @@ THUMBNAIL_CACHE_DIR = Path.home() / ".video_metadata_cache" / "netflix_watch_sta
 THUMBNAIL_CACHE_FILE = THUMBNAIL_CACHE_DIR / "thumbnail_cache.json"
 THUMBNAIL_CACHE_SUCCESS_TTL_SECONDS = 30 * 24 * 60 * 60
 THUMBNAIL_CACHE_FAILURE_TTL_SECONDS = 3 * 24 * 60 * 60
+UNMAPPED_IMDB_REPORT_SUFFIX = "_unmapped_imdb_titles.csv"
 THUMBNAIL_META_KEYS = {
     "og:image",
     "og:image:url",
@@ -1861,6 +1862,69 @@ def export_webapp_report(
     return target_path
 
 
+def _entry_has_imdb_title_metadata(entry: NetflixHistoryEntry) -> bool:
+    if isinstance(entry.metadata_parent_id, str) and re.fullmatch(r"tt\d+", entry.metadata_parent_id):
+        return True
+    return any("imdb" in source.casefold() for source in entry.metadata_sources)
+
+
+def _entry_requires_episode_mapping(entry: NetflixHistoryEntry) -> bool:
+    if entry.media_kind != "series":
+        return False
+    return bool(entry.parsed.episode_title or entry.parsed.episode is not None or _derive_episode_title(entry))
+
+
+def _entry_has_imdb_episode_metadata(entry: NetflixHistoryEntry) -> bool:
+    if isinstance(entry.resolved_episode_source_id, str) and re.fullmatch(r"tt\d+", entry.resolved_episode_source_id):
+        return True
+    return entry.resolved_episode is not None
+
+
+def build_unmapped_imdb_override_rows(entries: List[NetflixHistoryEntry]) -> List[Dict[str, str]]:
+    rows_by_title: Dict[str, Dict[str, str]] = {}
+    for entry in entries:
+        title_mapped = _entry_has_imdb_title_metadata(entry)
+        episode_required = _entry_requires_episode_mapping(entry)
+        episode_mapped = _entry_has_imdb_episode_metadata(entry)
+        if title_mapped and (not episode_required or episode_mapped):
+            continue
+
+        netflix_title = entry.raw_title.strip()
+        if not netflix_title:
+            continue
+
+        mapped_title = entry.resolved_title if title_mapped and entry.resolved_title != netflix_title else ""
+        row = rows_by_title.get(netflix_title)
+        if row is None:
+            rows_by_title[netflix_title] = {
+                "netflix_title": netflix_title,
+                "title": mapped_title,
+                "episode_title": "",
+            }
+            continue
+
+        if not row["title"] and mapped_title:
+            row["title"] = mapped_title
+
+    return sorted(rows_by_title.values(), key=lambda item: item["netflix_title"].casefold())
+
+
+def export_unmapped_imdb_overrides(entries: List[NetflixHistoryEntry], output_path: str) -> Path:
+    target_path = Path(output_path).expanduser().resolve()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = build_unmapped_imdb_override_rows(entries)
+    with target_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["netflix_title", "title", "episode_title"])
+        writer.writeheader()
+        writer.writerows(rows)
+    return target_path
+
+
+def default_unmapped_imdb_output_path(csv_path: str) -> Path:
+    source_path = Path(csv_path).expanduser()
+    return Path.cwd() / f"{source_path.stem}{UNMAPPED_IMDB_REPORT_SUFFIX}"
+
+
 def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTableRow]:
     title_groups: Dict[str, List[NetflixHistoryEntry]] = {}
     for entry in entries:
@@ -2307,6 +2371,11 @@ def main() -> None:
     )
     entries = analyzer.load_entries(args.csv_path)
     results = analyzer.analyze(entries)
+    unmapped_rows = build_unmapped_imdb_override_rows(entries)
+    unmapped_output_path = export_unmapped_imdb_overrides(
+        entries,
+        str(default_unmapped_imdb_output_path(args.csv_path)),
+    )
 
     if args.json:
         print(json.dumps(results, indent=2))
@@ -2319,9 +2388,14 @@ def main() -> None:
     if args.webapp_export:
         output_path = export_webapp_report(args.csv_path, results, entries, selected_columns, args.webapp_export)
         safe_write_line(f"Webapp exported to: {output_path}")
+        safe_write_line(f"IMDb-unmapped override rows: {len(unmapped_rows)}")
+        safe_write_line(f"IMDb-unmapped override template exported to: {unmapped_output_path}")
         return
 
     print_text_summary(results)
+    safe_write_line()
+    safe_write_line(f"IMDb-unmapped override rows: {len(unmapped_rows)}")
+    safe_write_line(f"IMDb-unmapped override template exported to: {unmapped_output_path}")
 
 
 if __name__ == "__main__":

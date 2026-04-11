@@ -10,6 +10,7 @@ from netflix_watch_status import (
     WatchTableRow,
     _derive_episode_title,
     _row_watch_state,
+    build_unmapped_imdb_override_rows,
     build_watch_table_rows,
     load_episode_title_overrides,
 )
@@ -466,6 +467,68 @@ def test_raw_entry_override_can_supply_both_series_and_episode_titles():
     assert episode_resolved == (2, 12, "Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!", "ep-24", 8.8, 900, 2025)
     assert provider.calls == [
         ("tt30217403", "Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!", 2),
+    ]
+
+
+def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures():
+    entries = [
+        NetflixHistoryEntry(
+            raw_title="Unknown Show",
+            watched_at=datetime(2026, 1, 1),
+            parsed=parse_netflix_title("Unknown Show"),
+            media_kind="movie",
+            resolved_title="Unknown Show",
+        ),
+        NetflixHistoryEntry(
+            raw_title="Known Show: Missing Episode",
+            watched_at=datetime(2026, 1, 2),
+            parsed=ParsedNetflixTitle(
+                raw_title="Known Show: Missing Episode",
+                title="Known Show",
+                media_kind="series",
+                episode_title="Missing Episode",
+                is_explicit_series=True,
+            ),
+            media_kind="series",
+            resolved_title="Known Show",
+            metadata_type="tv",
+            metadata_parent_id="tt1234567",
+            metadata_sources=("imdb",),
+        ),
+        NetflixHistoryEntry(
+            raw_title="Known Show: Found Episode",
+            watched_at=datetime(2026, 1, 3),
+            parsed=ParsedNetflixTitle(
+                raw_title="Known Show: Found Episode",
+                title="Known Show",
+                media_kind="series",
+                episode_title="Found Episode",
+                is_explicit_series=True,
+            ),
+            media_kind="series",
+            resolved_title="Known Show",
+            metadata_type="tv",
+            metadata_parent_id="tt1234567",
+            metadata_sources=("imdb",),
+            resolved_episode=2,
+            resolved_episode_source_id="tt7654321",
+            resolved_episode_title="Found Episode",
+        ),
+    ]
+
+    rows = build_unmapped_imdb_override_rows(entries)
+
+    assert rows == [
+        {
+            "netflix_title": "Known Show: Missing Episode",
+            "title": "Known Show",
+            "episode_title": "",
+        },
+        {
+            "netflix_title": "Unknown Show",
+            "title": "",
+            "episode_title": "",
+        },
     ]
 
 
