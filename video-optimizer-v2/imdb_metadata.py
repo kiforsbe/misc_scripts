@@ -1332,6 +1332,74 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         return None
 
+    def list_episodes(
+        self, parent_id: str, season: Optional[int] = None
+    ) -> List[EpisodeInfo]:
+        """List all known episodes for a series, optionally constrained to one season."""
+        self._ensure_data_loaded()
+
+        episode_list_key = f"episodes_{parent_id}_{season}"
+        if episode_list_key in self._search_cache:
+            cached = self._search_cache[episode_list_key]
+            if isinstance(cached, list):
+                return cached
+
+        internal_parent_id = None
+        parent_id_str = str(parent_id)
+        if parent_id_str.startswith("tt"):
+            try:
+                internal_parent_id = int(parent_id_str[2:])
+            except (ValueError, TypeError):
+                internal_parent_id = None
+        else:
+            try:
+                internal_parent_id = int(parent_id_str)
+            except (ValueError, TypeError):
+                internal_parent_id = None
+
+        if not internal_parent_id:
+            return []
+
+        conn = self._get_connection()
+        try:
+            params: List[int] = [internal_parent_id]
+            sql = """
+                SELECT e.season, e.episode, t.title, t.year, r.rating, r.votes
+                FROM title_episodes e
+                LEFT JOIN episode_titles t ON e.id = t.id
+                LEFT JOIN title_ratings r ON e.id = r.id
+                WHERE e.parent_id = ?
+            """
+            if season is not None:
+                sql += " AND e.season = ?"
+                params.append(season)
+
+            sql += " ORDER BY COALESCE(e.season, 0), COALESCE(e.episode, 0), e.id"
+            rows = conn.execute(sql, tuple(params)).fetchall()
+
+            episodes: List[EpisodeInfo] = []
+            for row in rows:
+                row_season = row["season"]
+                row_episode = row["episode"]
+                if row_season is None or row_episode is None:
+                    continue
+                episodes.append(
+                    EpisodeInfo(
+                        title=row["title"],
+                        season=row_season,
+                        episode=row_episode,
+                        parent_id=parent_id,
+                        year=row["year"],
+                        rating=(float(row["rating"] / 10.0) if row["rating"] else None),
+                        votes=row["votes"],
+                    )
+                )
+
+            self._search_cache[episode_list_key] = episodes
+            return episodes
+        finally:
+            self._return_connection(conn)
+
     def find_episode_by_title(
         self, parent_id: str, episode_title: str, season: Optional[int] = None
     ) -> Optional[EpisodeInfo]:

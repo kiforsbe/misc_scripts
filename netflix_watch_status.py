@@ -12,10 +12,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from netflix_title_parser import ParsedNetflixTitle, parse_netflix_title
 
+tqdm_progress: Any
+
 try:
-    from tqdm import tqdm as tqdm_progress
+    tqdm_progress = importlib.import_module("tqdm").tqdm
 except ImportError:
-    class tqdm_progress:
+    class _TqdmProgressFallback:
         def __init__(self, iterable=None, total=None, desc=None, unit=None, disable=False, file=None, **kwargs):
             self.iterable = iterable
             self.total = total or (len(iterable) if iterable is not None else 0)
@@ -48,6 +50,8 @@ except ImportError:
 
         def close(self):
             return None
+
+    tqdm_progress = _TqdmProgressFallback
 
 
 try:
@@ -181,6 +185,7 @@ class NetflixHistoryEntry:
     media_kind: str
     resolved_title: str
     metadata_type: Optional[str] = None
+    metadata_provider: Any = field(default=None, repr=False, compare=False)
     metadata_parent_id: Optional[str] = None
     resolved_season: Optional[int] = None
     resolved_episode: Optional[int] = None
@@ -392,6 +397,7 @@ class NetflixWatchStatusAnalyzer:
                     media_kind=media_kind,
                     resolved_title=resolved_title,
                     metadata_type=metadata_type,
+                    metadata_provider=metadata_provider,
                     metadata_parent_id=metadata_parent_id,
                     resolved_season=resolved_season,
                     resolved_episode=resolved_episode,
@@ -733,6 +739,12 @@ def _format_group_views(watched_at_values: List[datetime]) -> str:
     return ""
 
 
+def _format_progress(watched_count: int, total_count: int) -> str:
+    if total_count <= 0:
+        return ""
+    return f"{watched_count}/{total_count}"
+
+
 def parse_table_columns(raw_columns: str) -> List[str]:
     columns: List[str] = []
     seen: set[str] = set()
@@ -766,6 +778,22 @@ def _entry_title_year(entry: NetflixHistoryEntry) -> Optional[int]:
 
 def _entry_episode_year(entry: NetflixHistoryEntry) -> Optional[int]:
     return entry.resolved_episode_year
+
+
+def _list_metadata_episodes(title_entries: List[NetflixHistoryEntry]) -> List[Any]:
+    for entry in title_entries:
+        if (
+            entry.metadata_type != "tv"
+            or entry.metadata_provider is None
+            or entry.metadata_parent_id is None
+            or not hasattr(entry.metadata_provider, "list_episodes")
+        ):
+            continue
+        try:
+            return entry.metadata_provider.list_episodes(entry.metadata_parent_id)
+        except Exception:
+            return []
+    return []
 
 
 def _derive_episode_title(entry: NetflixHistoryEntry) -> str:
@@ -859,6 +887,144 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
             )
         )
 
+        metadata_episodes = _list_metadata_episodes(title_entries)
+        if metadata_episodes:
+            watched_episode_groups: Dict[tuple[int, int], List[NetflixHistoryEntry]] = {}
+            metadata_episode_keys = {
+                (episode_info.season, episode_info.episode)
+                for episode_info in metadata_episodes
+                if episode_info.season is not None and episode_info.episode is not None
+            }
+            unmatched_entries: List[NetflixHistoryEntry] = []
+            for entry in title_entries:
+                season_number = _entry_season(entry)
+                episode_number = _entry_episode(entry)
+                key = (season_number, episode_number)
+                if (
+                    season_number is not None
+                    and episode_number is not None
+                    and key in metadata_episode_keys
+                ):
+                    watched_episode_groups.setdefault((season_number, episode_number), []).append(entry)
+                else:
+                    unmatched_entries.append(entry)
+
+            rows[-1].episode = _format_progress(len(watched_episode_groups), len(metadata_episode_keys))
+
+            direct_entries: List[NetflixHistoryEntry] = []
+            extra_season_groups: Dict[tuple[Optional[int], str], List[NetflixHistoryEntry]] = {}
+            for entry in unmatched_entries:
+                season_number = _entry_season(entry)
+                season_title = entry.parsed.season_title or ""
+                if season_number is None and not season_title:
+                    direct_entries.append(entry)
+                    continue
+                extra_season_groups.setdefault((season_number, season_title), []).append(entry)
+
+            for entry in _build_episode_rows(direct_entries, level=1):
+                rows.append(entry)
+
+            season_title_overrides: Dict[int, str] = {}
+            for entry in title_entries:
+                season_number = _entry_season(entry)
+                season_title = entry.parsed.season_title or ""
+                if season_number is not None and season_title:
+                    season_title_overrides.setdefault(season_number, season_title)
+
+            metadata_season_map: Dict[int, List[Any]] = {}
+            for episode_info in metadata_episodes:
+                if episode_info.season is None or episode_info.episode is None:
+                    continue
+                metadata_season_map.setdefault(episode_info.season, []).append(episode_info)
+
+            processed_extra_season_keys: set[tuple[Optional[int], str]] = set()
+            for season_number in sorted(metadata_season_map):
+                display_season_title = season_title_overrides.get(season_number) or f"Season {season_number}"
+                watched_count = 0
+                season_rows: List[WatchTableRow] = []
+                for episode_info in sorted(metadata_season_map[season_number], key=lambda item: item.episode):
+                    key = (season_number, episode_info.episode)
+                    group_entries = watched_episode_groups.get(key)
+                    if group_entries:
+                        watched_count += 1
+                        watched_at_values = [entry.watched_at for entry in group_entries]
+                        first_entry = sorted(group_entries, key=lambda entry: (entry.watched_at, entry.raw_title.casefold()))[0]
+                        episode_title = _derive_episode_title(first_entry)
+                        season_rows.append(
+                            WatchTableRow(
+                                level=2,
+                                title=episode_title,
+                                year=str(_entry_episode_year(first_entry) or _entry_title_year(first_entry) or ""),
+                                season=str(season_number),
+                                season_title=display_season_title,
+                                episode=str(episode_info.episode),
+                                episode_title=episode_title,
+                                views=_format_leaf_views(watched_at_values),
+                            )
+                        )
+                        continue
+
+                    synthetic_title = f"{episode_info.title or f'Episode {episode_info.episode}'} *"
+                    season_rows.append(
+                        WatchTableRow(
+                            level=2,
+                            title=synthetic_title,
+                            year=str(episode_info.year or _entry_title_year(title_entries[0]) or ""),
+                            season=str(season_number),
+                            season_title=display_season_title,
+                            episode=str(episode_info.episode),
+                            episode_title=synthetic_title,
+                            views="0",
+                        )
+                    )
+
+                rows.append(
+                    WatchTableRow(
+                        level=1,
+                        title=display_season_title,
+                        season=str(season_number),
+                        episode=_format_progress(watched_count, len(metadata_season_map[season_number])),
+                        episode_title="",
+                        views=_format_group_views([]),
+                    )
+                )
+                rows.extend(season_rows)
+
+                extra_key = (season_number, season_title_overrides.get(season_number, ""))
+                if extra_key in extra_season_groups:
+                    processed_extra_season_keys.add(extra_key)
+
+            remaining_extra_seasons = [
+                item for item in extra_season_groups.items() if item[0] not in processed_extra_season_keys
+            ]
+            for (season_number, season_title), season_entries in sorted(
+                remaining_extra_seasons,
+                key=lambda item: (
+                    1 if item[0][0] is None else 0,
+                    item[0][0] or 0,
+                    item[0][1].casefold(),
+                ),
+            ):
+                display_season_title = season_title or (f"Season {season_number}" if season_number is not None else "")
+                rows.append(
+                    WatchTableRow(
+                        level=1,
+                        title=display_season_title or title,
+                        season=str(season_number) if season_number is not None else "",
+                        episode_title="",
+                        views=_format_group_views([entry.watched_at for entry in season_entries]),
+                    )
+                )
+                for entry in _build_episode_rows(
+                    season_entries,
+                    level=2,
+                    season_override=season_number,
+                    season_title_override=display_season_title if display_season_title else None,
+                ):
+                    rows.append(entry)
+
+            continue
+
         season_groups: Dict[tuple[Optional[int], str], List[NetflixHistoryEntry]] = {}
         direct_entries: List[NetflixHistoryEntry] = []
         for entry in title_entries:
@@ -894,6 +1060,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 WatchTableRow(
                     level=1,
                     title=display_season_title or title,
+                    season=str(season_number) if season_number is not None else "",
                     episode_title="",
                     views=_format_group_views([entry.watched_at for entry in season_entries]),
                 )
