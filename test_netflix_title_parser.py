@@ -96,6 +96,14 @@ def run_tests():
             "is_explicit_series": True,
         },
     )
+    assert_parse(
+        "SAKAMOTO DAYS: Each One's Mission",
+        {
+            "title": "SAKAMOTO DAYS: Each One's Mission",
+            "media_kind": "movie",
+            "is_explicit_series": False,
+        },
+    )
 
 
 if __name__ == "__main__":

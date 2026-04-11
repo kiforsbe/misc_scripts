@@ -174,6 +174,12 @@ def _normalize_lookup_text(text: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
 
 
+def _starts_with_casefold(text: str, prefix: str) -> bool:
+    if not prefix:
+        return False
+    return text[:len(prefix)].casefold() == prefix.casefold()
+
+
 def _metadata_match_is_compatible(
     query: str,
     raw_title: str,
@@ -511,6 +517,96 @@ class NetflixWatchStatusAnalyzer:
 
         return best_match
 
+    def _candidate_series_titles_from_colons(self, parsed: ParsedNetflixTitle) -> Tuple[str, ...]:
+        if parsed.is_explicit_series or ":" not in parsed.raw_title:
+            return ()
+
+        tokens = [token.strip() for token in parsed.raw_title.split(":") if token.strip()]
+        candidates: List[str] = []
+        for index in range(len(tokens) - 1, 0, -1):
+            prefix = ": ".join(tokens[:index]).strip()
+            suffix = ": ".join(tokens[index:]).strip()
+            if not prefix or not suffix:
+                continue
+            candidates.append(prefix)
+        return tuple(dict.fromkeys(candidates))
+
+    def _derive_episode_title_from_prefix(
+        self,
+        raw_title: str,
+        series_prefix: str,
+        season_title: Optional[str] = None,
+    ) -> Optional[str]:
+        prefix = series_prefix.strip()
+        cleaned_raw_title = raw_title.strip()
+        if not prefix or not _starts_with_casefold(cleaned_raw_title, prefix):
+            return None
+
+        suffix = cleaned_raw_title[len(prefix):].lstrip(" :")
+        if not suffix:
+            return None
+
+        if season_title and suffix.startswith(season_title):
+            suffix = suffix[len(season_title):].lstrip(" :")
+
+        return suffix or None
+
+    def _classify_colon_delimited_episode_title(
+        self,
+        parsed: ParsedNetflixTitle,
+    ) -> Optional[Tuple[str, str, Optional[int], Optional[int], Optional[str], Any, Optional[str], Optional[float], Optional[int], Optional[int], Tuple[str, ...], Optional[str], Tuple[str, ...]]]:
+        for query in self._candidate_series_titles_from_colons(parsed):
+            resolved_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources = self._lookup_metadata(
+                query,
+                preferred_type="tv",
+            )
+            if resolved_kind != "series":
+                continue
+            if not _metadata_match_is_compatible(
+                query=query,
+                raw_title=parsed.raw_title,
+                inferred_series_title=query,
+                resolved_kind=resolved_kind,
+                resolved_title=resolved_title,
+            ):
+                continue
+
+            episode_title = self._derive_episode_title_from_prefix(parsed.raw_title, query, parsed.season_title)
+            if not episode_title or metadata_provider is None or metadata_parent_id is None:
+                continue
+            if not hasattr(metadata_provider, "find_episode_by_title"):
+                continue
+
+            try:
+                episode_info = metadata_provider.find_episode_by_title(
+                    metadata_parent_id,
+                    episode_title,
+                    season=parsed.season,
+                )
+            except Exception:
+                continue
+
+            if episode_info is None:
+                continue
+
+            return (
+                resolved_kind,
+                resolved_title or query,
+                resolved_title_year,
+                resolved_total_seasons,
+                metadata_type,
+                metadata_provider,
+                metadata_parent_id,
+                metadata_average_rating,
+                metadata_num_votes,
+                metadata_runtime_minutes,
+                metadata_genres,
+                metadata_title_type,
+                metadata_sources,
+            )
+
+        return None
+
     def analyze(self, entries: List[NetflixHistoryEntry]) -> Dict[str, Any]:
         movies: Dict[str, MovieWatchStatus] = {}
         series: Dict[str, SeriesWatchStatus] = {}
@@ -551,7 +647,7 @@ class NetflixWatchStatusAnalyzer:
     ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[str], Optional[float], Optional[int], Optional[int]]:
         resolved_season = parsed.season
         resolved_episode = parsed.episode
-        resolved_episode_title = parsed.episode_title
+        resolved_episode_title = parsed.episode_title or self._derive_episode_title_for_lookup(parsed, resolved_title)
         resolved_episode_source_id: Optional[str] = None
         resolved_episode_rating: Optional[float] = None
         resolved_episode_votes: Optional[int] = None
@@ -628,15 +724,7 @@ class NetflixWatchStatusAnalyzer:
         if parsed.episode is not None:
             return None
 
-        prefix = resolved_title.strip()
-        raw_title = parsed.raw_title.strip()
-        if prefix and raw_title.startswith(prefix):
-            suffix = raw_title[len(prefix):].lstrip(" :")
-            if suffix:
-                if parsed.season_title and suffix.startswith(parsed.season_title):
-                    suffix = suffix[len(parsed.season_title):].lstrip(" :")
-                return suffix or None
-        return None
+        return self._derive_episode_title_from_prefix(parsed.raw_title, resolved_title, parsed.season_title)
 
     def _classify_entry(
         self, parsed: ParsedNetflixTitle, prefix_counts: Dict[str, int]
@@ -684,6 +772,10 @@ class NetflixWatchStatusAnalyzer:
             if parsed.is_explicit_series and resolved_kind == "movie":
                 return "series", parsed.title or resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
             return resolved_kind, resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
+
+        colon_delimited_match = self._classify_colon_delimited_episode_title(parsed)
+        if colon_delimited_match is not None:
+            return colon_delimited_match
 
         if inferred_series_title:
             return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
@@ -1228,7 +1320,7 @@ def _derive_episode_title(entry: NetflixHistoryEntry) -> str:
 
     prefix = entry.resolved_title.strip()
     raw_title = entry.raw_title.strip()
-    if prefix and raw_title.startswith(prefix):
+    if prefix and _starts_with_casefold(raw_title, prefix):
         suffix = raw_title[len(prefix):].lstrip(" :")
         if suffix:
             if entry.parsed.season_title and suffix.startswith(entry.parsed.season_title):
