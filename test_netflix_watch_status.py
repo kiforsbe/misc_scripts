@@ -122,14 +122,16 @@ def test_load_episode_title_overrides_normalizes_custom_keys():
     with TemporaryDirectory() as temp_dir:
         override_path = Path(temp_dir) / "episode_overrides.csv"
         override_path.write_text(
-            "netflix_title,title,episode_title\n"
-            '  Some Show: Weird Netflix Title  ,Actual IMDb Title,Actual Episode Title\n',
+            "netflix_title,title,year,source_id,episode_title\n"
+            '  Some Show: Weird Netflix Title  ,Actual IMDb Title,2024,tt1234567,Actual Episode Title\n',
             encoding="utf-8",
         )
 
         overrides = load_episode_title_overrides(str(override_path))
 
     assert overrides["some show: weird netflix title"].title == "Actual IMDb Title"
+    assert overrides["some show: weird netflix title"].year == 2024
+    assert overrides["some show: weird netflix title"].source_id == "tt1234567"
     assert overrides["some show: weird netflix title"].episode_title == "Actual Episode Title"
 
 
@@ -137,14 +139,16 @@ def test_load_episode_title_overrides_supports_title_only_rows():
     with TemporaryDirectory() as temp_dir:
         override_path = Path(temp_dir) / "episode_overrides.csv"
         override_path.write_text(
-            "netflix_title,title,episode_title\n"
-            'Some Show,Canonical Title,\n',
+            "netflix_title,title,year,source_id,episode_title\n"
+            'Some Show,Canonical Title,,,\n',
             encoding="utf-8",
         )
 
         overrides = load_episode_title_overrides(str(override_path))
 
     assert overrides["some show"].title == "Canonical Title"
+    assert overrides["some show"].year is None
+    assert overrides["some show"].source_id is None
     assert overrides["some show"].episode_title is None
 
 
@@ -153,8 +157,8 @@ def test_classify_entry_uses_title_override_table_for_non_matching_show_titles()
         def __init__(self):
             self.calls = []
 
-        def find_title(self, query, preferred_type=None):
-            self.calls.append((query, preferred_type))
+        def find_title(self, query, year=None, preferred_type=None):
+            self.calls.append((query, year, preferred_type))
             if query != "Dandadan":
                 return None
             return (
@@ -173,7 +177,7 @@ def test_classify_entry_uses_title_override_table_for_non_matching_show_titles()
     analyzer = NetflixWatchStatusAnalyzer(
         metadata_manager=metadata_manager,
         episode_title_overrides={
-            "DAN DA DAN": {"title": "Dandadan"},
+            "DAN DA DAN": {"title": "Dandadan", "year": 2024, "source_id": "tt30217403"},
         },
     )
 
@@ -187,7 +191,7 @@ def test_classify_entry_uses_title_override_table_for_non_matching_show_titles()
     assert resolved[3] == 3
     assert resolved[4] == "tv"
     assert resolved[6] == "tt30217403"
-    assert metadata_manager.calls == [("Dandadan", "tv")]
+    assert metadata_manager.calls == [("Dandadan", 2024, "tv")]
 
 
 def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_titles():
@@ -522,11 +526,15 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
         {
             "netflix_title": "Known Show: Missing Episode",
             "title": "Known Show",
+            "year": "",
+            "source_id": "tt1234567",
             "episode_title": "",
         },
         {
             "netflix_title": "Unknown Show",
             "title": "",
+            "year": "",
+            "source_id": "",
             "episode_title": "",
         },
     ]
