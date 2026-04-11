@@ -1930,8 +1930,15 @@ def _entry_has_imdb_episode_metadata(entry: NetflixHistoryEntry) -> bool:
     return entry.resolved_episode is not None
 
 
-def build_unmapped_imdb_override_rows(entries: List[NetflixHistoryEntry]) -> List[Dict[str, str]]:
+def build_unmapped_imdb_override_rows(
+    entries: List[NetflixHistoryEntry],
+    overrides: Optional[Dict[str, NetflixTitleOverride]] = None,
+) -> List[Dict[str, str]]:
     rows_by_title: Dict[str, Dict[str, str]] = {}
+    overrides = {
+        _normalize_episode_title_override_key(raw_title): override
+        for raw_title, override in (overrides or {}).items()
+    }
     for entry in entries:
         title_mapped = _entry_has_imdb_title_metadata(entry)
         episode_required = _entry_requires_episode_mapping(entry)
@@ -1942,6 +1949,7 @@ def build_unmapped_imdb_override_rows(entries: List[NetflixHistoryEntry]) -> Lis
         netflix_title = entry.raw_title.strip()
         if not netflix_title:
             continue
+        had_override = "yes" if _normalize_episode_title_override_key(netflix_title) in overrides else ""
 
         mapped_title = entry.resolved_title if title_mapped and entry.resolved_title != netflix_title else ""
         row = rows_by_title.get(netflix_title)
@@ -1952,6 +1960,7 @@ def build_unmapped_imdb_override_rows(entries: List[NetflixHistoryEntry]) -> Lis
                 "year": str(entry.resolved_title_year or "") if title_mapped else "",
                 "source_id": entry.metadata_parent_id or "" if title_mapped else "",
                 "episode_title": "",
+                "had_override": had_override,
             }
             continue
 
@@ -1961,16 +1970,31 @@ def build_unmapped_imdb_override_rows(entries: List[NetflixHistoryEntry]) -> Lis
             row["year"] = str(entry.resolved_title_year)
         if not row["source_id"] and title_mapped and entry.metadata_parent_id:
             row["source_id"] = entry.metadata_parent_id
+        if not row["had_override"] and had_override:
+            row["had_override"] = had_override
 
     return sorted(rows_by_title.values(), key=lambda item: item["netflix_title"].casefold())
 
 
-def export_unmapped_imdb_overrides(entries: List[NetflixHistoryEntry], output_path: str) -> Path:
+def summarize_unmapped_imdb_override_rows(rows: List[Dict[str, str]]) -> Dict[str, int]:
+    with_override = sum(1 for row in rows if row.get("had_override") == "yes")
+    return {
+        "total": len(rows),
+        "with_override": with_override,
+        "without_override": len(rows) - with_override,
+    }
+
+
+def export_unmapped_imdb_overrides(
+    entries: List[NetflixHistoryEntry],
+    output_path: str,
+    overrides: Optional[Dict[str, NetflixTitleOverride]] = None,
+) -> Path:
     target_path = Path(output_path).expanduser().resolve()
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = build_unmapped_imdb_override_rows(entries)
+    rows = build_unmapped_imdb_override_rows(entries, overrides=overrides)
     with target_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["netflix_title", "title", "year", "source_id", "episode_title"])
+        writer = csv.DictWriter(handle, fieldnames=["netflix_title", "title", "year", "source_id", "episode_title", "had_override"])
         writer.writeheader()
         writer.writerows(rows)
     return target_path
@@ -2427,10 +2451,12 @@ def main() -> None:
     )
     entries = analyzer.load_entries(args.csv_path)
     results = analyzer.analyze(entries)
-    unmapped_rows = build_unmapped_imdb_override_rows(entries)
+    unmapped_rows = build_unmapped_imdb_override_rows(entries, overrides=episode_title_overrides)
+    unmapped_stats = summarize_unmapped_imdb_override_rows(unmapped_rows)
     unmapped_output_path = export_unmapped_imdb_overrides(
         entries,
         str(default_unmapped_imdb_output_path(args.csv_path)),
+        overrides=episode_title_overrides,
     )
 
     if args.json:
@@ -2444,13 +2470,17 @@ def main() -> None:
     if args.webapp_export:
         output_path = export_webapp_report(args.csv_path, results, entries, selected_columns, args.webapp_export)
         safe_write_line(f"Webapp exported to: {output_path}")
-        safe_write_line(f"IMDb-unmapped override rows: {len(unmapped_rows)}")
+        safe_write_line(f"IMDb-unmapped override rows: {unmapped_stats['total']}")
+        safe_write_line(f"IMDb-unmapped rows with existing override: {unmapped_stats['with_override']}")
+        safe_write_line(f"IMDb-unmapped rows without override: {unmapped_stats['without_override']}")
         safe_write_line(f"IMDb-unmapped override template exported to: {unmapped_output_path}")
         return
 
     print_text_summary(results)
     safe_write_line()
-    safe_write_line(f"IMDb-unmapped override rows: {len(unmapped_rows)}")
+    safe_write_line(f"IMDb-unmapped override rows: {unmapped_stats['total']}")
+    safe_write_line(f"IMDb-unmapped rows with existing override: {unmapped_stats['with_override']}")
+    safe_write_line(f"IMDb-unmapped rows without override: {unmapped_stats['without_override']}")
     safe_write_line(f"IMDb-unmapped override template exported to: {unmapped_output_path}")
 
 

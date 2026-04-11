@@ -13,6 +13,7 @@ from netflix_watch_status import (
     build_unmapped_imdb_override_rows,
     build_watch_table_rows,
     load_episode_title_overrides,
+    summarize_unmapped_imdb_override_rows,
 )
 
 
@@ -520,7 +521,14 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
         ),
     ]
 
-    rows = build_unmapped_imdb_override_rows(entries)
+    rows = build_unmapped_imdb_override_rows(
+        entries,
+        overrides={
+            "Known Show: Missing Episode": {
+                "title": "Known Show",
+            },
+        },
+    )
 
     assert rows == [
         {
@@ -529,6 +537,7 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
             "year": "",
             "source_id": "tt1234567",
             "episode_title": "",
+            "had_override": "yes",
         },
         {
             "netflix_title": "Unknown Show",
@@ -536,8 +545,38 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
             "year": "",
             "source_id": "",
             "episode_title": "",
+            "had_override": "",
         },
     ]
+
+
+def test_summarize_unmapped_imdb_override_rows_counts_override_breakdown():
+    stats = summarize_unmapped_imdb_override_rows(
+        [
+            {
+                "netflix_title": "Known Show: Missing Episode",
+                "title": "Known Show",
+                "year": "",
+                "source_id": "tt1234567",
+                "episode_title": "",
+                "had_override": "yes",
+            },
+            {
+                "netflix_title": "Unknown Show",
+                "title": "",
+                "year": "",
+                "source_id": "",
+                "episode_title": "",
+                "had_override": "",
+            },
+        ]
+    )
+
+    assert stats == {
+        "total": 2,
+        "with_override": 1,
+        "without_override": 1,
+    }
 
 
 def test_row_watch_state_uses_progress_for_series_and_seasons():
