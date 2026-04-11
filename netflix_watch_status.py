@@ -134,7 +134,7 @@ THUMBNAIL_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-DEFAULT_EPISODE_TITLE_OVERRIDES_FILE = Path(__file__).with_name("netflix_episode_title_overrides.json")
+DEFAULT_EPISODE_TITLE_OVERRIDES_FILE = Path(__file__).with_name("netflix_episode_title_overrides.csv")
 
 
 def iter_progress(iterable, *, total: Optional[int] = None, desc: str = "Progress", unit: str = "item"):
@@ -175,35 +175,88 @@ def _normalize_episode_title_override_key(raw_title: Optional[str]) -> str:
     return re.sub(r"\s+", " ", raw_title).strip().casefold()
 
 
-def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Dict[str, str]:
+@dataclass(frozen=True)
+class NetflixTitleOverride:
+    title: Optional[str] = None
+    episode_title: Optional[str] = None
+
+
+def _coerce_episode_title_override(raw_value: Any, *, source_label: str) -> NetflixTitleOverride:
+    if isinstance(raw_value, NetflixTitleOverride):
+        return NetflixTitleOverride(
+            title=(raw_value.title or "").strip() or None,
+            episode_title=(raw_value.episode_title or "").strip() or None,
+        )
+
+    if isinstance(raw_value, str):
+        normalized_value = raw_value.strip()
+        if not normalized_value:
+            return NetflixTitleOverride()
+        return NetflixTitleOverride(
+            title=normalized_value,
+            episode_title=normalized_value,
+        )
+
+    if not isinstance(raw_value, dict):
+        raise ValueError(
+            "Episode title override values must be strings or objects with title/episode_title fields: "
+            f"{source_label}"
+        )
+
+    unknown_fields = sorted(set(raw_value.keys()) - {"title", "episode_title"})
+    if unknown_fields:
+        raise ValueError(
+            f"Episode title override contains unsupported fields {unknown_fields}: {source_label}"
+        )
+
+    title = raw_value.get("title")
+    episode_title = raw_value.get("episode_title")
+    if title is not None and not isinstance(title, str):
+        raise ValueError(f"Episode title override field 'title' must be a string: {source_label}")
+    if episode_title is not None and not isinstance(episode_title, str):
+        raise ValueError(f"Episode title override field 'episode_title' must be a string: {source_label}")
+
+    return NetflixTitleOverride(
+        title=(title or "").strip() or None,
+        episode_title=(episode_title or "").strip() or None,
+    )
+
+
+def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Dict[str, NetflixTitleOverride]:
     if not path.exists():
         if required:
             raise ValueError(f"Episode title override file not found: {path}")
         return {}
 
     try:
-        raw_data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Episode title override file is not valid JSON: {path} ({exc})") from exc
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = set(reader.fieldnames or ())
+            required_columns = {"netflix_title", "title", "episode_title"}
+            if not required_columns.issubset(fieldnames):
+                raise ValueError(
+                    "Episode title override CSV must include columns "
+                    f"{sorted(required_columns)}: {path}"
+                )
 
-    if not isinstance(raw_data, dict):
-        raise ValueError(f"Episode title override file must contain a JSON object: {path}")
-
-    overrides: Dict[str, str] = {}
-    for raw_key, raw_value in raw_data.items():
-        if not isinstance(raw_key, str) or not isinstance(raw_value, str):
-            raise ValueError(f"Episode title override keys and values must be strings: {path}")
-
-        normalized_key = _normalize_episode_title_override_key(raw_key)
-        normalized_value = raw_value.strip()
-        if not normalized_key or not normalized_value:
-            continue
-        overrides[normalized_key] = normalized_value
+            overrides: Dict[str, NetflixTitleOverride] = {}
+            for row in reader:
+                raw_key = row.get("netflix_title")
+                normalized_key = _normalize_episode_title_override_key(raw_key)
+                normalized_value = NetflixTitleOverride(
+                    title=(row.get("title") or "").strip() or None,
+                    episode_title=(row.get("episode_title") or "").strip() or None,
+                )
+                if not normalized_key or (not normalized_value.title and not normalized_value.episode_title):
+                    continue
+                overrides[normalized_key] = normalized_value
+    except csv.Error as exc:
+        raise ValueError(f"Episode title override CSV is not valid: {path} ({exc})") from exc
 
     return overrides
 
 
-def load_episode_title_overrides(override_path: Optional[str] = None) -> Dict[str, str]:
+def load_episode_title_overrides(override_path: Optional[str] = None) -> Dict[str, NetflixTitleOverride]:
     overrides = _load_episode_title_overrides_from_path(
         DEFAULT_EPISODE_TITLE_OVERRIDES_FILE,
         required=False,
@@ -403,7 +456,7 @@ class SeriesWatchStatus:
 
 
 class NetflixWatchStatusAnalyzer:
-    def __init__(self, metadata_manager: Any = None, episode_title_overrides: Optional[Dict[str, str]] = None):
+    def __init__(self, metadata_manager: Any = None, episode_title_overrides: Optional[Dict[str, Any]] = None):
         self.metadata_manager = metadata_manager
         self._metadata_cache: Dict[Tuple[str, Optional[str]], Tuple[Any, ...]] = {}
         self._episode_title_overrides = {
@@ -412,11 +465,31 @@ class NetflixWatchStatusAnalyzer:
             for normalized_key, normalized_value in [
                 (
                     _normalize_episode_title_override_key(raw_key),
-                    str(raw_value).strip(),
+                    _coerce_episode_title_override(
+                        raw_value,
+                        source_label=f"inline override ({raw_key})",
+                    ),
                 )
             ]
-            if normalized_key and normalized_value
+            if normalized_key and (normalized_value.title or normalized_value.episode_title)
         }
+
+    def _get_title_override(self, *titles: Optional[str]) -> Optional[NetflixTitleOverride]:
+        merged_title: Optional[str] = None
+        merged_episode_title: Optional[str] = None
+        for title in titles:
+            override = self._episode_title_overrides.get(_normalize_episode_title_override_key(title))
+            if override is None:
+                continue
+            if merged_title is None and override.title:
+                merged_title = override.title
+            if merged_episode_title is None and override.episode_title:
+                merged_episode_title = override.episode_title
+            if merged_title and merged_episode_title:
+                break
+        if not merged_title and not merged_episode_title:
+            return None
+        return NetflixTitleOverride(title=merged_title, episode_title=merged_episode_title)
 
     def load_entries(self, csv_path: str) -> List[NetflixHistoryEntry]:
         raw_entries: List[Tuple[str, datetime, ParsedNetflixTitle]] = []
@@ -711,8 +784,21 @@ class NetflixWatchStatusAnalyzer:
             "entries_data": [entry.to_dict() for entry in entries],
         }
 
-    def _get_episode_title_override(self, raw_title: str) -> Optional[str]:
-        return self._episode_title_overrides.get(_normalize_episode_title_override_key(raw_title))
+    def _get_episode_title_override(self, parsed: ParsedNetflixTitle, resolved_title: str) -> Optional[str]:
+        lookup_title = self._derive_episode_title(parsed, resolved_title)
+        episode_override_keys: List[str] = []
+
+        if parsed.raw_title:
+            episode_override_keys.append(parsed.raw_title)
+
+        if parsed.episode_title:
+            episode_override_keys.append(parsed.episode_title)
+
+        if lookup_title and lookup_title not in episode_override_keys:
+            episode_override_keys.append(lookup_title)
+
+        override = self._get_title_override(*episode_override_keys)
+        return override.episode_title if override is not None else None
 
     def _resolve_episode_metadata(
         self,
@@ -829,8 +915,8 @@ class NetflixWatchStatusAnalyzer:
         metadata_provider: Any,
         metadata_parent_id: Optional[str],
     ) -> Tuple[str, ...]:
-        override_title = self._get_episode_title_override(parsed.raw_title)
         lookup_title = self._derive_episode_title(parsed, resolved_title)
+        override_title = self._get_episode_title_override(parsed, resolved_title)
         if not override_title and not lookup_title:
             return ()
 
@@ -902,25 +988,41 @@ class NetflixWatchStatusAnalyzer:
         default_kind = "series" if parsed.is_explicit_series else parsed.media_kind
         default_title = parsed.title if parsed.is_explicit_series else parsed.raw_title
         inferred_series_title = self._infer_series_title(parsed, prefix_counts)
+        effective_override = self._get_title_override(parsed.raw_title, parsed.title, inferred_series_title)
+        series_title_override = effective_override.title if effective_override is not None else None
 
         if self.metadata_manager is None:
+            if series_title_override:
+                return "series", series_title_override, None, None, None, None, None, None, None, None, (), None, ()
             if inferred_series_title:
                 return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
             return default_kind, default_title, None, None, None, None, None, None, None, None, (), None, ()
 
-        queries: List[str] = []
+        queries: List[Tuple[str, bool]] = []
+        seen_queries: set[str] = set()
+
+        def add_query(query: Optional[str], *, authoritative: bool = False) -> None:
+            cache_key = (query or "").casefold().strip()
+            if not cache_key or cache_key in seen_queries:
+                return
+            seen_queries.add(cache_key)
+            queries.append((query or "", authoritative))
+
+        add_query(series_title_override, authoritative=series_title_override is not None)
         if parsed.is_explicit_series:
-            queries.append(parsed.title)
+            add_query(parsed.title)
         else:
             if inferred_series_title:
-                queries.append(inferred_series_title)
-            queries.append(parsed.raw_title)
+                add_query(inferred_series_title)
+            add_query(parsed.raw_title)
             if parsed.title != parsed.raw_title:
-                queries.append(parsed.title)
+                add_query(parsed.title)
 
-        for query in queries:
+        for query, authoritative_query in queries:
             preferred_type = "tv" if (
-                parsed.is_explicit_series
+                series_title_override is not None
+                or authoritative_query
+                or parsed.is_explicit_series
                 or parsed.episode is not None
                 or parsed.episode_title is not None
                 or inferred_series_title is not None
@@ -931,7 +1033,7 @@ class NetflixWatchStatusAnalyzer:
             )
             if resolved_kind is None:
                 continue
-            if not _metadata_match_is_compatible(
+            if not authoritative_query and not _metadata_match_is_compatible(
                 query=query,
                 raw_title=parsed.raw_title,
                 inferred_series_title=inferred_series_title,
@@ -1037,8 +1139,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--episode-title-overrides",
         metavar="FILE",
         help=(
-            "Optional JSON file mapping raw Netflix titles to IMDb episode titles. "
-            "These overrides are merged on top of netflix_episode_title_overrides.json when present."
+            "Optional CSV file mapping raw Netflix CSV titles to IMDb titles. "
+            "Expected columns: netflix_title,title,episode_title. "
+            "These overrides are merged on top of netflix_episode_title_overrides.csv when present."
         ),
     )
     return parser

@@ -10,6 +10,15 @@
     --accent: #b20710;
     --accent-soft: rgba(178, 7, 16, 0.1);
     --accent-strong: #8e0b12;
+    --watch-watched-title: var(--text);
+    --watch-watched-text: color-mix(in srgb, var(--text) 92%, white);
+    --watch-watched-gutter: color-mix(in srgb, var(--muted) 84%, var(--text));
+    --watch-partial-title: color-mix(in srgb, var(--text) 58%, white);
+    --watch-partial-text: color-mix(in srgb, var(--text) 50%, white);
+    --watch-partial-gutter: color-mix(in srgb, var(--muted) 62%, white);
+    --watch-unwatched-title: color-mix(in srgb, var(--text) 32%, white);
+    --watch-unwatched-text: color-mix(in srgb, var(--text) 24%, white);
+    --watch-unwatched-gutter: color-mix(in srgb, var(--muted) 42%, white);
     --selection: rgba(178, 7, 16, 0.12);
     --selection-strong: rgba(178, 7, 16, 0.2);
     --shadow: 0 20px 48px rgba(16, 24, 40, 0.08);
@@ -608,43 +617,43 @@ input:focus,
 .tree-row.is-watched .tree-title,
 .tree-row.is-watched .tree-subtitle,
 .treecell.is-watched .tree-name-button {
-    color: color-mix(in srgb, var(--text) 72%, white);
+    color: var(--watch-watched-title);
 }
 
 .tree-row.is-watched td {
-    color: color-mix(in srgb, var(--text) 80%, white);
+    color: var(--watch-watched-text);
 }
 
 .tree-row.is-watched .status-gutter {
-    color: color-mix(in srgb, var(--muted) 78%, white);
+    color: var(--watch-watched-gutter);
 }
 
 .tree-row.is-partial .tree-title,
 .tree-row.is-partial .tree-subtitle,
 .treecell.is-partial .tree-name-button {
-    color: color-mix(in srgb, var(--text) 60%, white);
+    color: var(--watch-partial-title);
 }
 
 .tree-row.is-partial td {
-    color: color-mix(in srgb, var(--text) 68%, white);
+    color: var(--watch-partial-text);
 }
 
 .tree-row.is-partial .status-gutter {
-    color: color-mix(in srgb, var(--muted) 80%, white);
+    color: var(--watch-partial-gutter);
 }
 
 .tree-row.is-unwatched .tree-title,
 .tree-row.is-unwatched .tree-subtitle,
 .treecell.is-unwatched .tree-name-button {
-    color: color-mix(in srgb, var(--text) 48%, white);
+    color: var(--watch-unwatched-title);
 }
 
 .tree-row.is-unwatched td {
-    color: color-mix(in srgb, var(--text) 56%, white);
+    color: var(--watch-unwatched-text);
 }
 
 .tree-row.is-unwatched .status-gutter {
-    color: color-mix(in srgb, var(--muted) 82%, white);
+    color: var(--watch-unwatched-gutter);
 }
 
 .tree-row.is-selected .gutter-column {

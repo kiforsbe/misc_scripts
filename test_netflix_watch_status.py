@@ -119,15 +119,74 @@ def test_resolve_episode_metadata_falls_back_to_known_episode_title_when_provide
 
 def test_load_episode_title_overrides_normalizes_custom_keys():
     with TemporaryDirectory() as temp_dir:
-        override_path = Path(temp_dir) / "episode_overrides.json"
+        override_path = Path(temp_dir) / "episode_overrides.csv"
         override_path.write_text(
-            '{"  Some Show: Weird Netflix Title  ": "Actual IMDb Title"}',
+            "netflix_title,title,episode_title\n"
+            '  Some Show: Weird Netflix Title  ,Actual IMDb Title,Actual Episode Title\n',
             encoding="utf-8",
         )
 
         overrides = load_episode_title_overrides(str(override_path))
 
-    assert overrides["some show: weird netflix title"] == "Actual IMDb Title"
+    assert overrides["some show: weird netflix title"].title == "Actual IMDb Title"
+    assert overrides["some show: weird netflix title"].episode_title == "Actual Episode Title"
+
+
+def test_load_episode_title_overrides_supports_title_only_rows():
+    with TemporaryDirectory() as temp_dir:
+        override_path = Path(temp_dir) / "episode_overrides.csv"
+        override_path.write_text(
+            "netflix_title,title,episode_title\n"
+            'Some Show,Canonical Title,\n',
+            encoding="utf-8",
+        )
+
+        overrides = load_episode_title_overrides(str(override_path))
+
+    assert overrides["some show"].title == "Canonical Title"
+    assert overrides["some show"].episode_title is None
+
+
+def test_classify_entry_uses_title_override_table_for_non_matching_show_titles():
+    class MetadataManager:
+        def __init__(self):
+            self.calls = []
+
+        def find_title(self, query, preferred_type=None):
+            self.calls.append((query, preferred_type))
+            if query != "Dandadan":
+                return None
+            return (
+                SimpleNamespace(
+                    title="Dandadan",
+                    type="tv",
+                    id="tt30217403",
+                    year=2024,
+                    total_seasons=3,
+                    sources=("imdb",),
+                ),
+                object(),
+            )
+
+    metadata_manager = MetadataManager()
+    analyzer = NetflixWatchStatusAnalyzer(
+        metadata_manager=metadata_manager,
+        episode_title_overrides={
+            "DAN DA DAN": {"title": "Dandadan"},
+        },
+    )
+
+    parsed = parse_netflix_title("DAN DA DAN")
+
+    resolved = analyzer._classify_entry(parsed, prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "Dandadan"
+    assert resolved[2] == 2024
+    assert resolved[3] == 3
+    assert resolved[4] == "tv"
+    assert resolved[6] == "tt30217403"
+    assert metadata_manager.calls == [("Dandadan", "tv")]
 
 
 def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_titles():
@@ -166,7 +225,9 @@ def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_tit
     analyzer = NetflixWatchStatusAnalyzer(
         metadata_manager=None,
         episode_title_overrides={
-            "Godzilla Singular Point: Gamesome": "Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+            "Godzilla Singular Point: Gamesome": {
+                "episode_title": "Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+            },
         },
     )
     provider = Provider()
@@ -192,6 +253,219 @@ def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_tit
     assert resolved == (1, 2, "Midsummer Devil Festival/'Manatsu Oni Matsuri'", "ep-2", 7.6, 1100, 2021)
     assert provider.calls == [
         ("tt1234567", "Midsummer Devil Festival/'Manatsu Oni Matsuri'", None),
+    ]
+
+
+def test_resolve_episode_metadata_uses_episode_title_override_key_without_series_prefix():
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def list_episodes(self, parent_id):
+            assert parent_id == "tt1234567"
+            return [
+                SimpleNamespace(
+                    season=1,
+                    episode=2,
+                    title="Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+                    year=2021,
+                    id="ep-2",
+                    rating=7.6,
+                    votes=1100,
+                ),
+            ]
+
+        def find_episode_by_title(self, parent_id, episode_title, season=None):
+            self.calls.append((parent_id, episode_title, season))
+            if episode_title == "Midsummer Devil Festival/'Manatsu Oni Matsuri'":
+                return SimpleNamespace(
+                    season=1,
+                    episode=2,
+                    title="Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+                    year=2021,
+                    id="ep-2",
+                    rating=7.6,
+                    votes=1100,
+                )
+            return None
+
+    analyzer = NetflixWatchStatusAnalyzer(
+        metadata_manager=None,
+        episode_title_overrides={
+            "Gamesome": {
+                "episode_title": "Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+            },
+        },
+    )
+    provider = Provider()
+
+    parsed = ParsedNetflixTitle(
+        raw_title="Godzilla Singular Point: Gamesome",
+        title="Godzilla Singular Point",
+        media_kind="series",
+        episode_title="Gamesome",
+        is_explicit_series=True,
+    )
+
+    resolved = analyzer._resolve_episode_metadata(
+        parsed=parsed,
+        media_kind="series",
+        metadata_type="tv",
+        metadata_provider=provider,
+        metadata_parent_id="tt1234567",
+        resolved_title="Godzilla Singular Point",
+        resolved_total_seasons=1,
+    )
+
+    assert resolved == (1, 2, "Midsummer Devil Festival/'Manatsu Oni Matsuri'", "ep-2", 7.6, 1100, 2021)
+    assert provider.calls == [
+        ("tt1234567", "Midsummer Devil Festival/'Manatsu Oni Matsuri'", None),
+    ]
+
+
+def test_resolve_episode_metadata_uses_full_raw_entry_override_key_for_inferred_series_titles():
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def list_episodes(self, parent_id):
+            assert parent_id == "tt1234567"
+            return [
+                SimpleNamespace(
+                    season=1,
+                    episode=2,
+                    title="Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+                    year=2021,
+                    id="ep-2",
+                    rating=7.6,
+                    votes=1100,
+                ),
+            ]
+
+        def find_episode_by_title(self, parent_id, episode_title, season=None):
+            self.calls.append((parent_id, episode_title, season))
+            if episode_title == "Midsummer Devil Festival/'Manatsu Oni Matsuri'":
+                return SimpleNamespace(
+                    season=1,
+                    episode=2,
+                    title="Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+                    year=2021,
+                    id="ep-2",
+                    rating=7.6,
+                    votes=1100,
+                )
+            return None
+
+    analyzer = NetflixWatchStatusAnalyzer(
+        metadata_manager=None,
+        episode_title_overrides={
+            "Godzilla Singular Point: Gamesome": {
+                "episode_title": "Midsummer Devil Festival/'Manatsu Oni Matsuri'",
+            },
+        },
+    )
+    provider = Provider()
+    parsed = parse_netflix_title("Godzilla Singular Point: Gamesome")
+
+    resolved = analyzer._resolve_episode_metadata(
+        parsed=parsed,
+        media_kind="series",
+        metadata_type="tv",
+        metadata_provider=provider,
+        metadata_parent_id="tt1234567",
+        resolved_title="Godzilla Singular Point",
+        resolved_total_seasons=1,
+    )
+
+    assert resolved == (1, 2, "Midsummer Devil Festival/'Manatsu Oni Matsuri'", "ep-2", 7.6, 1100, 2021)
+    assert provider.calls == [
+        ("tt1234567", "Midsummer Devil Festival/'Manatsu Oni Matsuri'", None),
+    ]
+
+
+def test_raw_entry_override_can_supply_both_series_and_episode_titles():
+    class MetadataManager:
+        def __init__(self):
+            self.calls = []
+
+        def find_title(self, query, preferred_type=None):
+            self.calls.append((query, preferred_type))
+            if query != "Dandadan":
+                return None
+            return (
+                SimpleNamespace(
+                    title="Dandadan",
+                    type="tv",
+                    id="tt30217403",
+                    year=2024,
+                    total_seasons=3,
+                    sources=("imdb",),
+                ),
+                object(),
+            )
+
+    class Provider:
+        def __init__(self):
+            self.calls = []
+
+        def list_episodes(self, parent_id, season=None):
+            assert parent_id == "tt30217403"
+            return [
+                SimpleNamespace(
+                    season=2,
+                    episode=12,
+                    title="Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!",
+                    year=2025,
+                    id="ep-24",
+                    rating=8.8,
+                    votes=900,
+                ),
+            ]
+
+        def find_episode_by_title(self, parent_id, episode_title, season=None):
+            self.calls.append((parent_id, episode_title, season))
+            if episode_title == "Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!":
+                return SimpleNamespace(
+                    season=2,
+                    episode=12,
+                    title="Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!",
+                    year=2025,
+                    id="ep-24",
+                    rating=8.8,
+                    votes=900,
+                )
+            return None
+
+    analyzer = NetflixWatchStatusAnalyzer(
+        metadata_manager=MetadataManager(),
+        episode_title_overrides={
+            "DAN DA DAN: Season 2: Clash! Space Kaiju vs. Giant Robot!": {
+                "title": "Dandadan",
+                "episode_title": "Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!",
+            },
+        },
+    )
+    parsed = parse_netflix_title("DAN DA DAN: Season 2: Clash! Space Kaiju vs. Giant Robot!")
+    resolved = analyzer._classify_entry(parsed, prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "Dandadan"
+    assert resolved[6] == "tt30217403"
+
+    provider = Provider()
+    episode_resolved = analyzer._resolve_episode_metadata(
+        parsed=parsed,
+        media_kind=resolved[0],
+        metadata_type=resolved[4],
+        metadata_provider=provider,
+        metadata_parent_id=resolved[6],
+        resolved_title=resolved[1],
+        resolved_total_seasons=resolved[3],
+    )
+
+    assert episode_resolved == (2, 12, "Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!", "ep-24", 8.8, 900, 2025)
+    assert provider.calls == [
+        ("tt30217403", "Gekitotsu! Uch\ufffd kaij\ufffd tai kyodai robo!", 2),
     ]
 
 
