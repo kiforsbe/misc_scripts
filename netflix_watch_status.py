@@ -964,6 +964,24 @@ def _format_runtime_minutes(value: Optional[int]) -> str:
     return " ".join(parts)
 
 
+def _parse_runtime_minutes(text: str) -> Optional[int]:
+    cleaned = (text or "").strip().lower()
+    if not cleaned:
+        return None
+
+    total = 0
+    matched = False
+    for value_text, unit in re.findall(r"(\d+)\s*([hm])", cleaned):
+        matched = True
+        value = int(value_text)
+        if unit == "h":
+            total += value * 60
+        else:
+            total += value
+
+    return total if matched else None
+
+
 def _format_genres(values: Tuple[str, ...]) -> str:
     return ", ".join(values)
 
@@ -995,6 +1013,34 @@ def _format_aggregate_runtime(runtime_minutes: Optional[int], item_count: int) -
     if runtime_minutes is None or item_count <= 0:
         return ""
     return _format_runtime_minutes(runtime_minutes * item_count)
+
+
+def _aggregate_direct_child_runtime(
+    rows: List[WatchTableRow],
+    parent_index: int,
+    episode_runtime_minutes: Optional[int] = None,
+) -> str:
+    total_minutes = 0
+    found_runtime = False
+    parent_level = rows[parent_index].level
+
+    for child_row in rows[parent_index + 1:]:
+        if child_row.level <= parent_level:
+            break
+        if child_row.level != parent_level + 1:
+            continue
+
+        runtime_minutes = _parse_runtime_minutes(child_row.runtime_minutes)
+        if runtime_minutes is None and child_row.item_type == "episode" and episode_runtime_minutes is not None:
+            runtime_minutes = episode_runtime_minutes
+        if runtime_minutes is None:
+            continue
+        total_minutes += runtime_minutes
+        found_runtime = True
+
+    if not found_runtime:
+        return rows[parent_index].runtime_minutes
+    return _format_runtime_minutes(total_minutes)
 
 
 def _format_source_id(value: Any) -> str:
@@ -1543,6 +1589,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
             )
             continue
 
+        series_row_index = len(rows)
         rows.append(
             WatchTableRow(
                 level=0,
@@ -1731,6 +1778,12 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 ):
                     rows.append(entry)
 
+            rows[series_row_index].runtime_minutes = _aggregate_direct_child_runtime(
+                rows,
+                series_row_index,
+                episode_runtime_minutes=title_entries[0].metadata_runtime_minutes,
+            )
+
             continue
 
         season_groups: Dict[tuple[Optional[int], str], List[NetflixHistoryEntry]] = {}
@@ -1792,6 +1845,12 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 season_title_override=season_title_override,
             ):
                 rows.append(entry)
+
+        rows[series_row_index].runtime_minutes = _aggregate_direct_child_runtime(
+            rows,
+            series_row_index,
+            episode_runtime_minutes=title_entries[0].metadata_runtime_minutes,
+        )
 
     return _finalize_watch_table_rows(rows)
 
