@@ -13,9 +13,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from netflix_title_parser import ParsedNetflixTitle, parse_netflix_title
 
 try:
-    from tqdm import tqdm
+    from tqdm import tqdm as tqdm_progress
 except ImportError:
-    class tqdm:
+    class tqdm_progress:
         def __init__(self, iterable=None, total=None, desc=None, unit=None, disable=False, file=None, **kwargs):
             self.iterable = iterable
             self.total = total or (len(iterable) if iterable is not None else 0)
@@ -88,9 +88,16 @@ DATE_FORMATS = (
 )
 SERIES_METADATA_TYPES = {"tv", "anime_series"}
 MOVIE_METADATA_TYPES = {"movie", "anime_movie"}
-TABLE_HEADERS = ("Title", "Season", "Season Title", "Episode", "Episode Title", "Views")
-TABLE_ALIGNMENTS = ("left", "right", "left", "right", "left", "left")
-TABLE_MAX_WIDTHS = (38, 6, 18, 7, 34, 48)
+DEFAULT_TABLE_COLUMNS = ("title", "year", "season", "season_title", "episode", "episode_title", "views")
+TABLE_COLUMN_DEFINITIONS = {
+    "title": {"header": "Title", "align": "left", "max_width": 38},
+    "year": {"header": "Year", "align": "right", "max_width": 10},
+    "season": {"header": "Season", "align": "right", "max_width": 6},
+    "season_title": {"header": "Season Title", "align": "left", "max_width": 18},
+    "episode": {"header": "Episode", "align": "right", "max_width": 7},
+    "episode_title": {"header": "Episode Title", "align": "left", "max_width": 34},
+    "views": {"header": "Views", "align": "left", "max_width": 48},
+}
 BROKEN_HISTORY_TITLE_RE = re.compile(
     r"^:\s*(?:episode\s+\d+|chapter\s+\d+|\d+(?:st|nd|rd|th)\b.*)$",
     re.IGNORECASE,
@@ -99,7 +106,7 @@ DATE_LIKE_TITLE_RE = re.compile(r"^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}$")
 
 
 def iter_progress(iterable, *, total: Optional[int] = None, desc: str = "Progress", unit: str = "item"):
-    return tqdm(iterable, total=total, desc=desc, unit=unit, file=sys.stderr)
+    return tqdm_progress(iterable, total=total, desc=desc, unit=unit, file=sys.stderr)
 
 
 def should_reject_history_title(raw_title: str) -> bool:
@@ -177,6 +184,10 @@ class NetflixHistoryEntry:
     metadata_parent_id: Optional[str] = None
     resolved_season: Optional[int] = None
     resolved_episode: Optional[int] = None
+    resolved_episode_title: Optional[str] = None
+    resolved_title_year: Optional[int] = None
+    resolved_episode_year: Optional[int] = None
+    resolved_total_seasons: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -189,6 +200,10 @@ class NetflixHistoryEntry:
             "metadata_parent_id": self.metadata_parent_id,
             "resolved_season": self.resolved_season,
             "resolved_episode": self.resolved_episode,
+            "resolved_episode_title": self.resolved_episode_title,
+            "resolved_title_year": self.resolved_title_year,
+            "resolved_episode_year": self.resolved_episode_year,
+            "resolved_total_seasons": self.resolved_total_seasons,
         }
 
 
@@ -196,6 +211,7 @@ class NetflixHistoryEntry:
 class WatchTableRow:
     level: int
     title: str
+    year: str = ""
     season: str = ""
     season_title: str = ""
     episode: str = ""
@@ -240,8 +256,9 @@ class SeriesWatchStatus:
     def add_entry(self, entry: NetflixHistoryEntry) -> None:
         self.watch_count += 1
         self.metadata_type = self.metadata_type or entry.metadata_type
-        if _entry_season(entry) is not None:
-            self.seasons.add(_entry_season(entry))
+        season_number = _entry_season(entry)
+        if season_number is not None:
+            self.seasons.add(season_number)
         episode_label = (entry.parsed.episode_title or "").casefold() or None
         if _entry_episode(entry) is None and episode_label is None:
             episode_label = entry.raw_title.casefold()
@@ -274,7 +291,7 @@ class SeriesWatchStatus:
 class NetflixWatchStatusAnalyzer:
     def __init__(self, metadata_manager: Any = None):
         self.metadata_manager = metadata_manager
-        self._metadata_cache: Dict[str, Tuple[Optional[str], Optional[str], Optional[str], Any, Optional[str]]] = {}
+        self._metadata_cache: Dict[Tuple[str, Optional[str]], Tuple[Optional[str], Optional[str], Optional[int], Optional[int], Optional[str], Any, Optional[str]]] = {}
 
     def load_entries(self, csv_path: str) -> List[NetflixHistoryEntry]:
         raw_entries: List[Tuple[str, datetime, ParsedNetflixTitle]] = []
@@ -357,14 +374,15 @@ class NetflixWatchStatusAnalyzer:
             desc=desc,
             unit="entry",
         ):
-            media_kind, resolved_title, metadata_type, metadata_provider, metadata_parent_id = self._classify_entry(parsed, prefix_counts)
-            resolved_season, resolved_episode = self._resolve_episode_metadata(
+            media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id = self._classify_entry(parsed, prefix_counts)
+            resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year = self._resolve_episode_metadata(
                 parsed=parsed,
                 media_kind=media_kind,
                 metadata_type=metadata_type,
                 metadata_provider=metadata_provider,
                 metadata_parent_id=metadata_parent_id,
                 resolved_title=resolved_title,
+                resolved_total_seasons=resolved_total_seasons,
             )
             entries.append(
                 NetflixHistoryEntry(
@@ -377,6 +395,10 @@ class NetflixWatchStatusAnalyzer:
                     metadata_parent_id=metadata_parent_id,
                     resolved_season=resolved_season,
                     resolved_episode=resolved_episode,
+                    resolved_episode_title=resolved_episode_title,
+                    resolved_title_year=resolved_title_year,
+                    resolved_episode_year=resolved_episode_year,
+                    resolved_total_seasons=resolved_total_seasons,
                 )
             )
 
@@ -452,23 +474,51 @@ class NetflixWatchStatusAnalyzer:
         metadata_provider: Any,
         metadata_parent_id: Optional[str],
         resolved_title: str,
-    ) -> Tuple[Optional[int], Optional[int]]:
+        resolved_total_seasons: Optional[int],
+    ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[int]]:
         resolved_season = parsed.season
         resolved_episode = parsed.episode
+        resolved_episode_title = parsed.episode_title
+        resolved_episode_year: Optional[int] = None
 
         if (
             media_kind != "series"
             or metadata_type != "tv"
             or metadata_provider is None
             or metadata_parent_id is None
-            or resolved_episode is not None
-            or not hasattr(metadata_provider, "find_episode_by_title")
         ):
-            return resolved_season, resolved_episode
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
+
+        lookup_season = resolved_season
+        if lookup_season is None and resolved_episode is not None and resolved_total_seasons == 1:
+            lookup_season = 1
+
+        if (
+            lookup_season is not None
+            and resolved_episode is not None
+            and not resolved_episode_title
+            and hasattr(metadata_provider, "get_episode_info")
+        ):
+            try:
+                episode_info = metadata_provider.get_episode_info(
+                    metadata_parent_id,
+                    lookup_season,
+                    resolved_episode,
+                )
+            except Exception:
+                episode_info = None
+
+            if episode_info is not None and episode_info.title:
+                resolved_season = episode_info.season
+                resolved_episode_title = episode_info.title
+                resolved_episode_year = episode_info.year
+
+        if resolved_episode is not None or not hasattr(metadata_provider, "find_episode_by_title"):
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
 
         episode_title = self._derive_episode_title_for_lookup(parsed, resolved_title)
         if not episode_title:
-            return resolved_season, resolved_episode
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
 
         try:
             episode_info = metadata_provider.find_episode_by_title(
@@ -477,12 +527,12 @@ class NetflixWatchStatusAnalyzer:
                 season=resolved_season,
             )
         except Exception:
-            return resolved_season, resolved_episode
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
 
         if episode_info is None:
-            return resolved_season, resolved_episode
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year
 
-        return episode_info.season, episode_info.episode
+        return episode_info.season, episode_info.episode, episode_info.title or resolved_episode_title, episode_info.year
 
     def _derive_episode_title_for_lookup(self, parsed: ParsedNetflixTitle, resolved_title: str) -> Optional[str]:
         if parsed.episode_title:
@@ -503,15 +553,15 @@ class NetflixWatchStatusAnalyzer:
 
     def _classify_entry(
         self, parsed: ParsedNetflixTitle, prefix_counts: Dict[str, int]
-    ) -> Tuple[str, str, Optional[str], Any, Optional[str]]:
+    ) -> Tuple[str, str, Optional[int], Optional[int], Optional[str], Any, Optional[str]]:
         default_kind = "series" if parsed.is_explicit_series else parsed.media_kind
         default_title = parsed.title if parsed.is_explicit_series else parsed.raw_title
         inferred_series_title = self._infer_series_title(parsed, prefix_counts)
 
         if self.metadata_manager is None:
             if inferred_series_title:
-                return "series", inferred_series_title, None, None, None
-            return default_kind, default_title, None, None, None
+                return "series", inferred_series_title, None, None, None, None, None
+            return default_kind, default_title, None, None, None, None, None
 
         queries: List[str] = []
         if parsed.is_explicit_series:
@@ -524,7 +574,16 @@ class NetflixWatchStatusAnalyzer:
                 queries.append(parsed.title)
 
         for query in queries:
-            resolved_kind, resolved_title, metadata_type, metadata_provider, metadata_parent_id = self._lookup_metadata(query)
+            preferred_type = "tv" if (
+                parsed.is_explicit_series
+                or parsed.episode is not None
+                or parsed.episode_title is not None
+                or inferred_series_title is not None
+            ) else None
+            resolved_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id = self._lookup_metadata(
+                query,
+                preferred_type=preferred_type,
+            )
             if resolved_kind is None:
                 continue
             if not _metadata_match_is_compatible(
@@ -536,35 +595,41 @@ class NetflixWatchStatusAnalyzer:
             ):
                 continue
             if parsed.is_explicit_series and resolved_kind == "movie":
-                return "series", parsed.title or resolved_title or default_title, metadata_type, metadata_provider, metadata_parent_id
-            return resolved_kind, resolved_title or default_title, metadata_type, metadata_provider, metadata_parent_id
+                return "series", parsed.title or resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id
+            return resolved_kind, resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id
 
         if inferred_series_title:
-            return "series", inferred_series_title, None, None, None
+            return "series", inferred_series_title, None, None, None, None, None
 
-        return default_kind, default_title, None, None, None
+        return default_kind, default_title, None, None, None, None, None
 
-    def _lookup_metadata(self, query: str) -> Tuple[Optional[str], Optional[str], Optional[str], Any, Optional[str]]:
+    def _lookup_metadata(
+        self,
+        query: str,
+        preferred_type: Optional[str] = None,
+    ) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[int], Optional[str], Any, Optional[str]]:
         cache_key = query.casefold().strip()
         if not cache_key:
-            return None, None, None, None, None
+            return None, None, None, None, None, None, None
 
-        if cache_key in self._metadata_cache:
-            return self._metadata_cache[cache_key]
+        metadata_cache_key = (cache_key, preferred_type)
+        if metadata_cache_key in self._metadata_cache:
+            return self._metadata_cache[metadata_cache_key]
 
         try:
-            match = self.metadata_manager.find_title(query)
+            match = self.metadata_manager.find_title(query, preferred_type=preferred_type)
         except Exception:
-            self._metadata_cache[cache_key] = (None, None, None, None, None)
-            return None, None, None, None, None
+            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None)
+            return None, None, None, None, None, None, None
 
         if not match or not match[0]:
-            self._metadata_cache[cache_key] = (None, None, None, None, None)
-            return None, None, None, None, None
+            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None)
+            return None, None, None, None, None, None, None
 
         title_info = match[0]
         provider = match[1] if len(match) > 1 else None
         metadata_type = getattr(title_info, "type", None)
+        resolved_total_seasons = getattr(title_info, "total_seasons", None)
         if metadata_type in SERIES_METADATA_TYPES:
             media_kind = "series"
         elif metadata_type in MOVIE_METADATA_TYPES:
@@ -573,9 +638,10 @@ class NetflixWatchStatusAnalyzer:
             media_kind = None
 
         resolved_title = getattr(title_info, "title", query)
+        resolved_title_year = getattr(title_info, "year", None) or getattr(title_info, "start_year", None)
         metadata_parent_id = getattr(title_info, "id", None)
-        self._metadata_cache[cache_key] = (media_kind, resolved_title, metadata_type, provider, metadata_parent_id)
-        return media_kind, resolved_title, metadata_type, provider, metadata_parent_id
+        self._metadata_cache[metadata_cache_key] = (media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id)
+        return media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -598,6 +664,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--table",
         action="store_true",
         help="Print a treegrid-style table grouped by title, season, and episode.",
+    )
+    parser.add_argument(
+        "--columns",
+        default=",".join(DEFAULT_TABLE_COLUMNS),
+        help=(
+            "Comma-separated table columns for --table. "
+            f"Available: {', '.join(TABLE_COLUMN_DEFINITIONS.keys())}."
+        ),
     )
     return parser
 
@@ -659,6 +733,25 @@ def _format_group_views(watched_at_values: List[datetime]) -> str:
     return ""
 
 
+def parse_table_columns(raw_columns: str) -> List[str]:
+    columns: List[str] = []
+    seen: set[str] = set()
+    for part in raw_columns.split(","):
+        column = part.strip().lower()
+        if not column or column in seen:
+            continue
+        if column not in TABLE_COLUMN_DEFINITIONS:
+            available = ", ".join(TABLE_COLUMN_DEFINITIONS.keys())
+            raise ValueError(f"Unknown table column '{column}'. Available columns: {available}")
+        columns.append(column)
+        seen.add(column)
+
+    if not columns:
+        raise ValueError("At least one table column must be selected")
+
+    return columns
+
+
 def _entry_season(entry: NetflixHistoryEntry) -> Optional[int]:
     return entry.resolved_season if entry.resolved_season is not None else entry.parsed.season
 
@@ -667,7 +760,18 @@ def _entry_episode(entry: NetflixHistoryEntry) -> Optional[int]:
     return entry.resolved_episode if entry.resolved_episode is not None else entry.parsed.episode
 
 
+def _entry_title_year(entry: NetflixHistoryEntry) -> Optional[int]:
+    return entry.resolved_title_year
+
+
+def _entry_episode_year(entry: NetflixHistoryEntry) -> Optional[int]:
+    return entry.resolved_episode_year
+
+
 def _derive_episode_title(entry: NetflixHistoryEntry) -> str:
+    if entry.resolved_episode_title:
+        return entry.resolved_episode_title
+
     if entry.parsed.episode_title:
         return entry.parsed.episode_title
 
@@ -696,7 +800,11 @@ def _episode_sort_key(item: tuple[tuple[Optional[int], str], List[NetflixHistory
 
 
 def _infer_missing_season_number(title_entries: List[NetflixHistoryEntry]) -> Optional[int]:
-    season_numbers = sorted({_entry_season(entry) for entry in title_entries if _entry_season(entry) is not None})
+    season_numbers = sorted(
+        season_number
+        for season_number in (_entry_season(entry) for entry in title_entries)
+        if season_number is not None
+    )
     if not season_numbers:
         return None
 
@@ -734,6 +842,8 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 WatchTableRow(
                     level=0,
                     title=title,
+                    year=str(_entry_title_year(title_entries[0]) or ""),
+                    episode_title="",
                     views=_format_leaf_views(watched_at_values),
                 )
             )
@@ -743,6 +853,8 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
             WatchTableRow(
                 level=0,
                 title=title,
+                year=str(_entry_title_year(title_entries[0]) or ""),
+                episode_title="",
                 views=_format_group_views(watched_at_values),
             )
         )
@@ -782,6 +894,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 WatchTableRow(
                     level=1,
                     title=display_season_title or title,
+                    episode_title="",
                     views=_format_group_views([entry.watched_at for entry in season_entries]),
                 )
             )
@@ -824,6 +937,7 @@ def _build_episode_rows(
             WatchTableRow(
                 level=level,
                 title=episode_title,
+                year=str(_entry_episode_year(first_entry) or _entry_title_year(first_entry) or ""),
                 season=str(resolved_season) if resolved_season is not None else "",
                 season_title=resolved_season_title,
                 episode=str(episode_number) if episode_number is not None else "",
@@ -834,33 +948,37 @@ def _build_episode_rows(
     return rows
 
 
-def render_watch_table(entries: List[NetflixHistoryEntry]) -> None:
+def render_watch_table(entries: List[NetflixHistoryEntry], selected_columns: List[str]) -> None:
     rows = build_watch_table_rows(entries)
     if not rows:
         return
 
-    widths = [min(len(header), TABLE_MAX_WIDTHS[index]) for index, header in enumerate(TABLE_HEADERS)]
+    headers = [TABLE_COLUMN_DEFINITIONS[column]["header"] for column in selected_columns]
+    alignments = [TABLE_COLUMN_DEFINITIONS[column]["align"] for column in selected_columns]
+    max_widths = [TABLE_COLUMN_DEFINITIONS[column]["max_width"] for column in selected_columns]
+    widths = [min(len(header), max_widths[index]) for index, header in enumerate(headers)]
     row_cells: List[List[str]] = []
     for row in rows:
-        title_text = f"{'  ' * row.level}{row.title}"
-        cells = [
-            title_text,
-            row.season,
-            row.season_title,
-            row.episode,
-            row.episode_title,
-            row.views,
-        ]
+        row_values = {
+            "title": f"{'  ' * row.level}{row.title}",
+            "year": row.year,
+            "season": row.season,
+            "season_title": row.season_title,
+            "episode": row.episode,
+            "episode_title": row.episode_title,
+            "views": row.views,
+        }
+        cells = [row_values[column] for column in selected_columns]
         row_cells.append(cells)
         for index, cell in enumerate(cells):
-            widths[index] = min(max(widths[index], len(cell)), TABLE_MAX_WIDTHS[index])
+            widths[index] = min(max(widths[index], len(cell)), max_widths[index])
 
-    header_line = _render_table_line(TABLE_HEADERS, widths, TABLE_ALIGNMENTS)
-    separator_line = _render_table_separator(widths, TABLE_ALIGNMENTS)
+    header_line = _render_table_line(headers, widths, alignments)
+    separator_line = _render_table_separator(widths, alignments)
     safe_write_line(header_line)
     safe_write_line(separator_line)
     for cells in row_cells:
-        safe_write_line(_render_table_line(cells, widths, TABLE_ALIGNMENTS))
+        safe_write_line(_render_table_line(cells, widths, alignments))
 
 
 def _render_table_line(values: tuple[str, ...] | List[str], widths: tuple[int, ...] | List[int], alignments: tuple[str, ...] | List[str]) -> str:
@@ -911,6 +1029,12 @@ def main() -> None:
     parser = build_argument_parser()
     args = parser.parse_args()
 
+    try:
+        selected_columns = parse_table_columns(args.columns)
+    except ValueError as exc:
+        parser.error(str(exc))
+        return
+
     metadata_manager = None if args.no_metadata else get_metadata_manager()
     analyzer = NetflixWatchStatusAnalyzer(metadata_manager=metadata_manager)
     entries = analyzer.load_entries(args.csv_path)
@@ -921,7 +1045,7 @@ def main() -> None:
         return
 
     if args.table:
-        render_watch_table(entries)
+        render_watch_table(entries, selected_columns)
         return
 
     print_text_summary(results)

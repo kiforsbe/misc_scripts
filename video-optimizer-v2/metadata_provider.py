@@ -616,10 +616,15 @@ class MetadataManager:
         # Cache for find_title results - key is (title, year)
         self._title_cache = {}
     
-    def find_title(self, title: str, year: Optional[int] = None) -> Tuple[Optional[TitleInfo], Optional[BaseMetadataProvider]]:
-        """Try all providers and return the best match and the provider that found it (cached)"""
+    def find_title(
+        self,
+        title: str,
+        year: Optional[int] = None,
+        preferred_type: Optional[str] = None,
+    ) -> Tuple[Optional[TitleInfo], Optional[BaseMetadataProvider]]:
+        """Try all providers and return the best match and the provider that found it (cached)."""
         # Check cache first
-        cache_key = (title, year)
+        cache_key = (title, year, preferred_type)
         if cache_key in self._title_cache:
             return self._title_cache[cache_key]
         
@@ -627,7 +632,10 @@ class MetadataManager:
         best_provider = None
         
         for provider in self.providers:
-            result = provider.find_title(title, year)
+            if preferred_type and hasattr(provider, "find_title_with_type_hint"):
+                result = provider.find_title_with_type_hint(title, preferred_type, year)
+            else:
+                result = provider.find_title(title, year)
             if result and result.info:  # Make sure we have both a result and title info
                 if not best_result or result.weighted_score > best_result.weighted_score:
                     best_result = result

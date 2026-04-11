@@ -1025,6 +1025,51 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         return best_match, best_score
 
+    def find_title_with_type_hint(
+        self,
+        title: str,
+        preferred_type: str,
+        year: Optional[int] = None,
+    ) -> Optional[MatchResult]:
+        """Find title information while preferring a hinted media type for ambiguous exact-title matches."""
+        self._ensure_data_loaded()
+
+        preferred_type_codes = {
+            "movie": {1},
+            "tv": {2, 3},
+        }.get(preferred_type)
+        if not preferred_type_codes:
+            return self.find_title(title, year)
+
+        cache_key = f"{title.lower()}_{year}_{preferred_type}"
+        if cache_key in self._search_cache:
+            return self._search_cache[cache_key]
+
+        conn = self._get_connection()
+        try:
+            title_lower = re.sub(r"\s+", " ", title.lower()).strip()
+            title_key = self._normalize_title_key(title)
+            exact_candidates = self._get_exact_candidates(conn, title_lower, title_key, year)
+            preferred_candidates = [row for row in exact_candidates if row["type"] in preferred_type_codes]
+
+            if preferred_candidates:
+                best_match, best_score = self._select_exact_match(preferred_candidates, conn, year)
+                if best_match:
+                    result = MatchResult(
+                        info=best_match,
+                        score=best_score,
+                        provider_weight=self.provider_weight,
+                    )
+                    self._search_cache[cache_key] = result
+                    return result
+        finally:
+            self._return_connection(conn)
+
+        result = self.find_title(title, year)
+        if result:
+            self._search_cache[cache_key] = result
+        return result
+
     def find_title(
         self, title: str, year: Optional[int] = None
     ) -> Optional[MatchResult]:
