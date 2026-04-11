@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Netflix watch status report</title>
+    <style>/*NETFLIX_WATCH_STATUS_CSS*/</style>
+</head>
+<body>
+    <div class="app-window">
+        <div class="window-pathbar">
+            <div class="address-shell">
+                <span class="address-label">Source CSV</span>
+                <div class="address-value" id="sourceCsv"></div>
+            </div>
+            <div class="smart-filter-shell">
+                <label class="smart-filter-label" for="searchInput">Filter rows</label>
+                <div class="smart-filter-row">
+                    <input id="searchInput" type="search" placeholder="Filter by title, year, season, episode, or watch year">
+                </div>
+            </div>
+        </div>
+
+        <div class="workspace-shell">
+            <section class="tree-pane">
+                <section class="treegrid-shell">
+                    <div class="treegrid-meta">
+                        <div class="treegrid-meta-item">
+                            <span class="eyebrow">Generated</span>
+                            <strong id="generatedAt"></strong>
+                        </div>
+                        <div class="treegrid-meta-item">
+                            <span class="eyebrow">Visible rows</span>
+                            <strong id="visibleCount"></strong>
+                        </div>
+                    </div>
+                    <div class="treegrid-wrap">
+                        <table class="treegrid" aria-label="Netflix watch status tree grid">
+                            <thead>
+                                <tr id="treegridHeaderRow"></tr>
+                            </thead>
+                            <tbody id="resultBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
+
+            <aside class="details-pane">
+                <div class="details-pane-header">
+                    <p class="eyebrow">Selection</p>
+                    <h2 id="selectionTitle">No selection</h2>
+                    <p id="selectionSubtitle" class="selection-subtitle"></p>
+                </div>
+                <section class="media-preview-shell">
+                    <div id="mediaPreview" class="media-preview" data-thumbnail-status="not_requested">
+                        <div class="media-preview-placeholder">
+                            <span class="eyebrow">Artwork</span>
+                            <strong>Reserved for future thumbnail support</strong>
+                            <p>No thumbnail handling in this iteration.</p>
+                        </div>
+                    </div>
+                </section>
+                <section class="summary-grid" id="summaryGrid"></section>
+                <section class="selection-panel">
+                    <p class="details-section-label">Selection Details</p>
+                    <div id="selectionDetails" class="selection-details"></div>
+                </section>
+                <section class="selection-panel">
+                    <p class="details-section-label">Context</p>
+                    <div id="selectionContext" class="selection-details"></div>
+                </section>
+            </aside>
+        </div>
+    </div>
+
+    <script id="netflixWatchStatusReport" type="application/json">/*NETFLIX_WATCH_STATUS_JSON*/</script>
+    <script>/*NETFLIX_WATCH_STATUS_JS*/</script>
+</body>
+</html>

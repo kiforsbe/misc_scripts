@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from netflix_title_parser import ParsedNetflixTitle, parse_netflix_title
@@ -224,6 +225,12 @@ class WatchTableRow:
     episode_title: str = ""
     views: str = ""
     watch_dates: str = ""
+    item_type: str = ""
+    row_id: str = ""
+    parent_id: Optional[str] = None
+    has_children: bool = False
+    thumbnail_status: str = "not_requested"
+    thumbnail_url: str = ""
 
 
 @dataclass
@@ -673,6 +680,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print a treegrid-style table grouped by title, season, and episode.",
     )
+    output_group.add_argument(
+        "--webapp-export",
+        metavar="FILE",
+        help="Export a standalone local HTML webapp report.",
+    )
     parser.add_argument(
         "--columns",
         default=",".join(DEFAULT_TABLE_COLUMNS),
@@ -753,6 +765,10 @@ def _format_progress(watched_count: int, total_count: int) -> str:
     if total_count <= 0:
         return ""
     return f"{watched_count}/{total_count}"
+
+
+def load_template_asset(filename: str) -> str:
+    return Path(__file__).with_name(filename).read_text(encoding="utf-8")
 
 
 def parse_table_columns(raw_columns: str) -> List[str]:
@@ -857,6 +873,126 @@ def _infer_missing_season_number(title_entries: List[NetflixHistoryEntry]) -> Op
     return missing_numbers[0]
 
 
+def _finalize_watch_table_rows(rows: List[WatchTableRow]) -> List[WatchTableRow]:
+    stack: Dict[int, str] = {}
+    child_counts: Dict[str, int] = {}
+
+    for index, row in enumerate(rows):
+        row.row_id = f"row-{index}"
+        row.parent_id = stack.get(row.level - 1) if row.level > 0 else None
+        stack[row.level] = row.row_id
+
+        for level in list(stack):
+            if level > row.level:
+                del stack[level]
+
+        if row.parent_id:
+            child_counts[row.parent_id] = child_counts.get(row.parent_id, 0) + 1
+
+    for row in rows:
+        row.has_children = child_counts.get(row.row_id, 0) > 0
+
+    return rows
+
+
+def _row_thumbnail_payload(row: WatchTableRow) -> Dict[str, str]:
+    return {
+        "status": row.thumbnail_status,
+        "url": row.thumbnail_url,
+        "alt": f"Artwork for {row.title}" if row.title else "Artwork placeholder",
+    }
+
+
+def _serialize_watch_table_row(row: WatchTableRow) -> Dict[str, Any]:
+    search_text = " ".join(
+        part for part in [
+            row.item_type,
+            row.title,
+            row.year,
+            row.season,
+            row.season_title,
+            row.episode,
+            row.episode_title,
+            row.views,
+            row.watch_dates,
+        ] if part
+    ).casefold()
+    return {
+        "id": row.row_id,
+        "parent_id": row.parent_id,
+        "level": row.level,
+        "item_type": row.item_type,
+        "title": row.title,
+        "year": row.year,
+        "season": row.season,
+        "season_title": row.season_title,
+        "episode": row.episode,
+        "episode_title": row.episode_title,
+        "views": row.views,
+        "watch_dates": row.watch_dates,
+        "has_children": row.has_children,
+        "thumbnail": _row_thumbnail_payload(row),
+        "search_text": search_text,
+    }
+
+
+def build_webapp_payload(
+    csv_path: str,
+    results: Dict[str, Any],
+    entries: List[NetflixHistoryEntry],
+    selected_columns: List[str],
+) -> Dict[str, Any]:
+    rows = build_watch_table_rows(entries)
+    columns = [
+        {
+            "key": column,
+            "header": TABLE_COLUMN_DEFINITIONS[column]["header"],
+            "align": TABLE_COLUMN_DEFINITIONS[column]["align"],
+        }
+        for column in selected_columns
+    ]
+    return {
+        "meta": {
+            "title": "Netflix watch status report",
+            "source_csv": str(Path(csv_path).resolve()),
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "columns": selected_columns,
+        },
+        "summary": results["summary"],
+        "movies": results["movies"],
+        "series": results["series"],
+        "columns": columns,
+        "rows": [_serialize_watch_table_row(row) for row in rows],
+    }
+
+
+def render_webapp_html(payload: Dict[str, Any]) -> str:
+    template = load_template_asset("netflix_watch_status_webapp_template.html")
+    css = load_template_asset("netflix_watch_status_webapp_template.css")
+    script = load_template_asset("netflix_watch_status_webapp_template.js")
+    serialized = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    return (
+        template
+        .replace("/*NETFLIX_WATCH_STATUS_CSS*/", css)
+        .replace("/*NETFLIX_WATCH_STATUS_JSON*/", serialized)
+        .replace("/*NETFLIX_WATCH_STATUS_JS*/", script)
+    )
+
+
+def export_webapp_report(
+    csv_path: str,
+    results: Dict[str, Any],
+    entries: List[NetflixHistoryEntry],
+    selected_columns: List[str],
+    output_path: str,
+) -> Path:
+    target_path = Path(output_path).expanduser().resolve()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    html = render_webapp_html(build_webapp_payload(csv_path, results, entries, selected_columns))
+    target_path.write_text(html, encoding="utf-8")
+    return target_path
+
+
 def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTableRow]:
     title_groups: Dict[str, List[NetflixHistoryEntry]] = {}
     for entry in entries:
@@ -884,6 +1020,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     episode_title="",
                     views=_format_leaf_views(watched_at_values),
                     watch_dates=_format_leaf_watch_dates(watched_at_values),
+                    item_type="movie",
                 )
             )
             continue
@@ -896,6 +1033,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 episode_title="",
                 views=_format_group_views(watched_at_values),
                 watch_dates=_format_group_watch_dates(watched_at_values),
+                item_type="series",
             )
         )
 
@@ -973,6 +1111,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                                 episode_title=episode_title,
                                 views=_format_leaf_views(watched_at_values),
                                 watch_dates=_format_leaf_watch_dates(watched_at_values),
+                                item_type="episode",
                             )
                         )
                         continue
@@ -989,6 +1128,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                             episode_title=synthetic_title,
                             views="0",
                             watch_dates="",
+                            item_type="episode",
                         )
                     )
 
@@ -1001,6 +1141,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                         episode_title="",
                         views=_format_group_views([]),
                         watch_dates=_format_group_watch_dates([]),
+                        item_type="season",
                     )
                 )
                 rows.extend(season_rows)
@@ -1029,6 +1170,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                         episode_title="",
                         views=_format_group_views([entry.watched_at for entry in season_entries]),
                         watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
+                        item_type="season",
                     )
                 )
                 for entry in _build_episode_rows(
@@ -1080,6 +1222,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     episode_title="",
                     views=_format_group_views([entry.watched_at for entry in season_entries]),
                     watch_dates=_format_group_watch_dates([entry.watched_at for entry in season_entries]),
+                    item_type="season",
                 )
             )
             season_override = season_number if season_number is not None else None
@@ -1092,7 +1235,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
             ):
                 rows.append(entry)
 
-    return rows
+    return _finalize_watch_table_rows(rows)
 
 
 def _build_episode_rows(
@@ -1128,6 +1271,7 @@ def _build_episode_rows(
                 episode_title=episode_title,
                 views=_format_leaf_views(watched_at_values),
                 watch_dates=_format_leaf_watch_dates(watched_at_values),
+                item_type="episode",
             )
         )
     return rows
@@ -1232,6 +1376,11 @@ def main() -> None:
 
     if args.table:
         render_watch_table(entries, selected_columns)
+        return
+
+    if args.webapp_export:
+        output_path = export_webapp_report(args.csv_path, results, entries, selected_columns, args.webapp_export)
+        safe_write_line(f"Webapp exported to: {output_path}")
         return
 
     print_text_summary(results)
