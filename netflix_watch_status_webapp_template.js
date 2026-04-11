@@ -20,7 +20,7 @@
     const state = {
         query: "",
         selectedId: rows[0] ? rows[0].id : null,
-        expanded: new Set(rows.filter((row) => row.has_children).map((row) => row.id)),
+        expanded: new Set(),
         shownColumns: new Set(defaultColumnOrder.filter((key) => defaultVisibleColumns.has(key))),
         columnOrder: [...defaultColumnOrder],
         draggingColumnKey: null,
