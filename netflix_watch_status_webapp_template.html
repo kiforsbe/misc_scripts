@@ -7,7 +7,7 @@
     <style>/*NETFLIX_WATCH_STATUS_CSS*/</style>
 </head>
 <body>
-    <div class="app-window">
+    <div class="app-window" id="appWindow">
         <div class="window-pathbar">
             <div class="address-shell">
                 <span class="address-label">Source CSV</span>
@@ -17,6 +17,7 @@
                 <label class="smart-filter-label" for="searchInput">Filter rows</label>
                 <div class="smart-filter-row">
                     <input id="searchInput" type="search" placeholder="Filter by title, year, season, episode, or watch year">
+                    <button id="listThumbnailToggle" class="list-thumbnail-toggle" type="button" aria-pressed="false">List Thumbnails</button>
                 </div>
             </div>
         </div>
@@ -45,8 +46,8 @@
                     <div id="mediaPreview" class="media-preview" data-thumbnail-status="not_requested">
                         <div class="media-preview-placeholder">
                             <span class="eyebrow">Artwork</span>
-                            <strong>Reserved for future thumbnail support</strong>
-                            <p>No thumbnail handling in this iteration.</p>
+                            <strong>No thumbnail available</strong>
+                            <p>The selected item does not currently have a resolved image.</p>
                         </div>
                     </div>
                 </section>

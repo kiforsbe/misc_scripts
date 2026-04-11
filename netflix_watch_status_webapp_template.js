@@ -29,11 +29,14 @@
         ],
         draggingColumnKey: null,
         dragInsertPosition: "before",
+        showListThumbnails: false,
     };
 
     const elements = {
+        appWindow: document.getElementById("appWindow"),
         sourceCsv: document.getElementById("sourceCsv"),
         searchInput: document.getElementById("searchInput"),
+        listThumbnailToggle: document.getElementById("listThumbnailToggle"),
         columnPickerMenu: document.getElementById("columnPickerMenu"),
         columnOptions: document.getElementById("columnOptions"),
         treegridHeaderRow: document.getElementById("treegridHeaderRow"),
@@ -150,6 +153,19 @@
             subtitle = subtitle ? `${subtitle} • Watched ${row.watch_dates}` : `Watched ${row.watch_dates}`;
         }
         return subtitle;
+    }
+
+    function hasAvailableThumbnails() {
+        return rows.some((row) => row.thumbnail && row.thumbnail.url);
+    }
+
+    function syncListThumbnailMode() {
+        const available = hasAvailableThumbnails();
+        elements.listThumbnailToggle.disabled = !available;
+        elements.listThumbnailToggle.hidden = !available;
+        elements.listThumbnailToggle.classList.toggle("is-active", available && state.showListThumbnails);
+        elements.listThumbnailToggle.setAttribute("aria-pressed", available && state.showListThumbnails ? "true" : "false");
+        elements.appWindow.classList.toggle("list-thumbnails-mode", available && state.showListThumbnails);
     }
 
     function visibleOptionalColumns() {
@@ -325,7 +341,7 @@
         elements.mediaPreview.innerHTML = `
             <div class="media-preview-placeholder">
                 <span class="eyebrow">Artwork</span>
-                <strong>Reserved for future thumbnail support</strong>
+                <strong>No thumbnail available</strong>
                 <p>Status: ${escapeHtml(status.replace(/_/g, " "))}</p>
             </div>
         `;
@@ -406,6 +422,12 @@
     function titleCellMarkup(row) {
         const expanded = state.expanded.has(row.id);
         const toggleLabel = expanded ? "Collapse" : "Expand";
+        const thumbnail = row.thumbnail || {};
+        const thumbnailMarkup = state.showListThumbnails
+            ? (thumbnail.url
+                ? `<span class="row-thumbnail-shell"><img class="row-thumbnail" src="${escapeHtml(thumbnail.url)}" alt="${escapeHtml(thumbnail.alt || displayTitle(row))}" loading="lazy"></span>`
+                : '<span class="row-thumbnail-shell is-empty" aria-hidden="true"></span>')
+            : "";
         return `
             <div class="treecell ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" style="--level:${row.level}">
                 <span class="tree-indent"></span>
@@ -413,6 +435,7 @@
                     ${row.has_children ? (expanded ? "−" : "+") : ""}
                 </button>
                 <button class="tree-name-button" data-action="select" data-row-id="${escapeHtml(row.id)}">
+                    ${thumbnailMarkup}
                     <div class="tree-title-block">
                         <span class="tree-title">${escapeHtml(displayTitle(row))}</span>
                         <span class="tree-subtitle">${escapeHtml(rowSubtitle(row))}</span>
@@ -465,6 +488,7 @@
     }
 
     function render() {
+        syncListThumbnailMode();
         renderHeader();
         renderRows();
         renderSelection();
@@ -490,6 +514,14 @@
 
     elements.searchInput.addEventListener("input", (event) => {
         state.query = String(event.target.value || "").trim().toLowerCase();
+        render();
+    });
+
+    elements.listThumbnailToggle.addEventListener("click", () => {
+        if (elements.listThumbnailToggle.disabled) {
+            return;
+        }
+        state.showListThumbnails = !state.showListThumbnails;
         render();
     });
 

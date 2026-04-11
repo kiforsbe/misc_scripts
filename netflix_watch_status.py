@@ -8,8 +8,12 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, urlopen
 
 from netflix_title_parser import ParsedNetflixTitle, parse_netflix_title
 
@@ -114,6 +118,21 @@ BROKEN_HISTORY_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 DATE_LIKE_TITLE_RE = re.compile(r"^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}$")
+THUMBNAIL_CACHE_DIR = Path.home() / ".video_metadata_cache" / "netflix_watch_status"
+THUMBNAIL_CACHE_FILE = THUMBNAIL_CACHE_DIR / "thumbnail_cache.json"
+THUMBNAIL_CACHE_SUCCESS_TTL_SECONDS = 30 * 24 * 60 * 60
+THUMBNAIL_CACHE_FAILURE_TTL_SECONDS = 3 * 24 * 60 * 60
+THUMBNAIL_META_KEYS = {
+    "og:image",
+    "og:image:url",
+    "og:image:secure_url",
+    "twitter:image",
+    "twitter:image:src",
+}
+THUMBNAIL_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def iter_progress(iterable, *, total: Optional[int] = None, desc: str = "Progress", unit: str = "item"):
@@ -205,6 +224,7 @@ class NetflixHistoryEntry:
     metadata_runtime_minutes: Optional[int] = None
     metadata_genres: Tuple[str, ...] = field(default_factory=tuple)
     metadata_title_type: Optional[str] = None
+    metadata_sources: Tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -226,6 +246,7 @@ class NetflixHistoryEntry:
             "metadata_runtime_minutes": self.metadata_runtime_minutes,
             "metadata_genres": list(self.metadata_genres),
             "metadata_title_type": self.metadata_title_type,
+            "metadata_sources": list(self.metadata_sources),
         }
 
 
@@ -408,7 +429,7 @@ class NetflixWatchStatusAnalyzer:
             desc=desc,
             unit="entry",
         ):
-            media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type = self._classify_entry(parsed, prefix_counts)
+            media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources = self._classify_entry(parsed, prefix_counts)
             resolved_season, resolved_episode, resolved_episode_title, resolved_episode_year = self._resolve_episode_metadata(
                 parsed=parsed,
                 media_kind=media_kind,
@@ -439,6 +460,7 @@ class NetflixWatchStatusAnalyzer:
                     metadata_runtime_minutes=metadata_runtime_minutes,
                     metadata_genres=metadata_genres,
                     metadata_title_type=metadata_title_type,
+                    metadata_sources=metadata_sources,
                 )
             )
 
@@ -593,15 +615,15 @@ class NetflixWatchStatusAnalyzer:
 
     def _classify_entry(
         self, parsed: ParsedNetflixTitle, prefix_counts: Dict[str, int]
-    ) -> Tuple[str, str, Optional[int], Optional[int], Optional[str], Any, Optional[str], Optional[float], Optional[int], Optional[int], Tuple[str, ...], Optional[str]]:
+    ) -> Tuple[str, str, Optional[int], Optional[int], Optional[str], Any, Optional[str], Optional[float], Optional[int], Optional[int], Tuple[str, ...], Optional[str], Tuple[str, ...]]:
         default_kind = "series" if parsed.is_explicit_series else parsed.media_kind
         default_title = parsed.title if parsed.is_explicit_series else parsed.raw_title
         inferred_series_title = self._infer_series_title(parsed, prefix_counts)
 
         if self.metadata_manager is None:
             if inferred_series_title:
-                return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None
-            return default_kind, default_title, None, None, None, None, None, None, None, None, (), None
+                return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
+            return default_kind, default_title, None, None, None, None, None, None, None, None, (), None, ()
 
         queries: List[str] = []
         if parsed.is_explicit_series:
@@ -620,7 +642,7 @@ class NetflixWatchStatusAnalyzer:
                 or parsed.episode_title is not None
                 or inferred_series_title is not None
             ) else None
-            resolved_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type = self._lookup_metadata(
+            resolved_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources = self._lookup_metadata(
                 query,
                 preferred_type=preferred_type,
             )
@@ -635,22 +657,22 @@ class NetflixWatchStatusAnalyzer:
             ):
                 continue
             if parsed.is_explicit_series and resolved_kind == "movie":
-                return "series", parsed.title or resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type
-            return resolved_kind, resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type
+                return "series", parsed.title or resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
+            return resolved_kind, resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
 
         if inferred_series_title:
-            return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None
+            return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
 
-        return default_kind, default_title, None, None, None, None, None, None, None, None, (), None
+        return default_kind, default_title, None, None, None, None, None, None, None, None, (), None, ()
 
     def _lookup_metadata(
         self,
         query: str,
         preferred_type: Optional[str] = None,
-    ) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[int], Optional[str], Any, Optional[str], Optional[float], Optional[int], Optional[int], Tuple[str, ...], Optional[str]]:
+    ) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[int], Optional[str], Any, Optional[str], Optional[float], Optional[int], Optional[int], Tuple[str, ...], Optional[str], Tuple[str, ...]]:
         cache_key = query.casefold().strip()
         if not cache_key:
-            return None, None, None, None, None, None, None, None, None, None, (), None
+            return None, None, None, None, None, None, None, None, None, None, (), None, ()
 
         metadata_cache_key = (cache_key, preferred_type)
         if metadata_cache_key in self._metadata_cache:
@@ -659,12 +681,12 @@ class NetflixWatchStatusAnalyzer:
         try:
             match = self.metadata_manager.find_title(query, preferred_type=preferred_type)
         except Exception:
-            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None)
-            return None, None, None, None, None, None, None, None, None, None, (), None
+            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None, ())
+            return None, None, None, None, None, None, None, None, None, None, (), None, ()
 
         if not match or not match[0]:
-            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None)
-            return None, None, None, None, None, None, None, None, None, None, (), None
+            self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None, ())
+            return None, None, None, None, None, None, None, None, None, None, (), None, ()
 
         title_info = match[0]
         provider = match[1] if len(match) > 1 else None
@@ -685,8 +707,9 @@ class NetflixWatchStatusAnalyzer:
         metadata_runtime_minutes = getattr(title_info, "runtime_minutes", None)
         metadata_genres = tuple(getattr(title_info, "genres", []) or ())
         metadata_title_type = getattr(title_info, "type", None)
-        self._metadata_cache[metadata_cache_key] = (media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type)
-        return media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type
+        metadata_sources = tuple(getattr(title_info, "sources", []) or ())
+        self._metadata_cache[metadata_cache_key] = (media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources)
+        return media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -836,6 +859,216 @@ def _entry_metadata_row_fields(entry: NetflixHistoryEntry) -> Dict[str, str]:
         "average_rating": _format_average_rating(entry.metadata_average_rating),
         "num_votes": _format_num_votes(entry.metadata_num_votes),
     }
+
+
+class _ThumbnailMetaParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.image_url: str = ""
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        if self.image_url:
+            return
+
+        normalized_attrs = {
+            (key or "").lower(): value or ""
+            for key, value in attrs
+        }
+        lower_tag = tag.lower()
+
+        if lower_tag == "meta":
+            meta_key = (
+                normalized_attrs.get("property")
+                or normalized_attrs.get("name")
+                or normalized_attrs.get("itemprop")
+                or ""
+            ).strip().lower()
+            content = normalized_attrs.get("content", "").strip()
+            if meta_key in THUMBNAIL_META_KEYS and content:
+                self.image_url = content
+            return
+
+        if lower_tag == "link":
+            rel = normalized_attrs.get("rel", "").strip().lower()
+            href = normalized_attrs.get("href", "").strip()
+            if rel == "image_src" and href:
+                self.image_url = href
+
+
+def _thumbnail_domain_rank(source_url: str) -> tuple[int, str]:
+    netloc = urlparse(source_url).netloc.casefold()
+    preferred_domains = (
+        "myanimelist.net",
+        "imdb.com",
+        "anilist.co",
+        "themoviedb.org",
+        "wikipedia.org",
+    )
+    for index, domain in enumerate(preferred_domains):
+        if domain in netloc:
+            return index, netloc
+    return len(preferred_domains), netloc
+
+
+def _iter_preferred_thumbnail_sources(sources: Tuple[str, ...]) -> List[str]:
+    unique_sources: List[str] = []
+    seen: set[str] = set()
+    for source in sources:
+        cleaned = source.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        unique_sources.append(cleaned)
+    return sorted(unique_sources, key=_thumbnail_domain_rank)
+
+
+def _load_thumbnail_cache() -> Dict[str, Dict[str, Any]]:
+    try:
+        return json.loads(THUMBNAIL_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_thumbnail_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+    try:
+        THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        THUMBNAIL_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
+def _thumbnail_cache_ttl(status: str) -> int:
+    return THUMBNAIL_CACHE_SUCCESS_TTL_SECONDS if status == "available" else THUMBNAIL_CACHE_FAILURE_TTL_SECONDS
+
+
+def _fetch_thumbnail_from_source_url(source_url: str) -> Dict[str, str]:
+    request = Request(
+        source_url,
+        headers={
+            "User-Agent": THUMBNAIL_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            final_url = response.geturl()
+            content_type = (response.headers.get("Content-Type") or "").casefold()
+            if content_type.startswith("image/"):
+                return {"status": "available", "url": final_url}
+            payload = response.read().decode("utf-8", errors="ignore")
+    except HTTPError:
+        return {"status": "http_error", "url": ""}
+    except URLError:
+        return {"status": "fetch_error", "url": ""}
+    except Exception:
+        return {"status": "fetch_error", "url": ""}
+
+    parser = _ThumbnailMetaParser()
+    try:
+        parser.feed(payload)
+    except Exception:
+        return {"status": "parse_error", "url": ""}
+
+    if not parser.image_url:
+        return {"status": "no_image", "url": ""}
+
+    return {
+        "status": "available",
+        "url": urljoin(final_url, parser.image_url),
+    }
+
+
+def _resolve_thumbnail_for_sources(
+    sources: Tuple[str, ...],
+    cache: Dict[str, Dict[str, Any]],
+) -> tuple[Dict[str, str], bool]:
+    now = int(time.time())
+    candidates = _iter_preferred_thumbnail_sources(sources)
+    if not candidates:
+        return {"status": "no_source", "url": ""}, False
+
+    dirty = False
+    last_result = {"status": "no_source", "url": ""}
+    for source_url in candidates:
+        cached = cache.get(source_url)
+        if cached and int(cached.get("expires_at", 0) or 0) > now:
+            cached_result = {
+                "status": str(cached.get("status") or "no_image"),
+                "url": str(cached.get("url") or ""),
+            }
+            if cached_result["status"] == "available":
+                return cached_result, dirty
+            last_result = cached_result
+            continue
+
+        resolved = _fetch_thumbnail_from_source_url(source_url)
+        cache[source_url] = {
+            "status": resolved["status"],
+            "url": resolved["url"],
+            "expires_at": now + _thumbnail_cache_ttl(resolved["status"]),
+            "checked_at": now,
+        }
+        dirty = True
+        if resolved["status"] == "available":
+            return resolved, dirty
+        last_result = resolved
+
+    return last_result, dirty
+
+
+def _thumbnail_url_from_imdb_id(metadata_parent_id: Optional[str]) -> str:
+    if not metadata_parent_id or not re.fullmatch(r"tt\d+", metadata_parent_id):
+        return ""
+    return f"https://images.metahub.space/poster/medium/{metadata_parent_id}/img"
+
+
+def _resolve_thumbnail_for_entry(
+    entry: NetflixHistoryEntry,
+    cache: Dict[str, Dict[str, Any]],
+) -> tuple[Dict[str, str], bool]:
+    imdb_thumbnail_url = _thumbnail_url_from_imdb_id(entry.metadata_parent_id)
+    if imdb_thumbnail_url:
+        return {"status": "available", "url": imdb_thumbnail_url}, False
+    return _resolve_thumbnail_for_sources(entry.metadata_sources, cache)
+
+
+def _apply_row_thumbnails(rows: List[WatchTableRow], entries: List[NetflixHistoryEntry]) -> None:
+    title_entries: Dict[str, NetflixHistoryEntry] = {}
+    for entry in entries:
+        key = entry.resolved_title.casefold()
+        current = title_entries.get(key)
+        if current is None:
+            title_entries[key] = entry
+            continue
+        if not current.metadata_parent_id and entry.metadata_parent_id:
+            title_entries[key] = entry
+            continue
+        if not current.metadata_sources and entry.metadata_sources:
+            title_entries[key] = entry
+
+    if not title_entries:
+        for row in rows:
+            row.thumbnail_status = "no_source"
+        return
+
+    cache = _load_thumbnail_cache()
+    dirty = False
+    thumbnails_by_title: Dict[str, Dict[str, str]] = {}
+    for title_key, entry in title_entries.items():
+        thumbnail_result, cache_dirty = _resolve_thumbnail_for_entry(entry, cache)
+        dirty = dirty or cache_dirty
+        thumbnails_by_title[title_key] = thumbnail_result
+
+    if dirty:
+        _save_thumbnail_cache(cache)
+
+    current_thumbnail = {"status": "no_source", "url": ""}
+    for row in rows:
+        if row.level == 0:
+            current_thumbnail = thumbnails_by_title.get(row.title.casefold(), {"status": "no_source", "url": ""})
+        row.thumbnail_status = current_thumbnail["status"]
+        row.thumbnail_url = current_thumbnail["url"]
 
 
 def _format_progress(watched_count: int, total_count: int) -> str:
@@ -1048,6 +1281,7 @@ def build_webapp_payload(
     selected_columns: List[str],
 ) -> Dict[str, Any]:
     rows = build_watch_table_rows(entries)
+    _apply_row_thumbnails(rows, entries)
     columns = [
         {
             "key": column,
