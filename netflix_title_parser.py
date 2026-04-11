@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass
-from typing import Optional
+from difflib import SequenceMatcher
+from typing import Iterable, Optional, Tuple
 
 
 SEASON_NUMBER_PATTERNS = (
@@ -17,6 +18,7 @@ EPISODE_NUMBER_PATTERNS = (
     re.compile(r"^(?P<number>\d+)(?:st|nd|rd|th)\s+.+$", re.IGNORECASE),
 )
 
+LOOKUP_TITLE_MATCH_THRESHOLD = 60.0
 
 @dataclass(frozen=True)
 class ParsedNetflixTitle:
@@ -52,6 +54,53 @@ def _parse_episode_number(token: str) -> Optional[int]:
         if match:
             return int(match.group("number"))
     return None
+
+
+def _normalize_lookup_text(text: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", _clean_token(text or "").casefold())).strip()
+
+
+def _score_lookup_title_match(source_title: str, candidate_title: str) -> Optional[float]:
+    normalized_source_title = _normalize_lookup_text(source_title)
+    normalized_candidate_title = _normalize_lookup_text(candidate_title)
+    if not normalized_source_title or not normalized_candidate_title:
+        return None
+
+    score = SequenceMatcher(None, normalized_source_title, normalized_candidate_title).ratio() * 100.0
+    if normalized_source_title == normalized_candidate_title:
+        score += 100.0
+    elif normalized_candidate_title in normalized_source_title or normalized_source_title in normalized_candidate_title:
+        score += 75.0
+
+    source_tokens = set(normalized_source_title.split())
+    candidate_tokens = set(normalized_candidate_title.split())
+    if source_tokens and candidate_tokens:
+        overlap = source_tokens & candidate_tokens
+        if overlap:
+            score += 25.0 * (len(overlap) / len(candidate_tokens))
+
+    return score
+
+
+def adapt_lookup_titles(title: Optional[str], known_titles: Optional[Iterable[str]] = None) -> Tuple[str, ...]:
+    cleaned = _clean_token(title or "")
+    if not cleaned:
+        return ()
+
+    candidates = [cleaned]
+    scored_candidates = []
+    for known_title in known_titles or ():
+        cleaned_known_title = _clean_token(known_title)
+        score = _score_lookup_title_match(cleaned, cleaned_known_title)
+        if score is None or score < LOOKUP_TITLE_MATCH_THRESHOLD:
+            continue
+
+        scored_candidates.append((score, cleaned_known_title))
+
+    for _, candidate in sorted(scored_candidates, key=lambda item: (-item[0], item[1].casefold())):
+        candidates.append(candidate)
+
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
 def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:

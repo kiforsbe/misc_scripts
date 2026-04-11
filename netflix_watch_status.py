@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from netflix_title_parser import ParsedNetflixTitle, parse_netflix_title
+from netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
 
 tqdm_progress: Any
 
@@ -134,6 +134,7 @@ THUMBNAIL_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+DEFAULT_EPISODE_TITLE_OVERRIDES_FILE = Path(__file__).with_name("netflix_episode_title_overrides.json")
 
 
 def iter_progress(iterable, *, total: Optional[int] = None, desc: str = "Progress", unit: str = "item"):
@@ -166,6 +167,50 @@ def parse_history_date(raw_date: str) -> Optional[datetime]:
         return datetime.fromisoformat(cleaned)
     except ValueError:
         return None
+
+
+def _normalize_episode_title_override_key(raw_title: Optional[str]) -> str:
+    if not raw_title:
+        return ""
+    return re.sub(r"\s+", " ", raw_title).strip().casefold()
+
+
+def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Dict[str, str]:
+    if not path.exists():
+        if required:
+            raise ValueError(f"Episode title override file not found: {path}")
+        return {}
+
+    try:
+        raw_data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Episode title override file is not valid JSON: {path} ({exc})") from exc
+
+    if not isinstance(raw_data, dict):
+        raise ValueError(f"Episode title override file must contain a JSON object: {path}")
+
+    overrides: Dict[str, str] = {}
+    for raw_key, raw_value in raw_data.items():
+        if not isinstance(raw_key, str) or not isinstance(raw_value, str):
+            raise ValueError(f"Episode title override keys and values must be strings: {path}")
+
+        normalized_key = _normalize_episode_title_override_key(raw_key)
+        normalized_value = raw_value.strip()
+        if not normalized_key or not normalized_value:
+            continue
+        overrides[normalized_key] = normalized_value
+
+    return overrides
+
+
+def load_episode_title_overrides(override_path: Optional[str] = None) -> Dict[str, str]:
+    overrides = _load_episode_title_overrides_from_path(
+        DEFAULT_EPISODE_TITLE_OVERRIDES_FILE,
+        required=False,
+    )
+    if override_path:
+        overrides.update(_load_episode_title_overrides_from_path(Path(override_path), required=True))
+    return overrides
 
 
 def _normalize_lookup_text(text: Optional[str]) -> str:
@@ -358,9 +403,20 @@ class SeriesWatchStatus:
 
 
 class NetflixWatchStatusAnalyzer:
-    def __init__(self, metadata_manager: Any = None):
+    def __init__(self, metadata_manager: Any = None, episode_title_overrides: Optional[Dict[str, str]] = None):
         self.metadata_manager = metadata_manager
         self._metadata_cache: Dict[Tuple[str, Optional[str]], Tuple[Any, ...]] = {}
+        self._episode_title_overrides = {
+            normalized_key: normalized_value
+            for raw_key, raw_value in (episode_title_overrides or {}).items()
+            for normalized_key, normalized_value in [
+                (
+                    _normalize_episode_title_override_key(raw_key),
+                    str(raw_value).strip(),
+                )
+            ]
+            if normalized_key and normalized_value
+        }
 
     def load_entries(self, csv_path: str) -> List[NetflixHistoryEntry]:
         raw_entries: List[Tuple[str, datetime, ParsedNetflixTitle]] = []
@@ -571,20 +627,40 @@ class NetflixWatchStatusAnalyzer:
             ):
                 continue
 
-            episode_title = self._derive_episode_title_from_prefix(parsed.raw_title, query, parsed.season_title)
-            if not episode_title or metadata_provider is None or metadata_parent_id is None:
+            if metadata_provider is None or metadata_parent_id is None:
                 continue
             if not hasattr(metadata_provider, "find_episode_by_title"):
                 continue
 
-            try:
-                episode_info = metadata_provider.find_episode_by_title(
-                    metadata_parent_id,
-                    episode_title,
-                    season=parsed.season,
-                )
-            except Exception:
+            lookup_candidates = self._derive_episode_title_lookup_candidates(
+                parsed,
+                resolved_title or query,
+                metadata_provider,
+                metadata_parent_id,
+            )
+            if not lookup_candidates:
                 continue
+
+            episode_info = None
+            for lookup_title in lookup_candidates:
+                try:
+                    episode_info = metadata_provider.find_episode_by_title(
+                        metadata_parent_id,
+                        lookup_title,
+                        season=parsed.season,
+                    )
+                except Exception:
+                    episode_info = None
+                if episode_info is not None:
+                    break
+
+            if episode_info is None:
+                episode_info = self._resolve_episode_from_known_list(
+                    metadata_provider,
+                    metadata_parent_id,
+                    parsed.season,
+                    lookup_candidates,
+                )
 
             if episode_info is None:
                 continue
@@ -635,6 +711,9 @@ class NetflixWatchStatusAnalyzer:
             "entries_data": [entry.to_dict() for entry in entries],
         }
 
+    def _get_episode_title_override(self, raw_title: str) -> Optional[str]:
+        return self._episode_title_overrides.get(_normalize_episode_title_override_key(raw_title))
+
     def _resolve_episode_metadata(
         self,
         parsed: ParsedNetflixTitle,
@@ -647,7 +726,7 @@ class NetflixWatchStatusAnalyzer:
     ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[str], Optional[float], Optional[int], Optional[int]]:
         resolved_season = parsed.season
         resolved_episode = parsed.episode
-        resolved_episode_title = parsed.episode_title or self._derive_episode_title_for_lookup(parsed, resolved_title)
+        resolved_episode_title = self._derive_episode_title(parsed, resolved_title)
         resolved_episode_source_id: Optional[str] = None
         resolved_episode_rating: Optional[float] = None
         resolved_episode_votes: Optional[int] = None
@@ -691,18 +770,35 @@ class NetflixWatchStatusAnalyzer:
         if resolved_episode is not None or not hasattr(metadata_provider, "find_episode_by_title"):
             return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
-        episode_title = self._derive_episode_title_for_lookup(parsed, resolved_title)
-        if not episode_title:
+        episode_title_candidates = self._derive_episode_title_lookup_candidates(
+            parsed,
+            resolved_title,
+            metadata_provider,
+            metadata_parent_id,
+        )
+        if not episode_title_candidates:
             return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
-        try:
-            episode_info = metadata_provider.find_episode_by_title(
+        episode_info = None
+        for lookup_title in episode_title_candidates:
+            try:
+                episode_info = metadata_provider.find_episode_by_title(
+                    metadata_parent_id,
+                    lookup_title,
+                    season=resolved_season,
+                )
+            except Exception:
+                episode_info = None
+            if episode_info is not None:
+                break
+
+        if episode_info is None:
+            episode_info = self._resolve_episode_from_known_list(
+                metadata_provider,
                 metadata_parent_id,
-                episode_title,
-                season=resolved_season,
+                resolved_season,
+                episode_title_candidates,
             )
-        except Exception:
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         if episode_info is None:
             return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
@@ -717,7 +813,7 @@ class NetflixWatchStatusAnalyzer:
             episode_info.year,
         )
 
-    def _derive_episode_title_for_lookup(self, parsed: ParsedNetflixTitle, resolved_title: str) -> Optional[str]:
+    def _derive_episode_title(self, parsed: ParsedNetflixTitle, resolved_title: str) -> Optional[str]:
         if parsed.episode_title:
             return parsed.episode_title
 
@@ -725,6 +821,80 @@ class NetflixWatchStatusAnalyzer:
             return None
 
         return self._derive_episode_title_from_prefix(parsed.raw_title, resolved_title, parsed.season_title)
+
+    def _derive_episode_title_lookup_candidates(
+        self,
+        parsed: ParsedNetflixTitle,
+        resolved_title: str,
+        metadata_provider: Any,
+        metadata_parent_id: Optional[str],
+    ) -> Tuple[str, ...]:
+        override_title = self._get_episode_title_override(parsed.raw_title)
+        lookup_title = self._derive_episode_title(parsed, resolved_title)
+        if not override_title and not lookup_title:
+            return ()
+
+        known_titles: Tuple[str, ...] = ()
+        if metadata_provider is not None and metadata_parent_id is not None and hasattr(metadata_provider, "list_episodes"):
+            try:
+                episodes = metadata_provider.list_episodes(metadata_parent_id, parsed.season)
+            except TypeError:
+                try:
+                    episodes = metadata_provider.list_episodes(metadata_parent_id)
+                except Exception:
+                    episodes = []
+            except Exception:
+                episodes = []
+            known_titles = tuple(
+                episode.title
+                for episode in episodes
+                if getattr(episode, "title", None)
+            )
+
+        candidates: List[str] = []
+        if override_title:
+            candidates.extend(adapt_lookup_titles(override_title, known_titles))
+        if lookup_title:
+            candidates.extend(adapt_lookup_titles(lookup_title, known_titles))
+        return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+    def _resolve_episode_from_known_list(
+        self,
+        metadata_provider: Any,
+        metadata_parent_id: Optional[str],
+        season: Optional[int],
+        lookup_candidates: Tuple[str, ...],
+    ) -> Any:
+        if metadata_provider is None or metadata_parent_id is None or not hasattr(metadata_provider, "list_episodes"):
+            return None
+        if not lookup_candidates:
+            return None
+
+        try:
+            episodes = metadata_provider.list_episodes(metadata_parent_id, season)
+        except TypeError:
+            try:
+                episodes = metadata_provider.list_episodes(metadata_parent_id)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+        if not episodes:
+            return None
+
+        episode_by_title = {
+            str(episode.title).casefold(): episode
+            for episode in episodes
+            if getattr(episode, "title", None)
+        }
+
+        for candidate in lookup_candidates[1:]:
+            matched_episode = episode_by_title.get(candidate.casefold())
+            if matched_episode is not None:
+                return matched_episode
+
+        return None
 
     def _classify_entry(
         self, parsed: ParsedNetflixTitle, prefix_counts: Dict[str, int]
@@ -861,6 +1031,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated table columns for --table. "
             f"Available: {', '.join(TABLE_COLUMN_DEFINITIONS.keys())}."
+        ),
+    )
+    parser.add_argument(
+        "--episode-title-overrides",
+        metavar="FILE",
+        help=(
+            "Optional JSON file mapping raw Netflix titles to IMDb episode titles. "
+            "These overrides are merged on top of netflix_episode_title_overrides.json when present."
         ),
     )
     return parser
@@ -1989,8 +2167,17 @@ def main() -> None:
         parser.error(str(exc))
         return
 
+    try:
+        episode_title_overrides = load_episode_title_overrides(args.episode_title_overrides)
+    except ValueError as exc:
+        parser.error(str(exc))
+        return
+
     metadata_manager = None if args.no_metadata else get_metadata_manager()
-    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=metadata_manager)
+    analyzer = NetflixWatchStatusAnalyzer(
+        metadata_manager=metadata_manager,
+        episode_title_overrides=episode_title_overrides,
+    )
     entries = analyzer.load_entries(args.csv_path)
     results = analyzer.analyze(entries)
 

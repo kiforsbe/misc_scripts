@@ -8,7 +8,7 @@
     const nameColumn = columns.find((column) => column.key === "title") || { key: "title", header: "Title", align: "left" };
     const optionalColumns = columns.filter((column) => column.key !== nameColumn.key);
     const defaultColumnOrder = optionalColumns.map((column) => column.key);
-    const defaultVisibleColumns = new Set(["year", "runtime_minutes", "average_rating", "genres"]);
+    const defaultVisibleColumns = new Set(["year", "runtime_minutes", "average_rating"]);
     const rowMap = new Map(rows.map((row) => [row.id, row]));
     const childrenMap = new Map();
 
