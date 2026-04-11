@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -292,11 +293,68 @@ class NetflixWatchStatusAnalyzer:
             raw_entries.append((raw_title, watched_at, parsed))
 
         prefix_counts = self._build_prefix_counts(raw_entries)
+        standalone_entries, episodic_entries = self._split_classification_candidates(raw_entries, prefix_counts)
+        entries: List[NetflixHistoryEntry] = []
+
+        entries.extend(
+            self._classify_entries_batch(
+                standalone_entries,
+                prefix_counts,
+                desc="Classifying standalone titles",
+            )
+        )
+        entries.extend(
+            self._classify_entries_batch(
+                episodic_entries,
+                prefix_counts,
+                desc="Classifying episodic titles",
+            )
+        )
+
+        entries.sort(key=lambda entry: (entry.watched_at, entry.raw_title.casefold()))
+
+        return entries
+
+    def _split_classification_candidates(
+        self,
+        raw_entries: List[Tuple[str, datetime, ParsedNetflixTitle]],
+        prefix_counts: Dict[str, int],
+    ) -> Tuple[List[Tuple[str, datetime, ParsedNetflixTitle]], List[Tuple[str, datetime, ParsedNetflixTitle]]]:
+        standalone_entries: List[Tuple[str, datetime, ParsedNetflixTitle]] = []
+        episodic_entries: List[Tuple[str, datetime, ParsedNetflixTitle]] = []
+
+        for raw_entry in raw_entries:
+            _, _, parsed = raw_entry
+            inferred_series_title = self._infer_series_title(parsed, prefix_counts)
+            is_episodic_candidate = (
+                parsed.is_explicit_series
+                or parsed.episode is not None
+                or parsed.episode_title is not None
+                or inferred_series_title is not None
+            )
+            if is_episodic_candidate:
+                episodic_entries.append(raw_entry)
+            else:
+                standalone_entries.append(raw_entry)
+
+        return standalone_entries, episodic_entries
+
+    def _classify_entries_batch(
+        self,
+        raw_entries: List[Tuple[str, datetime, ParsedNetflixTitle]],
+        prefix_counts: Dict[str, int],
+        desc: str,
+    ) -> List[NetflixHistoryEntry]:
+        if not raw_entries:
+            print(f"{desc}: 0 entries", file=sys.stderr)
+            return []
+
+        started_at = time.perf_counter()
         entries: List[NetflixHistoryEntry] = []
         for raw_title, watched_at, parsed in iter_progress(
             raw_entries,
             total=len(raw_entries),
-            desc="Classifying entries",
+            desc=desc,
             unit="entry",
         ):
             media_kind, resolved_title, metadata_type, metadata_provider, metadata_parent_id = self._classify_entry(parsed, prefix_counts)
@@ -322,6 +380,9 @@ class NetflixWatchStatusAnalyzer:
                 )
             )
 
+        elapsed = time.perf_counter() - started_at
+        rate = len(raw_entries) / elapsed if elapsed > 0 else 0.0
+        print(f"{desc} completed: {len(raw_entries)} entries in {elapsed:.2f}s ({rate:.1f} entries/s)", file=sys.stderr)
         return entries
 
     def _build_prefix_counts(
