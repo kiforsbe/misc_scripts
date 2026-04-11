@@ -102,7 +102,7 @@ TABLE_COLUMN_DEFINITIONS = {
     "episode": {"header": "Episode", "align": "right", "max_width": 7},
     "episode_title": {"header": "Episode Title", "align": "left", "max_width": 34},
     "views": {"header": "Views", "align": "right", "max_width": 7},
-    "watch_dates": {"header": "Watch Dates", "align": "left", "max_width": 24},
+    "watch_dates": {"header": "Watch Dates", "align": "left", "max_width": 40},
 }
 BROKEN_HISTORY_TITLE_RE = re.compile(
     r"^:\s*(?:episode\s+\d+|chapter\s+\d+|\d+(?:st|nd|rd|th)\b.*)$",
@@ -743,6 +743,11 @@ def _format_watch_years(watched_at_values: List[datetime]) -> str:
     return ", ".join(str(year) for year in years)
 
 
+def _format_watch_dates(watched_at_values: List[datetime]) -> str:
+    unique_dates = sorted({value.date().isoformat() for value in watched_at_values})
+    return ", ".join(unique_dates)
+
+
 def _format_leaf_views(watched_at_values: List[datetime]) -> str:
     return str(len(watched_at_values))
 
@@ -754,7 +759,7 @@ def _format_group_views(watched_at_values: List[datetime]) -> str:
 def _format_leaf_watch_dates(watched_at_values: List[datetime]) -> str:
     if not watched_at_values:
         return ""
-    return _format_watch_years(watched_at_values)
+    return _format_watch_dates(watched_at_values)
 
 
 def _format_group_watch_dates(watched_at_values: List[datetime]) -> str:

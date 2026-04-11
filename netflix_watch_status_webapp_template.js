@@ -2,6 +2,10 @@
     const report = JSON.parse(document.getElementById("netflixWatchStatusReport").textContent);
     const rows = Array.isArray(report.rows) ? report.rows : [];
     const columns = Array.isArray(report.columns) ? report.columns : [];
+    const nameColumn = columns.find((column) => column.key === "title") || { key: "title", header: "Title", align: "left" };
+    const optionalColumns = columns.filter((column) => column.key !== nameColumn.key);
+    const defaultColumnOrder = optionalColumns.map((column) => column.key);
+    const defaultVisibleColumns = new Set(["year"]);
     const rowMap = new Map(rows.map((row) => [row.id, row]));
     const childrenMap = new Map();
 
@@ -17,11 +21,17 @@
         query: "",
         selectedId: rows[0] ? rows[0].id : null,
         expanded: new Set(rows.filter((row) => row.has_children).map((row) => row.id)),
+        shownColumns: new Set(defaultColumnOrder.filter((key) => defaultVisibleColumns.has(key))),
+        columnOrder: [...defaultColumnOrder],
+        draggingColumnKey: null,
+        dragInsertPosition: "before",
     };
 
     const elements = {
         sourceCsv: document.getElementById("sourceCsv"),
         searchInput: document.getElementById("searchInput"),
+        columnPickerMenu: document.getElementById("columnPickerMenu"),
+        columnOptions: document.getElementById("columnOptions"),
         treegridHeaderRow: document.getElementById("treegridHeaderRow"),
         resultBody: document.getElementById("resultBody"),
         summaryGrid: document.getElementById("summaryGrid"),
@@ -59,14 +69,98 @@
         return row.display_episode_title || row.episode_title || "";
     }
 
-    function watchStateIcon(row) {
-        if (row.watch_state === "unwatched") {
-            return "●";
+    function formatEpisodeTreeSubtitle(row) {
+        const parts = [];
+
+        if (row.season) {
+            parts.push(`Season ${row.season}`);
         }
-        if (row.watch_state === "watched") {
-            return "○";
+        if (row.episode) {
+            parts.push(`Episode ${row.episode}`);
         }
-        return "";
+
+        let subtitle = parts.join(" • ");
+        if (row.watch_dates) {
+            subtitle = subtitle ? `${subtitle} • Watched ${row.watch_dates}` : `Watched ${row.watch_dates}`;
+        }
+        return subtitle;
+    }
+
+    function visibleOptionalColumns() {
+        return state.columnOrder
+            .map((key) => optionalColumns.find((column) => column.key === key))
+            .filter(Boolean)
+            .filter((column) => state.shownColumns.has(column.key));
+    }
+
+    function orderedOptionalColumns() {
+        return state.columnOrder
+            .map((key) => optionalColumns.find((column) => column.key === key))
+            .filter(Boolean);
+    }
+
+    function moveColumnBefore(sourceKey, targetKey) {
+        if (!sourceKey || !targetKey || sourceKey === targetKey) {
+            return;
+        }
+        const sourceIndex = state.columnOrder.indexOf(sourceKey);
+        const targetIndex = state.columnOrder.indexOf(targetKey);
+        if (sourceIndex < 0 || targetIndex < 0) {
+            return;
+        }
+        const nextOrder = [...state.columnOrder];
+        nextOrder.splice(sourceIndex, 1);
+        const insertIndex = nextOrder.indexOf(targetKey);
+        nextOrder.splice(insertIndex, 0, sourceKey);
+        state.columnOrder = nextOrder;
+    }
+
+    function moveColumnRelative(sourceKey, targetKey, position) {
+        if (!sourceKey || !targetKey || sourceKey === targetKey) {
+            return;
+        }
+        if (position === "before") {
+            moveColumnBefore(sourceKey, targetKey);
+            return;
+        }
+
+        const sourceIndex = state.columnOrder.indexOf(sourceKey);
+        const targetIndex = state.columnOrder.indexOf(targetKey);
+        if (sourceIndex < 0 || targetIndex < 0) {
+            return;
+        }
+
+        const nextOrder = [...state.columnOrder];
+        nextOrder.splice(sourceIndex, 1);
+        const adjustedTargetIndex = nextOrder.indexOf(targetKey);
+        nextOrder.splice(adjustedTargetIndex + 1, 0, sourceKey);
+        state.columnOrder = nextOrder;
+    }
+
+    function clearDragState() {
+        state.draggingColumnKey = null;
+        state.dragInsertPosition = "before";
+        elements.treegridHeaderRow.querySelectorAll(".optional-column-header").forEach((header) => {
+            header.classList.remove("drag-over");
+            header.classList.remove("insert-before");
+            header.classList.remove("insert-after");
+        });
+    }
+
+    function closeColumnMenu() {
+        elements.columnPickerMenu.hidden = true;
+    }
+
+    function openColumnMenu(clientX, clientY) {
+        elements.columnPickerMenu.hidden = false;
+        const menu = elements.columnPickerMenu;
+        menu.style.left = "0px";
+        menu.style.top = "0px";
+        const rect = menu.getBoundingClientRect();
+        const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+        const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+        menu.style.left = `${Math.min(clientX, maxLeft)}px`;
+        menu.style.top = `${Math.min(clientY, maxTop)}px`;
     }
 
     function buildAncestors(row) {
@@ -159,6 +253,16 @@
         `).join("");
     }
 
+    function renderColumnOptions() {
+        elements.columnOptions.innerHTML = orderedOptionalColumns().map((column) => `
+            <label class="column-option">
+                <input class="column-toggle-input" type="checkbox" value="${escapeHtml(column.key)}" ${state.shownColumns.has(column.key) ? "checked" : ""}>
+                <span class="column-toggle" aria-hidden="true"></span>
+                <span class="column-option-label">${escapeHtml(column.header || column.key)}</span>
+            </label>
+        `).join("");
+    }
+
     function renderPreview(row) {
         const thumbnail = row.thumbnail || {};
         const status = thumbnail.status || "not_requested";
@@ -203,7 +307,7 @@
             { label: "Episode Title", value: displayEpisodeTitle(row) },
             { label: "Watch Status", value: row.watch_state === "aggregate" ? "Aggregate" : row.watch_state },
             { label: "Views", value: row.views },
-            { label: "Watch Years", value: row.watch_dates },
+            { label: "Watch Dates", value: row.watch_dates },
         ];
         elements.selectionDetails.innerHTML = selectionItems(detailItems);
 
@@ -217,10 +321,18 @@
 
     function renderHeader() {
         const gutterHeader = '<th class="gutter-column" aria-hidden="true"></th>';
-        const dataHeaders = columns.map((column, index) => `
-            <th class="${column.align === "right" ? "align-right" : ""}">${escapeHtml(column.header || column.key || `Column ${index + 1}`)}</th>
+        const trailingGutterHeader = '<th class="gutter-column right-gutter-column" aria-hidden="true"></th>';
+        const fixedHeader = `
+            <th class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""}">
+                <span class="column-header-button is-fixed">${escapeHtml(nameColumn.header || nameColumn.key)}</span>
+            </th>
+        `;
+        const dataHeaders = visibleOptionalColumns().map((column, index) => `
+            <th class="optional-column-header column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""}" data-column-key="${escapeHtml(column.key)}" draggable="true">
+                <span class="column-header-button">${escapeHtml(column.header || column.key || `Column ${index + 1}`)}</span>
+            </th>
         `).join("");
-        elements.treegridHeaderRow.innerHTML = gutterHeader + dataHeaders;
+        elements.treegridHeaderRow.innerHTML = gutterHeader + fixedHeader + dataHeaders + trailingGutterHeader;
     }
 
     function toggleRow(rowId) {
@@ -240,14 +352,7 @@
             return row.episode ? `Progress ${row.episode}` : "Season";
         }
         if (row.item_type === "episode") {
-            const parts = [];
-            if (row.season) {
-                parts.push(`Season ${row.season}`);
-            }
-            if (row.watch_dates) {
-                parts.push(`Watched ${row.watch_dates}`);
-            }
-            return parts.join(" • ");
+            return formatEpisodeTreeSubtitle(row);
         }
         if (row.watch_dates) {
             return `Watched ${row.watch_dates}`;
@@ -291,22 +396,30 @@
     }
 
     function gutterCellMarkup(row) {
-        const statusIcon = watchStateIcon(row);
         const statusLabel = row.watch_state === "aggregate" ? "" : row.watch_state;
-        return `<span class="status-gutter ${statusIcon ? "" : "is-empty"}" aria-label="${escapeHtml(statusLabel)}">${escapeHtml(statusIcon)}</span>`;
+        const statusClass = row.watch_state === "watched"
+            ? "is-watched"
+            : row.watch_state === "unwatched"
+                ? "is-unwatched"
+                : "is-empty";
+        return `<span class="status-gutter ${statusClass}" aria-label="${escapeHtml(statusLabel)}"></span>`;
     }
 
     function renderRows() {
         const visibleRows = flattenVisibleRows(null);
+        const visibleColumns = visibleOptionalColumns();
         elements.resultBody.innerHTML = visibleRows.map((row) => `
             <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" data-row-id="${escapeHtml(row.id)}">
                 <td class="gutter-column">${gutterCellMarkup(row)}</td>
-                ${columns.map((column) => `<td class="${column.align === "right" ? "align-right" : ""}">${cellMarkup(row, column)}</td>`).join("")}
+                <td class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""}">${cellMarkup(row, nameColumn)}</td>
+                ${visibleColumns.map((column) => `<td class="column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""}">${cellMarkup(row, column)}</td>`).join("")}
+                <td class="gutter-column right-gutter-column"></td>
             </tr>
         `).join("");
     }
 
     function render() {
+        renderHeader();
         renderRows();
         renderSelection();
     }
@@ -334,8 +447,83 @@
         render();
     });
 
+    elements.treegridHeaderRow.addEventListener("dragstart", (event) => {
+        const header = event.target.closest("th.optional-column-header[data-column-key]");
+        if (!header) {
+            return;
+        }
+        state.draggingColumnKey = header.dataset.columnKey || null;
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", state.draggingColumnKey || "");
+        }
+    });
+
+    elements.treegridHeaderRow.addEventListener("dragover", (event) => {
+        const header = event.target.closest("th.optional-column-header");
+        if (!header || !state.draggingColumnKey) {
+            return;
+        }
+        event.preventDefault();
+        const rect = header.getBoundingClientRect();
+        state.dragInsertPosition = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
+        elements.treegridHeaderRow.querySelectorAll(".optional-column-header").forEach((candidate) => {
+            const isActive = candidate === header;
+            candidate.classList.toggle("drag-over", isActive);
+            candidate.classList.toggle("insert-before", isActive && state.dragInsertPosition === "before");
+            candidate.classList.toggle("insert-after", isActive && state.dragInsertPosition === "after");
+        });
+    });
+
+    elements.treegridHeaderRow.addEventListener("drop", (event) => {
+        const header = event.target.closest("th.optional-column-header");
+        if (!header || !state.draggingColumnKey) {
+            return;
+        }
+        event.preventDefault();
+        moveColumnRelative(state.draggingColumnKey, header.dataset.columnKey || "", state.dragInsertPosition);
+        clearDragState();
+        renderColumnOptions();
+        render();
+    });
+
+    elements.treegridHeaderRow.addEventListener("dragend", () => {
+        clearDragState();
+    });
+
+    elements.treegridHeaderRow.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openColumnMenu(event.clientX, event.clientY);
+    });
+
+    elements.columnOptions.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) {
+            return;
+        }
+        if (target.checked) {
+            state.shownColumns.add(target.value);
+        } else {
+            state.shownColumns.delete(target.value);
+        }
+        renderColumnOptions();
+        render();
+    });
+
+    document.addEventListener("click", (event) => {
+        if (!elements.columnPickerMenu.hidden && !event.target.closest("#columnPickerMenu")) {
+            closeColumnMenu();
+        }
+    });
+
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+            closeColumnMenu();
+        }
+    });
+
     elements.sourceCsv.textContent = report.meta && report.meta.source_csv ? report.meta.source_csv : "";
-    renderHeader();
+    renderColumnOptions();
     renderSummary();
     render();
 }());
