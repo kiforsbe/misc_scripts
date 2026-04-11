@@ -348,6 +348,18 @@ input:focus,
     background: transparent;
 }
 
+.treegrid tbody tr.virtual-spacer-row,
+.treegrid tbody tr.virtual-spacer-row:hover {
+    background: transparent;
+    cursor: default;
+}
+
+.treegrid tbody td.virtual-spacer-cell {
+    padding: 0;
+    border-bottom: 0;
+    background: transparent;
+}
+
 .treegrid tbody td {
     padding: 9px 12px;
     border-bottom: 1px solid rgba(26, 32, 44, 0.06);
@@ -466,8 +478,12 @@ input:focus,
 }
 
 .app-window.list-thumbnails-mode .treegrid tbody td {
-    padding-top: 8px;
-    padding-bottom: 8px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+}
+
+.app-window.list-thumbnails-mode .tree-name-button {
+    gap: 7px;
 }
 
 .app-window.list-thumbnails-mode .tree-title {

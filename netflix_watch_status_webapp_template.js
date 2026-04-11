@@ -1,4 +1,7 @@
 (function () {
+    const VIRTUAL_ROW_OVERSCAN = 10;
+    const VIRTUAL_ROW_ESTIMATE = 44;
+
     const report = JSON.parse(document.getElementById("netflixWatchStatusReport").textContent);
     const rows = Array.isArray(report.rows) ? report.rows : [];
     const columns = Array.isArray(report.columns) ? report.columns : [];
@@ -30,6 +33,14 @@
         draggingColumnKey: null,
         dragInsertPosition: "before",
         showListThumbnails: false,
+        virtualRows: [],
+        virtualRowOffsets: [],
+        virtualRowHeights: [],
+        virtualHeightCache: new Map(),
+        virtualTotalHeight: 0,
+        virtualRenderScheduled: false,
+        virtualForceRenderScheduled: false,
+        lastVirtualRangeKey: "",
     };
 
     const elements = {
@@ -41,6 +52,7 @@
         columnOptions: document.getElementById("columnOptions"),
         treegridHeaderRow: document.getElementById("treegridHeaderRow"),
         resultBody: document.getElementById("resultBody"),
+        treegridWrap: document.querySelector(".treegrid-wrap"),
         selectionTitle: document.getElementById("selectionTitle"),
         selectionSubtitle: document.getElementById("selectionSubtitle"),
         selectionDetails: document.getElementById("selectionDetails"),
@@ -474,17 +486,186 @@
         return `<span class="status-gutter ${statusClass}" aria-label="${escapeHtml(statusLabel)}"></span>`;
     }
 
-    function renderRows() {
-        const visibleRows = flattenVisibleRows(null);
-        const visibleColumns = visibleOptionalColumns();
-        elements.resultBody.innerHTML = visibleRows.map((row) => `
-            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" data-row-id="${escapeHtml(row.id)}">
+    function visibleColumnKeys() {
+        return [nameColumn.key, ...visibleOptionalColumns().map((column) => column.key), state.showListThumbnails ? "thumbs" : "plain"].join("|");
+    }
+
+    function virtualRowCacheKey(row) {
+        return `${row.id}|${row.level}|${row.watch_state}|${visibleColumnKeys()}`;
+    }
+
+    function virtualRowHeight(row) {
+        return state.virtualHeightCache.get(virtualRowCacheKey(row)) || VIRTUAL_ROW_ESTIMATE;
+    }
+
+    function recalculateVirtualMetrics() {
+        const offsets = new Array(state.virtualRows.length);
+        const heights = new Array(state.virtualRows.length);
+        let runningOffset = 0;
+
+        for (let index = 0; index < state.virtualRows.length; index += 1) {
+            const row = state.virtualRows[index];
+            const height = virtualRowHeight(row);
+            offsets[index] = runningOffset;
+            heights[index] = height;
+            runningOffset += height;
+        }
+
+        state.virtualRowOffsets = offsets;
+        state.virtualRowHeights = heights;
+        state.virtualTotalHeight = runningOffset;
+    }
+
+    function findVirtualStartIndex(scrollTop) {
+        let low = 0;
+        let high = state.virtualRowOffsets.length - 1;
+        let result = 0;
+
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const itemTop = state.virtualRowOffsets[mid];
+            const itemBottom = itemTop + state.virtualRowHeights[mid];
+
+            if (itemBottom >= scrollTop) {
+                result = mid;
+                high = mid - 1;
+            } else {
+                low = mid + 1;
+            }
+        }
+
+        return result;
+    }
+
+    function currentVirtualRange() {
+        if (!state.virtualRows.length) {
+            return { start: 0, end: -1, topOffset: 0, bottomOffset: 0 };
+        }
+
+        const scrollTop = elements.treegridWrap ? elements.treegridWrap.scrollTop || 0 : 0;
+        const viewportHeight = elements.treegridWrap ? elements.treegridWrap.clientHeight || 0 : 0;
+        const viewportBottom = scrollTop + viewportHeight;
+        const firstVisibleIndex = findVirtualStartIndex(scrollTop);
+        let end = firstVisibleIndex;
+
+        while (end < state.virtualRows.length && state.virtualRowOffsets[end] < viewportBottom) {
+            end += 1;
+        }
+
+        const start = Math.max(0, firstVisibleIndex - VIRTUAL_ROW_OVERSCAN);
+        const finalEnd = Math.min(state.virtualRows.length - 1, end + VIRTUAL_ROW_OVERSCAN);
+        const topOffset = state.virtualRowOffsets[start] || 0;
+        const renderedHeight = finalEnd >= start
+            ? (state.virtualRowOffsets[finalEnd] + state.virtualRowHeights[finalEnd]) - topOffset
+            : 0;
+        const bottomOffset = Math.max(0, state.virtualTotalHeight - topOffset - renderedHeight);
+
+        return { start, end: finalEnd, topOffset, bottomOffset };
+    }
+
+    function scheduleVirtualRender(force) {
+        if (force) {
+            state.virtualForceRenderScheduled = true;
+        }
+
+        if (state.virtualRenderScheduled) {
+            return;
+        }
+
+        state.virtualRenderScheduled = true;
+        requestAnimationFrame(() => {
+            const shouldForce = state.virtualForceRenderScheduled;
+            state.virtualRenderScheduled = false;
+            state.virtualForceRenderScheduled = false;
+            renderVirtualBody(shouldForce);
+        });
+    }
+
+    function measureVisibleRows() {
+        const renderedRows = elements.resultBody.querySelectorAll("tr[data-virtual-index]");
+        let hasChanged = false;
+
+        renderedRows.forEach((rowElement) => {
+            const index = Number(rowElement.dataset.virtualIndex);
+            if (!Number.isInteger(index) || index < 0 || index >= state.virtualRows.length) {
+                return;
+            }
+
+            const row = state.virtualRows[index];
+            const key = virtualRowCacheKey(row);
+            const measuredHeight = Math.ceil(rowElement.getBoundingClientRect().height);
+            if (!measuredHeight) {
+                return;
+            }
+
+            if (state.virtualHeightCache.get(key) !== measuredHeight) {
+                state.virtualHeightCache.set(key, measuredHeight);
+                hasChanged = true;
+            }
+        });
+
+        if (hasChanged) {
+            scheduleVirtualRender(true);
+        }
+    }
+
+    function renderVirtualRow(row, index, visibleColumns) {
+        return `
+            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${row.watch_state === "unwatched" ? "is-unwatched" : ""}" data-row-id="${escapeHtml(row.id)}" data-virtual-index="${index}">
                 <td class="gutter-column">${gutterCellMarkup(row)}</td>
                 <td class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""} ${nameColumn.align === "center" ? "align-center" : ""}">${cellMarkup(row, nameColumn)}</td>
                 ${visibleColumns.map((column) => `<td class="column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""} ${column.align === "center" ? "align-center" : ""}">${cellMarkup(row, column)}</td>`).join("")}
                 <td class="gutter-column right-gutter-column"></td>
             </tr>
-        `).join("");
+        `;
+    }
+
+    function renderVirtualBody(forceMeasurement) {
+        recalculateVirtualMetrics();
+        const visibleColumns = visibleOptionalColumns();
+        const colSpan = 2 + visibleColumns.length;
+
+        if (!state.virtualRows.length) {
+            elements.resultBody.innerHTML = `<tr><td colspan="${colSpan}"><div class="empty-state">No entries match the current filters.</div></td></tr>`;
+            return;
+        }
+
+        const range = currentVirtualRange();
+        const rangeKey = `${range.start}:${range.end}:${range.topOffset}:${range.bottomOffset}:${state.selectedId || ""}`;
+        if (!forceMeasurement && rangeKey === state.lastVirtualRangeKey) {
+            return;
+        }
+
+        state.lastVirtualRangeKey = rangeKey;
+
+        let html = "";
+        if (range.topOffset > 0) {
+            html += `<tr class="virtual-spacer-row" aria-hidden="true"><td class="virtual-spacer-cell" colspan="${colSpan}" style="height:${range.topOffset}px"></td></tr>`;
+        }
+
+        for (let index = range.start; index <= range.end; index += 1) {
+            html += renderVirtualRow(state.virtualRows[index], index, visibleColumns);
+        }
+
+        if (range.bottomOffset > 0) {
+            html += `<tr class="virtual-spacer-row" aria-hidden="true"><td class="virtual-spacer-cell" colspan="${colSpan}" style="height:${range.bottomOffset}px"></td></tr>`;
+        }
+
+        elements.resultBody.innerHTML = html;
+
+        if (forceMeasurement) {
+            measureVisibleRows();
+        } else {
+            requestAnimationFrame(() => {
+                measureVisibleRows();
+            });
+        }
+    }
+
+    function renderRows() {
+        state.virtualRows = flattenVisibleRows(null);
+        state.lastVirtualRangeKey = "";
+        renderVirtualBody(true);
     }
 
     function render() {
@@ -598,6 +779,18 @@
         if (event.key === "Escape") {
             closeColumnMenu();
         }
+    });
+
+    if (elements.treegridWrap) {
+        elements.treegridWrap.addEventListener("scroll", () => {
+            scheduleVirtualRender(false);
+        }, { passive: true });
+    }
+
+    window.addEventListener("resize", () => {
+        state.virtualHeightCache.clear();
+        state.lastVirtualRangeKey = "";
+        scheduleVirtualRender(true);
     });
 
     elements.sourceCsv.textContent = report.meta && report.meta.source_csv ? report.meta.source_csv : "";
