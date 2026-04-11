@@ -23,7 +23,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     #   title.basics: (none removed - all columns included for completeness)
     #   title.episode: (none removed - all are essential)
     #   title.ratings: (none removed - all are essential) 
-    #   title.akas: deduplicated unique titles only; drop ordering/language metadata
+    #   title.akas: deduplicated unique titles only; keep language just long enough to filter imported AKAs
     REQUIRED_COLUMNS = {
         "title.basics": [
             "tconst",
@@ -38,7 +38,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "title"],
+        "title.akas": ["titleId", "title", "language"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
@@ -49,6 +49,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     RECENT_YEAR_CUTOFF = 1900     # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = False  # Filter out adult content keywords (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
+    AKA_ALLOWED_LANGUAGES = ("en", "jp")  # Keep only these AKA languages during import (None = keep all)
 
     MAX_RETRIES = 3
 
@@ -71,6 +72,10 @@ class IMDbDataProvider(BaseMetadataProvider):
     TITLE_CACHE_MAX = 5000          # Cached TitleInfo objects by IMDb id
     TITLE_CACHE_EVICT = 1000        # Number of cached TitleInfo objects to evict
     EXACT_MATCH_LIMIT = 50          # Hard cap for exact title and AKA candidate scans
+
+    AKA_LANGUAGE_ALIASES = {
+        "jp": "ja",
+    }
 
     def __init__(self):
         super().__init__("imdb", provider_weight=0.9)
@@ -546,6 +551,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                 chunk_size = 100000
                 processed_rows = 0
                 kept_rows = 0
+                filtered_aka_language_rows = 0
+                aka_language_kept_counts: Dict[str, int] = {}
 
                 with gzip.open(gz_cache, "rt", encoding="utf-8") as f:
                     # Read header
@@ -592,12 +599,22 @@ class IMDbDataProvider(BaseMetadataProvider):
                                 value = None
                             row_data.append(value)
 
+                        if dataset_name == "title.akas":
+                            aka_language = self._extract_aka_language(row_data, required_cols)
+                            if not self._should_keep_aka_language(aka_language):
+                                filtered_aka_language_rows += 1
+                                continue
+
                         # Apply aggressive filtering
                         should_keep = self._should_keep_title(dataset_name, row_data, required_cols)
                         if not should_keep:
                             continue
 
                         kept_rows += 1
+                        if dataset_name == "title.akas":
+                            aka_language_label = self._extract_aka_language(row_data, required_cols) or "<none>"
+                            aka_language_kept_counts[aka_language_label] = aka_language_kept_counts.get(aka_language_label, 0) + 1
+
                         # Convert to compressed format
                         compressed_row = self._compress_row(dataset_name, row_data, required_cols, processed_tconst_ints)
                         if compressed_row:
@@ -657,6 +674,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                     cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
                     count = cursor.fetchone()[0]
                     logging.info(f"Total AKAs in database: {count}")
+                    logging.info(
+                        "IMDb AKA language filter active: configured=%s normalized=%s kept_by_language=%s filtered_by_language=%s",
+                        ", ".join(self.AKA_ALLOWED_LANGUAGES) if self.AKA_ALLOWED_LANGUAGES else "<all>",
+                        ", ".join(self._get_allowed_aka_languages()) if self._get_allowed_aka_languages() else "<all>",
+                        aka_language_kept_counts,
+                        filtered_aka_language_rows,
+                    )
 
         except Exception as e:
             logging.error(f"Error processing {dataset_name}: {str(e)}")
@@ -701,6 +725,39 @@ class IMDbDataProvider(BaseMetadataProvider):
                     return False
         
         return True    
+
+    @classmethod
+    def _normalize_aka_language(cls, language: Optional[str]) -> Optional[str]:
+        if language is None:
+            return None
+        normalized_language = language.strip().casefold()
+        if not normalized_language:
+            return None
+        return cls.AKA_LANGUAGE_ALIASES.get(normalized_language, normalized_language)
+
+    @classmethod
+    def _get_allowed_aka_languages(cls) -> Optional[Tuple[str, ...]]:
+        if cls.AKA_ALLOWED_LANGUAGES is None:
+            return None
+        normalized_languages = []
+        for language in cls.AKA_ALLOWED_LANGUAGES:
+            normalized_language = cls._normalize_aka_language(language)
+            if normalized_language and normalized_language not in normalized_languages:
+                normalized_languages.append(normalized_language)
+        return tuple(normalized_languages)
+
+    @classmethod
+    def _extract_aka_language(cls, row_data: List, required_cols: List[str]) -> Optional[str]:
+        data_dict = dict(zip(required_cols, row_data))
+        return cls._normalize_aka_language(data_dict.get("language"))
+
+    @classmethod
+    def _should_keep_aka_language(cls, language: Optional[str]) -> bool:
+        allowed_languages = cls._get_allowed_aka_languages()
+        if allowed_languages is None:
+            return True
+        return language in allowed_languages
+
     def _compress_row(self, dataset_name: str, row_data: List, required_cols: List[str], 
                       processed_tconst_ints: set) -> Optional[Dict]:
         """Convert row data to compressed format using tconst integers as IDs"""
