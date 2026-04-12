@@ -31,6 +31,11 @@ NUMERIC_OR_ROMAN_PART_RE = re.compile(
 TEXTUAL_CHAPTER_RE = re.compile(r"^chapter\s+[^:]+$", re.IGNORECASE)
 TEXTUAL_CASE_RE = re.compile(r"^case\s+[^:]+$", re.IGNORECASE)
 TEXTUAL_ISSUE_RE = re.compile(r"^issue\s*#?\s*[^:]+$", re.IGNORECASE)
+SCRIPTURE_REFERENCE_HEAD_RE = re.compile(
+    r"^(?:[1-3]\s+)?[a-z]+(?:\s+[a-z]+)*\s+\d+$",
+    re.IGNORECASE,
+)
+SCRIPTURE_REFERENCE_TAIL_RE = re.compile(r"^\d+(?:[-–]\d+)?$", re.IGNORECASE)
 
 EPISODE_TOKEN_RULES = (
     r"episode\s+(?P<number>\d+)",
@@ -73,6 +78,27 @@ TITLE_SPLIT_RULES = (
         kind="implicit_vs_part_episode",
         pattern=re.compile(
             r"^(?P<title>[^:]+)\s*:\s*(?P<episode_title>[^:]*vs\.[^:]*:\s*part\s+\d+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="implicit_pilot_episode",
+        pattern=re.compile(
+            r"^(?P<title>[^:]+)\s*:\s*(?P<episode_title>pilot\s*:\s*.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="implicit_dash_subtitle_episode",
+        pattern=re.compile(
+            r"^(?P<title>[^:]+\s-\s[^:]+)\s*:\s*(?P<episode_title>[^:]+:\s*.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="named_season",
+        pattern=re.compile(
+            r"^(?P<title>.+?)\s*:\s*(?P<season_token>season\s+\d+(?:[a-z])?)\s+[^:]+\s*:\s*(?P<remainder>.+)$",
             re.IGNORECASE,
         ),
     ),
@@ -247,9 +273,11 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
             continue
 
         series_title = _clean_token(match.group("title") or cleaned_title) or cleaned_title
-        if rule.kind == "season":
+        if rule.kind in {"season", "named_season"}:
             season_token = _clean_token(match.group("season_token") or "")
-            season_subtitle = _clean_token(match.group("season_subtitle") or "")
+            season_subtitle = ""
+            if rule.kind == "season":
+                season_subtitle = _clean_token(match.group("season_subtitle") or "")
             season_title = season_token
             if season_subtitle:
                 season_title = _clean_token(f"{season_token}: {season_subtitle}")
@@ -276,6 +304,13 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                     episode_title = _clean_token(f"{season_subtitle}: {episode_title}")
 
                 if season_subtitle and episode_title and (
+                    SCRIPTURE_REFERENCE_HEAD_RE.match(season_subtitle)
+                    and SCRIPTURE_REFERENCE_TAIL_RE.match(episode_title)
+                ):
+                    season_title = season_token or None
+                    episode_title = _clean_token(f"{season_subtitle}:{episode_title}")
+
+                if season_subtitle and episode_title and (
                     TEXTUAL_PART_RE.match(episode_title)
                     or NUMERIC_OR_ROMAN_PART_RE.match(episode_title)
                 ):
@@ -295,6 +330,23 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                 episode=episode_number,
                 episode_title=episode_title,
                 is_explicit_series=True,
+            )
+
+        if rule.kind in {
+            "implicit_vs_part_episode",
+            "implicit_pilot_episode",
+            "implicit_dash_subtitle_episode",
+        }:
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="movie",
+                season=None,
+                episode=None,
+                episode_title=episode_title,
+                is_explicit_series=False,
+                has_implicit_split=True,
             )
 
         if rule.kind == "episode_title_token":

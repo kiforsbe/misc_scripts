@@ -544,6 +544,121 @@ def run_tests():
         },
     )
     assert_parse(
+        "Warrior Nun: Season 1: Matthew 7:13",
+        {
+            "title": "Warrior Nun",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "Matthew 7:13",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Warrior Nun: Season 1: Proverbs 14:1",
+        {
+            "title": "Warrior Nun",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "Proverbs 14:1",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Warrior Nun: Season 2: Jeremiah 29:13",
+        {
+            "title": "Warrior Nun",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Season 2",
+            "episode": None,
+            "episode_title": "Jeremiah 29:13",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "A.P. Bio: Teacher Jail",
+        {
+            "title": "A.P. Bio",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "Teacher Jail",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "A.P. Bio: Pilot: Catfish",
+        {
+            "title": "A.P. Bio",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "Pilot: Catfish",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "B: The Beginning: Season 1: Episode 1",
+        {
+            "title": "B: The Beginning",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": 1,
+            "episode_title": None,
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "B: The Beginning: Season 2 Succession: Episode 1",
+        {
+            "title": "B: The Beginning",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Season 2",
+            "episode": 1,
+            "episode_title": None,
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Borgen - Power & Glory: The Lesser of Two Evils",
+        {
+            "title": "Borgen - Power & Glory",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "The Lesser of Two Evils",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "Borgen - Power & Glory: The Minister Doesn’t Wish to Comment",
+        {
+            "title": "Borgen - Power & Glory",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "The Minister Doesn’t Wish to Comment",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "Borgen - Power & Glory: Inuit Nunaat: Land of the People",
+        {
+            "title": "Borgen - Power & Glory",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "Inuit Nunaat: Land of the People",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
         "Trollhunters: Tales of Arcadia: Part 1: Roaming Fees May Apply",
         {
             "title": "Trollhunters: Tales of Arcadia",
