@@ -95,6 +95,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._search_cache = {}  # Cache recent search results
         self._title_cache = {}   # Cache for title info objects
         self._episode_titles_table_ready = False
+        self._unused_indexes_pruned = False
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
         self.CACHE_EXPIRY_DATASETS = list(self.DATASETS.keys())
         self._connection_pool = []  # Connection pool for better performance
@@ -144,6 +145,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._search_cache = {}
         self._title_cache = {}
         self._episode_titles_table_ready = False
+        self._unused_indexes_pruned = False
 
         for suffix in ("", "-wal", "-shm"):
             db_file = f"{self._db_path}{suffix}"
@@ -240,15 +242,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     """
                 )                
                 self._ensure_episode_titles_table_schema(conn)
-
-                # Only create essential indexes initially - others will be added after data load
-                conn.executescript(
-                    """
-                    -- Essential indexes for data loading
-                    CREATE INDEX IF NOT EXISTS idx_episodes_parent_temp ON title_episode(parent_id);
-                    DROP INDEX IF EXISTS idx_akas_title;
-                    """
-                )
 
                 conn.commit()
         except Exception as e:
@@ -1136,20 +1129,13 @@ class IMDbDataProvider(BaseMetadataProvider):
         logging.info("Optimizing database for read operations...")
         
         with sqlite3.connect(self._db_path, timeout=60.0) as conn:
-            # Create all indexes for fast queries - including covering indexes
-            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_lower ON title_basics(title_lower)")
+            # Create only the indexes still used by the current query paths.
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_type ON title_basics(type)")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_start_year ON title_basics(year)")
-            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_type_year ON title_basics(type, year)")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_type_year_title ON title_basics(type, year, title_lower)")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_covering ON title_basics(title_lower, year, type, title, genres)")
-            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_prefix ON title_basics(substr(title_lower, 1, 2))")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_ratings_votes ON title_ratings(votes DESC)")
-            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_ratings_covering ON title_ratings(id, rating, votes)")
-            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episode(parent_id)")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episode(parent_id, season, episode)")
-            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episode(id)")
-            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episode_titles_lower ON title_basics(title_lower) WHERE type = 4")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId)")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_akas_title_ci ON title_akas(title COLLATE NOCASE, titleId)")
 
@@ -1921,6 +1907,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._search_cache.clear()
         self._title_cache.clear()
         self._episode_titles_table_ready = False
+        self._unused_indexes_pruned = False
         self._ensure_data_loaded()
         logging.info("IMDb database refreshed successfully")
 
