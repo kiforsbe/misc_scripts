@@ -38,7 +38,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "ordering", "title", "region", "language", "types", "attributes", "isOriginalTitle"],
+        "title.akas": ["titleId", "ordering", "title"] #, "region", "language", "types", "attributes", "isOriginalTitle"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
