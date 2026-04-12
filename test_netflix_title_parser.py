@@ -99,6 +99,30 @@ def run_tests():
         },
     )
     assert_parse(
+        "Black Lightning: Season 2: The Book of Consequences: Chapter One: The Rise of the Green Light Babies",
+        {
+            "title": "Black Lightning",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Season 2: The Book of Consequences",
+            "episode": None,
+            "episode_title": "Chapter One: The Rise of the Green Light Babies",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "A Series of Unfortunate Events: Season 1: The Bad Beginning: Part One",
+        {
+            "title": "A Series of Unfortunate Events",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1: The Bad Beginning",
+            "episode": None,
+            "episode_title": "The Bad Beginning: Part One",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
         "Trollhunters: Tales of Arcadia: Part 1: Roaming Fees May Apply",
         {
             "title": "Trollhunters: Tales of Arcadia",

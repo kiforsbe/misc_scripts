@@ -15,6 +15,10 @@ SEASON_NUMBER_PATTERNS = tuple(
 )
 
 LIMITED_SERIES_RE = re.compile(r"^limited\s+series$", re.IGNORECASE)
+TEXTUAL_PART_RE = re.compile(
+    r"^part\s+(?:one|two|three|four|five|six|seven|eight|nine|ten)$",
+    re.IGNORECASE,
+)
 
 EPISODE_TOKEN_RULES = (
     r"episode\s+(?P<number>\d+)",
@@ -29,6 +33,7 @@ EPISODE_NUMBER_PATTERNS = tuple(
 SEASON_SPLIT_TOKEN_REGEX = r"(?:season\s+\d+|series\s+\d+|part\s+\d+|limited\s+series)"
 EPISODE_SPLIT_TOKEN_REGEX = r"(?:episode\s+\d+|chapter\s+\d+|\d+(?:st|nd|rd|th)\s+[^:]+)"
 EPISODE_SUFFIX_REGEX = rf"(?P<episode_token>{EPISODE_SPLIT_TOKEN_REGEX})(?:\s*:\s*(?P<episode_title>.+))?"
+SEASON_SUBTITLE_REGEX = rf"(?:\s*:\s*(?P<season_subtitle>(?!\s*(?:{EPISODE_SPLIT_TOKEN_REGEX})(?:\s*:|$))[^:]+)(?=\s*:))?"
 
 LOOKUP_TITLE_MATCH_THRESHOLD = 60.0
 
@@ -55,7 +60,7 @@ TITLE_SPLIT_RULES = (
     TitleSplitRule(
         kind="season",
         pattern=re.compile(
-            rf"^(?P<title>.+?)\s*:\s*(?P<season_title>{SEASON_SPLIT_TOKEN_REGEX})(?:\s*:\s*(?P<remainder>.+))?$",
+            rf"^(?P<title>.+?)\s*:\s*(?P<season_token>{SEASON_SPLIT_TOKEN_REGEX}){SEASON_SUBTITLE_REGEX}(?:\s*:\s*(?P<remainder>.+))?$",
             re.IGNORECASE,
         ),
     ),
@@ -160,8 +165,13 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
 
         series_title = _clean_token(match.group("title") or cleaned_title) or cleaned_title
         if rule.kind == "season":
-            season_title = _clean_token(match.group("season_title") or "") or None
-            season_number = _parse_season_number(season_title or "")
+            season_token = _clean_token(match.group("season_token") or "")
+            season_subtitle = _clean_token(match.group("season_subtitle") or "")
+            season_title = season_token
+            if season_subtitle:
+                season_title = _clean_token(f"{season_token}: {season_subtitle}")
+            season_title = season_title or None
+            season_number = _parse_season_number(season_token)
             remainder = _clean_token(match.group("remainder") or "")
 
             episode_number = None
@@ -173,6 +183,9 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                     episode_title = _clean_token(episode_match.group("episode_title") or "") or None
                 else:
                     episode_title = remainder
+
+                if season_subtitle and episode_title and TEXTUAL_PART_RE.match(episode_title):
+                    episode_title = _clean_token(f"{season_subtitle}: {episode_title}")
 
             return ParsedNetflixTitle(
                 raw_title=raw_title,
