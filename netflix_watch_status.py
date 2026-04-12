@@ -138,6 +138,54 @@ THUMBNAIL_USER_AGENT = (
 DEFAULT_EPISODE_TITLE_OVERRIDES_FILE = Path(__file__).with_name("netflix_episode_title_overrides.csv")
 
 
+def _configure_utf8_output() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+
+def _repair_mojibake(text: str) -> str:
+    suspicious_markers = ("Ã", "â€", "â€™", "â€œ", "â€\x9d", "Â")
+    if not any(marker in text for marker in suspicious_markers):
+        return text
+    try:
+        repaired = text.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    return repaired
+
+
+def _clean_csv_text(value: Optional[str]) -> str:
+    return _repair_mojibake((value or "").strip())
+
+
+def _open_csv_with_fallback_encodings(path: Path):
+    encodings = ("utf-8-sig", "cp1252", "latin-1")
+    last_error: Optional[UnicodeDecodeError] = None
+    for encoding in encodings:
+        try:
+            handle = path.open("r", encoding=encoding, newline="")
+            try:
+                handle.read(1)
+                handle.seek(0)
+            except Exception:
+                handle.close()
+                raise
+            return handle
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise last_error
+    raise UnicodeDecodeError("utf-8", b"", 0, 1, f"Unable to decode CSV file: {path}")
+
+
 def iter_progress(iterable, *, total: Optional[int] = None, desc: str = "Progress", unit: str = "item"):
     return tqdm_progress(iterable, total=total, desc=desc, unit=unit, file=sys.stderr)
 
@@ -221,14 +269,14 @@ def _build_episode_title_override_lookup_keys(
 def _coerce_episode_title_override(raw_value: Any, *, source_label: str) -> NetflixTitleOverride:
     if isinstance(raw_value, NetflixTitleOverride):
         return NetflixTitleOverride(
-            title=(raw_value.title or "").strip() or None,
+            title=_clean_csv_text(raw_value.title) or None,
             year=raw_value.year,
-            source_id=(raw_value.source_id or "").strip() or None,
-            episode_title=(raw_value.episode_title or "").strip() or None,
+            source_id=_clean_csv_text(raw_value.source_id) or None,
+            episode_title=_clean_csv_text(raw_value.episode_title) or None,
         )
 
     if isinstance(raw_value, str):
-        normalized_value = raw_value.strip()
+        normalized_value = _clean_csv_text(raw_value)
         if not normalized_value:
             return NetflixTitleOverride()
         return NetflixTitleOverride(
@@ -262,10 +310,10 @@ def _coerce_episode_title_override(raw_value: Any, *, source_label: str) -> Netf
         raise ValueError(f"Episode title override field 'episode_title' must be a string: {source_label}")
 
     return NetflixTitleOverride(
-        title=(title or "").strip() or None,
+        title=_clean_csv_text(title) or None,
         year=year,
-        source_id=(source_id or "").strip() or None,
-        episode_title=(episode_title or "").strip() or None,
+        source_id=_clean_csv_text(source_id) or None,
+        episode_title=_clean_csv_text(episode_title) or None,
     )
 
 
@@ -276,7 +324,7 @@ def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Di
         return {}
 
     try:
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        with _open_csv_with_fallback_encodings(path) as handle:
             reader = csv.DictReader(handle)
             fieldnames = set(reader.fieldnames or ())
             required_columns = {"title", "year"}
@@ -290,16 +338,16 @@ def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Di
 
             overrides: Dict[str, NetflixTitleOverride] = {}
             for row in reader:
-                raw_original_key = row.get("netflix_original_title")
-                raw_split_key = row.get("netflix_title")
+                raw_original_key = _clean_csv_text(row.get("netflix_original_title"))
+                raw_split_key = _clean_csv_text(row.get("netflix_title"))
                 normalized_key = _normalize_episode_title_override_key(raw_original_key)
                 if not normalized_key:
                     normalized_key = _normalize_episode_title_override_key_parts(
                         raw_split_key,
-                        row.get("season_name"),
-                        row.get("netflix_episode_title"),
+                        _clean_csv_text(row.get("season_name")),
+                        _clean_csv_text(row.get("netflix_episode_title")),
                     )
-                raw_year = (row.get("year") or "").strip()
+                raw_year = _clean_csv_text(row.get("year"))
                 if raw_year:
                     try:
                         normalized_year = int(raw_year)
@@ -310,10 +358,10 @@ def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Di
                 else:
                     normalized_year = None
                 normalized_value = NetflixTitleOverride(
-                    title=(row.get("title") or "").strip() or None,
+                    title=_clean_csv_text(row.get("title")) or None,
                     year=normalized_year,
-                    source_id=(row.get("source_id") or "").strip() or None,
-                    episode_title=(row.get("episode_title") or "").strip() or None,
+                    source_id=_clean_csv_text(row.get("source_id")) or None,
+                    episode_title=_clean_csv_text(row.get("episode_title")) or None,
                 )
                 if not normalized_key or (
                     not normalized_value.title
@@ -585,12 +633,12 @@ class NetflixWatchStatusAnalyzer:
     def load_entries(self, csv_path: str) -> List[NetflixHistoryEntry]:
         raw_entries: List[Tuple[str, datetime, ParsedNetflixTitle]] = []
 
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
+        with _open_csv_with_fallback_encodings(Path(csv_path)) as handle:
             rows = list(csv.DictReader(handle))
 
         for row in iter_progress(rows, total=len(rows), desc="Reading Netflix history", unit="row"):
-            raw_title = (row.get("Title") or "").strip()
-            raw_date = (row.get("Date") or "").strip()
+            raw_title = _clean_csv_text(row.get("Title"))
+            raw_date = _clean_csv_text(row.get("Date"))
             watched_at = parse_history_date(raw_date)
             if should_reject_history_title(raw_title) or watched_at is None:
                 continue
@@ -2537,6 +2585,7 @@ def print_text_summary(results: Dict[str, Any]) -> None:
 
 
 def main() -> None:
+    _configure_utf8_output()
     parser = build_argument_parser()
     args = parser.parse_args()
 
@@ -2568,7 +2617,7 @@ def main() -> None:
     )
 
     if args.json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps(results, indent=2, ensure_ascii=False))
         return
 
     if args.table:
