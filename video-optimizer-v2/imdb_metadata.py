@@ -46,7 +46,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     # IMPORTANT: Titles with fewer than MIN_VOTES_THRESHOLD votes are excluded from the
     # database entirely (both during ratings import and via post-load cleanup of title_basics).
     # This keeps the DB small and searches fast by only including well-known titles.
-    MIN_VOTES_THRESHOLD = 200     # Minimum votes required to store a title in the DB (None = no filter)
+    MIN_VOTES_THRESHOLD = 500     # Minimum votes required to store a title in the DB (None = no filter)
     RECENT_YEAR_CUTOFF = 1950     # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = True  # Filter out IMDb titles flagged as adult (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
@@ -868,82 +868,74 @@ class IMDbDataProvider(BaseMetadataProvider):
                 batch
             )
 
+    def _timed_execute(self, conn, sql: str, params: Tuple = ()) -> sqlite3.Cursor:
+        frame = inspect.currentframe()
+        caller = frame.f_back if frame is not None else None
+        location = "<unknown>"
+        if caller is not None:
+            location = (
+                f"{os.path.basename(caller.f_code.co_filename)}:"
+                f"{caller.f_lineno} in {caller.f_code.co_name}"
+            )
+
+        sql_preview = " ".join(sql.strip().split())
+        if len(sql_preview) > 180:
+            sql_preview = f"{sql_preview[:177]}..."
+
+        started_at = time.perf_counter()
+        try:
+            return conn.execute(sql, params)
+        finally:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            print(f"[sql {elapsed_ms:9.2f} ms] {location} :: {sql_preview}")
+
     def _optimize_database_for_reads(self) -> None:
         """Optimize database for read-only operations after data loading"""
         logging.info("Optimizing database for read operations...")
         
         with sqlite3.connect(self._db_path, timeout=60.0) as conn:
-            def timed_execute(sql: str, params: Tuple = ()) -> sqlite3.Cursor:
-                frame = inspect.currentframe()
-                caller = frame.f_back if frame is not None else None
-                location = "<unknown>"
-                if caller is not None:
-                    location = (
-                        f"{os.path.basename(caller.f_code.co_filename)}:"
-                        f"{caller.f_lineno} in {caller.f_code.co_name}"
-                    )
-
-                sql_preview = " ".join(sql.strip().split())
-                if len(sql_preview) > 180:
-                    sql_preview = f"{sql_preview[:177]}..."
-
-                started_at = time.perf_counter()
-                try:
-                    return conn.execute(sql, params)
-                finally:
-                    elapsed_ms = (time.perf_counter() - started_at) * 1000
-                    print(f"[sql {elapsed_ms:9.2f} ms] {location} :: {sql_preview}")
-
             # Create all indexes for fast queries - including covering indexes
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_title_lower ON title_basics(title_lower)")
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_title_type ON title_basics(type)")
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_start_year ON title_basics(year)")
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_title_type_year ON title_basics(type, year)")
-            timed_execute(
-                "CREATE INDEX IF NOT EXISTS idx_title_type_year_title ON title_basics(type, year, title_lower)"
-            )
-            timed_execute(
-                "CREATE INDEX IF NOT EXISTS idx_title_covering ON title_basics(title_lower, year, type, title, genres)"
-            )
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_title_prefix ON title_basics(substr(title_lower, 1, 2))")
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_ratings_votes ON title_ratings(votes DESC)")
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_ratings_covering ON title_ratings(id, rating, votes)")
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episode(parent_id)")
-            timed_execute(
-                "CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episode(parent_id, season, episode)"
-            )
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episode(id)")
-            timed_execute(
-                "CREATE INDEX IF NOT EXISTS idx_episode_titles_lower ON title_basics(title_lower) WHERE type = 4"
-            )
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId)")
-            timed_execute("CREATE INDEX IF NOT EXISTS idx_akas_title_ci ON title_akas(title COLLATE NOCASE, titleId)")
-            timed_execute("DROP INDEX IF EXISTS idx_title_episode_titles")
-            timed_execute("DROP INDEX IF EXISTS idx_akas_title")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_lower ON title_basics(title_lower)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_type ON title_basics(type)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_start_year ON title_basics(year)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_type_year ON title_basics(type, year)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_type_year_title ON title_basics(type, year, title_lower)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_covering ON title_basics(title_lower, year, type, title, genres)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_title_prefix ON title_basics(substr(title_lower, 1, 2))")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_ratings_votes ON title_ratings(votes DESC)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_ratings_covering ON title_ratings(id, rating, votes)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episode(parent_id)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episode(parent_id, season, episode)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episode(id)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episode_titles_lower ON title_basics(title_lower) WHERE type = 4")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId)")
+            self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_akas_title_ci ON title_akas(title COLLATE NOCASE, titleId)")
+            self._timed_execute(conn, "DROP INDEX IF EXISTS idx_title_episode_titles")
+            self._timed_execute(conn, "DROP INDEX IF EXISTS idx_akas_title")
             
             # Optimize for read-only operations
-            timed_execute("PRAGMA journal_mode=WAL")  # Enable WAL mode after loading
-            timed_execute("PRAGMA wal_autocheckpoint=1000")  # Auto-checkpoint every 1000 pages
-            timed_execute("PRAGMA synchronous=NORMAL")
-            timed_execute("PRAGMA cache_size=50000")  # Large cache for reads
-            timed_execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+            self._timed_execute(conn, "PRAGMA journal_mode=WAL")  # Enable WAL mode after loading
+            self._timed_execute(conn, "PRAGMA wal_autocheckpoint=1000")  # Auto-checkpoint every 1000 pages
+            self._timed_execute(conn, "PRAGMA synchronous=NORMAL")
+            self._timed_execute(conn, "PRAGMA cache_size=50000")  # Large cache for reads
+            self._timed_execute(conn, "PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
             
             # Analyze tables for better query planning
-            timed_execute("ANALYZE")
+            self._timed_execute(conn, "ANALYZE")
 
             # Run SQLite's lightweight post-analysis optimization pass.
-            timed_execute("PRAGMA optimize")
+            self._timed_execute(conn, "PRAGMA optimize")
 
             conn.commit()
 
             # Rebuild the file after full reload so deleted large tables/indexes actually shrink on disk.
-            timed_execute("PRAGMA journal_mode=DELETE")
-            timed_execute("VACUUM")
-            timed_execute("PRAGMA journal_mode=WAL")
+            self._timed_execute(conn, "PRAGMA journal_mode=DELETE")
+            self._timed_execute(conn, "VACUUM")
+            self._timed_execute(conn, "PRAGMA journal_mode=WAL")
 
             # Build a standalone FTS table for title_akas to enable fast title-based episode lookups.
-            timed_execute("INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas")
-            timed_execute("INSERT INTO title_fts(title_fts) VALUES('optimize')")
+            self._timed_execute(conn, "INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas")
+            self._timed_execute(conn, "INSERT INTO title_fts(title_fts) VALUES('optimize')")
 
             # Commit
             conn.commit()
