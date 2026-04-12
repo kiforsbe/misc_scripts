@@ -123,6 +123,69 @@ def run_tests():
         },
     )
     assert_parse(
+        "Carmen Sandiego: Season 1: Becoming Carmen Sandiego: Part I",
+        {
+            "title": "Carmen Sandiego",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "Becoming Carmen Sandiego: Part I",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Case Closed: Zero's Tea Time: TIME.1",
+        {
+            "title": "Case Closed: Zero's Tea Time",
+            "media_kind": "series",
+            "season": None,
+            "episode": None,
+            "episode_title": "TIME.1",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Cyberpunk: Edgerunners: Humanity",
+        {
+            "title": "Cyberpunk: Edgerunners",
+            "media_kind": "movie",
+            "episode_title": "Humanity",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "Cyberpunk: Edgerunners: Girl on Fire",
+        {
+            "title": "Cyberpunk: Edgerunners",
+            "media_kind": "movie",
+            "episode_title": "Girl on Fire",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "Cyberpunk: Edgerunners: My Moon My Man",
+        {
+            "title": "Cyberpunk: Edgerunners",
+            "media_kind": "movie",
+            "episode_title": "My Moon My Man",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "Daybreak: Josh vs. the Apocalypse: Part 1",
+        {
+            "title": "Daybreak",
+            "media_kind": "movie",
+            "episode_title": "Josh vs. the Apocalypse: Part 1",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
         "Trollhunters: Tales of Arcadia: Part 1: Roaming Fees May Apply",
         {
             "title": "Trollhunters: Tales of Arcadia",
