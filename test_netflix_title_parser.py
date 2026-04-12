@@ -448,6 +448,102 @@ def run_tests():
         },
     )
     assert_parse(
+        "The OA: Part I: Chapter 2: New Colossus",
+        {
+            "title": "The OA",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Part I",
+            "episode": 2,
+            "episode_title": "New Colossus",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The OA: Part I: Chapter 5: Paradise",
+        {
+            "title": "The OA",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Part I",
+            "episode": 5,
+            "episode_title": "Paradise",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The OA: Part II: Chapter 1: Angel of Death",
+        {
+            "title": "The OA",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Part II",
+            "episode": 1,
+            "episode_title": "Angel of Death",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The OA: Part II: Chapter 3: Magic Mirror",
+        {
+            "title": "The OA",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Part II",
+            "episode": 3,
+            "episode_title": "Magic Mirror",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The Order: Season 1: Undeclared: Part 1",
+        {
+            "title": "The Order",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "Undeclared: Part 1",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The Order: Season 1: Undeclared: Part 2",
+        {
+            "title": "The Order",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "Undeclared: Part 2",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The Order: Season 2: Fear Itself, Part 1",
+        {
+            "title": "The Order",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Season 2",
+            "episode": None,
+            "episode_title": "Fear Itself, Part 1",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The Order: Season 2: Fear Itself, Part 2",
+        {
+            "title": "The Order",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Season 2",
+            "episode": None,
+            "episode_title": "Fear Itself, Part 2",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
         "Trollhunters: Tales of Arcadia: Part 1: Roaming Fees May Apply",
         {
             "title": "Trollhunters: Tales of Arcadia",

@@ -15,9 +15,17 @@ SEASON_NUMBER_PATTERNS = tuple(
 )
 
 LIMITED_SERIES_RE = re.compile(r"^limited\s+series$", re.IGNORECASE)
+PART_ROMAN_SEASON_RE = re.compile(
+    r"^part\s+(?P<roman>i|ii|iii|iv|v|vi|vii|viii|ix|x)$",
+    re.IGNORECASE,
+)
 BOOK_NUMBER_RE = re.compile(r"^book\s+(?P<number>\d+)$", re.IGNORECASE)
 TEXTUAL_PART_RE = re.compile(
     r"^part\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|i|ii|iii|iv|v|vi|vii|viii|ix|x)$",
+    re.IGNORECASE,
+)
+NUMERIC_OR_ROMAN_PART_RE = re.compile(
+    r"^part\s+(?:\d+|i|ii|iii|iv|v|vi|vii|viii|ix|x)$",
     re.IGNORECASE,
 )
 TEXTUAL_CHAPTER_RE = re.compile(r"^chapter\s+[^:]+$", re.IGNORECASE)
@@ -34,7 +42,7 @@ EPISODE_NUMBER_PATTERNS = tuple(
     re.compile(rf"^{rule}$", re.IGNORECASE) for rule in EPISODE_TOKEN_RULES
 )
 
-SEASON_SPLIT_TOKEN_REGEX = r"(?:season\s+\d+(?:[a-z])?|series\s+\d+(?:[a-z])?|part\s+\d+(?:[a-z])?|limited\s+series)"
+SEASON_SPLIT_TOKEN_REGEX = r"(?:season\s+\d+(?:[a-z])?|series\s+\d+(?:[a-z])?|part\s+(?:\d+(?:[a-z])?|i|ii|iii|iv|v|vi|vii|viii|ix|x)|limited\s+series)"
 EPISODE_SPLIT_TOKEN_REGEX = r"(?:episode\s+\d+|chapter\s+\d+|\d+(?:st|nd|rd|th)\s+[^:]+)"
 EPISODE_SUFFIX_REGEX = rf"(?P<episode_token>{EPISODE_SPLIT_TOKEN_REGEX})(?:\s*:\s*(?P<episode_title>.+))?"
 SEASON_SUBTITLE_REGEX = rf"(?:\s*:\s*(?P<season_subtitle>(?!\s*(?:{EPISODE_SPLIT_TOKEN_REGEX})(?:\s*:|$))[^:]+)(?=\s*:))?"
@@ -151,6 +159,22 @@ def _parse_season_number(token: str) -> Optional[int]:
         match = pattern.match(cleaned)
         if match:
             return int(match.group("number"))
+    roman_match = PART_ROMAN_SEASON_RE.match(cleaned)
+    if roman_match:
+        roman_value = roman_match.group("roman").upper()
+        roman_numbers = {
+            "I": 1,
+            "II": 2,
+            "III": 3,
+            "IV": 4,
+            "V": 5,
+            "VI": 6,
+            "VII": 7,
+            "VIII": 8,
+            "IX": 9,
+            "X": 10,
+        }
+        return roman_numbers.get(roman_value)
     if LIMITED_SERIES_RE.match(cleaned):
         return 1
     return None
@@ -251,8 +275,14 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                     season_title = season_token or None
                     episode_title = _clean_token(f"{season_subtitle}: {episode_title}")
 
-                if season_subtitle and episode_title and TEXTUAL_PART_RE.match(episode_title):
-                    if _normalize_lookup_text(series_title) in _normalize_lookup_text(season_subtitle):
+                if season_subtitle and episode_title and (
+                    TEXTUAL_PART_RE.match(episode_title)
+                    or NUMERIC_OR_ROMAN_PART_RE.match(episode_title)
+                ):
+                    if (
+                        NUMERIC_OR_ROMAN_PART_RE.match(episode_title)
+                        or _normalize_lookup_text(series_title) in _normalize_lookup_text(season_subtitle)
+                    ):
                         season_title = season_token or None
                     episode_title = _clean_token(f"{season_subtitle}: {episode_title}")
 
