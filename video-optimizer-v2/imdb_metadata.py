@@ -596,7 +596,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                 # Read and process data in chunks with aggressive filtering
                 chunk_size = 100000
                 processed_rows = 0
-                kept_rows = 0
 
                 with gzip.open(gz_cache, "rt", encoding="utf-8") as f:
                     # Read header
@@ -607,8 +606,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     ]
                     
                     batch = []
-                    pbar_unit = "kept_rows" if dataset_name == "title.akas" else "rows"
-                    pbar = tqdm(desc=f"Processing {dataset_name}", unit=pbar_unit)
+                    pbar = tqdm(desc=f"Processing {dataset_name}", unit="rows")
 
                     for line in f:
                         if not line.strip():
@@ -652,7 +650,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                         if not compressed_row or not compressed_row.get("row"):
                             continue
 
-                        kept_rows += 1
                         batch.append(compressed_row["row"])
 
                         if len(batch) >= chunk_size:
@@ -670,13 +667,8 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                 # Update version metadata used by cache freshness/status checks.
                 self._upsert_dataset_version(conn, dataset_name, source_last_modified_ts)
-
-                # Rebuild FTS only after AKA rows are populated.
-                if dataset_name == "title.akas":
-                    self._rebuild_title_fts(conn)
                 
                 conn.commit()
-                logging.info(f"Loaded {kept_rows}/{processed_rows} rows from {dataset_name} (filtered {processed_rows - kept_rows})")
                 
                 # Additional debugging for episodes and ratings
                 if dataset_name == "title.ratings":
@@ -853,13 +845,6 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         return processed_tconst_ints
 
-    def _rebuild_title_fts(self, conn: sqlite3.Connection) -> None:
-        """Rebuild the standalone FTS table from deduplicated AKA rows."""
-        conn.execute("DELETE FROM title_fts")
-        conn.execute(
-            "INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas"
-        )
-
     def _insert_compressed_batch(self, conn: sqlite3.Connection, dataset_name: str, batch: List[Tuple]) -> None:
         """Insert compressed batch data"""        
         if dataset_name == "title.basics":
@@ -955,7 +940,12 @@ class IMDbDataProvider(BaseMetadataProvider):
             timed_execute("PRAGMA journal_mode=DELETE")
             timed_execute("VACUUM")
             timed_execute("PRAGMA journal_mode=WAL")
+
+            # Build a standalone FTS table for title_akas to enable fast title-based episode lookups.
+            timed_execute("INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas")
             timed_execute("INSERT INTO title_fts(title_fts) VALUES('optimize')")
+
+            # Commit
             conn.commit()
             logging.info("Database optimization complete")
 
