@@ -45,8 +45,8 @@ class IMDbDataProvider(BaseMetadataProvider):
     # IMPORTANT: Titles with fewer than MIN_VOTES_THRESHOLD votes are excluded from the
     # database entirely (both during ratings import and via post-load cleanup of title_basics).
     # This keeps the DB small and searches fast by only including well-known titles.
-    MIN_VOTES_THRESHOLD = 1000     # Minimum votes required to store a title in the DB (None = no filter)
-    RECENT_YEAR_CUTOFF = 1900     # Only keep titles from this year onwards (None = no filter)
+    MIN_VOTES_THRESHOLD = 200     # Minimum votes required to store a title in the DB (None = no filter)
+    RECENT_YEAR_CUTOFF = 1950     # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = False  # Filter out adult content keywords (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
     FILTER_AKA_BY_LANGUAGE = False  # False = keep AKA rows from all regions/languages during import
@@ -207,7 +207,61 @@ class IMDbDataProvider(BaseMetadataProvider):
                         titleId UNINDEXED,
                         tokenize='porter unicode61'
                     );
-                """
+
+                    -- Search view for episodes
+                    CREATE VIEW IF NOT EXISTS episodes_view AS
+                    SELECT
+                        -- Series titles
+                        --b.title             AS series_title,
+                        --b.original_title    AS series_original_title,
+
+                        -- AKA titles for the series
+                        sa.title            AS series_aka_title,
+                        --sa.region           AS series_aka_region,
+                        --sa.language         AS series_aka_language,
+                        --sa.types            AS series_aka_types,
+                        sa.is_original_title AS series_aka_is_original,
+
+                        -- Series year
+                        b.year              AS series_year,
+                        
+                        -- Episode basics
+                        e.season,
+                        e.episode,
+
+                        -- Episode titles
+                        et.title            AS episode_title,
+                        et.year             AS episode_year,
+
+                        -- AKA titles for the episode (if your DB ever contains them)
+                        ea.title            AS episode_aka_title,
+                        ea.region           AS episode_aka_region,
+                        ea.language         AS episode_aka_language,
+                        ea.types            AS episode_aka_types,
+                        --ea.attributes       AS episode_aka_attributes,
+                        ea.is_original_title AS episode_aka_is_original
+
+                    FROM title_episodes e
+
+                    -- Episode title lookup
+                    LEFT JOIN episode_titles et
+                        ON et.id = e.id
+
+                    -- Series primary title
+                    LEFT JOIN title_basics b
+                        ON b.id = e.parent_id
+
+                    -- Series AKA titles
+                    LEFT JOIN title_akas sa
+                        ON sa.titleId = e.parent_id
+
+                    -- Episode AKA titles (your DB probably has none, but this supports them)
+                    LEFT JOIN title_akas ea
+                        ON ea.titleId = e.id
+
+                    ORDER BY e.parent_id, e.season, e.episode,
+                            sa.region, ea.region
+                    """
                 )                
                 # Only create essential indexes initially - others will be added after data load
                 conn.executescript(

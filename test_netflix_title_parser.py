@@ -22,9 +22,23 @@ def run_tests():
     assert_parse(
         "Mission: Cross",
         {
-            "title": "Mission: Cross",
+            "title": "Mission",
             "media_kind": "movie",
+            "episode_title": "Cross",
             "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "A.I.C.O.: Awakening",
+        {
+            "title": "A.I.C.O.",
+            "media_kind": "movie",
+            "season": None,
+            "episode": None,
+            "episode_title": "Awakening",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
         },
     )
     assert_parse(
@@ -97,11 +111,24 @@ def run_tests():
         },
     )
     assert_parse(
+        "Missing: The Other Side: Missing: The Other Side 2: Episode 1",
+        {
+            "title": "Missing: The Other Side: Missing: The Other Side 2",
+            "media_kind": "series",
+            "season": None,
+            "episode": 1,
+            "episode_title": None,
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
         "SAKAMOTO DAYS: Each One's Mission",
         {
-            "title": "SAKAMOTO DAYS: Each One's Mission",
+            "title": "SAKAMOTO DAYS",
             "media_kind": "movie",
+            "episode_title": "Each One's Mission",
             "is_explicit_series": False,
+            "has_implicit_split": True,
         },
     )
 

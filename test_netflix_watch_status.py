@@ -153,6 +153,35 @@ def test_load_episode_title_overrides_supports_title_only_rows():
     assert overrides["some show"].episode_title is None
 
 
+def test_load_episode_title_overrides_supports_split_netflix_keys():
+    with TemporaryDirectory() as temp_dir:
+        override_path = Path(temp_dir) / "episode_overrides.csv"
+        override_path.write_text(
+            "netflix_title,season_name,netflix_episode_title,title,year,source_id,episode_title\n"
+            'Known Show,Season 1,Missing Episode,Canonical Show,2024,tt1234567,Canonical Episode\n',
+            encoding="utf-8",
+        )
+
+        overrides = load_episode_title_overrides(str(override_path))
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=None, episode_title_overrides=overrides)
+    parsed = ParsedNetflixTitle(
+        raw_title="Known Show: Season 1: Missing Episode",
+        title="Known Show",
+        media_kind="series",
+        season=1,
+        season_title="Season 1",
+        episode_title="Missing Episode",
+        is_explicit_series=True,
+    )
+
+    resolved = analyzer._classify_entry(parsed, prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "Canonical Show"
+    assert analyzer._get_episode_title_override(parsed, resolved[1]) == "Canonical Episode"
+
+
 def test_classify_entry_uses_title_override_table_for_non_matching_show_titles():
     class MetadataManager:
         def __init__(self):
@@ -193,6 +222,68 @@ def test_classify_entry_uses_title_override_table_for_non_matching_show_titles()
     assert resolved[4] == "tv"
     assert resolved[6] == "tt30217403"
     assert metadata_manager.calls == [("Dandadan", 2024, "tv")]
+
+
+def test_classify_entry_prefers_movie_match_for_implicit_single_colon_titles():
+    class MetadataManager:
+        def __init__(self):
+            self.calls = []
+
+        def find_title(self, query, year=None, preferred_type=None):
+            self.calls.append((query, year, preferred_type))
+            if query != "Mission: Cross":
+                return None
+            return (
+                SimpleNamespace(
+                    title="Mission: Cross",
+                    type="movie",
+                    id="tt1234567",
+                    year=2023,
+                    sources=("imdb",),
+                ),
+                object(),
+            )
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=MetadataManager())
+
+    resolved = analyzer._classify_entry(parse_netflix_title("Mission: Cross"), prefix_counts={})
+
+    assert resolved[0] == "movie"
+    assert resolved[1] == "Mission: Cross"
+    assert analyzer.metadata_manager.calls == [("Mission: Cross", None, "movie")]
+
+
+def test_classify_entry_falls_back_to_series_match_for_implicit_single_colon_titles():
+    class MetadataManager:
+        def __init__(self):
+            self.calls = []
+
+        def find_title(self, query, year=None, preferred_type=None):
+            self.calls.append((query, year, preferred_type))
+            if query != "A.I.C.O.":
+                return None
+            return (
+                SimpleNamespace(
+                    title="A.I.C.O. Incarnation",
+                    type="tv",
+                    id="tt7493752",
+                    year=2018,
+                    total_seasons=1,
+                    sources=("imdb",),
+                ),
+                object(),
+            )
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=MetadataManager())
+
+    resolved = analyzer._classify_entry(parse_netflix_title("A.I.C.O.: Awakening"), prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "A.I.C.O. Incarnation"
+    assert analyzer.metadata_manager.calls == [
+        ("A.I.C.O.: Awakening", None, "movie"),
+        ("A.I.C.O.", None, "tv"),
+    ]
 
 
 def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_titles():
@@ -483,6 +574,7 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
             parsed=parse_netflix_title("Unknown Show"),
             media_kind="movie",
             resolved_title="Unknown Show",
+            expected_type="movie",
         ),
         NetflixHistoryEntry(
             raw_title="Known Show: Missing Episode",
@@ -496,6 +588,7 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
             ),
             media_kind="series",
             resolved_title="Known Show",
+            expected_type="series",
             metadata_type="tv",
             metadata_parent_id="tt1234567",
             metadata_sources=("imdb",),
@@ -512,6 +605,7 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
             ),
             media_kind="series",
             resolved_title="Known Show",
+            expected_type="series",
             metadata_type="tv",
             metadata_parent_id="tt1234567",
             metadata_sources=("imdb",),
@@ -532,15 +626,23 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
 
     assert rows == [
         {
-            "netflix_title": "Known Show: Missing Episode",
-            "title": "Known Show",
+            "netflix_original_title": "Known Show: Missing Episode",
+            "netflix_title": "Known Show",
+            "season_name": "",
+            "netflix_episode_title": "Missing Episode",
+            "expected_type": "series",
+            "title": "",
             "year": "",
             "source_id": "tt1234567",
             "episode_title": "",
             "had_override": "yes",
         },
         {
+            "netflix_original_title": "Unknown Show",
             "netflix_title": "Unknown Show",
+            "season_name": "",
+            "netflix_episode_title": "",
+            "expected_type": "movie",
             "title": "",
             "year": "",
             "source_id": "",
@@ -554,15 +656,23 @@ def test_summarize_unmapped_imdb_override_rows_counts_override_breakdown():
     stats = summarize_unmapped_imdb_override_rows(
         [
             {
-                "netflix_title": "Known Show: Missing Episode",
-                "title": "Known Show",
+                "netflix_original_title": "Known Show: Missing Episode",
+                "netflix_title": "Known Show",
+                "season_name": "",
+                "netflix_episode_title": "Missing Episode",
+                "expected_type": "series",
+                "title": "",
                 "year": "",
                 "source_id": "tt1234567",
                 "episode_title": "",
                 "had_override": "yes",
             },
             {
+                "netflix_original_title": "Unknown Show",
                 "netflix_title": "Unknown Show",
+                "season_name": "",
+                "netflix_episode_title": "",
+                "expected_type": "movie",
                 "title": "",
                 "year": "",
                 "source_id": "",

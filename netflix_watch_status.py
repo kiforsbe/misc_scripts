@@ -171,9 +171,24 @@ def parse_history_date(raw_date: str) -> Optional[datetime]:
 
 
 def _normalize_episode_title_override_key(raw_title: Optional[str]) -> str:
-    if not raw_title:
+    return _normalize_episode_title_override_key_parts(raw_title)
+
+
+def _normalize_episode_title_override_key_parts(
+    title: Optional[str],
+    season_name: Optional[str] = None,
+    netflix_episode_title: Optional[str] = None,
+) -> str:
+    normalized_title = re.sub(r"\s+", " ", title or "").strip().casefold()
+    if not normalized_title:
         return ""
-    return re.sub(r"\s+", " ", raw_title).strip().casefold()
+
+    normalized_season_name = re.sub(r"\s+", " ", season_name or "").strip().casefold()
+    normalized_episode_title = re.sub(r"\s+", " ", netflix_episode_title or "").strip().casefold()
+    if not normalized_season_name and not normalized_episode_title:
+        return normalized_title
+
+    return "\x1f".join((normalized_title, normalized_season_name, normalized_episode_title))
 
 
 @dataclass(frozen=True)
@@ -182,6 +197,25 @@ class NetflixTitleOverride:
     year: Optional[int] = None
     source_id: Optional[str] = None
     episode_title: Optional[str] = None
+
+
+def _build_episode_title_override_lookup_keys(
+    parsed: ParsedNetflixTitle,
+    *,
+    inferred_series_title: Optional[str] = None,
+    derived_episode_title: Optional[str] = None,
+) -> Tuple[str, ...]:
+    candidates = (
+        _normalize_episode_title_override_key_parts(parsed.title, parsed.season_title, parsed.episode_title),
+        _normalize_episode_title_override_key_parts(parsed.title, parsed.season_title, derived_episode_title),
+        _normalize_episode_title_override_key_parts(parsed.title, parsed.season_title),
+        _normalize_episode_title_override_key(parsed.raw_title),
+        _normalize_episode_title_override_key(parsed.title),
+        _normalize_episode_title_override_key(inferred_series_title),
+        _normalize_episode_title_override_key(parsed.episode_title),
+        _normalize_episode_title_override_key(derived_episode_title),
+    )
+    return tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
 def _coerce_episode_title_override(raw_value: Any, *, source_label: str) -> NetflixTitleOverride:
@@ -255,7 +289,11 @@ def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Di
             overrides: Dict[str, NetflixTitleOverride] = {}
             for row in reader:
                 raw_key = row.get("netflix_title")
-                normalized_key = _normalize_episode_title_override_key(raw_key)
+                normalized_key = _normalize_episode_title_override_key_parts(
+                    raw_key,
+                    row.get("season_name"),
+                    row.get("netflix_episode_title"),
+                )
                 raw_year = (row.get("year") or "").strip()
                 if raw_year:
                     try:
@@ -343,6 +381,7 @@ class NetflixHistoryEntry:
     parsed: ParsedNetflixTitle
     media_kind: str
     resolved_title: str
+    expected_type: str = ""
     metadata_type: Optional[str] = None
     metadata_provider: Any = field(default=None, repr=False, compare=False)
     metadata_parent_id: Optional[str] = None
@@ -368,6 +407,7 @@ class NetflixHistoryEntry:
             "watched_at": self.watched_at.date().isoformat(),
             "parsed": asdict(self.parsed),
             "media_kind": self.media_kind,
+            "expected_type": self.expected_type,
             "resolved_title": self.resolved_title,
             "metadata_type": self.metadata_type,
             "metadata_parent_id": self.metadata_parent_id,
@@ -632,6 +672,7 @@ class NetflixWatchStatusAnalyzer:
                     watched_at=watched_at,
                     parsed=parsed,
                     media_kind=media_kind,
+                    expected_type=media_kind,
                     resolved_title=resolved_title,
                     metadata_type=metadata_type,
                     metadata_provider=metadata_provider,
@@ -830,17 +871,12 @@ class NetflixWatchStatusAnalyzer:
 
     def _get_episode_title_override(self, parsed: ParsedNetflixTitle, resolved_title: str) -> Optional[str]:
         lookup_title = self._derive_episode_title(parsed, resolved_title)
-        episode_override_keys: List[str] = []
-
-        if parsed.raw_title:
-            episode_override_keys.append(parsed.raw_title)
-
-        if parsed.episode_title:
-            episode_override_keys.append(parsed.episode_title)
-
-        if lookup_title and lookup_title not in episode_override_keys:
-            episode_override_keys.append(lookup_title)
-
+        episode_override_keys = list(
+            _build_episode_title_override_lookup_keys(
+                parsed,
+                derived_episode_title=lookup_title,
+            )
+        )
         override = self._get_title_override(*episode_override_keys)
         return override.episode_title if override is not None else None
 
@@ -1032,7 +1068,12 @@ class NetflixWatchStatusAnalyzer:
         default_kind = "series" if parsed.is_explicit_series else parsed.media_kind
         default_title = parsed.title if parsed.is_explicit_series else parsed.raw_title
         inferred_series_title = self._infer_series_title(parsed, prefix_counts)
-        effective_override = self._get_title_override(parsed.raw_title, parsed.title, inferred_series_title)
+        effective_override = self._get_title_override(
+            *_build_episode_title_override_lookup_keys(
+                parsed,
+                inferred_series_title=inferred_series_title,
+            )
+        )
         series_title_override = effective_override.title if effective_override is not None else None
         series_title_override_year = effective_override.year if effective_override is not None else None
 
@@ -1043,39 +1084,53 @@ class NetflixWatchStatusAnalyzer:
                 return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
             return default_kind, default_title, None, None, None, None, None, None, None, None, (), None, ()
 
-        queries: List[Tuple[str, bool, Optional[int]]] = []
-        seen_queries: set[str] = set()
+        queries: List[Tuple[str, bool, Optional[int], Optional[str]]] = []
+        seen_queries: set[Tuple[str, Optional[int], Optional[str]]] = set()
 
-        def add_query(query: Optional[str], *, authoritative: bool = False, year: Optional[int] = None) -> None:
-            cache_key = ((query or "").casefold().strip(), year)
+        def add_query(
+            query: Optional[str],
+            *,
+            authoritative: bool = False,
+            year: Optional[int] = None,
+            preferred_type: Optional[str] = None,
+        ) -> None:
+            cache_key = ((query or "").casefold().strip(), year, preferred_type)
             if not cache_key or cache_key in seen_queries:
                 return
             seen_queries.add(cache_key)
-            queries.append((query or "", authoritative, year))
+            queries.append((query or "", authoritative, year, preferred_type))
 
         add_query(
             series_title_override,
             authoritative=series_title_override is not None,
             year=series_title_override_year,
+            preferred_type="tv" if series_title_override is not None else None,
         )
         if parsed.is_explicit_series:
-            add_query(parsed.title)
+            add_query(parsed.title, preferred_type="tv")
         else:
             if inferred_series_title:
-                add_query(inferred_series_title)
-            add_query(parsed.raw_title)
-            if parsed.title != parsed.raw_title:
-                add_query(parsed.title)
+                add_query(inferred_series_title, preferred_type="tv")
+            if parsed.has_implicit_split and not inferred_series_title:
+                add_query(parsed.raw_title, preferred_type="movie")
+                if parsed.title != parsed.raw_title:
+                    add_query(parsed.title, preferred_type="tv")
+            else:
+                add_query(parsed.raw_title)
+                if parsed.title != parsed.raw_title:
+                    add_query(parsed.title)
 
-        for query, authoritative_query, query_year in queries:
-            preferred_type = "tv" if (
-                series_title_override is not None
-                or authoritative_query
-                or parsed.is_explicit_series
-                or parsed.episode is not None
-                or parsed.episode_title is not None
-                or inferred_series_title is not None
-            ) else None
+        for query, authoritative_query, query_year, preferred_type_override in queries:
+            preferred_type = preferred_type_override
+            if preferred_type is None:
+                preferred_type = "tv" if (
+                    series_title_override is not None
+                    or authoritative_query
+                    or parsed.is_explicit_series
+                    or parsed.episode is not None
+                    or (parsed.episode_title is not None and not parsed.has_implicit_split)
+                    or inferred_series_title is not None
+                ) else None
             resolved_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources = self._lookup_metadata(
                 query,
                 year=query_year,
@@ -1102,6 +1157,9 @@ class NetflixWatchStatusAnalyzer:
         if inferred_series_title:
             return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
 
+        if parsed.has_implicit_split:
+            return "series", parsed.title or default_title, None, None, None, None, None, None, None, None, (), None, ()
+
         return default_kind, default_title, None, None, None, None, None, None, None, None, (), None, ()
 
     def _lookup_metadata(
@@ -1120,6 +1178,12 @@ class NetflixWatchStatusAnalyzer:
 
         try:
             match = self.metadata_manager.find_title(query, year=year, preferred_type=preferred_type)
+        except TypeError:
+            try:
+                match = self.metadata_manager.find_title(query, preferred_type=preferred_type)
+            except Exception:
+                self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None, ())
+                return None, None, None, None, None, None, None, None, None, None, (), None, ()
         except Exception:
             self._metadata_cache[metadata_cache_key] = (None, None, None, None, None, None, None, None, None, None, (), None, ())
             return None, None, None, None, None, None, None, None, None, None, (), None, ()
@@ -1192,6 +1256,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help=(
             "Optional CSV file mapping raw Netflix CSV titles to IMDb titles. "
             "Expected columns: netflix_title,title,year,source_id,episode_title. "
+            "Optional Netflix key columns: season_name,netflix_episode_title. "
             "These overrides are merged on top of netflix_episode_title_overrides.csv when present."
         ),
     )
@@ -1934,7 +1999,7 @@ def build_unmapped_imdb_override_rows(
     entries: List[NetflixHistoryEntry],
     overrides: Optional[Dict[str, NetflixTitleOverride]] = None,
 ) -> List[Dict[str, str]]:
-    rows_by_title: Dict[str, Dict[str, str]] = {}
+    rows_by_title: Dict[Tuple[str, str, str], Dict[str, str]] = {}
     overrides = {
         _normalize_episode_title_override_key(raw_title): override
         for raw_title, override in (overrides or {}).items()
@@ -1946,16 +2011,23 @@ def build_unmapped_imdb_override_rows(
         if title_mapped and (not episode_required or episode_mapped):
             continue
 
-        netflix_title = entry.raw_title.strip()
+        netflix_title = (entry.parsed.title or entry.raw_title).strip()
+        season_name = (entry.parsed.season_title or "").strip()
+        netflix_episode_title = (entry.parsed.episode_title or "").strip()
         if not netflix_title:
             continue
-        had_override = "yes" if _normalize_episode_title_override_key(netflix_title) in overrides else ""
+        had_override = "yes" if any(key in overrides for key in _build_episode_title_override_lookup_keys(entry.parsed)) else ""
 
         mapped_title = entry.resolved_title if title_mapped and entry.resolved_title != netflix_title else ""
-        row = rows_by_title.get(netflix_title)
+        row_key = (netflix_title, season_name, netflix_episode_title)
+        row = rows_by_title.get(row_key)
         if row is None:
-            rows_by_title[netflix_title] = {
+            rows_by_title[row_key] = {
+                "netflix_original_title": entry.raw_title.strip(),
                 "netflix_title": netflix_title,
+                "season_name": season_name,
+                "netflix_episode_title": netflix_episode_title,
+                "expected_type": entry.expected_type,
                 "title": mapped_title,
                 "year": str(entry.resolved_title_year or "") if title_mapped else "",
                 "source_id": entry.metadata_parent_id or "" if title_mapped else "",
@@ -1970,10 +2042,19 @@ def build_unmapped_imdb_override_rows(
             row["year"] = str(entry.resolved_title_year)
         if not row["source_id"] and title_mapped and entry.metadata_parent_id:
             row["source_id"] = entry.metadata_parent_id
+        if not row["expected_type"] and entry.expected_type:
+            row["expected_type"] = entry.expected_type
         if not row["had_override"] and had_override:
             row["had_override"] = had_override
 
-    return sorted(rows_by_title.values(), key=lambda item: item["netflix_title"].casefold())
+    return sorted(
+        rows_by_title.values(),
+        key=lambda item: (
+            item["netflix_title"].casefold(),
+            item["season_name"].casefold(),
+            item["netflix_episode_title"].casefold(),
+        ),
+    )
 
 
 def summarize_unmapped_imdb_override_rows(rows: List[Dict[str, str]]) -> Dict[str, int]:
@@ -1994,7 +2075,21 @@ def export_unmapped_imdb_overrides(
     target_path.parent.mkdir(parents=True, exist_ok=True)
     rows = build_unmapped_imdb_override_rows(entries, overrides=overrides)
     with target_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["netflix_title", "title", "year", "source_id", "episode_title", "had_override"])
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "netflix_original_title",
+                "netflix_title",
+                "season_name",
+                "netflix_episode_title",
+                "expected_type",
+                "title",
+                "year",
+                "source_id",
+                "episode_title",
+                "had_override",
+            ],
+        )
         writer.writeheader()
         writer.writerows(rows)
     return target_path

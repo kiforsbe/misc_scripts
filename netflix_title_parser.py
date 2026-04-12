@@ -4,19 +4,31 @@ from difflib import SequenceMatcher
 from typing import Iterable, Optional, Tuple
 
 
-SEASON_NUMBER_PATTERNS = (
-    re.compile(r"^season\s+(?P<number>\d+)$", re.IGNORECASE),
-    re.compile(r"^series\s+(?P<number>\d+)$", re.IGNORECASE),
-    re.compile(r"^part\s+(?P<number>\d+)$", re.IGNORECASE),
+SEASON_TOKEN_RULES = (
+    r"season\s+(?P<number>\d+)",
+    r"series\s+(?P<number>\d+)",
+    r"part\s+(?P<number>\d+)",
+)
+
+SEASON_NUMBER_PATTERNS = tuple(
+    re.compile(rf"^{rule}$", re.IGNORECASE) for rule in SEASON_TOKEN_RULES
 )
 
 LIMITED_SERIES_RE = re.compile(r"^limited\s+series$", re.IGNORECASE)
 
-EPISODE_NUMBER_PATTERNS = (
-    re.compile(r"^episode\s+(?P<number>\d+)$", re.IGNORECASE),
-    re.compile(r"^chapter\s+(?P<number>\d+)$", re.IGNORECASE),
-    re.compile(r"^(?P<number>\d+)(?:st|nd|rd|th)\s+.+$", re.IGNORECASE),
+EPISODE_TOKEN_RULES = (
+    r"episode\s+(?P<number>\d+)",
+    r"chapter\s+(?P<number>\d+)",
+    r"(?P<number>\d+)(?:st|nd|rd|th)\s+[^:]+",
 )
+
+EPISODE_NUMBER_PATTERNS = tuple(
+    re.compile(rf"^{rule}$", re.IGNORECASE) for rule in EPISODE_TOKEN_RULES
+)
+
+SEASON_SPLIT_TOKEN_REGEX = r"(?:season\s+\d+|series\s+\d+|part\s+\d+|limited\s+series)"
+EPISODE_SPLIT_TOKEN_REGEX = r"(?:episode\s+\d+|chapter\s+\d+|\d+(?:st|nd|rd|th)\s+[^:]+)"
+EPISODE_SUFFIX_REGEX = rf"(?P<episode_token>{EPISODE_SPLIT_TOKEN_REGEX})(?:\s*:\s*(?P<episode_title>.+))?"
 
 LOOKUP_TITLE_MATCH_THRESHOLD = 60.0
 
@@ -30,6 +42,39 @@ class ParsedNetflixTitle:
     episode: Optional[int] = None
     episode_title: Optional[str] = None
     is_explicit_series: bool = False
+    has_implicit_split: bool = False
+
+
+@dataclass(frozen=True)
+class TitleSplitRule:
+    kind: str
+    pattern: re.Pattern
+
+
+TITLE_SPLIT_RULES = (
+    TitleSplitRule(
+        kind="season",
+        pattern=re.compile(
+            rf"^(?P<title>.+?)\s*:\s*(?P<season_title>{SEASON_SPLIT_TOKEN_REGEX})(?:\s*:\s*(?P<remainder>.+))?$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="episode",
+        pattern=re.compile(
+            rf"^(?P<title>.+?)\s*:\s*{EPISODE_SUFFIX_REGEX}$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="implicit_episode",
+        pattern=re.compile(
+            r"^(?P<title>[^:]+?)\s*:\s*(?P<episode_title>[^:]+)$",
+        ),
+    ),
+)
+
+EPISODE_REMAINDER_PATTERN = re.compile(rf"^{EPISODE_SUFFIX_REGEX}$", re.IGNORECASE)
 
 
 def _clean_token(token: str) -> str:
@@ -108,45 +153,56 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
     if not cleaned_title:
         return ParsedNetflixTitle(raw_title=raw_title, title="", media_kind="movie")
 
-    tokens = [_clean_token(token) for token in cleaned_title.split(":")]
-    tokens = [token for token in tokens if token]
-
-    for index in range(1, len(tokens)):
-        season_number = _parse_season_number(tokens[index])
-        if season_number is None:
+    for rule in TITLE_SPLIT_RULES:
+        match = rule.pattern.match(cleaned_title)
+        if not match:
             continue
 
-        series_title = ": ".join(tokens[:index]).strip()
-        trailing_tokens = tokens[index + 1 :]
+        series_title = _clean_token(match.group("title") or cleaned_title) or cleaned_title
+        if rule.kind == "season":
+            season_title = _clean_token(match.group("season_title") or "") or None
+            season_number = _parse_season_number(season_title or "")
+            remainder = _clean_token(match.group("remainder") or "")
 
-        episode_number = None
-        if trailing_tokens:
-            episode_number = _parse_episode_number(trailing_tokens[0])
-            if episode_number is not None:
-                trailing_tokens = trailing_tokens[1:]
+            episode_number = None
+            episode_title = None
+            if remainder:
+                episode_match = EPISODE_REMAINDER_PATTERN.match(remainder)
+                if episode_match:
+                    episode_number = _parse_episode_number(episode_match.group("episode_token"))
+                    episode_title = _clean_token(episode_match.group("episode_title") or "") or None
+                else:
+                    episode_title = remainder
 
-        episode_title = ": ".join(trailing_tokens).strip() or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="series",
+                season=season_number,
+                season_title=season_title,
+                episode=episode_number,
+                episode_title=episode_title,
+                is_explicit_series=True,
+            )
+
+        if rule.kind == "implicit_episode":
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="movie",
+                season=None,
+                episode=None,
+                episode_title=episode_title,
+                is_explicit_series=False,
+                has_implicit_split=True,
+            )
+
+        episode_number = _parse_episode_number(match.group("episode_token"))
+        episode_title = _clean_token(match.group("episode_title") or "") or None
         return ParsedNetflixTitle(
             raw_title=raw_title,
-            title=series_title or cleaned_title,
-            media_kind="series",
-            season=season_number,
-            season_title=tokens[index],
-            episode=episode_number,
-            episode_title=episode_title,
-            is_explicit_series=True,
-        )
-
-    for index in range(1, len(tokens)):
-        episode_number = _parse_episode_number(tokens[index])
-        if episode_number is None:
-            continue
-
-        series_title = ": ".join(tokens[:index]).strip()
-        episode_title = ": ".join(tokens[index + 1 :]).strip() or None
-        return ParsedNetflixTitle(
-            raw_title=raw_title,
-            title=series_title or cleaned_title,
+            title=series_title,
             media_kind="series",
             season=None,
             episode=episode_number,
