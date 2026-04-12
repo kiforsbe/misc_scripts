@@ -96,6 +96,13 @@ TITLE_SPLIT_RULES = (
         ),
     ),
     TitleSplitRule(
+        kind="implicit_repeated_re_title_episode",
+        pattern=re.compile(
+            r"^(?P<title_base>[^:]+)\s*:\s*(?P<title>(?P=title_base)\s*:\s*re)\s*:\s*(?P<episode_title>[^:]+:\s*.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
         kind="named_season",
         pattern=re.compile(
             r"^(?P<title>.+?)\s*:\s*(?P<season_token>season\s+\d+(?:[a-z])?)\s+[^:]+\s*:\s*(?P<remainder>.+)$",
@@ -273,6 +280,9 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
             continue
 
         series_title = _clean_token(match.group("title") or cleaned_title) or cleaned_title
+        if rule.kind == "implicit_repeated_re_title_episode":
+            series_title = re.sub(r":(?=\S)", ": ", series_title)
+
         if rule.kind in {"season", "named_season"}:
             season_token = _clean_token(match.group("season_token") or "")
             season_subtitle = ""
@@ -336,6 +346,7 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
             "implicit_vs_part_episode",
             "implicit_pilot_episode",
             "implicit_dash_subtitle_episode",
+            "implicit_repeated_re_title_episode",
         }:
             episode_title = _clean_token(match.group("episode_title") or "") or None
             return ParsedNetflixTitle(

@@ -659,6 +659,39 @@ def run_tests():
         },
     )
     assert_parse(
+        "Tokyo Ghoul: Tokyo Ghoul:re: member: Fragments",
+        {
+            "title": "Tokyo Ghoul: re",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "member: Fragments",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "Tokyo Ghoul: Tokyo Ghoul:re: mind: Days of Recollections",
+        {
+            "title": "Tokyo Ghoul: re",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "mind: Days of Recollections",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "Tokyo Ghoul: Tokyo Ghoul:re: Morse: Remembrances",
+        {
+            "title": "Tokyo Ghoul: re",
+            "media_kind": "movie",
+            "episode": None,
+            "episode_title": "Morse: Remembrances",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
         "Trollhunters: Tales of Arcadia: Part 1: Roaming Fees May Apply",
         {
             "title": "Trollhunters: Tales of Arcadia",
