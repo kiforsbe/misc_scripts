@@ -328,6 +328,126 @@ def run_tests():
         },
     )
     assert_parse(
+        "Great Pretender: Season 1: Case 1_4: Los Angeles Connection",
+        {
+            "title": "Great Pretender",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "Case 1_4: Los Angeles Connection",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Great Pretender: Season 1: Case 3_1: Snow of London",
+        {
+            "title": "Great Pretender",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "Case 3_1: Snow of London",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Great Pretender: Season 2: Case 4_6: Wizard of Far East",
+        {
+            "title": "Great Pretender",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Season 2",
+            "episode": None,
+            "episode_title": "Case 4_6: Wizard of Far East",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Raising Dion: Season 1: ISSUE #101: How Do You Raise a Superhero?",
+        {
+            "title": "Raising Dion",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "ISSUE #101: How Do You Raise a Superhero?",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Raising Dion: Season 1: ISSUE #104: Welcome to BIONA. Hope You Survive the Experience",
+        {
+            "title": "Raising Dion",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Season 1",
+            "episode": None,
+            "episode_title": "ISSUE #104: Welcome to BIONA. Hope You Survive the Experience",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Shadowhunters: The Mortal Instruments: Season 3: What Lies Beneath",
+        {
+            "title": "Shadowhunters: The Mortal Instruments",
+            "media_kind": "series",
+            "season": 3,
+            "season_title": "Season 3",
+            "episode": None,
+            "episode_title": "What Lies Beneath",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Shadowhunters: The Mortal Instruments: Season 3B: A Kiss from a Rose",
+        {
+            "title": "Shadowhunters: The Mortal Instruments",
+            "media_kind": "series",
+            "season": 3,
+            "season_title": "Season 3B",
+            "episode": None,
+            "episode_title": "A Kiss from a Rose",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The Last Kids on Earth: Book 1: The Last Kids on Earth",
+        {
+            "title": "The Last Kids on Earth",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Book 1",
+            "episode": None,
+            "episode_title": "The Last Kids on Earth",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The Last Kids on Earth: Book 2: Follow That Butler",
+        {
+            "title": "The Last Kids on Earth",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Book 2",
+            "episode": None,
+            "episode_title": "Follow That Butler",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "The Last Kids on Earth: Book 2: Stay on Target",
+        {
+            "title": "The Last Kids on Earth",
+            "media_kind": "series",
+            "season": 2,
+            "season_title": "Book 2",
+            "episode": None,
+            "episode_title": "Stay on Target",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
         "Trollhunters: Tales of Arcadia: Part 1: Roaming Fees May Apply",
         {
             "title": "Trollhunters: Tales of Arcadia",

@@ -5,9 +5,9 @@ from typing import Iterable, Optional, Tuple
 
 
 SEASON_TOKEN_RULES = (
-    r"season\s+(?P<number>\d+)",
-    r"series\s+(?P<number>\d+)",
-    r"part\s+(?P<number>\d+)",
+    r"season\s+(?P<number>\d+)(?:[a-z])?",
+    r"series\s+(?P<number>\d+)(?:[a-z])?",
+    r"part\s+(?P<number>\d+)(?:[a-z])?",
 )
 
 SEASON_NUMBER_PATTERNS = tuple(
@@ -21,6 +21,8 @@ TEXTUAL_PART_RE = re.compile(
     re.IGNORECASE,
 )
 TEXTUAL_CHAPTER_RE = re.compile(r"^chapter\s+[^:]+$", re.IGNORECASE)
+TEXTUAL_CASE_RE = re.compile(r"^case\s+[^:]+$", re.IGNORECASE)
+TEXTUAL_ISSUE_RE = re.compile(r"^issue\s*#?\s*[^:]+$", re.IGNORECASE)
 
 EPISODE_TOKEN_RULES = (
     r"episode\s+(?P<number>\d+)",
@@ -32,7 +34,7 @@ EPISODE_NUMBER_PATTERNS = tuple(
     re.compile(rf"^{rule}$", re.IGNORECASE) for rule in EPISODE_TOKEN_RULES
 )
 
-SEASON_SPLIT_TOKEN_REGEX = r"(?:season\s+\d+|series\s+\d+|part\s+\d+|limited\s+series)"
+SEASON_SPLIT_TOKEN_REGEX = r"(?:season\s+\d+(?:[a-z])?|series\s+\d+(?:[a-z])?|part\s+\d+(?:[a-z])?|limited\s+series)"
 EPISODE_SPLIT_TOKEN_REGEX = r"(?:episode\s+\d+|chapter\s+\d+|\d+(?:st|nd|rd|th)\s+[^:]+)"
 EPISODE_SUFFIX_REGEX = rf"(?P<episode_token>{EPISODE_SPLIT_TOKEN_REGEX})(?:\s*:\s*(?P<episode_title>.+))?"
 SEASON_SUBTITLE_REGEX = rf"(?:\s*:\s*(?P<season_subtitle>(?!\s*(?:{EPISODE_SPLIT_TOKEN_REGEX})(?:\s*:|$))[^:]+)(?=\s*:))?"
@@ -91,6 +93,13 @@ TITLE_SPLIT_RULES = (
         kind="repeated_numbered_season",
         pattern=re.compile(
             r"^(?P<title>.+?)\s*:\s*(?P<season_title>(?P=title)\s+\d+)\s*:\s*(?P<episode_title>chapter\s+[^:]+:\s*.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="book_season",
+        pattern=re.compile(
+            r"^(?P<title>[^:]+)\s*:\s*(?P<season_title>book\s+\d+)\s*:\s*(?P<episode_title>.+)$",
             re.IGNORECASE,
         ),
     ),
@@ -234,7 +243,11 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                 else:
                     episode_title = remainder
 
-                if season_subtitle and episode_title and TEXTUAL_CHAPTER_RE.match(season_subtitle):
+                if season_subtitle and episode_title and (
+                    TEXTUAL_CHAPTER_RE.match(season_subtitle)
+                    or TEXTUAL_CASE_RE.match(season_subtitle)
+                    or TEXTUAL_ISSUE_RE.match(season_subtitle)
+                ):
                     season_title = season_token or None
                     episode_title = _clean_token(f"{season_subtitle}: {episode_title}")
 
@@ -274,6 +287,22 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                 title=series_title,
                 media_kind="series",
                 season=None,
+                season_title=season_title,
+                episode=None,
+                episode_title=episode_title,
+                is_explicit_series=True,
+            )
+
+        if rule.kind == "book_season":
+            season_title = _clean_token(match.group("season_title") or "") or None
+            book_match = BOOK_NUMBER_RE.match(season_title or "")
+            season_number = int(book_match.group("number")) if book_match else None
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="series",
+                season=season_number,
                 season_title=season_title,
                 episode=None,
                 episode_title=episode_title,
