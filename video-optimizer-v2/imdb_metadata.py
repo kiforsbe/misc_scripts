@@ -46,10 +46,11 @@ class IMDbDataProvider(BaseMetadataProvider):
     # IMPORTANT: Titles with fewer than MIN_VOTES_THRESHOLD votes are excluded from the
     # database entirely. title.ratings is loaded first, then title.basics is gated to
     # those qualifying ids so low-vote rows never need to be inserted and deleted later.
-    MIN_VOTES_THRESHOLD = 5000     # Minimum votes required to store a title in the DB (None = no filter)
+    MIN_VOTES_THRESHOLD = 200     # Minimum votes required to store a title in the DB (None = no filter)
     RECENT_YEAR_CUTOFF = 1975     # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = True  # Filter out IMDb titles flagged as adult (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
+    AKA_ALLOWED_LANGUAGES = ('en', 'ja', 'jp')  # Admit AKAs when language or region is English/Japanese or unspecified
 
     MAX_RETRIES = 3
 
@@ -126,6 +127,32 @@ class IMDbDataProvider(BaseMetadataProvider):
             self._connection_pool.append(conn)
         else:
             conn.close()
+
+    def _close_connection_pool(self) -> None:
+        """Close pooled read connections before rebuilding the database file."""
+        while getattr(self, "_connection_pool", []):
+            conn = self._connection_pool.pop()
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _reset_database_for_reload(self) -> None:
+        """Drop any stale on-disk database state before a full reload."""
+        self._close_connection_pool()
+        self._search_cache = {}
+        self._title_cache = {}
+
+        for suffix in ("", "-wal", "-shm"):
+            db_file = f"{self._db_path}{suffix}"
+            try:
+                os.remove(db_file)
+            except FileNotFoundError:
+                continue
+            except PermissionError:
+                logging.warning("Could not remove %s during IMDb reload; reusing the existing file", db_file)
+
+        self._init_database()
 
     def _init_database(self) -> None:
         """Initialize SQLite database with optimized schema"""
@@ -358,16 +385,19 @@ class IMDbDataProvider(BaseMetadataProvider):
             elif not self._has_episode_aka_data():
                 logging.info("IMDb cache is current but lacks episode-linked AKA data. Reloading datasets.")
 
+        logging.info("Resetting IMDb database before reload...")
+        self._reset_database_for_reload()
+
         logging.info("Loading IMDb datasets into database...")
         
         # Load datasets in order of dependency:
         # 1. title.ratings first to establish the qualifying ids when a vote threshold is active
         # 2. title.basics second for searchable movies/series that survived ratings + config filters
-        # 3. Prune child tables that no longer match the filtered basics set
+        # 3. Prune filtered title_basics rows while leaving ratings intact until episode basics exist
         # 4. title.episode establishes the surviving episode ids for kept parents
         # 5. Backfill only those surviving episode rows from title.basics
         # 6. title.akas loads only for rows that now exist in title_basics
-        # 7. Prune child tables as a safety net against any stale rows
+        # 7. Prune child tables and orphan ratings against the final surviving title set
         #
         # This avoids staging a large number of episode rows and episode AKAs
         self._load_dataset_to_db("title.ratings")
@@ -379,6 +409,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._load_surviving_episode_basics()
         self._load_dataset_to_db("title.akas")
         self._prune_child_tables()
+        self._prune_orphan_ratings()
         
         # Verify data integrity
         self._verify_data_integrity()
@@ -420,9 +451,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     f"DELETE FROM title_basics WHERE {' OR '.join(where_clauses)}",
                     tuple(params),
                 )
-            conn.execute(
-                "DELETE FROM title_ratings WHERE id NOT IN (SELECT id FROM title_basics)"
-            )
             conn.commit()
             after_count = conn.execute("SELECT COUNT(*) FROM title_basics").fetchone()[0]
 
@@ -432,6 +460,21 @@ class IMDbDataProvider(BaseMetadataProvider):
                 "Pruned %s title_basics rows that violated configured type/year/adult filters",
                 removed,
             )
+        return removed
+
+    def _prune_orphan_ratings(self) -> int:
+        """Remove ratings whose ids are no longer present in the final surviving basics set."""
+        with sqlite3.connect(self._db_path, timeout=60.0) as conn:
+            before_count = conn.execute("SELECT COUNT(*) FROM title_ratings").fetchone()[0]
+            conn.execute(
+                "DELETE FROM title_ratings WHERE id NOT IN (SELECT id FROM title_basics)"
+            )
+            conn.commit()
+            after_count = conn.execute("SELECT COUNT(*) FROM title_ratings").fetchone()[0]
+
+        removed = before_count - after_count
+        if removed:
+            logging.info("Pruned %s orphaned title_ratings rows", removed)
         return removed
 
     def _prune_child_tables(self) -> None:
@@ -844,6 +887,50 @@ class IMDbDataProvider(BaseMetadataProvider):
     def _normalize_space_collapsed_text(text: Optional[str]) -> str:
         return " ".join((text or "").split())
 
+    @staticmethod
+    def _normalize_aka_language_code(code: Optional[str]) -> Optional[str]:
+        normalized = IMDbDataProvider._normalize_space_collapsed_text(code).lower() or None
+        if normalized == "jp":
+            return "ja"
+        return normalized
+
+    @classmethod
+    def _get_allowed_aka_languages(cls) -> Tuple[str, ...]:
+        normalized_languages: List[str] = []
+        for language in getattr(cls, "AKA_ALLOWED_LANGUAGES", ()):
+            normalized = cls._normalize_aka_language_code(language)
+            if normalized and normalized not in normalized_languages:
+                normalized_languages.append(normalized)
+        return tuple(normalized_languages)
+
+    @classmethod
+    def _get_allowed_aka_locale_codes(cls) -> Tuple[str, ...]:
+        normalized_codes: List[str] = []
+        for code in getattr(cls, "AKA_ALLOWED_LANGUAGES", ()):
+            normalized = cls._normalize_space_collapsed_text(code).lower() or None
+            if normalized and normalized not in normalized_codes:
+                normalized_codes.append(normalized)
+        return tuple(normalized_codes)
+
+    @classmethod
+    def _should_keep_aka_language(cls, language: Optional[str]) -> bool:
+        normalized = cls._normalize_aka_language_code(language)
+        return normalized in cls._get_allowed_aka_languages() if normalized else False
+
+    @classmethod
+    def _should_keep_aka_locale(cls, language: Optional[str], region: Optional[str]) -> bool:
+        normalized_language = cls._normalize_aka_language_code(language)
+        normalized_region = cls._normalize_space_collapsed_text(region).lower() or None
+
+        if normalized_language is None and normalized_region is None:
+            return True
+
+        allowed_codes = cls._get_allowed_aka_locale_codes()
+        return (
+            (normalized_language in allowed_codes if normalized_language else False)
+            or (normalized_region in allowed_codes if normalized_region else False)
+        )
+
     def _compress_row(
         self,
         dataset_name: str,
@@ -949,6 +1036,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                 return None
             language = self._normalize_space_collapsed_text(data_dict.get('language')) or None
             region = self._normalize_space_collapsed_text(data_dict.get('region')) or None
+            if not self._should_keep_aka_locale(language, region):
+                return None
             return {
                 'row': (
                     titleId_int,
