@@ -186,6 +186,148 @@ def run_tests():
         },
     )
     assert_parse(
+        "Demon Slayer: Kimetsu no Yaiba: Tanjiro Kamado, Unwavering Resolve Arc: Cruelty",
+        {
+            "title": "Demon Slayer: Kimetsu no Yaiba",
+            "media_kind": "series",
+            "season": None,
+            "season_title": "Tanjiro Kamado, Unwavering Resolve Arc",
+            "episode": None,
+            "episode_title": "Cruelty",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Demon Slayer: Kimetsu no Yaiba: Tanjiro Kamado, Unwavering Resolve Arc: Swordsman Accompanying a Demon",
+        {
+            "title": "Demon Slayer: Kimetsu no Yaiba",
+            "media_kind": "series",
+            "season": None,
+            "season_title": "Tanjiro Kamado, Unwavering Resolve Arc",
+            "episode": None,
+            "episode_title": "Swordsman Accompanying a Demon",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Chilling Adventures of Sabrina: Part 4: Chapter Thirty-Four: The Returned",
+        {
+            "title": "Chilling Adventures of Sabrina",
+            "media_kind": "series",
+            "season": 4,
+            "season_title": "Part 4",
+            "episode": None,
+            "episode_title": "Chapter Thirty-Four: The Returned",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Chilling Adventures of Sabrina: Part 1: Chapter Thirteen: The Passion of Sabrina Spellman",
+        {
+            "title": "Chilling Adventures of Sabrina",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Part 1",
+            "episode": None,
+            "episode_title": "Chapter Thirteen: The Passion of Sabrina Spellman",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Chilling Adventures of Sabrina: Part 1: Chapter One: October Country",
+        {
+            "title": "Chilling Adventures of Sabrina",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Part 1",
+            "episode": None,
+            "episode_title": "Chapter One: October Country",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "DOTA: Dragon's Blood: Book 1: The Knight, Death and the Devil",
+        {
+            "title": "DOTA: Dragon's Blood",
+            "media_kind": "series",
+            "season": 1,
+            "season_title": "Book 1",
+            "episode": None,
+            "episode_title": "The Knight, Death and the Devil",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "DOTA: Dragon's Blood: Book 3: Consider Phlebas",
+        {
+            "title": "DOTA: Dragon's Blood",
+            "media_kind": "series",
+            "season": 3,
+            "season_title": "Book 3",
+            "episode": None,
+            "episode_title": "Consider Phlebas",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "DOTA: Dragon's Blood: Book 3: Summons of the Ideal",
+        {
+            "title": "DOTA: Dragon's Blood",
+            "media_kind": "series",
+            "season": 3,
+            "season_title": "Book 3",
+            "episode": None,
+            "episode_title": "Summons of the Ideal",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Stranger Things: Chapter Seven: The Bathtub",
+        {
+            "title": "Stranger Things",
+            "media_kind": "series",
+            "season": None,
+            "episode": None,
+            "episode_title": "Chapter Seven: The Bathtub",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Stranger Things: Chapter Four: The Body",
+        {
+            "title": "Stranger Things",
+            "media_kind": "series",
+            "season": None,
+            "episode": None,
+            "episode_title": "Chapter Four: The Body",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Stranger Things: Stranger Things 3: Chapter Three: The Case of the Missing Lifeguard",
+        {
+            "title": "Stranger Things",
+            "media_kind": "series",
+            "season": None,
+            "season_title": "Stranger Things 3",
+            "episode": None,
+            "episode_title": "Chapter Three: The Case of the Missing Lifeguard",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
+        "Stranger Things: Stranger Things 4: Chapter One: The Hellfire Club",
+        {
+            "title": "Stranger Things",
+            "media_kind": "series",
+            "season": None,
+            "season_title": "Stranger Things 4",
+            "episode": None,
+            "episode_title": "Chapter One: The Hellfire Club",
+            "is_explicit_series": True,
+        },
+    )
+    assert_parse(
         "Trollhunters: Tales of Arcadia: Part 1: Roaming Fees May Apply",
         {
             "title": "Trollhunters: Tales of Arcadia",

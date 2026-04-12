@@ -15,10 +15,12 @@ SEASON_NUMBER_PATTERNS = tuple(
 )
 
 LIMITED_SERIES_RE = re.compile(r"^limited\s+series$", re.IGNORECASE)
+BOOK_NUMBER_RE = re.compile(r"^book\s+(?P<number>\d+)$", re.IGNORECASE)
 TEXTUAL_PART_RE = re.compile(
     r"^part\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|i|ii|iii|iv|v|vi|vii|viii|ix|x)$",
     re.IGNORECASE,
 )
+TEXTUAL_CHAPTER_RE = re.compile(r"^chapter\s+[^:]+$", re.IGNORECASE)
 
 EPISODE_TOKEN_RULES = (
     r"episode\s+(?P<number>\d+)",
@@ -82,6 +84,34 @@ TITLE_SPLIT_RULES = (
         kind="episode_title_token",
         pattern=re.compile(
             r"^(?P<title>.+?)\s*:\s*(?P<episode_title>time\.\d+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="repeated_numbered_season",
+        pattern=re.compile(
+            r"^(?P<title>.+?)\s*:\s*(?P<season_title>(?P=title)\s+\d+)\s*:\s*(?P<episode_title>chapter\s+[^:]+:\s*.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="named_book_season",
+        pattern=re.compile(
+            r"^(?P<title>.+?:.+?)\s*:\s*(?P<season_title>book\s+\d+)\s*:\s*(?P<episode_title>.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="chapter_title_episode",
+        pattern=re.compile(
+            r"^(?P<title>.+?)\s*:\s*(?P<episode_title>chapter\s+[^:]+:\s*.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    TitleSplitRule(
+        kind="named_arc_season",
+        pattern=re.compile(
+            r"^(?P<title>.+)\s*:\s*(?P<season_title>[^:]*\barc)\s*:\s*(?P<episode_title>.+)$",
             re.IGNORECASE,
         ),
     ),
@@ -204,6 +234,10 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                 else:
                     episode_title = remainder
 
+                if season_subtitle and episode_title and TEXTUAL_CHAPTER_RE.match(season_subtitle):
+                    season_title = season_token or None
+                    episode_title = _clean_token(f"{season_subtitle}: {episode_title}")
+
                 if season_subtitle and episode_title and TEXTUAL_PART_RE.match(episode_title):
                     if _normalize_lookup_text(series_title) in _normalize_lookup_text(season_subtitle):
                         season_title = season_token or None
@@ -216,6 +250,74 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                 season=season_number,
                 season_title=season_title,
                 episode=episode_number,
+                episode_title=episode_title,
+                is_explicit_series=True,
+            )
+
+        if rule.kind == "episode_title_token":
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="series",
+                season=None,
+                episode=None,
+                episode_title=episode_title,
+                is_explicit_series=True,
+            )
+
+        if rule.kind == "repeated_numbered_season":
+            season_title = _clean_token(match.group("season_title") or "") or None
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="series",
+                season=None,
+                season_title=season_title,
+                episode=None,
+                episode_title=episode_title,
+                is_explicit_series=True,
+            )
+
+        if rule.kind == "named_book_season":
+            season_title = _clean_token(match.group("season_title") or "") or None
+            book_match = BOOK_NUMBER_RE.match(season_title or "")
+            season_number = int(book_match.group("number")) if book_match else None
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="series",
+                season=season_number,
+                season_title=season_title,
+                episode=None,
+                episode_title=episode_title,
+                is_explicit_series=True,
+            )
+
+        if rule.kind == "chapter_title_episode":
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="series",
+                season=None,
+                episode=None,
+                episode_title=episode_title,
+                is_explicit_series=True,
+            )
+
+        if rule.kind == "named_arc_season":
+            season_title = _clean_token(match.group("season_title") or "") or None
+            episode_title = _clean_token(match.group("episode_title") or "") or None
+            return ParsedNetflixTitle(
+                raw_title=raw_title,
+                title=series_title,
+                media_kind="series",
+                season=None,
+                season_title=season_title,
+                episode=None,
                 episode_title=episode_title,
                 is_explicit_series=True,
             )
@@ -257,18 +359,6 @@ def parse_netflix_title(raw_title: str) -> ParsedNetflixTitle:
                 episode_title=episode_title,
                 is_explicit_series=False,
                 has_implicit_split=True,
-            )
-
-        if rule.kind == "episode_title_token":
-            episode_title = _clean_token(match.group("episode_title") or "") or None
-            return ParsedNetflixTitle(
-                raw_title=raw_title,
-                title=series_title,
-                media_kind="series",
-                season=None,
-                episode=None,
-                episode_title=episode_title,
-                is_explicit_series=True,
             )
 
         episode_number = _parse_episode_number(match.group("episode_token"))
