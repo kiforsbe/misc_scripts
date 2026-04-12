@@ -23,7 +23,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     #   title.basics: (none removed - all columns included for completeness)
     #   title.episode: (none removed - all are essential)
     #   title.ratings: (none removed - all are essential) 
-    #   title.akas: keep ordering for fast raw staging, then materialize a deduplicated lookup table
+    #   title.akas: store only the compact raw fields needed for title lookup
     REQUIRED_COLUMNS = {
         "title.basics": [
             "tconst",
@@ -38,7 +38,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "ordering", "title"] #, "region", "language", "types", "attributes", "isOriginalTitle"],
+        "title.akas": ["titleId", "ordering", "title"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
@@ -47,7 +47,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     # This keeps the DB small and searches fast by only including well-known titles.
     MIN_VOTES_THRESHOLD = 200     # Minimum votes required to store a title in the DB (None = no filter)
     RECENT_YEAR_CUTOFF = 1950     # Only keep titles from this year onwards (None = no filter)
-    FILTER_ADULT_CONTENT = False  # Filter out adult content keywords (False = no filter)
+    FILTER_ADULT_CONTENT = True  # Filter out IMDb titles flagged as adult (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
     FILTER_AKA_BY_LANGUAGE = False  # False = keep AKA rows from all regions/languages during import
     AKA_ALLOWED_LANGUAGES = ("en", "jp")  # Keep only these AKA languages during import (None = keep all)
@@ -74,10 +74,25 @@ class IMDbDataProvider(BaseMetadataProvider):
     TITLE_CACHE_EVICT = 1000        # Number of cached TitleInfo objects to evict
     EXACT_MATCH_LIMIT = 50          # Hard cap for exact title and AKA candidate scans
 
+    TITLE_TYPE_CODES = {
+        "movie": 1,
+        "tvSeries": 2,
+        "tvMiniSeries": 3,
+        "tvEpisode": 4,
+    }
+    TITLE_TYPE_NAMES = {
+        1: "movie",
+        2: "tvSeries",
+        3: "tvMiniSeries",
+    }
+    PREFERRED_TYPE_HINT_CODES = {
+        "movie": {TITLE_TYPE_CODES["movie"]},
+        "tv": {TITLE_TYPE_CODES["tvSeries"], TITLE_TYPE_CODES["tvMiniSeries"]},
+    }
+
     AKA_LANGUAGE_ALIASES = {
         "jp": "ja",
     }
-
     def __init__(self):
         super().__init__("imdb", provider_weight=0.9)
         self._search_cache = {}  # Cache recent search results
@@ -126,7 +141,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                 conn.execute("PRAGMA temp_store=MEMORY")
                 conn.execute("PRAGMA page_size=32768")  # Larger pages for better compression
                 conn.execute("PRAGMA auto_vacuum=INCREMENTAL")  # Reclaim space when data is deleted
-                self._drop_legacy_aka_schema(conn)
                 
                 # Create tables with optimized schema - compressed storage
                 conn.executescript(
@@ -150,30 +164,18 @@ class IMDbDataProvider(BaseMetadataProvider):
                         votes INTEGER
                     ) WITHOUT ROWID;
 
-                    CREATE TABLE IF NOT EXISTS title_episodes (
+                    CREATE TABLE IF NOT EXISTS title_episode (
                         id INTEGER PRIMARY KEY,
                         parent_id INTEGER NOT NULL,
                         season INTEGER,
                         episode INTEGER
                     ) WITHOUT ROWID;
 
-                    CREATE TABLE IF NOT EXISTS episode_titles (
-                        id INTEGER PRIMARY KEY,
-                        title TEXT NOT NULL,
-                        title_lower TEXT NOT NULL,
-                        year INTEGER
-                    ) WITHOUT ROWID;
-
                     CREATE TABLE IF NOT EXISTS title_akas (
                         titleId INTEGER NOT NULL,
+                        ordering INTEGER NOT NULL,
                         title TEXT NOT NULL,
-                        title_key TEXT NOT NULL,
-                        region TEXT,
-                        language TEXT,
-                        types TEXT,
-                        attributes TEXT,
-                        is_original_title INTEGER,
-                        PRIMARY KEY (titleId, title_key)
+                        PRIMARY KEY (titleId, ordering)
                     ) WITHOUT ROWID;
 
                     CREATE TABLE IF NOT EXISTS data_version (
@@ -199,7 +201,29 @@ class IMDbDataProvider(BaseMetadataProvider):
                         CASE WHEN r.rating IS NULL THEN NULL ELSE r.rating / 10.0 END as rating,
                         r.votes
                     FROM title_basics b
-                    LEFT JOIN title_ratings r ON b.id = r.id;
+                    LEFT JOIN title_ratings r ON b.id = r.id
+                    WHERE b.type IN (1, 2, 3);
+
+                    DROP VIEW IF EXISTS episode_titles;
+                    CREATE VIEW IF NOT EXISTS episode_titles AS
+                    SELECT
+                        b.id,
+                        b.title,
+                        b.title_lower,
+                        b.year,
+                        1 AS is_primary
+                    FROM title_basics b
+                    WHERE b.type = 4
+                    UNION ALL
+                    SELECT
+                        a.titleId AS id,
+                        a.title,
+                        LOWER(a.title) AS title_lower,
+                        b.year,
+                        0 AS is_primary
+                    FROM title_akas a
+                    JOIN title_basics b ON b.id = a.titleId
+                    WHERE b.type = 4;
                     
                     -- Standalone FTS5 virtual table for fast title searching across deduplicated AKAs.
                     CREATE VIRTUAL TABLE IF NOT EXISTS title_fts USING fts5(
@@ -208,66 +232,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                         tokenize='porter unicode61'
                     );
 
-                    -- Search view for episodes
-                    CREATE VIEW IF NOT EXISTS episodes_view AS
-                    SELECT
-                        -- Series titles
-                        --b.title             AS series_title,
-                        --b.original_title    AS series_original_title,
-
-                        -- AKA titles for the series
-                        sa.title            AS series_aka_title,
-                        --sa.region           AS series_aka_region,
-                        --sa.language         AS series_aka_language,
-                        --sa.types            AS series_aka_types,
-                        sa.is_original_title AS series_aka_is_original,
-
-                        -- Series year
-                        b.year              AS series_year,
-                        
-                        -- Episode basics
-                        e.season,
-                        e.episode,
-
-                        -- Episode titles
-                        et.title            AS episode_title,
-                        et.year             AS episode_year,
-
-                        -- AKA titles for the episode (if your DB ever contains them)
-                        ea.title            AS episode_aka_title,
-                        ea.region           AS episode_aka_region,
-                        ea.language         AS episode_aka_language,
-                        ea.types            AS episode_aka_types,
-                        --ea.attributes       AS episode_aka_attributes,
-                        ea.is_original_title AS episode_aka_is_original
-
-                    FROM title_episodes e
-
-                    -- Episode title lookup
-                    LEFT JOIN episode_titles et
-                        ON et.id = e.id
-
-                    -- Series primary title
-                    LEFT JOIN title_basics b
-                        ON b.id = e.parent_id
-
-                    -- Series AKA titles
-                    LEFT JOIN title_akas sa
-                        ON sa.titleId = e.parent_id
-
-                    -- Episode AKA titles (your DB probably has none, but this supports them)
-                    LEFT JOIN title_akas ea
-                        ON ea.titleId = e.id
-
-                    ORDER BY e.parent_id, e.season, e.episode,
-                            sa.region, ea.region
                     """
                 )                
                 # Only create essential indexes initially - others will be added after data load
                 conn.executescript(
                     """
                     -- Essential indexes for data loading
-                    CREATE INDEX IF NOT EXISTS idx_episodes_parent_temp ON title_episodes(parent_id);
+                    CREATE INDEX IF NOT EXISTS idx_episodes_parent_temp ON title_episode(parent_id);
                     DROP INDEX IF EXISTS idx_akas_title;
                     """
                 )
@@ -276,21 +247,6 @@ class IMDbDataProvider(BaseMetadataProvider):
         except Exception as e:
             logging.error(f"Failed to initialize database: {str(e)}")
             raise
-
-    def _drop_legacy_aka_schema(self, conn: sqlite3.Connection) -> None:
-        """Drop legacy AKA/FTS tables when their schema no longer matches the compact layout."""
-        aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_akas)").fetchall()]
-        if aka_columns and aka_columns != ["titleId", "title", "title_key", "region", "language", "types", "attributes", "is_original_title"]:
-            conn.execute("DROP TABLE IF EXISTS title_fts")
-            conn.execute("DROP TABLE IF EXISTS title_akas")
-
-        raw_aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(raw_title_akas)").fetchall()]
-        if raw_aka_columns and raw_aka_columns != ["titleId", "ordering", "title", "title_key", "region", "language", "types", "attributes", "is_original_title"]:
-            conn.execute("DROP TABLE IF EXISTS raw_title_akas")
-
-        fts_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_fts)").fetchall()]
-        if fts_columns and fts_columns != ["title", "titleId"]:
-            conn.execute("DROP TABLE IF EXISTS title_fts")
 
     def _load_cache_duration(self) -> None:
         try:
@@ -356,11 +312,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             cursor = conn.execute("SELECT COUNT(*) FROM title_ratings")
             ratings_count = cursor.fetchone()[0]
 
-            cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+            cursor = conn.execute("SELECT COUNT(*) FROM title_episode")
             episodes_count = cursor.fetchone()[0]
-
-            cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
-            episode_titles_count = cursor.fetchone()[0]
 
             cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
             akas_count = cursor.fetchone()[0]
@@ -368,8 +321,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             logging.info(f"Data integrity check:")
             logging.info(f"  title_basics: {basics_count}")
             logging.info(f"  title_ratings: {ratings_count}")
-            logging.info(f"  title_episodes: {episodes_count}")
-            logging.info(f"  episode_titles: {episode_titles_count}")
+            logging.info(f"  title_episode: {episodes_count}")
             logging.info(f"  title_akas: {akas_count}")
             
             # Check for orphaned ratings
@@ -381,41 +333,33 @@ class IMDbDataProvider(BaseMetadataProvider):
             
             # Check for orphaned episodes
             cursor = conn.execute("""
-                SELECT COUNT(*) FROM title_episodes e 
+                SELECT COUNT(*) FROM title_episode e 
                 WHERE NOT EXISTS (SELECT 1 FROM title_basics b WHERE b.id = e.parent_id)
             """)
             orphaned_episodes = cursor.fetchone()[0]
 
             cursor = conn.execute("""
-                SELECT COUNT(*) FROM episode_titles t
-                WHERE NOT EXISTS (SELECT 1 FROM title_episodes e WHERE e.id = t.id)
-            """)
-            orphaned_episode_titles = cursor.fetchone()[0]
-
-            cursor = conn.execute("""
                 SELECT COUNT(*) FROM title_akas a
                 WHERE NOT EXISTS (SELECT 1 FROM title_basics b WHERE b.id = a.titleId)
-                AND NOT EXISTS (SELECT 1 FROM title_episodes e WHERE e.id = a.titleId)
+                AND NOT EXISTS (SELECT 1 FROM title_episode e WHERE e.id = a.titleId)
             """)
             orphaned_akas = cursor.fetchone()[0]
             
             logging.info(f"  Orphaned ratings: {orphaned_ratings}")
             logging.info(f"  Orphaned episodes: {orphaned_episodes}")
-            logging.info(f"  Orphaned episode titles: {orphaned_episode_titles}")
             logging.info(f"  Orphaned AKAs: {orphaned_akas}")
 
     def _ensure_data_loaded(self) -> None:
         """Ensure database contains current IMDb data"""
-        if self._is_data_current() and self._has_episode_title_data() and self._has_compact_aka_layout() and self._has_episode_aka_data():
-            logging.info("Database contains current IMDb data")
-            return
+        if self._is_data_current():
+            if self._has_episode_title_data() and self._has_episode_aka_data():
+                logging.info("Database contains current IMDb data")
+                return
 
-        if self._is_data_current() and not self._has_episode_title_data():
-            logging.info("IMDb cache is current but lacks compact episode title data. Reloading datasets.")
-        elif self._is_data_current() and not self._has_compact_aka_layout():
-            logging.info("IMDb cache is current but still uses the legacy AKA layout. Reloading datasets.")
-        elif self._is_data_current() and not self._has_episode_aka_data():
-            logging.info("IMDb cache is current but lacks episode-linked AKA data. Reloading datasets.")
+            if not self._has_episode_title_data():
+                logging.info("IMDb cache is current but lacks episode title data. Reloading datasets.")
+            elif not self._has_episode_aka_data():
+                logging.info("IMDb cache is current but lacks episode-linked AKA data. Reloading datasets.")
 
         logging.info("Loading IMDb datasets into database...")
         
@@ -441,9 +385,12 @@ class IMDbDataProvider(BaseMetadataProvider):
         # this ensures the entire database only contains titles with enough votes.
         if self.MIN_VOTES_THRESHOLD is not None:
             self._purge_low_vote_titles()
+
+        self._prune_config_filtered_titles()
         
         self._load_dataset_to_db("title.episode")
         self._load_dataset_to_db("title.akas")
+        self._deduplicate_title_akas()
         self._prune_child_tables()
         
         # Verify data integrity
@@ -477,51 +424,120 @@ class IMDbDataProvider(BaseMetadataProvider):
             removed = before_count - after_count
             logging.info(f"Purged {removed} low-vote titles ({before_count} -> {after_count} remaining)")
 
+    def _prune_config_filtered_titles(self) -> int:
+        """Remove titles that violate the configured type, year, or adult filters."""
+        where_clauses: List[str] = []
+        params: List[object] = []
+
+        if self.ALLOWED_TITLE_TYPES is not None:
+            allowed_type_codes = sorted(
+                {
+                    self.TITLE_TYPE_CODES[title_type]
+                    for title_type in self.ALLOWED_TITLE_TYPES
+                    if title_type in self.TITLE_TYPE_CODES and title_type != "tvEpisode"
+                }
+            )
+            if allowed_type_codes:
+                placeholders = ", ".join("?" for _ in allowed_type_codes)
+                where_clauses.append(f"(type != 4 AND type NOT IN ({placeholders}))")
+                params.extend(allowed_type_codes)
+            else:
+                where_clauses.append("type != 4")
+
+        if self.RECENT_YEAR_CUTOFF is not None:
+            where_clauses.append("(year IS NOT NULL AND year < ?)")
+            params.append(self.RECENT_YEAR_CUTOFF)
+
+        if self.FILTER_ADULT_CONTENT:
+            where_clauses.append("COALESCE(is_adult, 0) = 1")
+
+        if not where_clauses:
+            return 0
+
+        with sqlite3.connect(self._db_path, timeout=60.0) as conn:
+            before_count = conn.execute("SELECT COUNT(*) FROM title_basics").fetchone()[0]
+            conn.execute(
+                f"DELETE FROM title_basics WHERE {' OR '.join(where_clauses)}",
+                tuple(params),
+            )
+            conn.execute(
+                "DELETE FROM title_ratings WHERE id NOT IN (SELECT id FROM title_basics)"
+            )
+            conn.commit()
+            after_count = conn.execute("SELECT COUNT(*) FROM title_basics").fetchone()[0]
+
+        removed = before_count - after_count
+        if removed:
+            logging.info(
+                "Pruned %s title_basics rows that violated configured type/year/adult filters",
+                removed,
+            )
+        return removed
+
+    def _deduplicate_title_akas(self) -> int:
+        """Keep one AKA row per (titleId, title), preferring the earliest ordering value."""
+        with sqlite3.connect(self._db_path, timeout=60.0) as conn:
+            before_count = conn.execute("SELECT COUNT(*) FROM title_akas").fetchone()[0]
+            conn.execute(
+                """
+                DELETE FROM title_akas
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM title_akas AS preferred
+                    WHERE preferred.titleId = title_akas.titleId
+                    AND preferred.title = title_akas.title
+                    AND preferred.ordering < title_akas.ordering
+                )
+                """
+            )
+            conn.commit()
+            after_count = conn.execute("SELECT COUNT(*) FROM title_akas").fetchone()[0]
+
+        removed = before_count - after_count
+        if removed:
+            logging.info("Deduplicated %s duplicate AKA rows by title", removed)
+        return removed
+
     def _prune_child_tables(self) -> None:
         """Remove child rows that do not point at the surviving filtered title set."""
         logging.info("Pruning child tables against surviving title_basics rows...")
         with sqlite3.connect(self._db_path, timeout=60.0) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+            cursor = conn.execute("SELECT COUNT(*) FROM title_episode")
             episode_before = cursor.fetchone()[0]
-            cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
-            episode_titles_before = cursor.fetchone()[0]
             cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
             akas_before = cursor.fetchone()[0]
 
             conn.execute(
                 """
-                DELETE FROM title_episodes
+                DELETE FROM title_episode
                 WHERE parent_id NOT IN (SELECT id FROM title_basics)
+                OR id NOT IN (SELECT id FROM title_basics)
                 """
             )
             conn.execute(
                 """
-                DELETE FROM episode_titles
-                WHERE id NOT IN (SELECT id FROM title_episodes)
+                DELETE FROM title_basics
+                WHERE type = 4 AND id NOT IN (SELECT id FROM title_episode)
                 """
             )
             conn.execute(
                 """
                 DELETE FROM title_akas
                 WHERE titleId NOT IN (SELECT id FROM title_basics)
-                AND titleId NOT IN (SELECT id FROM title_episodes)
+                AND titleId NOT IN (SELECT id FROM title_episode)
                 """
             )
             conn.commit()
 
-            cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+            cursor = conn.execute("SELECT COUNT(*) FROM title_episode")
             episode_after = cursor.fetchone()[0]
-            cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
-            episode_titles_after = cursor.fetchone()[0]
             cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
             akas_after = cursor.fetchone()[0]
 
             logging.info(
-                "Pruned child rows: title_episodes %s -> %s, episode_titles %s -> %s, title_akas %s -> %s",
+                "Pruned child rows: title_episode %s -> %s, title_akas %s -> %s",
                 episode_before,
                 episode_after,
-                episode_titles_before,
-                episode_titles_after,
                 akas_before,
                 akas_after,
             )
@@ -591,16 +607,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                 # Clear existing data
                 if dataset_name == "title.basics":
                     conn.execute("DELETE FROM title_basics")
-                    conn.execute("DELETE FROM episode_titles")
                 elif dataset_name == "title.ratings":
                     conn.execute("DELETE FROM title_ratings")
                 elif dataset_name == "title.episode":
-                    conn.execute("DELETE FROM title_episodes")
+                    conn.execute("DELETE FROM title_episode")
                 elif dataset_name == "title.akas":
                     conn.execute("DELETE FROM title_akas")
                     conn.execute("DELETE FROM title_fts")
-                    self._create_raw_title_akas_table(conn)
-                    conn.execute("DELETE FROM raw_title_akas")
                 
                 # Track processed tconst integers for cross-dataset linking
                 processed_tconst_ints = set()
@@ -627,14 +640,9 @@ class IMDbDataProvider(BaseMetadataProvider):
                     aka_title_id_idx = header.index("titleId") if dataset_name == "title.akas" else -1
                     aka_ordering_idx = header.index("ordering") if dataset_name == "title.akas" else -1
                     aka_title_idx = header.index("title") if dataset_name == "title.akas" else -1
-                    aka_region_idx = header.index("region") if dataset_name == "title.akas" else -1
                     aka_language_idx = header.index("language") if dataset_name == "title.akas" else -1
-                    aka_types_idx = header.index("types") if dataset_name == "title.akas" else -1
-                    aka_attributes_idx = header.index("attributes") if dataset_name == "title.akas" else -1
-                    aka_is_original_title_idx = header.index("isOriginalTitle") if dataset_name == "title.akas" else -1
                     
                     batch = []
-                    episode_title_batch = []
                     pbar_unit = "source_rows" if dataset_name == "title.akas" else "rows"
                     pbar = tqdm(desc=f"Processing {dataset_name}", unit=pbar_unit)
                     processed_rows_since_update = 0
@@ -653,11 +661,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                                 aka_title_id_idx,
                                 aka_ordering_idx,
                                 aka_title_idx,
-                                aka_region_idx,
                                 aka_language_idx,
-                                aka_types_idx,
-                                aka_attributes_idx,
-                                aka_is_original_title_idx,
                                 processed_tconst_ints,
                             )
                             if language_filtered:
@@ -713,20 +717,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                         # Convert to compressed format
                         compressed_row = self._compress_row(dataset_name, row_data, required_cols, processed_tconst_ints)
                         if compressed_row:
-                            if dataset_name == "title.basics" and compressed_row.get("episode_row"):
-                                episode_title_batch.append(compressed_row["episode_row"])
-                            elif compressed_row.get("row"):
+                            if compressed_row.get("row"):
                                 batch.append(compressed_row['row'])
 
-                            pending_rows = len(batch) + len(episode_title_batch)
-                            if pending_rows >= chunk_size:
-                                inserted_rows = len(batch) + len(episode_title_batch)
-                                if batch:
-                                    self._insert_compressed_batch(conn, dataset_name, batch)
-                                    batch = []
-                                if episode_title_batch:
-                                    self._insert_episode_title_batch(conn, episode_title_batch)
-                                    episode_title_batch = []
+                            if len(batch) >= chunk_size:
+                                inserted_rows = len(batch)
+                                self._insert_compressed_batch(conn, dataset_name, batch)
+                                batch = []
                                 pbar.update(inserted_rows)
                                 processed_rows_since_update = 0
 
@@ -738,9 +735,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                             processed_rows_since_update = 0
                         else:
                             pbar.update(len(batch))
-                    if episode_title_batch:
-                        self._insert_episode_title_batch(conn, episode_title_batch)
-                        pbar.update(len(episode_title_batch))
 
                     if dataset_name == "title.akas" and processed_rows_since_update:
                         pbar.update(processed_rows_since_update)
@@ -750,9 +744,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                 # Update version metadata used by cache freshness/status checks.
                 self._upsert_dataset_version(conn, dataset_name, source_last_modified_ts)
 
-                # Rebuild FTS only after deduplicated AKA rows are populated.
+                # Rebuild FTS only after AKA rows are populated.
                 if dataset_name == "title.akas":
-                    self._materialize_title_akas_from_raw(conn)
                     self._rebuild_title_fts(conn)
                 
                 conn.commit()
@@ -764,16 +757,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                     count = cursor.fetchone()[0]
                     logging.info(f"Total ratings in database: {count}")
                 elif dataset_name == "title.episode":
-                    cursor = conn.execute("SELECT COUNT(*) FROM title_episodes")
+                    cursor = conn.execute("SELECT COUNT(*) FROM title_episode")
                     count = cursor.fetchone()[0]
                     logging.info(f"Total episodes in database: {count}")
                 elif dataset_name == "title.basics":
                     cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
                     count = cursor.fetchone()[0]
                     logging.info(f"Total titles in database: {count}")
-                    cursor = conn.execute("SELECT COUNT(*) FROM episode_titles")
-                    episode_title_count = cursor.fetchone()[0]
-                    logging.info(f"Total compact episode titles in database: {episode_title_count}")
                 elif dataset_name == "title.akas":
                     cursor = conn.execute("SELECT COUNT(*) FROM title_akas")
                     count = cursor.fetchone()[0]
@@ -798,13 +788,10 @@ class IMDbDataProvider(BaseMetadataProvider):
             # Extract data by column name
             data_dict = dict(zip(required_cols, row_data))
             title_type = data_dict.get('titleType', '')
-
-            # Keep episode rows in a dedicated compact table for episode title lookup.
-            if title_type == 'tvEpisode':
-                return True
+            is_episode = title_type == 'tvEpisode'
             
             # Filter by title type - configurable list of allowed types
-            if self.ALLOWED_TITLE_TYPES is not None:
+            if not is_episode and self.ALLOWED_TITLE_TYPES is not None:
                 if title_type not in self.ALLOWED_TITLE_TYPES:
                     return False
             
@@ -816,8 +803,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     
             # Filter out adult content (if enabled)
             if self.FILTER_ADULT_CONTENT:
-                title = data_dict.get('primaryTitle', '').lower()
-                if any(word in title for word in ['adult', 'xxx', 'porn']):
+                if data_dict.get('isAdult') == 1:
                     return False
                     
         elif dataset_name == "title.ratings":
@@ -855,11 +841,6 @@ class IMDbDataProvider(BaseMetadataProvider):
         return tuple(normalized_languages)
 
     @classmethod
-    def _extract_aka_language(cls, row_data: List, required_cols: List[str]) -> Optional[str]:
-        data_dict = dict(zip(required_cols, row_data))
-        return cls._normalize_aka_language(data_dict.get("language"))
-
-    @classmethod
     def _should_keep_aka_language(cls, language: Optional[str]) -> bool:
         allowed_languages = cls._get_allowed_aka_languages()
         if allowed_languages is None:
@@ -872,13 +853,9 @@ class IMDbDataProvider(BaseMetadataProvider):
         title_id_idx: int,
         ordering_idx: int,
         title_idx: int,
-        region_idx: int,
         language_idx: int,
-        types_idx: int,
-        attributes_idx: int,
-        is_original_title_idx: int,
         processed_tconst_ints: set,
-    ) -> Tuple[Optional[Tuple[int, int, str, str, Optional[str], Optional[str], Optional[str], Optional[str], Optional[int]]], Optional[str], bool]:
+    ) -> Tuple[Optional[Tuple[int, int, str]], Optional[str], bool]:
         language_value = fields[language_idx] if language_idx < len(fields) else None
         if language_value in (None, "", "\\N"):
             normalized_language = None
@@ -907,28 +884,10 @@ class IMDbDataProvider(BaseMetadataProvider):
         if not normalized_title:
             return None, normalized_language, False
 
-        region_value = self._normalize_space_collapsed_text(fields[region_idx]) if region_idx < len(fields) and fields[region_idx] not in (None, "", "\\N") else None
-        types_value = self._normalize_space_collapsed_text(fields[types_idx]) if types_idx < len(fields) and fields[types_idx] not in (None, "", "\\N") else None
-        attributes_value = self._normalize_space_collapsed_text(fields[attributes_idx]) if attributes_idx < len(fields) and fields[attributes_idx] not in (None, "", "\\N") else None
-        is_original_title_value = fields[is_original_title_idx] if is_original_title_idx < len(fields) else None
-        if is_original_title_value in (None, "", "\\N"):
-            normalized_is_original_title = None
-        else:
-            try:
-                normalized_is_original_title = int(is_original_title_value)
-            except (ValueError, TypeError):
-                normalized_is_original_title = None
-
         return (
             title_id_int,
             ordering_int,
             normalized_title,
-            self._normalize_title_key(normalized_title),
-            region_value,
-            normalized_language,
-            types_value,
-            attributes_value,
-            normalized_is_original_title,
         ), normalized_language, False
 
     @staticmethod
@@ -952,19 +911,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             if tconst_int is None:
                 return None
             
-            if data_dict['titleType'] == 'tvEpisode':
-                return {
-                    'episode_row': (
-                        tconst_int,
-                        data_dict['primaryTitle'] or '',
-                        (data_dict['primaryTitle'] or '').lower(),
-                        data_dict['startYear'],
-                    )
-                }
-
             # Map title type to integer
-            type_map = {'movie': 1, 'tvSeries': 2, 'tvMiniSeries': 3}
-            type_int = type_map.get(data_dict['titleType'], 1)
+            type_int = self.TITLE_TYPE_CODES.get(data_dict['titleType'], self.TITLE_TYPE_CODES['movie'])
             
             # Compress genres - only keep first 3, joined with commas
             genres = data_dict.get('genres', '')
@@ -1025,7 +973,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                 # Skip this episode - no corresponding parent series in basics
                 return None
         elif dataset_name == "title.akas":
-            # Convert titleId to integer
             titleId = data_dict['titleId']
             ordering = data_dict.get('ordering')
             try:
@@ -1044,7 +991,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     titleId_int,
                     ordering_int,
                     normalized_title,
-                    self._normalize_title_key(normalized_title),
                 )
             }
         
@@ -1058,18 +1004,11 @@ class IMDbDataProvider(BaseMetadataProvider):
             processed_tconst_ints.add(row[0])
 
         if dataset_name == "title.akas":
-            cursor = conn.execute("SELECT id FROM title_episodes")
+            cursor = conn.execute("SELECT id FROM title_episode")
             for row in cursor.fetchall():
                 processed_tconst_ints.add(row[0])
 
         return processed_tconst_ints
-
-    def _insert_episode_title_batch(self, conn: sqlite3.Connection, batch: List[Tuple]) -> None:
-        """Insert compact episode title rows."""
-        conn.executemany(
-            "INSERT OR REPLACE INTO episode_titles (id, title, title_lower, year) VALUES (?, ?, ?, ?)",
-            batch,
-        )
 
     def _rebuild_title_fts(self, conn: sqlite3.Connection) -> None:
         """Rebuild the standalone FTS table from deduplicated AKA rows."""
@@ -1078,38 +1017,6 @@ class IMDbDataProvider(BaseMetadataProvider):
             "INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas"
         )
 
-    def _create_raw_title_akas_table(self, conn: sqlite3.Connection) -> None:
-        """Create the raw AKA staging table keyed by IMDb's natural row identity."""
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS raw_title_akas (
-                titleId INTEGER NOT NULL,
-                ordering INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                title_key TEXT NOT NULL,
-                region TEXT,
-                language TEXT,
-                types TEXT,
-                attributes TEXT,
-                is_original_title INTEGER,
-                PRIMARY KEY (titleId, ordering)
-            ) WITHOUT ROWID
-            """
-        )
-
-    def _materialize_title_akas_from_raw(self, conn: sqlite3.Connection) -> None:
-        """Collapse raw AKA rows into the compact lookup table and drop the staging table."""
-        conn.execute("DELETE FROM title_akas")
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO title_akas (titleId, title, title_key, region, language, types, attributes, is_original_title)
-            SELECT titleId, title, title_key, region, language, types, attributes, is_original_title
-            FROM raw_title_akas
-            ORDER BY titleId, ordering
-            """
-        )
-        conn.execute("DROP TABLE IF EXISTS raw_title_akas")
-    
     def _insert_compressed_batch(self, conn: sqlite3.Connection, dataset_name: str, batch: List[Tuple]) -> None:
         """Insert compressed batch data"""        
         if dataset_name == "title.basics":
@@ -1124,12 +1031,12 @@ class IMDbDataProvider(BaseMetadataProvider):
             )
         elif dataset_name == "title.episode":
             conn.executemany(
-                "INSERT OR REPLACE INTO title_episodes (id, parent_id, season, episode) VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO title_episode (id, parent_id, season, episode) VALUES (?, ?, ?, ?)",
                 batch
             )
         elif dataset_name == "title.akas":
             conn.executemany(
-                "INSERT OR REPLACE INTO raw_title_akas (titleId, ordering, title, title_key, region, language, types, attributes, is_original_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO title_akas (titleId, ordering, title) VALUES (?, ?, ?)",
                 batch
             )
 
@@ -1161,16 +1068,17 @@ class IMDbDataProvider(BaseMetadataProvider):
                 CREATE INDEX IF NOT EXISTS idx_ratings_covering ON title_ratings(id, rating, votes);
 
                 -- Indexes for episodes
-                CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episodes(parent_id);
-                CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episodes(parent_id, season, episode);
+                CREATE INDEX IF NOT EXISTS idx_episodes_parent ON title_episode(parent_id);
+                CREATE INDEX IF NOT EXISTS idx_episodes_season_ep ON title_episode(parent_id, season, episode);
 
                 -- Additional index for fast episode lookup by id
-                CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episodes(id);
-                CREATE INDEX IF NOT EXISTS idx_episode_titles_lower ON episode_titles(title_lower);
+                CREATE INDEX IF NOT EXISTS idx_episodes_id ON title_episode(id);
+                CREATE INDEX IF NOT EXISTS idx_episode_titles_lower ON title_basics(title_lower) WHERE type = 4;
 
                 -- Indexes for akas
                 CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId);
-                CREATE INDEX IF NOT EXISTS idx_akas_title_key ON title_akas(title_key, titleId);
+                CREATE INDEX IF NOT EXISTS idx_akas_title_ci ON title_akas(title COLLATE NOCASE, titleId);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_akas_title_dedup ON title_akas(titleId, title);
 
                 DROP INDEX IF EXISTS idx_title_episode_titles;
                 DROP INDEX IF EXISTS idx_akas_title;
@@ -1201,23 +1109,13 @@ class IMDbDataProvider(BaseMetadataProvider):
             logging.info("Database optimization complete")
 
     def _has_episode_title_data(self) -> bool:
-        """Return True when the cache includes compact episode title rows required for title-based episode lookup."""
+        """Return True when the cache includes episode title rows required for title-based episode lookup."""
         try:
             with sqlite3.connect(self._db_path, timeout=5.0) as conn:
                 row = conn.execute(
-                    "SELECT 1 FROM episode_titles WHERE title IS NOT NULL AND title != '' LIMIT 1"
+                    "SELECT 1 FROM title_basics WHERE type = 4 AND title IS NOT NULL AND title != '' LIMIT 1"
                 ).fetchone()
                 return row is not None
-        except Exception:
-            return False
-
-    def _has_compact_aka_layout(self) -> bool:
-        """Return True when the cache uses the deduplicated AKA schema and standalone FTS layout."""
-        try:
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                aka_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_akas)").fetchall()]
-                fts_columns = [row[1] for row in conn.execute("PRAGMA table_info(title_fts)").fetchall()]
-                return aka_columns == ["titleId", "title", "title_key", "region", "language", "types", "attributes", "is_original_title"] and fts_columns == ["title", "titleId"]
         except Exception:
             return False
 
@@ -1229,17 +1127,13 @@ class IMDbDataProvider(BaseMetadataProvider):
                     """
                     SELECT 1
                     FROM title_akas a
-                    WHERE EXISTS (SELECT 1 FROM title_episodes e WHERE e.id = a.titleId)
+                    WHERE EXISTS (SELECT 1 FROM title_episode e WHERE e.id = a.titleId)
                     LIMIT 1
                     """
                 ).fetchone()
                 return row is not None
         except Exception:
             return False
-
-    def _normalize_title_key(self, title: str) -> str:
-        """Normalize a title into the compact key stored for AKA exact matching."""
-        return " ".join((title or "").casefold().split())
 
     def _apply_candidate_bonuses(self, row: sqlite3.Row | dict, score: float, year: Optional[int]) -> float:
         """Apply common year and popularity bonuses to a candidate score."""
@@ -1258,12 +1152,12 @@ class IMDbDataProvider(BaseMetadataProvider):
         return total_score
 
     def _get_exact_candidates(
-        self, conn: sqlite3.Connection, title_lower: str, title_key: str, year: Optional[int]
+        self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]
     ) -> List[sqlite3.Row]:
         """Return exact primary-title or AKA matches before falling back to FTS."""
         year_clause = ""
         primary_params: list = [title_lower, self.MIN_VOTES_THRESHOLD or 0]
-        aka_params: list = [title_key, self.MIN_VOTES_THRESHOLD or 0]
+        aka_params: list = [title_lower, self.MIN_VOTES_THRESHOLD or 0]
         if year:
             year_clause = " AND (s.year BETWEEN ? AND ? OR s.year IS NULL)"
             primary_params.extend([year - self.YEAR_TOLERANCE, year + self.YEAR_TOLERANCE])
@@ -1289,16 +1183,16 @@ class IMDbDataProvider(BaseMetadataProvider):
         if primary_matches:
             return primary_matches
 
-        if not title_key:
+        if not title_lower:
             return []
 
         aka_cursor = conn.execute(
             f"""
-                 SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes,
+                 SELECT DISTINCT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes,
                    1 AS match_rank
             FROM title_akas a
             JOIN search_view s ON a.titleId = s.id
-            WHERE a.title_key = ?
+            WHERE a.title = ? COLLATE NOCASE
             AND s.type IN (1, 2, 3)
             AND s.votes >= ?
             {year_clause}
@@ -1337,10 +1231,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         """Find title information while preferring a hinted media type for ambiguous exact-title matches."""
         self._ensure_data_loaded()
 
-        preferred_type_codes = {
-            "movie": {1},
-            "tv": {2, 3},
-        }.get(preferred_type)
+        preferred_type_codes = self.PREFERRED_TYPE_HINT_CODES.get(preferred_type)
         if not preferred_type_codes:
             return self.find_title(title, year)
 
@@ -1351,8 +1242,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn = self._get_connection()
         try:
             title_lower = re.sub(r"\s+", " ", title.lower()).strip()
-            title_key = self._normalize_title_key(title)
-            exact_candidates = self._get_exact_candidates(conn, title_lower, title_key, year)
+            exact_candidates = self._get_exact_candidates(conn, title_lower, year)
             preferred_candidates = [row for row in exact_candidates if row["type"] in preferred_type_codes]
 
             if preferred_candidates:
@@ -1431,9 +1321,8 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn = self._get_connection()
         try:
             title_lower = re.sub(r"\s+", " ", title.lower()).strip()
-            title_key = self._normalize_title_key(title)
 
-            exact_candidates = self._get_exact_candidates(conn, title_lower, title_key, year)
+            exact_candidates = self._get_exact_candidates(conn, title_lower, year)
             if exact_candidates:
                 best_match, best_score = self._select_exact_match(exact_candidates, conn, year)
             else:
@@ -1554,8 +1443,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             return cached
 
         # Map type integer back to string
-        type_map = {1: 'movie', 2: 'tvSeries', 3: 'tvMiniSeries'}
-        title_type = type_map.get(row["type"], 'movie')
+        title_type = self.TITLE_TYPE_NAMES.get(row["type"], 'movie')
         media_type = "movie" if title_type == "movie" else "tv"
 
         # Get episode count for TV shows using existing connection (much faster)
@@ -1565,7 +1453,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             cursor = conn.execute(
                 """
                 SELECT COUNT(*) as episode_count, MAX(season) as max_season
-                FROM title_episodes 
+                FROM title_episode
                 WHERE parent_id = ?
             """,
                 (row["id"],),
@@ -1648,8 +1536,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             cursor = conn.execute(
                 """
                 SELECT e.id, t.title, t.year, r.rating, r.votes
-                FROM title_episodes e
-                LEFT JOIN episode_titles t ON e.id = t.id
+                FROM title_episode e
+                LEFT JOIN episode_titles t ON e.id = t.id AND t.is_primary = 1
                 LEFT JOIN title_ratings r ON e.id = r.id
                 WHERE e.parent_id = ? AND e.season = ? AND e.episode = ?
                 LIMIT 1
@@ -1715,8 +1603,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             params: List[int] = [internal_parent_id]
             sql = """
                 SELECT e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes
-                FROM title_episodes e
-                LEFT JOIN episode_titles t ON e.id = t.id
+                FROM title_episode e
+                LEFT JOIN episode_titles t ON e.id = t.id AND t.is_primary = 1
                 LEFT JOIN title_ratings r ON e.id = r.id
                 WHERE e.parent_id = ?
             """
@@ -1799,19 +1687,26 @@ class IMDbDataProvider(BaseMetadataProvider):
         try:
             params = [internal_parent_id]
             sql = """
-                SELECT e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes,
-                GROUP_CONCAT(a.title, '<<<AKA>>>') AS aka_titles
-                FROM title_episodes e
-                LEFT JOIN episode_titles t ON e.id = t.id
+                SELECT e.id, e.season, e.episode, t.primary_title AS title, t.primary_year AS year,
+                r.rating, r.votes, t.candidate_titles
+                FROM title_episode e
+                LEFT JOIN (
+                    SELECT
+                        id,
+                        MAX(CASE WHEN is_primary = 1 THEN title END) AS primary_title,
+                        MAX(CASE WHEN is_primary = 1 THEN year END) AS primary_year,
+                        GROUP_CONCAT(title, '<<<AKA>>>') AS candidate_titles
+                    FROM episode_titles
+                    GROUP BY id
+                ) t ON e.id = t.id
                 LEFT JOIN title_ratings r ON e.id = r.id
-                LEFT JOIN title_akas a ON e.id = a.titleId
                 WHERE e.parent_id = ?
             """
             if season is not None:
                 sql += " AND e.season = ?"
                 params.append(season)
 
-            sql += " GROUP BY e.id, e.season, e.episode, t.title, t.year, r.rating, r.votes"
+            sql += " GROUP BY e.id, e.season, e.episode, t.primary_title, t.primary_year, t.candidate_titles, r.rating, r.votes"
 
             cursor = conn.execute(sql, tuple(params))
             candidates = cursor.fetchall()
@@ -1825,11 +1720,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                 if row["title"]:
                     candidate_titles.append(row["title"])
 
-                aka_titles = row["aka_titles"] or ""
-                if aka_titles:
-                    for aka_title in aka_titles.split('<<<AKA>>>'):
-                        if aka_title:
-                            candidate_titles.append(aka_title)
+                candidate_titles_text = row["candidate_titles"] or ""
+                if candidate_titles_text:
+                    for candidate_title in candidate_titles_text.split('<<<AKA>>>'):
+                        if candidate_title:
+                            candidate_titles.append(candidate_title)
 
                 score = max(
                     (
