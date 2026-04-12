@@ -39,15 +39,15 @@ class IMDbDataProvider(BaseMetadataProvider):
         ],
         "title.episode": ["tconst", "parentTconst", "seasonNumber", "episodeNumber"],
         "title.ratings": ["tconst", "averageRating", "numVotes"],
-        "title.akas": ["titleId", "title"],
+        "title.akas": ["titleId", "title", "language", "region"],
     }
     
     # Configurable filtering options - set to None to disable specific filters
     # IMPORTANT: Titles with fewer than MIN_VOTES_THRESHOLD votes are excluded from the
-    # database entirely (both during ratings import and via post-load cleanup of title_basics).
-    # This keeps the DB small and searches fast by only including well-known titles.
-    MIN_VOTES_THRESHOLD = 500     # Minimum votes required to store a title in the DB (None = no filter)
-    RECENT_YEAR_CUTOFF = 1950     # Only keep titles from this year onwards (None = no filter)
+    # database entirely. title.ratings is loaded first, then title.basics is gated to
+    # those qualifying ids so low-vote rows never need to be inserted and deleted later.
+    MIN_VOTES_THRESHOLD = 5000     # Minimum votes required to store a title in the DB (None = no filter)
+    RECENT_YEAR_CUTOFF = 1975     # Only keep titles from this year onwards (None = no filter)
     FILTER_ADULT_CONTENT = True  # Filter out IMDb titles flagged as adult (False = no filter)
     ALLOWED_TITLE_TYPES = ['movie', 'tvSeries', 'tvMiniSeries']  # None = allow all types
 
@@ -136,7 +136,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                 conn.execute("PRAGMA cache_size=10000")
                 conn.execute("PRAGMA temp_store=MEMORY")
                 conn.execute("PRAGMA page_size=32768")  # Larger pages for better compression
-                conn.execute("PRAGMA auto_vacuum=INCREMENTAL")  # Reclaim space when data is deleted
                 
                 # Create tables with optimized schema - compressed storage
                 conn.executescript(
@@ -167,9 +166,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                         episode INTEGER
                     ) WITHOUT ROWID;
 
-                    CREATE TABLE title_akas (
+                    CREATE TABLE IF NOT EXISTS title_akas (
                         titleId INTEGER NOT NULL,
                         title TEXT NOT NULL,
+                        title_lower TEXT NOT NULL,
+                        language TEXT,
+                        region TEXT,
                         PRIMARY KEY (titleId, title)
                     ) WITHOUT ROWID;
 
@@ -359,24 +361,17 @@ class IMDbDataProvider(BaseMetadataProvider):
         logging.info("Loading IMDb datasets into database...")
         
         # Load datasets in order of dependency:
-        # 1. title.basics first for searchable movies/series only
-        # 2. title.ratings second (filtered by MIN_VOTES_THRESHOLD)
-        # 3. Then purge basics entries that didn't meet the vote threshold
+        # 1. title.ratings first to establish the qualifying ids when a vote threshold is active
+        # 2. title.basics second for searchable movies/series that survived ratings + config filters
+        # 3. Prune child tables that no longer match the filtered basics set
         # 4. title.episode establishes the surviving episode ids for kept parents
         # 5. Backfill only those surviving episode rows from title.basics
         # 6. title.akas loads only for rows that now exist in title_basics
         # 7. Prune child tables as a safety net against any stale rows
         #
         # This avoids staging a large number of episode rows and episode AKAs
-        # that would only be deleted later once parent filtering is known.
-        self._load_dataset_to_db("title.basics", include_episode_basics=False)
         self._load_dataset_to_db("title.ratings")
-        
-        # Remove titles from title_basics that have no matching rating entry.
-        # Since title.ratings already filters out titles below MIN_VOTES_THRESHOLD,
-        # this ensures the entire database only contains titles with enough votes.
-        if self.MIN_VOTES_THRESHOLD is not None:
-            self._purge_low_vote_titles()
+        self._load_dataset_to_db("title.basics", include_episode_basics=False)
 
         self._prune_config_filtered_titles()
         
@@ -390,31 +385,6 @@ class IMDbDataProvider(BaseMetadataProvider):
         
         # Optimize database for read operations
         self._optimize_database_for_reads()
-
-    def _purge_low_vote_titles(self) -> None:
-        """Remove titles from title_basics that don't have a matching entry in title_ratings.
-        
-        Since title_ratings is already filtered by MIN_VOTES_THRESHOLD during import,
-        any title_basics entry without a rating row is guaranteed to have fewer than
-        MIN_VOTES_THRESHOLD votes. This keeps the entire database clean.
-        """
-        logging.info(f"Purging titles with fewer than {self.MIN_VOTES_THRESHOLD} votes from title_basics...")
-        with sqlite3.connect(self._db_path, timeout=60.0) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
-            before_count = cursor.fetchone()[0]
-            
-            # Delete basics entries that have no corresponding rating
-            # (i.e. they were filtered out due to low vote count)
-            conn.execute("""
-                DELETE FROM title_basics
-                WHERE type != 4 AND id NOT IN (SELECT id FROM title_ratings)
-            """)
-            conn.commit()
-            
-            cursor = conn.execute("SELECT COUNT(*) FROM title_basics")
-            after_count = cursor.fetchone()[0]
-            removed = before_count - after_count
-            logging.info(f"Purged {removed} low-vote titles ({before_count} -> {after_count} remaining)")
 
     def _prune_config_filtered_titles(self) -> int:
         """Remove titles that violate the configured type, year, or adult filters."""
@@ -443,15 +413,13 @@ class IMDbDataProvider(BaseMetadataProvider):
         if self.FILTER_ADULT_CONTENT:
             where_clauses.append("COALESCE(is_adult, 0) = 1")
 
-        if not where_clauses:
-            return 0
-
         with sqlite3.connect(self._db_path, timeout=60.0) as conn:
             before_count = conn.execute("SELECT COUNT(*) FROM title_basics").fetchone()[0]
-            conn.execute(
-                f"DELETE FROM title_basics WHERE {' OR '.join(where_clauses)}",
-                tuple(params),
-            )
+            if where_clauses:
+                conn.execute(
+                    f"DELETE FROM title_basics WHERE {' OR '.join(where_clauses)}",
+                    tuple(params),
+                )
             conn.execute(
                 "DELETE FROM title_ratings WHERE id NOT IN (SELECT id FROM title_basics)"
             )
@@ -583,13 +551,20 @@ class IMDbDataProvider(BaseMetadataProvider):
                     conn.execute("DELETE FROM title_akas")
                     conn.execute("DELETE FROM title_fts")
                 
-                # Track processed tconst integers for cross-dataset linking
-                processed_tconst_ints = set()
+                linkable_tconst_ints: Optional[set[int]] = None
 
-                # Load existing tconst integers if this isn't the first dataset
-                if dataset_name != "title.basics":
-                    processed_tconst_ints = self._load_linkable_tconst_ints(conn, dataset_name)
-                    logging.info(f"Loaded {len(processed_tconst_ints)} existing tconst integers for {dataset_name}")
+                if dataset_name == "title.basics" and self.MIN_VOTES_THRESHOLD is not None:
+                    linkable_tconst_ints = self._load_qualifying_rating_tconst_ints(conn)
+                    logging.info(
+                        f"Loaded {len(linkable_tconst_ints)} qualifying rating ids for {dataset_name}"
+                    )
+                elif dataset_name != "title.basics" and (
+                    dataset_name != "title.ratings" or self._table_has_rows(conn, "title_basics")
+                ):
+                    linkable_tconst_ints = self._load_linkable_tconst_ints(conn, dataset_name)
+                    logging.info(
+                        f"Loaded {len(linkable_tconst_ints)} existing tconst integers for {dataset_name}"
+                    )
                 
                 # Read and process data in chunks with aggressive filtering
                 chunk_size = 100000
@@ -649,7 +624,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                             continue
 
                         # Convert to compressed format
-                        compressed_row = self._compress_row(dataset_name, row_data, required_cols, processed_tconst_ints)
+                        compressed_row = self._compress_row(
+                            dataset_name,
+                            row_data,
+                            required_cols,
+                            linkable_tconst_ints,
+                        )
                         if not compressed_row or not compressed_row.get("row"):
                             continue
 
@@ -717,7 +697,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     return
 
                 required_cols = self.REQUIRED_COLUMNS["title.basics"]
-                processed_tconst_ints: set[int] = set()
                 chunk_size = 100000
                 inserted_rows = 0
                 batch = []
@@ -790,7 +769,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                             "title.basics",
                             row_data,
                             required_cols,
-                            processed_tconst_ints,
+                            None,
                         )
                         if not compressed_row or not compressed_row.get("row"):
                             continue
@@ -852,8 +831,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     
         elif dataset_name == "title.ratings":
             # Filter by minimum votes threshold (if configured).
-            # Titles that don't meet this threshold won't have a rating row,
-            # and will subsequently be purged from title_basics too (see _purge_low_vote_titles).
+            # Ratings are loaded first so title.basics can be gated to this qualifying id set.
             if self.MIN_VOTES_THRESHOLD is not None:
                 data_dict = dict(zip(required_cols, row_data))
                 votes = data_dict.get('numVotes', 0)
@@ -866,8 +844,13 @@ class IMDbDataProvider(BaseMetadataProvider):
     def _normalize_space_collapsed_text(text: Optional[str]) -> str:
         return " ".join((text or "").split())
 
-    def _compress_row(self, dataset_name: str, row_data: List, required_cols: List[str], 
-                      processed_tconst_ints: set) -> Optional[Dict]:
+    def _compress_row(
+        self,
+        dataset_name: str,
+        row_data: List,
+        required_cols: List[str],
+        linkable_tconst_ints: Optional[set[int]],
+    ) -> Optional[Dict]:
         """Convert row data to compressed format using tconst integers as IDs"""
         data_dict = dict(zip(required_cols, row_data))
         
@@ -882,6 +865,9 @@ class IMDbDataProvider(BaseMetadataProvider):
             
             if tconst_int is None:
                 return None
+
+            if linkable_tconst_ints is not None and tconst_int not in linkable_tconst_ints:
+                return None
             
             # Map title type to integer
             type_int = self.TITLE_TYPE_CODES.get(data_dict['titleType'], self.TITLE_TYPE_CODES['movie'])
@@ -894,8 +880,6 @@ class IMDbDataProvider(BaseMetadataProvider):
             
             title = data_dict['primaryTitle'] or ''
             original_title = data_dict['originalTitle'] or ''
-            
-            processed_tconst_ints.add(tconst_int)
             
             return {
                 'row': (tconst_int, title, original_title, title.lower(), type_int, 
@@ -912,7 +896,9 @@ class IMDbDataProvider(BaseMetadataProvider):
             except (ValueError, TypeError):
                 tconst_int = None
             
-            if tconst_int and tconst_int in processed_tconst_ints:
+            if tconst_int and (
+                linkable_tconst_ints is None or tconst_int in linkable_tconst_ints
+            ):
                 # Store rating as integer (rating * 10) to save space
                 rating = data_dict.get('averageRating')
                 rating_int = int(rating * 10) if rating else None
@@ -936,7 +922,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                 tconst_int = None
                 parent_tconst_int = None
             
-            if parent_tconst_int and parent_tconst_int in processed_tconst_ints and tconst_int:
+            if (
+                parent_tconst_int
+                and tconst_int
+                and linkable_tconst_ints is not None
+                and parent_tconst_int in linkable_tconst_ints
+            ):
                 return {
                     'row': (tconst_int, parent_tconst_int,
                            data_dict.get('seasonNumber'), data_dict.get('episodeNumber'))
@@ -951,19 +942,32 @@ class IMDbDataProvider(BaseMetadataProvider):
             except (ValueError, TypeError):
                 return None
             # Only keep akas for titles we have in basics
-            if titleId_int not in processed_tconst_ints:
+            if linkable_tconst_ints is not None and titleId_int not in linkable_tconst_ints:
                 return None
             normalized_title = self._normalize_space_collapsed_text(data_dict.get('title', ''))
             if not normalized_title:
                 return None
+            language = self._normalize_space_collapsed_text(data_dict.get('language')) or None
+            region = self._normalize_space_collapsed_text(data_dict.get('region')) or None
             return {
                 'row': (
                     titleId_int,
                     normalized_title,
+                    normalized_title.lower(),
+                    language,
+                    region,
                 )
             }
         
         return None
+
+    @staticmethod
+    def _table_has_rows(conn: sqlite3.Connection, table_name: str) -> bool:
+        row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+        return row is not None
+
+    def _load_qualifying_rating_tconst_ints(self, conn: sqlite3.Connection) -> set[int]:
+        return {row[0] for row in conn.execute("SELECT id FROM title_ratings").fetchall()}
 
     def _load_linkable_tconst_ints(self, conn: sqlite3.Connection, dataset_name: str) -> set[int]:
         processed_tconst_ints: set[int] = set()
@@ -993,7 +997,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             )
         elif dataset_name == "title.akas":
             conn.executemany(
-                "INSERT OR IGNORE INTO title_akas (titleId, title) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO title_akas (titleId, title, title_lower, language, region) VALUES (?, ?, ?, ?, ?)",
                 batch
             )
 
@@ -1056,11 +1060,6 @@ class IMDbDataProvider(BaseMetadataProvider):
             self._timed_execute(conn, "PRAGMA optimize")
 
             conn.commit()
-
-            # Rebuild the file after full reload so deleted large tables/indexes actually shrink on disk.
-            self._timed_execute(conn, "PRAGMA journal_mode=DELETE")
-            self._timed_execute(conn, "VACUUM")
-            self._timed_execute(conn, "PRAGMA journal_mode=WAL")
 
             # Build a standalone FTS table for title_akas to enable fast title-based episode lookups.
             self._timed_execute(conn, "INSERT INTO title_fts (title, titleId) SELECT title, titleId FROM title_akas")
