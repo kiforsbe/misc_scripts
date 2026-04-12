@@ -359,20 +359,17 @@ class IMDbDataProvider(BaseMetadataProvider):
         logging.info("Loading IMDb datasets into database...")
         
         # Load datasets in order of dependency:
-        # 1. title.basics first (filtered by type/year/adult)
+        # 1. title.basics first for searchable movies/series only
         # 2. title.ratings second (filtered by MIN_VOTES_THRESHOLD)
         # 3. Then purge basics entries that didn't meet the vote threshold
-        # 4. title.episode and title.akas last (only for surviving titles)
-        # 5. Prune child tables against the final surviving title set
+        # 4. title.episode establishes the surviving episode ids for kept parents
+        # 5. Backfill only those surviving episode rows from title.basics
+        # 6. title.akas loads only for rows that now exist in title_basics
+        # 7. Prune child tables as a safety net against any stale rows
         #
-        # Note: episodes and akas are implicitly filtered by the vote threshold
-        # because they load processed_tconst_ints from the already-purged
-        # title_basics table. _compress_row checks parent IDs against this set,
-        # so episodes/akas for low-vote titles are never inserted. Compact
-        # episode titles are staged from title.basics earlier in the pipeline,
-        # so they are pruned after title.episode establishes the surviving
-        # episode id set.
-        self._load_dataset_to_db("title.basics")
+        # This avoids staging a large number of episode rows and episode AKAs
+        # that would only be deleted later once parent filtering is known.
+        self._load_dataset_to_db("title.basics", include_episode_basics=False)
         self._load_dataset_to_db("title.ratings")
         
         # Remove titles from title_basics that have no matching rating entry.
@@ -384,6 +381,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._prune_config_filtered_titles()
         
         self._load_dataset_to_db("title.episode")
+        self._load_surviving_episode_basics()
         self._load_dataset_to_db("title.akas")
         self._prune_child_tables()
         
@@ -512,7 +510,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 akas_after,
             )
 
-    def _load_dataset_to_db(self, dataset_name: str) -> None:
+    def _load_dataset_to_db(self, dataset_name: str, include_episode_basics: bool = True) -> None:
         """Load a dataset into the database"""
         url = self.DATASETS[dataset_name]
         gz_cache = os.path.join(self.cache_dir, f"{dataset_name}.tsv.gz")
@@ -642,7 +640,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                             row_data.append(value)
 
                         # Apply aggressive filtering
-                        if dataset_name != "title.akas" and not self._should_keep_title(dataset_name, row_data, required_cols):
+                        if dataset_name != "title.akas" and not self._should_keep_title(
+                            dataset_name,
+                            row_data,
+                            required_cols,
+                            include_episode_basics=include_episode_basics,
+                        ):
                             continue
 
                         # Convert to compressed format
@@ -692,13 +695,144 @@ class IMDbDataProvider(BaseMetadataProvider):
             logging.error(f"Error processing {dataset_name}: {str(e)}")
             raise
 
-    def _should_keep_title(self, dataset_name: str, row_data: List, required_cols: List[str]) -> bool:
+    def _load_surviving_episode_basics(self) -> None:
+        """Load episode title rows only for episode ids that survived parent filtering."""
+        logging.info("Loading surviving episode title rows into title_basics...")
+        gz_cache = os.path.join(self.cache_dir, "title.basics.tsv.gz")
+        if not os.path.exists(gz_cache):
+            raise FileNotFoundError(f"Missing cached IMDb dataset: {gz_cache}")
+
+        try:
+            with sqlite3.connect(self._db_path, timeout=60.0) as conn:
+                conn.execute("PRAGMA synchronous=OFF")
+                conn.execute("PRAGMA temp_store=MEMORY")
+                conn.execute("PRAGMA cache_size=100000")
+
+                remaining_episode_ids = {
+                    row[0] for row in conn.execute("SELECT id FROM title_episode").fetchall()
+                }
+                total_episode_ids = len(remaining_episode_ids)
+                if total_episode_ids == 0:
+                    logging.info("No surviving episode ids found after title.episode load")
+                    return
+
+                required_cols = self.REQUIRED_COLUMNS["title.basics"]
+                processed_tconst_ints: set[int] = set()
+                chunk_size = 100000
+                inserted_rows = 0
+                batch = []
+
+                with gzip.open(gz_cache, "rt", encoding="utf-8") as f:
+                    header = f.readline().strip().split("\t")
+                    col_indices = [
+                        header.index(col) for col in required_cols if col in header
+                    ]
+
+                    pbar = tqdm(
+                        total=total_episode_ids,
+                        desc="Processing surviving title.basics episodes",
+                        unit="rows",
+                    )
+
+                    for line in f:
+                        if not remaining_episode_ids:
+                            break
+                        if not line.strip():
+                            continue
+
+                        fields = line.rstrip("\n\r").split("\t")
+
+                        row_data = []
+                        for i, col_idx in enumerate(col_indices):
+                            if col_idx < len(fields):
+                                value = fields[col_idx]
+                                if value == "\\N" or value == "":
+                                    value = None
+                                elif required_cols[i] in ["startYear", "endYear", "runtimeMinutes", "seasonNumber", "episodeNumber", "numVotes"]:
+                                    try:
+                                        value = int(value) if value else None
+                                    except (ValueError, TypeError):
+                                        value = None
+                                elif required_cols[i] == "isAdult":
+                                    try:
+                                        value = int(value) if value in ["0", "1"] else 0
+                                    except (ValueError, TypeError):
+                                        value = 0
+                                elif required_cols[i] == "averageRating":
+                                    try:
+                                        value = float(value) if value else None
+                                    except (ValueError, TypeError):
+                                        value = None
+                            else:
+                                value = None
+                            row_data.append(value)
+
+                        data_dict = dict(zip(required_cols, row_data))
+                        if data_dict.get("titleType") != "tvEpisode":
+                            continue
+
+                        tconst = data_dict.get("tconst")
+                        try:
+                            episode_id = int(tconst[2:]) if isinstance(tconst, str) and tconst.startswith("tt") else None
+                        except (ValueError, TypeError):
+                            episode_id = None
+
+                        if episode_id is None or episode_id not in remaining_episode_ids:
+                            continue
+
+                        remaining_episode_ids.remove(episode_id)
+                        pbar.update(1)
+
+                        if not self._should_keep_title("title.basics", row_data, required_cols):
+                            continue
+
+                        compressed_row = self._compress_row(
+                            "title.basics",
+                            row_data,
+                            required_cols,
+                            processed_tconst_ints,
+                        )
+                        if not compressed_row or not compressed_row.get("row"):
+                            continue
+
+                        batch.append(compressed_row["row"])
+                        inserted_rows += 1
+
+                        if len(batch) >= chunk_size:
+                            self._insert_compressed_batch(conn, "title.basics", batch)
+                            batch = []
+
+                    pbar.close()
+
+                if batch:
+                    self._insert_compressed_batch(conn, "title.basics", batch)
+
+                conn.commit()
+                logging.info(
+                    "Inserted %s surviving episode title rows into title_basics (%s linked episode ids)",
+                    inserted_rows,
+                    total_episode_ids,
+                )
+        except Exception as e:
+            logging.error(f"Error backfilling episode title rows: {str(e)}")
+            raise
+
+    def _should_keep_title(
+        self,
+        dataset_name: str,
+        row_data: List,
+        required_cols: List[str],
+        include_episode_basics: bool = True,
+    ) -> bool:
         """Apply configurable filtering to keep only relevant titles"""
         if dataset_name == "title.basics":
             # Extract data by column name
             data_dict = dict(zip(required_cols, row_data))
             title_type = data_dict.get('titleType', '')
             is_episode = title_type == 'tvEpisode'
+
+            if is_episode and not include_episode_basics:
+                return False
             
             # Filter by title type - configurable list of allowed types
             if not is_episode and self.ALLOWED_TITLE_TYPES is not None:
@@ -837,11 +971,6 @@ class IMDbDataProvider(BaseMetadataProvider):
         cursor = conn.execute("SELECT id FROM title_basics")
         for row in cursor.fetchall():
             processed_tconst_ints.add(row[0])
-
-        if dataset_name == "title.akas":
-            cursor = conn.execute("SELECT id FROM title_episode")
-            for row in cursor.fetchall():
-                processed_tconst_ints.add(row[0])
 
         return processed_tconst_ints
 
