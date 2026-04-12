@@ -33,10 +33,22 @@ def run_tests():
         "A.I.C.O.: Awakening",
         {
             "title": "A.I.C.O.",
-            "media_kind": "movie",
+            "media_kind": "series",
             "season": None,
             "episode": None,
             "episode_title": "Awakening",
+            "is_explicit_series": False,
+            "has_implicit_split": True,
+        },
+    )
+    assert_parse(
+        "A.I.C.O.: Devotion",
+        {
+            "title": "A.I.C.O.",
+            "media_kind": "series",
+            "season": None,
+            "episode": None,
+            "episode_title": "Devotion",
             "is_explicit_series": False,
             "has_implicit_split": True,
         },

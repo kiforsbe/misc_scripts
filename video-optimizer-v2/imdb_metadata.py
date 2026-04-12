@@ -1365,6 +1365,46 @@ class IMDbDataProvider(BaseMetadataProvider):
                     )
                     self._search_cache[cache_key] = result
                     return result
+
+            candidates = [
+                dict(row)
+                for row in self._get_fuzzy_candidates(conn, title_lower, year)
+                if row["type"] in preferred_type_codes
+            ]
+            if candidates:
+                search_dict = {}
+                candidate_by_id = {}
+                for row in candidates:
+                    row_id = row["id"]
+                    if row_id in candidate_by_id:
+                        continue
+                    candidate_by_id[row_id] = row
+                    search_dict[row_id] = row.get("matched_title") or row["title"]
+
+                title_matches = process.extract(
+                    title, search_dict, scorer=fuzz.ratio, limit=self.FUZZY_MATCH_LIMIT
+                )
+
+                best_match = None
+                best_score = 0.0
+                for _matched_title, fuzzy_score, row_id in title_matches:
+                    row = candidate_by_id.get(row_id)
+                    if not row:
+                        continue
+
+                    total_score = self._apply_candidate_bonuses(row, float(fuzzy_score), year)
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_match = self._create_title_info_from_row_fast(row, conn)
+
+                if best_match:
+                    result = MatchResult(
+                        info=best_match,
+                        score=best_score,
+                        provider_weight=self.provider_weight,
+                    )
+                    self._search_cache[cache_key] = result
+                    return result
         finally:
             self._return_connection(conn)
 
@@ -1399,8 +1439,14 @@ class IMDbDataProvider(BaseMetadataProvider):
             else:
                 candidates = [dict(row) for row in self._get_fuzzy_candidates(conn, title_lower, year)]
 
-                search_dict = {r["id"]: r["title"] for r in candidates}
-                candidate_by_id = {r["id"]: r for r in candidates}
+                search_dict = {}
+                candidate_by_id = {}
+                for row in candidates:
+                    row_id = row["id"]
+                    if row_id in candidate_by_id:
+                        continue
+                    candidate_by_id[row_id] = row
+                    search_dict[row_id] = row.get("matched_title") or row["title"]
 
                 title_matches = process.extract(
                     title, search_dict, scorer=fuzz.ratio, limit=self.FUZZY_MATCH_LIMIT
@@ -1446,12 +1492,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                 if year:
                     cursor = conn.execute(
                         """
-                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes, f.score
+                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes, f.score, f.title AS matched_title
                         FROM (
-                            SELECT titleId, MIN(bm25(title_fts, 10.0)) AS score
+                            SELECT titleId, title, bm25(title_fts, 10.0) AS score
                             FROM title_fts
                             WHERE title_fts MATCH ?
-                            GROUP BY titleId
                             ORDER BY score
                             LIMIT ?
                         ) f
@@ -1474,12 +1519,11 @@ class IMDbDataProvider(BaseMetadataProvider):
                 else:
                     cursor = conn.execute(
                         """
-                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes, f.score
+                        SELECT s.id, s.title, s.type, s.year, s.end_year, s.runtime_minutes, s.genres, s.rating, s.votes, f.score, f.title AS matched_title
                         FROM (
-                            SELECT titleId, MIN(bm25(title_fts, 10.0)) AS score
+                            SELECT titleId, title, bm25(title_fts, 10.0) AS score
                             FROM title_fts
                             WHERE title_fts MATCH ?
-                            GROUP BY titleId
                             ORDER BY score
                             LIMIT ?
                         ) f

@@ -6,6 +6,7 @@ import requests
 import sqlite3
 import zstandard as zstd
 import time
+from difflib import SequenceMatcher
 from datetime import timedelta
 from typing import Optional
 from tqdm import tqdm
@@ -782,18 +783,51 @@ class AnimeDataProvider(BaseMetadataProvider):
         cache_key = f"{title.lower()}_{year if year else ''}"
         if cache_key in self._search_cache:
             return self._search_cache[cache_key]
-        best_score = 200
+        best_score = 0.0
         anime_data = None  # Initialize to prevent UnboundLocalError
         conn = self._get_connection()
         try:
             candidates = []
             # 0. Try exact match first
             cursor = conn.execute(
-                "SELECT * FROM anime_synonym_view WHERE synonym = ?",
-                (title,)
+                """
+                SELECT * FROM anime_synonym_view
+                WHERE synonym = ? COLLATE NOCASE OR title = ? COLLATE NOCASE
+                ORDER BY CASE
+                    WHEN synonym = ? COLLATE NOCASE THEN 0
+                    WHEN title = ? COLLATE NOCASE THEN 1
+                    ELSE 2
+                END,
+                LENGTH(synonym),
+                year DESC
+                LIMIT 1
+                """,
+                (title, title, title, title)
             )
             candidates = cursor.fetchmany(1)
-            if candidates is None or len(candidates) == 0:
+            if candidates:
+                anime_data = candidates[0]
+                best_score = self._score_title_match(title, anime_data['synonym'])
+            else:
+                prefix_pattern = f"{title.strip()}%"
+                cursor = conn.execute(
+                    """
+                    SELECT * FROM anime_synonym_view
+                    WHERE synonym LIKE ? COLLATE NOCASE OR title LIKE ? COLLATE NOCASE
+                    ORDER BY LENGTH(synonym), year DESC
+                    LIMIT 25
+                    """,
+                    (prefix_pattern, prefix_pattern)
+                )
+                direct_candidates = cursor.fetchall()
+                if direct_candidates:
+                    anime_data = max(
+                        direct_candidates,
+                        key=lambda candidate: self._score_title_match(title, candidate['synonym']),
+                    )
+                    best_score = self._score_title_match(title, anime_data['synonym'])
+
+            if anime_data is None:
                 # 1. Build FTS5 query string for the title
                 fts_query = self._build_fts_query(title)
                 # 2. Query FTS5 table for candidate synonyms
@@ -814,11 +848,13 @@ class AnimeDataProvider(BaseMetadataProvider):
                     candidates = self._rank_candidates(title, candidates)
                     
             # 3. The first candidate is the top scorer, much better results than fuzzer
-            if candidates and len(candidates) > 0:
+            if anime_data is None and candidates and len(candidates) > 0:
                 top_candidate = candidates[0]
                 anime_data = conn.execute(
                     "SELECT * FROM anime_synonym_view WHERE id = ?", (top_candidate['id'],)
                 ).fetchone()
+                if anime_data:
+                    best_score = self._score_title_match(title, top_candidate['title'])
         finally:
             self._return_connection(conn)
         if anime_data:
@@ -985,48 +1021,67 @@ class AnimeDataProvider(BaseMetadataProvider):
         """
         if not candidates:
             return candidates
-            
-        # Normalize query for comparison
-        query_normalized = query_title.lower()
-        query_normalized = re.sub(r'[^\w\s]', ' ', query_normalized)
-        query_words = set(query_normalized.split())
         
         scored_candidates = []
         for candidate in candidates:
-            candidate_title = candidate['title'].lower() if 'title' in candidate else ''
-            candidate_normalized = re.sub(r'[^\w\s]', ' ', candidate_title)
-            candidate_words = set(candidate_normalized.split())
-            
-            # Calculate matching score
-            common_words = query_words & candidate_words
-            if not query_words:
-                word_coverage = 0
-            else:
-                word_coverage = len(common_words) / len(query_words)
-            
-            # Bonus for exact match
-            exact_match_bonus = 10 if candidate_title == query_normalized else 0
-            
-            # Bonus for having all query words present
-            all_words_bonus = 5 if len(common_words) == len(query_words) else 0
-            
-            # Penalty for very short candidate titles (likely abbreviations)
-            length_penalty = -2 if len(candidate_words) < len(query_words) / 2 else 0
-            
-            # Combined score (BM25 score is negative, so we negate it for ranking)
-            combined_score = (
-                -candidate['score'] +  # BM25 score (negated because lower BM25 is better)
-                (word_coverage * 20) +  # Word coverage is very important
-                exact_match_bonus +
-                all_words_bonus +
-                length_penalty
+            combined_score = self._score_title_match(
+                query_title,
+                candidate['title'] if 'title' in candidate else '',
+                bm25_score=candidate['score'] if 'score' in candidate.keys() else None,
             )
-            
             scored_candidates.append((combined_score, candidate))
         
         # Sort by combined score (descending) and return candidates only
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
         return [candidate for score, candidate in scored_candidates]
+
+    def _score_title_match(
+        self,
+        query_title: str,
+        candidate_title: str,
+        bm25_score: Optional[float] = None,
+    ) -> float:
+        """Score how well a candidate title matches the query title."""
+        query_normalized = self._normalize_title_for_similarity(query_title)
+        candidate_normalized = self._normalize_title_for_similarity(candidate_title)
+        query_compact = self._normalize_title_for_similarity(query_title, compact=True)
+        candidate_compact = self._normalize_title_for_similarity(candidate_title, compact=True)
+
+        if not query_normalized or not candidate_normalized:
+            return 0.0
+
+        if query_normalized == candidate_normalized or query_compact == candidate_compact:
+            return 200.0
+
+        ratio = max(
+            SequenceMatcher(None, query_normalized, candidate_normalized).ratio(),
+            SequenceMatcher(None, query_compact, candidate_compact).ratio(),
+        )
+        query_words = set(query_normalized.split())
+        candidate_words = set(candidate_normalized.split())
+        coverage = (len(query_words & candidate_words) / len(query_words)) if query_words else 0.0
+
+        score = 70.0 + (ratio * 70.0) + (coverage * 40.0)
+        if candidate_normalized.startswith(query_normalized) or candidate_compact.startswith(query_compact):
+            score += 25.0
+        if bm25_score is not None:
+            score += min(15.0, max(0.0, -float(bm25_score)))
+
+        return min(score, 199.0)
+
+    def _normalize_title_for_similarity(self, title: str, compact: bool = False) -> str:
+        normalized = (title or '').casefold()
+        normalized = re.sub(r'[^\w\s]', ' ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        if compact:
+            return normalized.replace(' ', '')
+        return normalized
+
+    def _looks_like_acronym_query(self, title: str) -> bool:
+        tokens = re.findall(r'\w+', (title or '').casefold())
+        if len(tokens) < 3:
+            return False
+        return all(len(token) == 1 for token in tokens)
 
     def _build_fts_query(self, title: str) -> str:
         """Build FTS5 query from title for fuzzy search"""
@@ -1037,12 +1092,13 @@ class AnimeDataProvider(BaseMetadataProvider):
         # Remove punctuation and special characters
         normalized = re.sub(r'[^\w\s]', ' ', normalized)
 
-        # Remove words like "the", "a", "an" and other common English stop words
-        normalized = re.sub(r'\b(the|a|an|and|of|in|to|for|with)\b', '', normalized)
+        if not self._looks_like_acronym_query(title):
+            # Remove words like "the", "a", "an" and other common English stop words
+            normalized = re.sub(r'\b(the|a|an|and|of|in|to|for|with)\b', '', normalized)
 
-        # DO NOT remove "no" as it's semantically important in Japanese titles
-        # Only remove other less important Japanese particles
-        normalized = re.sub(r'\b(wa|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
+            # DO NOT remove "no" as it's semantically important in Japanese titles
+            # Only remove other less important Japanese particles
+            normalized = re.sub(r'\b(wa|ni|de|o|ka|ga|e|kara|made|yori|to|ya)\b', '', normalized)
 
         # Split into words and build FTS5 query
         words = [w for w in normalized.split() if w]  # Filter empty strings

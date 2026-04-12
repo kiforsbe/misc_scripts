@@ -60,6 +60,24 @@ class MatchResult:
         """Get the score weighted by provider weight"""
         return self.score * self.provider_weight
 
+
+def _metadata_type_matches_preference(
+    metadata_type: Optional[str],
+    preferred_type: Optional[str],
+) -> bool:
+    """Return whether a provider result satisfies a high-level media type preference."""
+    if not preferred_type:
+        return True
+
+    normalized_type = (metadata_type or "").casefold().strip()
+    normalized_preference = preferred_type.casefold().strip()
+
+    if normalized_preference == "tv":
+        return normalized_type in {"tv", "anime_series"}
+    if normalized_preference == "movie":
+        return normalized_type in {"movie", "anime_movie"}
+    return normalized_type == normalized_preference
+
 class BaseMetadataProvider(ABC):
     """Base class for metadata providers with common functionality"""
     DEFAULT_TTL_DAYS = 7
@@ -632,6 +650,8 @@ class MetadataManager:
         
         best_result: Optional[MatchResult] = None
         best_provider = None
+        best_fallback_result: Optional[MatchResult] = None
+        best_fallback_provider = None
         
         for provider in self.providers:
             if preferred_type and hasattr(provider, "find_title_with_type_hint"):
@@ -639,9 +659,17 @@ class MetadataManager:
             else:
                 result = provider.find_title(title, year)
             if result and result.info:  # Make sure we have both a result and title info
-                if not best_result or result.weighted_score > best_result.weighted_score:
-                    best_result = result
-                    best_provider = provider
+                if _metadata_type_matches_preference(getattr(result.info, "type", None), preferred_type):
+                    if not best_result or result.weighted_score > best_result.weighted_score:
+                        best_result = result
+                        best_provider = provider
+                elif not best_fallback_result or result.weighted_score > best_fallback_result.weighted_score:
+                    best_fallback_result = result
+                    best_fallback_provider = provider
+
+        if best_result is None:
+            best_result = best_fallback_result
+            best_provider = best_fallback_provider
         
         # Cache the result (even if None)
         result_tuple = (best_result.info if best_result else None, best_provider)

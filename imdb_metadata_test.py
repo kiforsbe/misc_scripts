@@ -299,6 +299,11 @@ def test_imdb_metadata(verbosity=1):
         {
             "filename": "SurrealEstate S03E08 1080p x265-ELiTE[EZTVx.to].mkv",
             "expected": {"title": "SurrealEstate", "season": 3, "episode": 8},
+        },
+        {
+            "filename": "A.I.C.O.: Devotion",
+            "query": {"title": "A.I.C.O.", "episode_title": "Devotion"},
+            "expected": {"title": "A.I.C.O. Incarnation", "episode_title": "Devotion"},
         }
     ]
 
@@ -308,17 +313,24 @@ def test_imdb_metadata(verbosity=1):
     for entry in test_cases:
         filename = entry["filename"]
         expected = entry["expected"]
-        guess = guessit_wrapper(filename)
+        guess = dict(entry.get("query") or guessit_wrapper(filename))
         actual = guess
 
         # Determine if this is a TV episode or a movie
-        is_episode = "season" in expected and "episode" in expected
+        is_episode = ("season" in expected and "episode" in expected) or "episode_title" in expected
 
         # Get title metadata (timed)
         title_result = None
         search_start = time.time()
         try:
-            title_result = provider.find_title(guess.get("title"), year=guess.get("year", None))
+            if guess.get("episode_title") and hasattr(provider, "find_title_with_type_hint"):
+                title_result = provider.find_title_with_type_hint(
+                    guess.get("title"),
+                    preferred_type="tv",
+                    year=guess.get("year", None),
+                )
+            else:
+                title_result = provider.find_title(guess.get("title"), year=guess.get("year", None))
         finally:
             search_time_ms = int((time.time() - search_start) * 1000)
             actual['search_time_ms'] = search_time_ms
@@ -339,7 +351,25 @@ def test_imdb_metadata(verbosity=1):
 
         # Query IMDb metadata appropriately
         if is_episode and provider is not None:
-            if title_result is not None and hasattr(provider, "get_episode_info"):
+            if title_result is not None and guess.get("episode_title") and hasattr(provider, "find_episode_by_title"):
+                ep_result = None
+                ep_start = time.time()
+                try:
+                    ep_result = provider.find_episode_by_title(
+                        title_result.info.id,
+                        guess.get("episode_title"),
+                        season=guess.get("season", None),
+                    )
+                finally:
+                    actual['episode_search_time_ms'] = int((time.time() - ep_start) * 1000)
+
+                actual['episode_title'] = ep_result.title if ep_result else None
+                actual['episode_air_date'] = ep_result.air_date if ep_result else None
+                actual['episode_plot'] = ep_result.plot if ep_result else None
+                actual['episode_rating'] = ep_result.rating if ep_result else None
+                actual['episode_votes'] = ep_result.votes if ep_result else None
+                actual['episode_year'] = ep_result.year if ep_result else None
+            elif title_result is not None and hasattr(provider, "get_episode_info"):
                 guess_episode_num = guess.get("episode", None)
                 # Handle cases where episode is a list (e.g., multi-episode files), only take first episode in list
                 ep_nums = guess_episode_num if isinstance(guess_episode_num, list) else [guess_episode_num]
