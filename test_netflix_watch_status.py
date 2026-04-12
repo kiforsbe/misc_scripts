@@ -1,3 +1,4 @@
+import csv
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from netflix_watch_status import (
     _row_watch_state,
     build_unmapped_imdb_override_rows,
     build_watch_table_rows,
+    export_unmapped_imdb_overrides,
     load_episode_title_overrides,
     summarize_unmapped_imdb_override_rows,
 )
@@ -123,7 +125,7 @@ def test_load_episode_title_overrides_normalizes_custom_keys():
     with TemporaryDirectory() as temp_dir:
         override_path = Path(temp_dir) / "episode_overrides.csv"
         override_path.write_text(
-            "netflix_title,title,year,source_id,episode_title\n"
+            "netflix_original_title,title,year,source_id,episode_title\n"
             '  Some Show: Weird Netflix Title  ,Actual IMDb Title,2024,tt1234567,Actual Episode Title\n',
             encoding="utf-8",
         )
@@ -140,7 +142,7 @@ def test_load_episode_title_overrides_supports_title_only_rows():
     with TemporaryDirectory() as temp_dir:
         override_path = Path(temp_dir) / "episode_overrides.csv"
         override_path.write_text(
-            "netflix_title,title,year,source_id,episode_title\n"
+            "netflix_original_title,title,year,source_id,episode_title\n"
             'Some Show,Canonical Title,,,\n',
             encoding="utf-8",
         )
@@ -151,6 +153,53 @@ def test_load_episode_title_overrides_supports_title_only_rows():
     assert overrides["some show"].year is None
     assert overrides["some show"].source_id is None
     assert overrides["some show"].episode_title is None
+
+
+def test_load_episode_title_overrides_allows_omitting_optional_mapping_columns():
+    with TemporaryDirectory() as temp_dir:
+        override_path = Path(temp_dir) / "episode_overrides.csv"
+        override_path.write_text(
+            "netflix_original_title,title,year\n"
+            'Some Show,Canonical Title,2024\n',
+            encoding="utf-8",
+        )
+
+        overrides = load_episode_title_overrides(str(override_path))
+
+    assert overrides["some show"].title == "Canonical Title"
+    assert overrides["some show"].year == 2024
+    assert overrides["some show"].source_id is None
+    assert overrides["some show"].episode_title is None
+
+
+def test_load_episode_title_overrides_legacy_split_keys_still_work_without_optional_mapping_columns():
+    with TemporaryDirectory() as temp_dir:
+        override_path = Path(temp_dir) / "episode_overrides.csv"
+        override_path.write_text(
+            "netflix_title,season_name,netflix_episode_title,title,year\n"
+            'Known Show,Season 1,Missing Episode,Canonical Show,2024\n',
+            encoding="utf-8",
+        )
+
+        overrides = load_episode_title_overrides(str(override_path))
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=None, episode_title_overrides=overrides)
+    parsed = ParsedNetflixTitle(
+        raw_title="Known Show: Season 1: Missing Episode",
+        title="Known Show",
+        media_kind="series",
+        season=1,
+        season_title="Season 1",
+        episode_title="Missing Episode",
+        is_explicit_series=True,
+    )
+
+    resolved = analyzer._classify_entry(parsed, prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "Canonical Show"
+    assert resolved[2] == 2024
+    assert analyzer._get_episode_title_override(parsed, resolved[1]) is None
 
 
 def test_load_episode_title_overrides_supports_split_netflix_keys():
@@ -179,6 +228,37 @@ def test_load_episode_title_overrides_supports_split_netflix_keys():
 
     assert resolved[0] == "series"
     assert resolved[1] == "Canonical Show"
+    assert analyzer._get_episode_title_override(parsed, resolved[1]) == "Canonical Episode"
+
+
+def test_load_episode_title_overrides_prefers_netflix_original_title_key_for_mapping():
+    with TemporaryDirectory() as temp_dir:
+        override_path = Path(temp_dir) / "episode_overrides.csv"
+        override_path.write_text(
+            "netflix_original_title,netflix_title,season_name,netflix_episode_title,title,year,source_id,episode_title\n"
+            'Known Show: Season 1: Missing Episode,Known Show,Season 1,Missing Episode,Canonical Show,2024,tt1234567,Canonical Episode\n',
+            encoding="utf-8",
+        )
+
+        overrides = load_episode_title_overrides(str(override_path))
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=None, episode_title_overrides=overrides)
+    parsed = ParsedNetflixTitle(
+        raw_title="Known Show: Season 1: Missing Episode",
+        title="Known Show",
+        media_kind="series",
+        season=1,
+        season_title="Season 1",
+        episode_title="Missing Episode",
+        is_explicit_series=True,
+    )
+
+    resolved = analyzer._classify_entry(parsed, prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "Canonical Show"
+    assert resolved[2] == 2024
+    assert resolved[6] == "tt1234567"
     assert analyzer._get_episode_title_override(parsed, resolved[1]) == "Canonical Episode"
 
 
@@ -687,6 +767,74 @@ def test_summarize_unmapped_imdb_override_rows_counts_override_breakdown():
         "with_override": 1,
         "without_override": 1,
     }
+
+
+def test_exported_unmapped_csv_round_trips_as_override_input_when_filled_in():
+    entries = [
+        NetflixHistoryEntry(
+            raw_title="Roundtrip Show: Season 1: Missing Episode",
+            watched_at=datetime(2026, 1, 2),
+            parsed=ParsedNetflixTitle(
+                raw_title="Roundtrip Show: Season 1: Missing Episode",
+                title="Roundtrip Show",
+                media_kind="series",
+                season=1,
+                season_title="Season 1",
+                episode_title="Missing Episode",
+                is_explicit_series=True,
+            ),
+            media_kind="series",
+            resolved_title="Roundtrip Show",
+            expected_type="series",
+            metadata_type="tv",
+            metadata_parent_id="tt7654321",
+            metadata_sources=("imdb",),
+        ),
+    ]
+
+    with TemporaryDirectory() as temp_dir:
+        override_path = Path(temp_dir) / "unmapped_roundtrip.csv"
+        export_unmapped_imdb_overrides(entries, str(override_path))
+
+        with override_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+        assert rows == [
+            {
+                "netflix_original_title": "Roundtrip Show: Season 1: Missing Episode",
+                "netflix_title": "Roundtrip Show",
+                "season_name": "Season 1",
+                "netflix_episode_title": "Missing Episode",
+                "expected_type": "series",
+                "title": "",
+                "year": "",
+                "source_id": "tt7654321",
+                "episode_title": "",
+                "had_override": "",
+            }
+        ]
+
+        rows[0]["title"] = "Roundtrip Canonical Show"
+        rows[0]["year"] = "2024"
+        rows[0]["episode_title"] = "Roundtrip Canonical Episode"
+
+        with override_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+        overrides = load_episode_title_overrides(str(override_path))
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=None, episode_title_overrides=overrides)
+    parsed = entries[0].parsed
+
+    resolved = analyzer._classify_entry(parsed, prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "Roundtrip Canonical Show"
+    assert resolved[2] == 2024
+    assert resolved[6] == "tt7654321"
+    assert analyzer._get_episode_title_override(parsed, resolved[1]) == "Roundtrip Canonical Episode"
 
 
 def test_row_watch_state_uses_progress_for_series_and_seasons():

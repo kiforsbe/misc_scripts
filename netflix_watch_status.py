@@ -279,27 +279,34 @@ def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Di
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             fieldnames = set(reader.fieldnames or ())
-            required_columns = {"netflix_title", "title", "year", "source_id", "episode_title"}
-            if not required_columns.issubset(fieldnames):
+            required_columns = {"title", "year"}
+            has_primary_key = "netflix_original_title" in fieldnames or "netflix_title" in fieldnames
+            if not required_columns.issubset(fieldnames) or not has_primary_key:
                 raise ValueError(
                     "Episode title override CSV must include columns "
-                    f"{sorted(required_columns)}: {path}"
+                    f"{sorted(required_columns)} and one of ['netflix_original_title', 'netflix_title']: {path}. "
+                    "Optional columns: ['episode_title', 'source_id', 'season_name', 'netflix_episode_title']"
                 )
 
             overrides: Dict[str, NetflixTitleOverride] = {}
             for row in reader:
-                raw_key = row.get("netflix_title")
-                normalized_key = _normalize_episode_title_override_key_parts(
-                    raw_key,
-                    row.get("season_name"),
-                    row.get("netflix_episode_title"),
-                )
+                raw_original_key = row.get("netflix_original_title")
+                raw_split_key = row.get("netflix_title")
+                normalized_key = _normalize_episode_title_override_key(raw_original_key)
+                if not normalized_key:
+                    normalized_key = _normalize_episode_title_override_key_parts(
+                        raw_split_key,
+                        row.get("season_name"),
+                        row.get("netflix_episode_title"),
+                    )
                 raw_year = (row.get("year") or "").strip()
                 if raw_year:
                     try:
                         normalized_year = int(raw_year)
                     except ValueError as exc:
-                        raise ValueError(f"Episode title override year must be an integer: {path} ({raw_key})") from exc
+                        raise ValueError(
+                            f"Episode title override year must be an integer: {path} ({raw_original_key or raw_split_key})"
+                        ) from exc
                 else:
                     normalized_year = None
                 normalized_value = NetflixTitleOverride(
@@ -1076,10 +1083,11 @@ class NetflixWatchStatusAnalyzer:
         )
         series_title_override = effective_override.title if effective_override is not None else None
         series_title_override_year = effective_override.year if effective_override is not None else None
+        series_title_override_source_id = effective_override.source_id if effective_override is not None else None
 
         if self.metadata_manager is None:
             if series_title_override:
-                return "series", series_title_override, None, None, None, None, None, None, None, None, (), None, ()
+                return "series", series_title_override, series_title_override_year, None, None, None, series_title_override_source_id, None, None, None, (), None, ()
             if inferred_series_title:
                 return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
             return default_kind, default_title, None, None, None, None, None, None, None, None, (), None, ()
@@ -1147,12 +1155,15 @@ class NetflixWatchStatusAnalyzer:
             ):
                 continue
             if parsed.is_explicit_series and resolved_kind == "movie":
-                return "series", parsed.title or resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
-            return resolved_kind, resolved_title or default_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
+                return "series", parsed.title or resolved_title or default_title, resolved_title_year or series_title_override_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id or series_title_override_source_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
+            return resolved_kind, resolved_title or default_title, resolved_title_year or series_title_override_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id or series_title_override_source_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
 
         colon_delimited_match = self._classify_colon_delimited_episode_title(parsed)
         if colon_delimited_match is not None:
             return colon_delimited_match
+
+        if series_title_override:
+            return "series", series_title_override, series_title_override_year, None, None, None, series_title_override_source_id, None, None, None, (), None, ()
 
         if inferred_series_title:
             return "series", inferred_series_title, None, None, None, None, None, None, None, None, (), None, ()
@@ -1254,9 +1265,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--episode-title-overrides",
         metavar="FILE",
         help=(
-            "Optional CSV file mapping raw Netflix CSV titles to IMDb titles. "
-            "Expected columns: netflix_title,title,year,source_id,episode_title. "
-            "Optional Netflix key columns: season_name,netflix_episode_title. "
+            "Optional CSV file mapping raw Netflix CSV titles to canonical metadata. "
+            "Primary key column: netflix_original_title. Legacy netflix_title with optional season_name and "
+            "netflix_episode_title is still accepted for backward compatibility. "
+            "Fill-in mapping columns: title, year, optional source_id, and optional episode_title "
+            "(used only for episode metadata lookup). "
             "These overrides are merged on top of netflix_episode_title_overrides.csv when present."
         ),
     )
