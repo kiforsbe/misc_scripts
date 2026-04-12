@@ -94,6 +94,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         super().__init__("imdb", provider_weight=0.9)
         self._search_cache = {}  # Cache recent search results
         self._title_cache = {}   # Cache for title info objects
+        self._episode_titles_table_ready = False
         self._db_path = os.path.join(self.cache_dir, "imdb_data.db")
         self.CACHE_EXPIRY_DATASETS = list(self.DATASETS.keys())
         self._connection_pool = []  # Connection pool for better performance
@@ -142,6 +143,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._close_connection_pool()
         self._search_cache = {}
         self._title_cache = {}
+        self._episode_titles_table_ready = False
 
         for suffix in ("", "-wal", "-shm"):
             db_file = f"{self._db_path}{suffix}"
@@ -227,27 +229,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     FROM title_basics b
                     LEFT JOIN title_ratings r ON b.id = r.id
                     WHERE b.type IN (1, 2, 3);
-
-                    DROP VIEW IF EXISTS episode_titles;
-                    CREATE VIEW IF NOT EXISTS episode_titles AS
-                    SELECT
-                        b.id,
-                        b.title,
-                        b.title_lower,
-                        b.year,
-                        1 AS is_primary
-                    FROM title_basics b
-                    WHERE b.type = 4
-                    UNION ALL
-                    SELECT
-                        a.titleId AS id,
-                        a.title,
-                        LOWER(a.title) AS title_lower,
-                        b.year,
-                        0 AS is_primary
-                    FROM title_akas a
-                    JOIN title_basics b ON b.id = a.titleId
-                    WHERE b.type = 4;
                     
                     -- Standalone FTS5 virtual table for fast title searching across deduplicated AKAs.
                     CREATE VIRTUAL TABLE IF NOT EXISTS title_fts USING fts5(
@@ -258,6 +239,8 @@ class IMDbDataProvider(BaseMetadataProvider):
 
                     """
                 )                
+                self._ensure_episode_titles_table_schema(conn)
+
                 # Only create essential indexes initially - others will be added after data load
                 conn.executescript(
                     """
@@ -271,6 +254,40 @@ class IMDbDataProvider(BaseMetadataProvider):
         except Exception as e:
             logging.error(f"Failed to initialize database: {str(e)}")
             raise
+
+    def _ensure_episode_titles_table_schema(self, conn: sqlite3.Connection) -> None:
+        """Ensure the episode title lookup helper exists as a materialized table."""
+        existing_object = conn.execute(
+            "SELECT type FROM sqlite_master WHERE name = 'episode_titles' LIMIT 1"
+        ).fetchone()
+
+        if existing_object is not None:
+            object_type = existing_object[0]
+            if object_type == "view":
+                conn.execute("DROP VIEW episode_titles")
+            elif object_type == "table":
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info('episode_titles')").fetchall()
+                }
+                expected_columns = {"id", "title", "title_lower", "year", "is_primary"}
+                if columns != expected_columns:
+                    conn.execute("DROP TABLE episode_titles")
+
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS episode_titles (
+                id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                title_lower TEXT NOT NULL,
+                year INTEGER,
+                is_primary INTEGER NOT NULL,
+                PRIMARY KEY (id, is_primary, title)
+            ) WITHOUT ROWID;
+
+            CREATE INDEX IF NOT EXISTS idx_episode_titles_title_lower ON episode_titles(title_lower, id);
+            """
+        )
 
     def _load_cache_duration(self) -> None:
         try:
@@ -376,13 +393,16 @@ class IMDbDataProvider(BaseMetadataProvider):
     def _ensure_data_loaded(self) -> None:
         """Ensure database contains current IMDb data"""
         if self._is_data_current():
-            if self._has_episode_title_data() and self._has_episode_aka_data():
+            has_episode_title_data = self._has_episode_title_data()
+            has_episode_aka_data = self._has_episode_aka_data()
+
+            if has_episode_title_data and has_episode_aka_data:
                 logging.info("Database contains current IMDb data")
                 return
 
-            if not self._has_episode_title_data():
+            if not has_episode_title_data:
                 logging.info("IMDb cache is current but lacks episode title data. Reloading datasets.")
-            elif not self._has_episode_aka_data():
+            elif not has_episode_aka_data:
                 logging.info("IMDb cache is current but lacks episode-linked AKA data. Reloading datasets.")
 
         logging.info("Resetting IMDb database before reload...")
@@ -1132,8 +1152,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_episode_titles_lower ON title_basics(title_lower) WHERE type = 4")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_akas_titleId ON title_akas(titleId)")
             self._timed_execute(conn, "CREATE INDEX IF NOT EXISTS idx_akas_title_ci ON title_akas(title COLLATE NOCASE, titleId)")
-            self._timed_execute(conn, "DROP INDEX IF EXISTS idx_title_episode_titles")
-            self._timed_execute(conn, "DROP INDEX IF EXISTS idx_akas_title")
+
+            self._rebuild_episode_titles_table(conn)
             
             # Optimize for read-only operations
             self._timed_execute(conn, "PRAGMA journal_mode=WAL")  # Enable WAL mode after loading
@@ -1158,6 +1178,53 @@ class IMDbDataProvider(BaseMetadataProvider):
             conn.commit()
             logging.info("Database optimization complete")
 
+    def _rebuild_episode_titles_table(self, conn: Optional[sqlite3.Connection] = None) -> None:
+        """Rebuild the episode title lookup helper from episode basics and AKAs."""
+        close_conn = conn is None
+        if conn is None:
+            conn = sqlite3.connect(self._db_path, timeout=60.0)
+
+        try:
+            if close_conn:
+                conn.execute("PRAGMA synchronous=OFF")
+                conn.execute("PRAGMA temp_store=MEMORY")
+                conn.execute("PRAGMA cache_size=100000")
+
+            self._ensure_episode_titles_table_schema(conn)
+            self._timed_execute(conn, "DELETE FROM episode_titles")
+            self._timed_execute(
+                conn,
+                """
+                INSERT INTO episode_titles (id, title, title_lower, year, is_primary)
+                SELECT b.id, b.title, b.title_lower, b.year, 1
+                FROM title_basics b
+                WHERE b.type = 4 AND b.title IS NOT NULL AND b.title != ''
+                """,
+            )
+            self._timed_execute(
+                conn,
+                """
+                INSERT INTO episode_titles (id, title, title_lower, year, is_primary)
+                SELECT a.titleId, a.title, LOWER(a.title), b.year, 0
+                FROM title_akas a
+                JOIN title_basics b ON b.id = a.titleId
+                WHERE b.type = 4 AND a.title IS NOT NULL AND a.title != ''
+                """,
+            )
+
+            row = conn.execute("SELECT COUNT(*) FROM episode_titles").fetchone()
+            logging.info(
+                "Materialized %s episode title lookup rows",
+                row[0] if row else 0,
+            )
+            self._episode_titles_table_ready = bool(row and row[0])
+
+            if close_conn:
+                conn.commit()
+        finally:
+            if close_conn and conn is not None:
+                conn.close()
+
     def _has_episode_title_data(self) -> bool:
         """Return True when the cache includes episode title rows required for title-based episode lookup."""
         try:
@@ -1166,6 +1233,23 @@ class IMDbDataProvider(BaseMetadataProvider):
                     "SELECT 1 FROM title_basics WHERE type = 4 AND title IS NOT NULL AND title != '' LIMIT 1"
                 ).fetchone()
                 return row is not None
+        except Exception:
+            return False
+
+    def _has_episode_titles_table_data(self) -> bool:
+        """Return True when the episode title lookup helper has materialized primary rows."""
+        try:
+            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
+                row = conn.execute(
+                    "SELECT type FROM sqlite_master WHERE name = 'episode_titles' LIMIT 1"
+                ).fetchone()
+                if row is None or row[0] != "table":
+                    return False
+
+                primary_row = conn.execute(
+                    "SELECT 1 FROM episode_titles WHERE is_primary = 1 LIMIT 1"
+                ).fetchone()
+                return primary_row is not None
         except Exception:
             return False
 
@@ -1662,7 +1746,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 sql += " AND e.season = ?"
                 params.append(season)
 
-            sql += " ORDER BY COALESCE(e.season, 0), COALESCE(e.episode, 0), e.id"
+            sql += " ORDER BY e.season, e.episode, e.id"
             rows = conn.execute(sql, tuple(params)).fetchall()
 
             episodes: List[EpisodeInfo] = []
@@ -1737,18 +1821,13 @@ class IMDbDataProvider(BaseMetadataProvider):
         try:
             params = [internal_parent_id]
             sql = """
-                SELECT e.id, e.season, e.episode, t.primary_title AS title, t.primary_year AS year,
-                r.rating, r.votes, t.candidate_titles
+                SELECT e.id, e.season, e.episode,
+                MAX(CASE WHEN t.is_primary = 1 THEN t.title END) AS title,
+                MAX(CASE WHEN t.is_primary = 1 THEN t.year END) AS year,
+                r.rating, r.votes,
+                GROUP_CONCAT(CASE WHEN t.is_primary = 0 THEN t.title END, '<<<AKA>>>') AS candidate_titles
                 FROM title_episode e
-                LEFT JOIN (
-                    SELECT
-                        id,
-                        MAX(CASE WHEN is_primary = 1 THEN title END) AS primary_title,
-                        MAX(CASE WHEN is_primary = 1 THEN year END) AS primary_year,
-                        GROUP_CONCAT(title, '<<<AKA>>>') AS candidate_titles
-                    FROM episode_titles
-                    GROUP BY id
-                ) t ON e.id = t.id
+                LEFT JOIN episode_titles t ON t.id = e.id
                 LEFT JOIN title_ratings r ON e.id = r.id
                 WHERE e.parent_id = ?
             """
@@ -1756,7 +1835,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 sql += " AND e.season = ?"
                 params.append(season)
 
-            sql += " GROUP BY e.id, e.season, e.episode, t.primary_title, t.primary_year, t.candidate_titles, r.rating, r.votes"
+            sql += " GROUP BY e.id, e.season, e.episode, r.rating, r.votes"
 
             cursor = conn.execute(sql, tuple(params))
             candidates = cursor.fetchall()
@@ -1841,6 +1920,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self.set_cache_expiry(0)
         self._search_cache.clear()
         self._title_cache.clear()
+        self._episode_titles_table_ready = False
         self._ensure_data_loaded()
         logging.info("IMDb database refreshed successfully")
 
