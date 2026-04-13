@@ -108,8 +108,22 @@ class IMDbDataProvider(BaseMetadataProvider):
         self.CACHE_EXPIRY_DATASETS = list(self.DATASETS.keys())
         self._connection_pool: List[sqlite3.Connection] = []
         self._pool_size = 3
+        self._db_loaded_once = False
+        self._db_loaded_until_ts: Optional[int] = None
         self._init_database()
         self._load_cache_duration()
+
+    def _clear_loaded_state(self) -> None:
+        self._db_loaded_once = False
+        self._db_loaded_until_ts = None
+
+    def _mark_database_loaded(self, now_ts: Optional[int] = None) -> None:
+        resolved_now_ts = now_ts if now_ts is not None else int(time.time())
+        self._db_loaded_once = True
+        try:
+            self._db_loaded_until_ts = int(self.get_cache_expiry().timestamp())
+        except Exception:
+            self._db_loaded_until_ts = resolved_now_ts + int(self.cache_duration.total_seconds())
 
     def _get_connection(self) -> sqlite3.Connection:
         if self._connection_pool:
@@ -141,6 +155,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._close_connection_pool()
         self._search_cache.clear()
         self._title_cache.clear()
+        self._clear_loaded_state()
 
         for suffix in ("", "-wal", "-shm"):
             db_file = f"{self._db_path}{suffix}"
@@ -262,24 +277,67 @@ class IMDbDataProvider(BaseMetadataProvider):
         )
 
     def _is_data_current(self) -> bool:
-        return self._is_data_current_in_db(
-            main_table="title_core",
-            datasets=getattr(self, "CACHE_EXPIRY_DATASETS", None),
-        )
+        conn = self._get_connection()
+        try:
+            ds_list = list(getattr(self, "CACHE_EXPIRY_DATASETS", []) or [])
+            now_ts = int(time.time())
+            count_current = 0
+
+            if ds_list:
+                placeholders = ",".join("?" for _ in ds_list)
+                cur = conn.execute(
+                    f"SELECT dataset, expires_at, updated FROM data_version WHERE dataset IN ({placeholders})",
+                    tuple(ds_list),
+                )
+                rows = {row[0]: row for row in cur.fetchall()}
+
+                for dataset_name in ds_list:
+                    row = rows.get(dataset_name)
+                    if not row:
+                        continue
+                    expires_at = row[1]
+                    updated = row[2]
+                    try:
+                        if expires_at and int(expires_at) > now_ts:
+                            count_current += 1
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        if updated and int(updated) + int(self.cache_duration.total_seconds()) > now_ts:
+                            count_current += 1
+                        else:
+                            return False
+                    except Exception:
+                        return False
+
+                if count_current != len(ds_list):
+                    return False
+
+            row = conn.execute("SELECT 1 FROM title_core LIMIT 1").fetchone()
+            return row is not None
+        except Exception:
+            return False
+        finally:
+            self._return_connection(conn)
 
     def _has_title_search_data(self) -> bool:
+        conn = self._get_connection()
         try:
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                return conn.execute("SELECT 1 FROM title_search LIMIT 1").fetchone() is not None
+            return conn.execute("SELECT 1 FROM title_search LIMIT 1").fetchone() is not None
         except Exception:
             return False
+        finally:
+            self._return_connection(conn)
 
     def _has_episode_title_data(self) -> bool:
+        conn = self._get_connection()
         try:
-            with sqlite3.connect(self._db_path, timeout=5.0) as conn:
-                return conn.execute("SELECT 1 FROM episode_core WHERE title != '' LIMIT 1").fetchone() is not None
+            return conn.execute("SELECT 1 FROM episode_core WHERE title != '' LIMIT 1").fetchone() is not None
         except Exception:
             return False
+        finally:
+            self._return_connection(conn)
 
     def _verify_data_integrity(self) -> None:
         with sqlite3.connect(self._db_path) as conn:
@@ -289,7 +347,15 @@ class IMDbDataProvider(BaseMetadataProvider):
             logging.info("episode_search=%s", conn.execute("SELECT COUNT(*) FROM episode_search").fetchone()[0])
 
     def _ensure_data_loaded(self) -> None:
+        now_ts = int(time.time())
+        if getattr(self, "_db_loaded_once", False):
+            loaded_until_ts = getattr(self, "_db_loaded_until_ts", None)
+            if loaded_until_ts is None or now_ts < loaded_until_ts:
+                return
+            self._clear_loaded_state()
+
         if self._is_data_current() and self._has_title_search_data() and self._has_episode_title_data():
+            self._mark_database_loaded(now_ts)
             return
 
         self._reset_database_for_reload()
@@ -304,6 +370,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._rebuild_read_optimized_tables(dataset_paths, source_timestamps)
         self._verify_data_integrity()
         self._optimize_database_for_reads()
+        self._mark_database_loaded(now_ts)
 
     def _ensure_dataset_cache_file(self, dataset_name: str) -> Tuple[str, int]:
         url = self.DATASETS[dataset_name]
@@ -1486,4 +1553,5 @@ class IMDbDataProvider(BaseMetadataProvider):
         self.set_cache_expiry(0)
         self._search_cache.clear()
         self._title_cache.clear()
+        self._clear_loaded_state()
         self._ensure_data_loaded()
