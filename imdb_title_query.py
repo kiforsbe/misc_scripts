@@ -134,6 +134,18 @@ PromptFunction = Callable[[DatasetSchema, Path, bool], bool]
 DownloadFunction = Callable[[DatasetSchema, Path], Path]
 
 
+def set_csv_field_size_limit() -> None:
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
+            if limit < 1:
+                raise RuntimeError("Unable to configure CSV field size limit.")
+
+
 def parse_dataset_name(input_path: Path) -> Optional[str]:
     name = input_path.name
     for suffix in (".tsv.gz", ".tsv"):
@@ -263,6 +275,7 @@ def build_filter(schema: DatasetSchema, expression: str, ignore_case: bool = Tru
 
 
 def iter_tsv_rows(file_path: Path, schema: DatasetSchema) -> Iterable[Dict[str, Any]]:
+    set_csv_field_size_limit()
     opener = gzip.open if file_path.suffix == ".gz" else open
     with opener(file_path, "rt", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
