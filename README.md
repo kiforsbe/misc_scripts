@@ -123,6 +123,38 @@ python compare_package_versions.py --no-color "requests==2.31.0"
 #### Requires
 - packaging
 
+### imdb_title_query.py
+A simple CLI for querying IMDb `title.*.tsv.gz` datasets using the declared dataset schemas, substring search, basic filters, and plain-text table output. It can read a specific file, scan a directory for the matching dataset, or use the same default cache folder as the `video-optimizer-v2` IMDb provider.
+
+#### Features
+- Declared schemas for `title.basics`, `title.akas`, `title.crew`, `title.episode`, `title.principals`, and `title.ratings`
+- Simple filtering with operators such as `=`, `!=`, `~`, `!~`, `>`, `>=`, `<`, and `<=`
+- Selectable output columns and optional query restriction to specific search columns
+- Reads `.tsv.gz` files directly without extracting them first
+- Defaults to `%USERPROFILE%\.video_metadata_cache\imdb` when no path is provided
+- Prompts before downloading a missing dataset interactively, with `--download` and `--force-download` options for unattended or refresh workflows
+
+#### Usage Examples
+```bash
+# Query a specific IMDb dataset file
+python imdb_title_query.py C:\path\to\title.basics.tsv.gz --query matrix --where titleType=movie
+
+# Use the shared IMDb cache folder and auto-download if missing
+python imdb_title_query.py --dataset title.ratings --download --where numVotes>=100000
+
+# Force re-download of a cached dataset into a custom cache directory
+python imdb_title_query.py --dataset title.akas --force-download --cache-dir D:\imdb-cache --query ghost
+
+# Show only selected columns
+python imdb_title_query.py --dataset title.basics --columns tconst,primaryTitle,startYear --query alien
+
+# Print the declared schema for a dataset
+python imdb_title_query.py --show-schema title.episode
+```
+
+#### Requires
+- No external dependencies required (uses only Python standard libraries)
+
 ### media-to-mp3.py
 Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.
 
