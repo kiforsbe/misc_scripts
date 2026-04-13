@@ -69,6 +69,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     TITLE_CACHE_MAX = 5000
     TITLE_CACHE_EVICT = 1000
     EXACT_MATCH_LIMIT = 50
+    SQL_TIMING_ENABLED = True
 
     TITLE_TYPE_CODES = {
         "movie": 1,
@@ -340,15 +341,15 @@ class IMDbDataProvider(BaseMetadataProvider):
         ratings_by_id, qualifying_title_ids = self._load_ratings_map(dataset_paths["title.ratings"])
 
         with sqlite3.connect(self._db_path, timeout=60.0) as conn:
-            conn.execute("PRAGMA synchronous=OFF")
-            conn.execute("PRAGMA temp_store=MEMORY")
-            conn.execute("PRAGMA cache_size=100000")
+            self._timed_execute(conn, "PRAGMA synchronous=OFF")
+            self._timed_execute(conn, "PRAGMA temp_store=MEMORY")
+            self._timed_execute(conn, "PRAGMA cache_size=100000")
 
-            conn.execute("DELETE FROM title_fts")
-            conn.execute("DELETE FROM title_search")
-            conn.execute("DELETE FROM episode_search")
-            conn.execute("DELETE FROM episode_core")
-            conn.execute("DELETE FROM title_core")
+            self._timed_execute(conn, "DELETE FROM title_fts")
+            self._timed_execute(conn, "DELETE FROM title_search")
+            self._timed_execute(conn, "DELETE FROM episode_search")
+            self._timed_execute(conn, "DELETE FROM episode_core")
+            self._timed_execute(conn, "DELETE FROM title_core")
 
             conn.executescript(
                 """
@@ -510,7 +511,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                     pbar.update(1)
 
         if title_core_batch:
-            conn.executemany(
+            self._timed_executemany(
+                conn,
                 """
                 INSERT OR REPLACE INTO title_core (
                     id, title, original_title, type, year, end_year, runtime_minutes, genres, rating, votes
@@ -519,7 +521,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                 title_core_batch,
             )
         if episode_basics_batch:
-            conn.executemany(
+            self._timed_executemany(
+                conn,
                 "INSERT OR REPLACE INTO temp_episode_basics (id, title, title_lower, year, rating, votes) VALUES (?, ?, ?, ?, ?, ?)",
                 episode_basics_batch,
             )
@@ -560,13 +563,15 @@ class IMDbDataProvider(BaseMetadataProvider):
                     pbar.update(1)
 
         if batch:
-            conn.executemany(
+            self._timed_executemany(
+                conn,
                 "INSERT OR REPLACE INTO temp_episode_links (id, parent_id, season, episode) VALUES (?, ?, ?, ?)",
                 batch,
             )
 
     def _materialize_episode_core(self, conn: sqlite3.Connection) -> None:
-        conn.execute(
+        self._timed_execute(
+            conn,
             """
             INSERT OR REPLACE INTO episode_core (id, parent_id, season, episode, title, year, rating, votes)
             SELECT l.id, l.parent_id, l.season, l.episode, b.title, b.year, b.rating, b.votes
@@ -576,13 +581,15 @@ class IMDbDataProvider(BaseMetadataProvider):
         )
 
     def _populate_primary_search_tables(self, conn: sqlite3.Connection) -> None:
-        conn.execute(
+        self._timed_execute(
+            conn,
             """
             INSERT OR IGNORE INTO title_search (title_id, search_title, search_title_lower, is_primary)
             SELECT id, title, lower(title), 1 FROM title_core WHERE title != ''
             """
         )
-        conn.execute(
+        self._timed_execute(
+            conn,
             """
             INSERT OR IGNORE INTO episode_search (episode_id, parent_id, search_title, search_title_lower, is_primary)
             SELECT id, parent_id, title, lower(title), 1 FROM episode_core WHERE title != ''
@@ -617,12 +624,14 @@ class IMDbDataProvider(BaseMetadataProvider):
                     pbar.update(1)
 
         if batch:
-            conn.executemany(
+            self._timed_executemany(
+                conn,
                 "INSERT OR IGNORE INTO temp_aka_staging (title_id, title, title_lower) VALUES (?, ?, ?)",
                 batch,
             )
 
-        conn.execute(
+        self._timed_execute(
+            conn,
             """
             INSERT OR IGNORE INTO title_search (title_id, search_title, search_title_lower, is_primary)
             SELECT a.title_id, a.title, a.title_lower, 0
@@ -630,7 +639,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             JOIN title_core t ON t.id = a.title_id
             """
         )
-        conn.execute(
+        self._timed_execute(
+            conn,
             """
             INSERT OR IGNORE INTO episode_search (episode_id, parent_id, search_title, search_title_lower, is_primary)
             SELECT a.title_id, e.parent_id, a.title, a.title_lower, 0
@@ -1274,21 +1284,38 @@ class IMDbDataProvider(BaseMetadataProvider):
         or_query = " OR ".join(f"{word}*" for word in words)
         return [and_query, or_query]
 
-    def _timed_execute(self, conn: sqlite3.Connection, sql: str, params: Tuple[Any, ...] = ()) -> sqlite3.Cursor:
+    def _get_timed_sql_context(self, sql: str) -> Tuple[str, str]:
         frame = inspect.currentframe()
-        caller = frame.f_back if frame is not None else None
+        caller = frame.f_back.f_back if frame is not None and frame.f_back is not None else None
         location = "<unknown>"
         if caller is not None:
             location = f"{os.path.basename(caller.f_code.co_filename)}:{caller.f_lineno} in {caller.f_code.co_name}"
         sql_preview = " ".join(sql.strip().split())
         if len(sql_preview) > 180:
             sql_preview = f"{sql_preview[:177]}..."
+        return location, sql_preview
+
+    def _timed_execute(self, conn: sqlite3.Connection, sql: str, params: Tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        if not self.SQL_TIMING_ENABLED:
+            return conn.execute(sql, params)
+        location, sql_preview = self._get_timed_sql_context(sql)
         started_at = time.perf_counter()
         try:
             return conn.execute(sql, params)
         finally:
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             print(f"[sql {elapsed_ms:9.2f} ms] {location} :: {sql_preview}")
+
+    def _timed_executemany(self, conn: sqlite3.Connection, sql: str, seq_of_params: Iterable[Tuple[Any, ...]]) -> sqlite3.Cursor:
+        if not self.SQL_TIMING_ENABLED:
+            return conn.executemany(sql, seq_of_params)
+        location, sql_preview = self._get_timed_sql_context(sql)
+        started_at = time.perf_counter()
+        try:
+            return conn.executemany(sql, seq_of_params)
+        finally:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            print(f"[sql-many {elapsed_ms:9.2f} ms] {location} :: {sql_preview}")
 
     def _optimize_database_for_reads(self) -> None:
         with sqlite3.connect(self._db_path, timeout=60.0) as conn:
