@@ -290,7 +290,7 @@ def _coerce_episode_title_override(raw_value: Any, *, source_label: str) -> Netf
             f"{source_label}"
         )
 
-    unknown_fields = sorted(set(raw_value.keys()) - {"title", "year", "source_id", "episode_title"})
+    unknown_fields = sorted(set(raw_value.keys()) - {"title", "year", "source_id", "episode_title", "found_source"})
     if unknown_fields:
         raise ValueError(
             f"Episode title override contains unsupported fields {unknown_fields}: {source_label}"
@@ -333,7 +333,7 @@ def _load_episode_title_overrides_from_path(path: Path, *, required: bool) -> Di
                 raise ValueError(
                     "Episode title override CSV must include columns "
                     f"{sorted(required_columns)} and one of ['netflix_original_title', 'netflix_title']: {path}. "
-                    "Optional columns: ['episode_title', 'source_id', 'season_name', 'netflix_episode_title']"
+                    "Optional columns: ['episode_title', 'source_id', 'found_source', 'season_name', 'netflix_episode_title']"
                 )
 
             overrides: Dict[str, NetflixTitleOverride] = {}
@@ -427,6 +427,22 @@ def _metadata_match_is_compatible(
         or normalized_resolved in normalized_raw
         or normalized_raw in normalized_resolved
     )
+
+
+def _provider_name(provider: Any) -> str:
+    if provider is None:
+        return ""
+    return type(provider).__name__
+
+
+def _merge_metadata_sources(*source_groups: Tuple[str, ...]) -> Tuple[str, ...]:
+    merged_sources: List[str] = []
+    for source_group in source_groups:
+        for source in source_group:
+            cleaned = str(source or "").strip()
+            if cleaned and cleaned not in merged_sources:
+                merged_sources.append(cleaned)
+    return tuple(merged_sources)
 
 
 @dataclass
@@ -1271,6 +1287,39 @@ class NetflixWatchStatusAnalyzer:
         metadata_genres = tuple(getattr(title_info, "genres", []) or ())
         metadata_title_type = getattr(title_info, "type", None)
         metadata_sources = tuple(getattr(title_info, "sources", []) or ())
+
+        if (
+            media_kind == "series"
+            and _provider_name(provider) != "IMDbDataProvider"
+            and hasattr(self.metadata_manager, "find_title_from_provider")
+        ):
+            try:
+                imdb_match = self.metadata_manager.find_title_from_provider(
+                    query,
+                    "imdbdataprovider",
+                    year=year,
+                    preferred_type="tv",
+                )
+            except TypeError:
+                try:
+                    imdb_match = self.metadata_manager.find_title_from_provider(query, "imdbdataprovider")
+                except Exception:
+                    imdb_match = (None, None)
+            except Exception:
+                imdb_match = (None, None)
+
+            imdb_info = imdb_match[0] if imdb_match else None
+            imdb_provider = imdb_match[1] if imdb_match and len(imdb_match) > 1 else None
+            if imdb_info is not None and getattr(imdb_info, "type", None) == "tv":
+                provider = imdb_provider or provider
+                metadata_parent_id = getattr(imdb_info, "id", None) or metadata_parent_id
+                resolved_total_seasons = getattr(imdb_info, "total_seasons", None) or resolved_total_seasons
+                metadata_sources = _merge_metadata_sources(
+                    metadata_sources,
+                    tuple(getattr(imdb_info, "sources", []) or ()),
+                )
+                metadata_type = "tv"
+
         self._metadata_cache[metadata_cache_key] = (media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources)
         return media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
 
@@ -2056,13 +2105,52 @@ def _entry_has_imdb_episode_metadata(entry: NetflixHistoryEntry) -> bool:
     return entry.resolved_episode is not None
 
 
+def _entry_found_source(entry: NetflixHistoryEntry) -> str:
+    labels: List[str] = []
+    if entry.metadata_title_type in {"anime_series", "anime_movie"} or any(
+        any(domain in source.casefold() for domain in ("myanimelist", "anilist", "anime-planet", "anidb", "kitsu"))
+        for source in entry.metadata_sources
+    ):
+        labels.append("anime")
+    if _entry_has_imdb_title_metadata(entry) or _entry_has_imdb_episode_metadata(entry):
+        labels.append("imdb")
+    if not labels:
+        provider_label = _provider_name(entry.metadata_provider)
+        if provider_label:
+            labels.append(provider_label)
+    return "+".join(dict.fromkeys(labels))
+
+
+def _combine_found_sources(*source_values: str) -> str:
+    labels: List[str] = []
+    for source_value in source_values:
+        for label in str(source_value or "").split("+"):
+            cleaned_label = label.strip()
+            if cleaned_label:
+                labels.append(cleaned_label)
+    return "+".join(dict.fromkeys(labels))
+
+
+def _override_found_source(override: Optional[NetflixTitleOverride]) -> str:
+    if override is None:
+        return ""
+    if override.source_id and re.fullmatch(r"tt\d+", override.source_id):
+        return "imdb"
+    if override.title or override.year is not None or override.episode_title:
+        return "imdb"
+    return ""
+
+
 def build_unmapped_imdb_override_rows(
     entries: List[NetflixHistoryEntry],
     overrides: Optional[Dict[str, NetflixTitleOverride]] = None,
 ) -> List[Dict[str, str]]:
     rows_by_title: Dict[Tuple[str, str, str], Dict[str, str]] = {}
     overrides = {
-        _normalize_episode_title_override_key(raw_title): override
+        _normalize_episode_title_override_key(raw_title): _coerce_episode_title_override(
+            override,
+            source_label=f"build_unmapped_imdb_override_rows[{raw_title}]",
+        )
         for raw_title, override in (overrides or {}).items()
     }
     for entry in entries:
@@ -2077,9 +2165,24 @@ def build_unmapped_imdb_override_rows(
         netflix_episode_title = (entry.parsed.episode_title or "").strip()
         if not netflix_title:
             continue
-        had_override = "yes" if any(key in overrides for key in _build_episode_title_override_lookup_keys(entry.parsed)) else ""
+        override = next(
+            (overrides[key] for key in _build_episode_title_override_lookup_keys(entry.parsed) if key in overrides),
+            None,
+        )
+        had_override = "yes" if override is not None else ""
+        found_source = _combine_found_sources(_entry_found_source(entry), _override_found_source(override))
 
-        mapped_title = entry.resolved_title if title_mapped and entry.resolved_title != netflix_title else ""
+        has_resolved_title_hint = bool(entry.resolved_title and entry.resolved_title != netflix_title)
+        mapped_title = entry.resolved_title if has_resolved_title_hint else ""
+        if not mapped_title and override is not None and override.title:
+            mapped_title = override.title
+        mapped_year = str(entry.resolved_title_year or "") if (title_mapped or has_resolved_title_hint) else ""
+        if not mapped_year and override is not None and override.year is not None:
+            mapped_year = str(override.year)
+        mapped_source_id = entry.metadata_parent_id or "" if title_mapped else ""
+        if not mapped_source_id and override is not None and override.source_id:
+            mapped_source_id = override.source_id
+        mapped_episode_title = override.episode_title if override is not None and override.episode_title else ""
         row_key = (netflix_title, season_name, netflix_episode_title)
         row = rows_by_title.get(row_key)
         if row is None:
@@ -2090,19 +2193,24 @@ def build_unmapped_imdb_override_rows(
                 "netflix_episode_title": netflix_episode_title,
                 "expected_type": entry.expected_type,
                 "title": mapped_title,
-                "year": str(entry.resolved_title_year or "") if title_mapped else "",
-                "source_id": entry.metadata_parent_id or "" if title_mapped else "",
-                "episode_title": "",
+                "year": mapped_year,
+                "source_id": mapped_source_id,
+                "episode_title": mapped_episode_title,
+                "found_source": found_source,
                 "had_override": had_override,
             }
             continue
 
         if not row["title"] and mapped_title:
             row["title"] = mapped_title
-        if not row["year"] and title_mapped and entry.resolved_title_year is not None:
-            row["year"] = str(entry.resolved_title_year)
-        if not row["source_id"] and title_mapped and entry.metadata_parent_id:
-            row["source_id"] = entry.metadata_parent_id
+        if not row["year"] and mapped_year:
+            row["year"] = mapped_year
+        if not row["source_id"] and mapped_source_id:
+            row["source_id"] = mapped_source_id
+        if not row["episode_title"] and mapped_episode_title:
+            row["episode_title"] = mapped_episode_title
+        if not row["found_source"] and found_source:
+            row["found_source"] = found_source
         if not row["expected_type"] and entry.expected_type:
             row["expected_type"] = entry.expected_type
         if not row["had_override"] and had_override:
@@ -2148,6 +2256,7 @@ def export_unmapped_imdb_overrides(
                 "year",
                 "source_id",
                 "episode_title",
+                "found_source",
                 "had_override",
             ],
         )

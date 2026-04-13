@@ -69,7 +69,8 @@ class IMDbDataProvider(BaseMetadataProvider):
     TITLE_CACHE_MAX = 5000
     TITLE_CACHE_EVICT = 1000
     EXACT_MATCH_LIMIT = 50
-    SQL_TIMING_ENABLED = True
+    PREFIX_MATCH_LIMIT = 100
+    SQL_TIMING_ENABLED = False
 
     TITLE_TYPE_CODES = {
         "movie": 1,
@@ -855,6 +856,59 @@ class IMDbDataProvider(BaseMetadataProvider):
                 best_match = self._create_title_info_from_row_fast(row, conn)
         return best_match, best_score
 
+    @staticmethod
+    def _build_prefix_search_patterns(title_lower: str) -> List[str]:
+        normalized = re.sub(r"\s+", " ", title_lower).strip()
+        if not normalized:
+            return []
+
+        trimmed = normalized.rstrip(" .,:;!?/\\|_+-")
+        if len(re.sub(r"[^a-z0-9]+", "", trimmed)) < 2:
+            return []
+
+        patterns = [
+            f"{trimmed} %",
+            f"{trimmed}:%",
+            f"{trimmed}-%",
+            f"{trimmed}.%",
+            f"{trimmed}/%",
+        ]
+        if trimmed != normalized:
+            patterns.append(f"{normalized}%")
+        return list(dict.fromkeys(pattern for pattern in patterns if pattern))
+
+    def _get_prefix_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[sqlite3.Row]:
+        patterns = self._build_prefix_search_patterns(title_lower)
+        if not patterns:
+            return []
+
+        year_clause = ""
+        params: List[Any] = [self.MIN_VOTES_THRESHOLD or 0]
+        if year is not None:
+            year_clause = " AND (c.year BETWEEN ? AND ? OR c.year IS NULL)"
+            params.extend([year - self.YEAR_TOLERANCE, year + self.YEAR_TOLERANCE])
+
+        pattern_clause = " OR ".join("s.search_title_lower LIKE ?" for _ in patterns)
+        params.extend(patterns)
+        params.append(self.PREFIX_MATCH_LIMIT)
+
+        return conn.execute(
+            f"""
+            SELECT c.id, c.title, c.type, c.year, c.end_year, c.runtime_minutes, c.genres,
+                   CASE WHEN c.rating IS NULL THEN NULL ELSE c.rating / 10.0 END AS rating,
+                   c.votes, s.search_title AS matched_title,
+                   CASE WHEN s.is_primary = 1 THEN 2 ELSE 1 END AS match_rank
+            FROM title_search s
+            JOIN title_core c ON c.id = s.title_id
+            WHERE c.votes >= ?
+              {year_clause}
+              AND ({pattern_clause})
+            ORDER BY LENGTH(s.search_title_lower), s.is_primary DESC, c.votes DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
     def _extract_matches(self, query: str, choices: Dict[int, str], limit: int) -> List[Tuple[str, float, int]]:
         extractor = getattr(process, "extract", None)
         if callable(extractor):
@@ -982,6 +1036,16 @@ class IMDbDataProvider(BaseMetadataProvider):
                     for key in oldest_keys:
                         del self._search_cache[key]
                 return result
+
+            prefix_candidates = [dict(row) for row in self._get_prefix_candidates(conn, title_lower, year)]
+            result = self._select_best_fuzzy_match(conn, title, prefix_candidates, year)
+            if result is not None:
+                self._search_cache[cache_key] = result
+                if len(self._search_cache) > self.SEARCH_CACHE_MAX:
+                    oldest_keys = list(self._search_cache.keys())[: self.SEARCH_CACHE_EVICT]
+                    for key in oldest_keys:
+                        del self._search_cache[key]
+                return result
         finally:
             self._return_connection(conn)
 
@@ -1011,6 +1075,16 @@ class IMDbDataProvider(BaseMetadataProvider):
 
             candidates = [dict(row) for row in self._get_fuzzy_candidates(conn, title_lower, year) if row["type"] in preferred_type_codes]
             result = self._select_best_fuzzy_match(conn, title, candidates, year)
+            if result is not None:
+                self._search_cache[cache_key] = result
+                return result
+
+            prefix_candidates = [
+                dict(row)
+                for row in self._get_prefix_candidates(conn, title_lower, year)
+                if row["type"] in preferred_type_codes
+            ]
+            result = self._select_best_fuzzy_match(conn, title, prefix_candidates, year)
             if result is not None:
                 self._search_cache[cache_key] = result
                 return result

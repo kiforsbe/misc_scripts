@@ -635,6 +635,27 @@ class MetadataManager:
         self.providers = providers
         # Cache for find_title results - key is (title, year)
         self._title_cache = {}
+
+    @staticmethod
+    def _provider_name(provider: BaseMetadataProvider) -> str:
+        return type(provider).__name__.casefold().strip()
+
+    def _find_title_with_provider(
+        self,
+        provider: BaseMetadataProvider,
+        title: str,
+        year: Optional[int] = None,
+        preferred_type: Optional[str] = None,
+    ) -> Tuple[Optional[TitleInfo], Optional[BaseMetadataProvider]]:
+        provider_find_with_type_hint = getattr(provider, "find_title_with_type_hint", None)
+        if preferred_type and callable(provider_find_with_type_hint):
+            result = provider_find_with_type_hint(title, preferred_type, year)
+        else:
+            result = provider.find_title(title, year)
+        result_info = getattr(result, "info", None)
+        if isinstance(result, MatchResult) and result_info:
+            return result_info, provider
+        return None, None
     
     def find_title(
         self,
@@ -654,12 +675,14 @@ class MetadataManager:
         best_fallback_provider = None
         
         for provider in self.providers:
-            if preferred_type and hasattr(provider, "find_title_with_type_hint"):
-                result = provider.find_title_with_type_hint(title, preferred_type, year)
+            provider_find_with_type_hint = getattr(provider, "find_title_with_type_hint", None)
+            if preferred_type and callable(provider_find_with_type_hint):
+                result = provider_find_with_type_hint(title, preferred_type, year)
             else:
                 result = provider.find_title(title, year)
-            if result and result.info:  # Make sure we have both a result and title info
-                if _metadata_type_matches_preference(getattr(result.info, "type", None), preferred_type):
+            result_info = getattr(result, "info", None)
+            if isinstance(result, MatchResult) and result_info:  # Make sure we have both a result and title info
+                if _metadata_type_matches_preference(getattr(result_info, "type", None), preferred_type):
                     if not best_result or result.weighted_score > best_result.weighted_score:
                         best_result = result
                         best_provider = provider
@@ -673,6 +696,29 @@ class MetadataManager:
         
         # Cache the result (even if None)
         result_tuple = (best_result.info if best_result else None, best_provider)
+        self._title_cache[cache_key] = result_tuple
+        return result_tuple
+
+    def find_title_from_provider(
+        self,
+        title: str,
+        provider_name: str,
+        year: Optional[int] = None,
+        preferred_type: Optional[str] = None,
+    ) -> Tuple[Optional[TitleInfo], Optional[BaseMetadataProvider]]:
+        normalized_provider_name = provider_name.casefold().strip()
+        cache_key = (title, year, preferred_type, normalized_provider_name)
+        if cache_key in self._title_cache:
+            return self._title_cache[cache_key]
+
+        for provider in self.providers:
+            if self._provider_name(provider) != normalized_provider_name:
+                continue
+            result_tuple = self._find_title_with_provider(provider, title, year=year, preferred_type=preferred_type)
+            self._title_cache[cache_key] = result_tuple
+            return result_tuple
+
+        result_tuple = (None, None)
         self._title_cache[cache_key] = result_tuple
         return result_tuple
     

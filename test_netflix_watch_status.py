@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 from netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
 from netflix_watch_status import (
+    DEFAULT_EPISODE_TITLE_OVERRIDES_FILE,
     NetflixHistoryEntry,
     NetflixWatchStatusAnalyzer,
     WatchTableRow,
@@ -262,6 +263,17 @@ def test_load_episode_title_overrides_prefers_netflix_original_title_key_for_map
     assert analyzer._get_episode_title_override(parsed, resolved[1]) == "Canonical Episode"
 
 
+def test_default_episode_title_overrides_include_dandadan_imdb_mapping():
+    overrides = load_episode_title_overrides(str(DEFAULT_EPISODE_TITLE_OVERRIDES_FILE))
+
+    override = overrides["dan da dan: season 1: to a kinder world"]
+
+    assert override.title == "Dandadan"
+    assert override.year == 2024
+    assert override.source_id == "tt30217403"
+    assert override.episode_title == "Yasashii sekai e"
+
+
 def test_classify_entry_uses_title_override_table_for_non_matching_show_titles():
     class MetadataManager:
         def __init__(self):
@@ -364,6 +376,66 @@ def test_classify_entry_falls_back_to_series_match_for_implicit_single_colon_tit
         ("A.I.C.O.: Awakening", None, "movie"),
         ("A.I.C.O.", None, "tv"),
     ]
+
+
+def test_classify_entry_merges_imdb_metadata_into_anime_series_matches():
+    class AnimeProvider:
+        pass
+
+    class IMDbProvider:
+        pass
+
+    class MetadataManager:
+        def __init__(self):
+            self.calls = []
+
+        def find_title(self, query, year=None, preferred_type=None):
+            self.calls.append(("find_title", query, year, preferred_type))
+            if query != "A.I.C.O.":
+                return None
+            return (
+                SimpleNamespace(
+                    title="A.I.C.O. Incarnation",
+                    type="anime_series",
+                    id="36039",
+                    year=2018,
+                    total_seasons=1,
+                    rating=6.7,
+                    sources=("https://myanimelist.net/anime/36039",),
+                ),
+                AnimeProvider(),
+            )
+
+        def find_title_from_provider(self, query, provider_name, year=None, preferred_type=None):
+            self.calls.append(("find_title_from_provider", query, provider_name, year, preferred_type))
+            if query != "A.I.C.O." or provider_name != "imdbdataprovider":
+                return (None, None)
+            return (
+                SimpleNamespace(
+                    title="A.I.C.O. Incarnation",
+                    type="tv",
+                    id="tt8116380",
+                    year=2018,
+                    total_seasons=1,
+                    sources=("https://www.imdb.com/title/tt8116380/",),
+                ),
+                IMDbProvider(),
+            )
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=MetadataManager())
+
+    resolved = analyzer._classify_entry(parse_netflix_title("A.I.C.O.: Awakening"), prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "A.I.C.O. Incarnation"
+    assert resolved[4] == "tv"
+    assert resolved[6] == "tt8116380"
+    assert type(resolved[5]).__name__ == "IMDbProvider"
+    assert resolved[11] == "anime_series"
+    assert resolved[12] == (
+        "https://myanimelist.net/anime/36039",
+        "https://www.imdb.com/title/tt8116380/",
+    )
 
 
 def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_titles():
@@ -700,6 +772,9 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
         overrides={
             "Known Show: Missing Episode": {
                 "title": "Known Show",
+                "year": 2024,
+                "source_id": "tt1234567",
+                "episode_title": "Canonical Missing Episode",
             },
         },
     )
@@ -711,10 +786,11 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
             "season_name": "",
             "netflix_episode_title": "Missing Episode",
             "expected_type": "series",
-            "title": "",
-            "year": "",
+            "title": "Known Show",
+            "year": "2024",
             "source_id": "tt1234567",
-            "episode_title": "",
+            "episode_title": "Canonical Missing Episode",
+            "found_source": "imdb",
             "had_override": "yes",
         },
         {
@@ -727,8 +803,89 @@ def test_build_unmapped_imdb_override_rows_includes_title_and_episode_failures()
             "year": "",
             "source_id": "",
             "episode_title": "",
+            "found_source": "",
             "had_override": "",
         },
+    ]
+
+
+def test_build_unmapped_imdb_override_rows_preserves_non_imdb_title_hints():
+    entries = [
+        NetflixHistoryEntry(
+            raw_title="A.I.C.O.: Awakening",
+            watched_at=datetime(2026, 1, 1),
+            parsed=ParsedNetflixTitle(
+                raw_title="A.I.C.O.: Awakening",
+                title="A.I.C.O.",
+                media_kind="movie",
+                episode_title="Awakening",
+                has_implicit_split=True,
+            ),
+            media_kind="series",
+            resolved_title="A.I.C.O. Incarnation",
+            resolved_title_year=2018,
+            metadata_type="anime_series",
+            metadata_parent_id="36039",
+            metadata_sources=("https://myanimelist.net/anime/36039",),
+        ),
+    ]
+
+    rows = build_unmapped_imdb_override_rows(entries)
+
+    assert rows == [
+        {
+            "netflix_original_title": "A.I.C.O.: Awakening",
+            "netflix_title": "A.I.C.O.",
+            "season_name": "",
+            "netflix_episode_title": "Awakening",
+            "expected_type": "",
+            "title": "A.I.C.O. Incarnation",
+            "year": "2018",
+            "source_id": "",
+            "episode_title": "",
+            "found_source": "anime",
+            "had_override": "",
+        }
+    ]
+
+
+def test_build_unmapped_imdb_override_rows_uses_override_imdb_metadata_when_entry_is_unresolved():
+    entries = [
+        NetflixHistoryEntry(
+            raw_title="DAN DA DAN: Season 1: To a Kinder World",
+            watched_at=datetime(2026, 1, 1),
+            parsed=ParsedNetflixTitle(
+                raw_title="DAN DA DAN: Season 1: To a Kinder World",
+                title="DAN DA DAN",
+                media_kind="series",
+                season=1,
+                season_title="Season 1",
+                episode_title="To a Kinder World",
+                is_explicit_series=True,
+            ),
+            media_kind="series",
+            resolved_title="DAN DA DAN",
+            expected_type="series",
+        ),
+    ]
+
+    overrides = load_episode_title_overrides(str(DEFAULT_EPISODE_TITLE_OVERRIDES_FILE))
+    rows = build_unmapped_imdb_override_rows(entries, overrides=overrides)
+
+    assert rows == [
+        {
+            "netflix_original_title": "DAN DA DAN: Season 1: To a Kinder World",
+            "netflix_title": "DAN DA DAN",
+            "season_name": "Season 1",
+            "netflix_episode_title": "To a Kinder World",
+            "expected_type": "series",
+            "title": "Dandadan",
+            "year": "2024",
+            "source_id": "tt30217403",
+            "episode_title": "Yasashii sekai e",
+            "found_source": "imdb",
+            "had_override": "yes",
+        }
     ]
 
 
@@ -745,6 +902,7 @@ def test_summarize_unmapped_imdb_override_rows_counts_override_breakdown():
                 "year": "",
                 "source_id": "tt1234567",
                 "episode_title": "",
+                "found_source": "imdb",
                 "had_override": "yes",
             },
             {
@@ -757,6 +915,7 @@ def test_summarize_unmapped_imdb_override_rows_counts_override_breakdown():
                 "year": "",
                 "source_id": "",
                 "episode_title": "",
+                "found_source": "",
                 "had_override": "",
             },
         ]
@@ -810,6 +969,7 @@ def test_exported_unmapped_csv_round_trips_as_override_input_when_filled_in():
                 "year": "",
                 "source_id": "tt7654321",
                 "episode_title": "",
+                "found_source": "imdb",
                 "had_override": "",
             }
         ]
