@@ -1,4 +1,5 @@
 (function () {
+    const FILTER_INPUT_DEBOUNCE_MS = 250;
     const VIRTUAL_ROW_OVERSCAN = 10;
     const VIRTUAL_ROW_ESTIMATE = 44;
 
@@ -23,6 +24,9 @@
     const preferredDefaultColumnOrder = ["year", "runtime_minutes", "average_rating", "genres"];
     const state = {
         query: "",
+        compiledFilter: () => true,
+        filterError: "",
+        filterInputTimer: null,
         selectedId: rows[0] ? rows[0].id : null,
         expanded: new Set(),
         shownColumns: new Set(defaultColumnOrder.filter((key) => defaultVisibleColumns.has(key))),
@@ -47,6 +51,8 @@
         appWindow: document.getElementById("appWindow"),
         sourceCsv: document.getElementById("sourceCsv"),
         searchInput: document.getElementById("searchInput"),
+        smartFilterHelpButton: document.getElementById("smartFilterHelpButton"),
+        smartFilterHelp: document.getElementById("smartFilterHelp"),
         listThumbnailToggle: document.getElementById("listThumbnailToggle"),
         columnPickerMenu: document.getElementById("columnPickerMenu"),
         columnOptions: document.getElementById("columnOptions"),
@@ -284,6 +290,592 @@
         menu.style.top = `${Math.min(clientY, maxTop)}px`;
     }
 
+    function parseNumericValue(token) {
+        return /^-?\d+$/.test(token) ? Number.parseInt(token, 10) : Number.parseFloat(token);
+    }
+
+    function parseNumericExpr(expr) {
+        const trimmed = String(expr || "").trim();
+        const approxMatch = trimmed.match(/^~\s*(-?\d+(?:\.\d+)?)\s*(?:±|\+\/-)\s*(\d+(?:\.\d+)?)$/);
+        if (approxMatch) {
+            const center = Number.parseFloat(approxMatch[1]);
+            const delta = Number.parseFloat(approxMatch[2]);
+            return (value) => center - delta <= value && value <= center + delta;
+        }
+
+        const moduloMatch = trimmed.match(/^%\s*(\d+)$/);
+        if (moduloMatch) {
+            const divisor = Number.parseInt(moduloMatch[1], 10);
+            if (divisor === 0) {
+                throw new Error("Modulo divisor cannot be zero");
+            }
+            return (value) => value % divisor === 0;
+        }
+
+        const rangeMatch = trimmed.match(/^\s*(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)\s*$/);
+        if (rangeMatch) {
+            const lower = parseNumericValue(rangeMatch[1]);
+            const upper = parseNumericValue(rangeMatch[2]);
+            if (lower > upper) {
+                throw new Error("Range lower bound cannot exceed upper bound");
+            }
+            return (value) => lower <= value && value <= upper;
+        }
+
+        if (trimmed.includes(",")) {
+            const values = new Set(trimmed.split(",").map((part) => part.trim()).filter(Boolean).map(parseNumericValue));
+            if (!values.size) {
+                throw new Error("Empty enumeration expression");
+            }
+            return (value) => values.has(value);
+        }
+
+        const comparisonMatch = trimmed.match(/^(<=|>=|!=|=|<|>)\s*(-?\d+(?:\.\d+)?)$/);
+        if (comparisonMatch) {
+            const operator = comparisonMatch[1];
+            const threshold = parseNumericValue(comparisonMatch[2]);
+            if (operator === "=") {
+                return (value) => value === threshold;
+            }
+            if (operator === "!=") {
+                return (value) => value !== threshold;
+            }
+            if (operator === ">") {
+                return (value) => value > threshold;
+            }
+            if (operator === ">=") {
+                return (value) => value >= threshold;
+            }
+            if (operator === "<") {
+                return (value) => value < threshold;
+            }
+            return (value) => value <= threshold;
+        }
+
+        if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+            const exact = parseNumericValue(trimmed);
+            return (value) => value === exact;
+        }
+
+        throw new Error(`Unsupported numeric expression: ${trimmed}`);
+    }
+
+    function transformNumericExpr(expr, valueTransform) {
+        const trimmed = String(expr || "").trim();
+        const approxMatch = trimmed.match(/^~\s*([^±]+?)\s*(?:±|\+\/-)\s*(.+)$/);
+        if (approxMatch) {
+            return `~${valueTransform(approxMatch[1].trim())}±${valueTransform(approxMatch[2].trim())}`;
+        }
+
+        const moduloMatch = trimmed.match(/^%\s*(.+)$/);
+        if (moduloMatch) {
+            const value = valueTransform(moduloMatch[1].trim());
+            if (!Number.isInteger(value)) {
+                throw new Error("Modulo expressions require integer values");
+            }
+            return `%${value}`;
+        }
+
+        const rangeMatch = trimmed.match(/^(.+?)\.\.(.+)$/);
+        if (rangeMatch) {
+            return `${valueTransform(rangeMatch[1].trim())}..${valueTransform(rangeMatch[2].trim())}`;
+        }
+
+        const comparisonMatch = trimmed.match(/^(<=|>=|!=|=|<|>)(.+)$/);
+        if (comparisonMatch) {
+            return `${comparisonMatch[1]}${valueTransform(comparisonMatch[2].trim())}`;
+        }
+
+        if (trimmed.includes(",")) {
+            return trimmed.split(",").map((part) => valueTransform(part.trim())).join(",");
+        }
+
+        return String(valueTransform(trimmed));
+    }
+
+    function normalizeRuntimeToken(token) {
+        const trimmed = String(token || "").trim().toLowerCase();
+        if (!trimmed) {
+            throw new Error("Runtime filter cannot be empty");
+        }
+        if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+            return Number.parseFloat(trimmed);
+        }
+
+        let totalMinutes = 0;
+        let matched = false;
+        trimmed.replace(/(-?\d+(?:\.\d+)?)\s*([hm])/g, (_, valueText, unit) => {
+            matched = true;
+            const value = Number.parseFloat(valueText);
+            totalMinutes += unit === "h" ? value * 60 : value;
+            return "";
+        });
+
+        if (!matched) {
+            throw new Error(`Invalid runtime token: ${token}`);
+        }
+
+        return totalMinutes;
+    }
+
+    function parseRuntimeExpr(expr) {
+        return parseNumericExpr(transformNumericExpr(expr, normalizeRuntimeToken));
+    }
+
+    function tokenizeQuery(text) {
+        const tokens = [];
+        let current = "";
+        let quote = null;
+
+        for (const character of String(text || "")) {
+            if (quote) {
+                if (character === quote) {
+                    quote = null;
+                } else {
+                    current += character;
+                }
+                continue;
+            }
+
+            if (character === '"' || character === "'") {
+                quote = character;
+                continue;
+            }
+
+            if (/\s/.test(character)) {
+                if (current) {
+                    tokens.push(current);
+                    current = "";
+                }
+                continue;
+            }
+
+            current += character;
+        }
+
+        if (current) {
+            tokens.push(current);
+        }
+
+        return tokens;
+    }
+
+    function globToRegExp(pattern) {
+        const source = String(pattern || "")
+            .replace(/[|\\{}()[\]^$+?.]/g, "\\$&")
+            .replace(/\*/g, ".*")
+            .replace(/\?/g, ".");
+        return new RegExp(`^${source}$`, "i");
+    }
+
+    function createStringMatcher(rawValue) {
+        const value = String(rawValue || "").trim();
+        if (!value) {
+            throw new Error("Filter value cannot be empty");
+        }
+        if (value.includes("*") || value.includes("?")) {
+            const regex = globToRegExp(value);
+            return (candidate) => regex.test(String(candidate || ""));
+        }
+        const lowered = value.toLowerCase();
+        return (candidate) => String(candidate || "").toLowerCase().includes(lowered);
+    }
+
+    function canonicalSmartFilterField(fieldName) {
+        return ({
+            name: "title",
+            title: "title",
+            year: "year",
+            source: "source_id",
+            source_id: "source_id",
+            sourceid: "source_id",
+            type: "item_type",
+            item: "item_type",
+            item_type: "item_type",
+            itemtype: "item_type",
+            state: "watch_state",
+            status: "watch_state",
+            watch: "watch_state",
+            watch_state: "watch_state",
+            watchstate: "watch_state",
+            season: "season",
+            season_title: "season_title",
+            seasontitle: "season_title",
+            episode: "episode",
+            episode_title: "episode_title",
+            episodetitle: "episode_title",
+            views: "views",
+            dates: "watch_dates",
+            date: "watch_dates",
+            watch_dates: "watch_dates",
+            watchdates: "watch_dates",
+            watchyear: "watch_year",
+            watchyears: "watch_year",
+            watch_year: "watch_year",
+            runtime: "runtime_minutes",
+            runtime_minutes: "runtime_minutes",
+            runtimeminutes: "runtime_minutes",
+            rating: "average_rating",
+            average_rating: "average_rating",
+            averagerating: "average_rating",
+            votes: "num_votes",
+            num_votes: "num_votes",
+            numvotes: "num_votes",
+            genre: "genres",
+            genres: "genres",
+            title_type: "title_type",
+            titletype: "title_type",
+            id: "id",
+            parent: "parent_id",
+            parent_id: "parent_id",
+            parentid: "parent_id",
+            level: "level",
+            children: "has_children",
+            has_children: "has_children",
+            haschildren: "has_children",
+            progress: "progress",
+            total: "progress_total",
+        })[String(fieldName || "").trim().toLowerCase()] || "";
+    }
+
+    function normalizeItemTypeToken(value) {
+        const lowered = String(value || "").trim().toLowerCase();
+        const normalized = ({
+            movie: "movie",
+            movies: "movie",
+            film: "movie",
+            series: "series",
+            show: "series",
+            shows: "series",
+            season: "season",
+            seasons: "season",
+            episode: "episode",
+            episodes: "episode",
+        })[lowered];
+        if (!normalized) {
+            throw new Error(`Unknown type filter: ${value}`);
+        }
+        return normalized;
+    }
+
+    function normalizeWatchStateToken(value) {
+        const lowered = String(value || "").trim().toLowerCase();
+        const normalized = ({
+            watched: "watched",
+            complete: "watched",
+            completed: "watched",
+            partial: "partial",
+            partially: "partial",
+            unwatched: "unwatched",
+            unseen: "unwatched",
+            aggregate: "aggregate",
+            grouped: "aggregate",
+        })[lowered];
+        if (!normalized) {
+            throw new Error(`Unknown watch state filter: ${value}`);
+        }
+        return normalized;
+    }
+
+    function parseBooleanToken(value) {
+        const lowered = String(value || "").trim().toLowerCase();
+        if (["1", "true", "yes", "y", "on"].includes(lowered)) {
+            return true;
+        }
+        if (["0", "false", "no", "n", "off"].includes(lowered)) {
+            return false;
+        }
+        throw new Error(`Invalid boolean value: ${value}`);
+    }
+
+    function parseYearValues(value) {
+        return [...new Set((String(value || "").match(/\d{4}/g) || []).map((token) => Number.parseInt(token, 10)))];
+    }
+
+    function parseLeadingInteger(value) {
+        const match = String(value || "").match(/-?\d+/);
+        return match ? Number.parseInt(match[0], 10) : null;
+    }
+
+    function parseVotesValue(value) {
+        const normalized = String(value || "").replace(/,/g, "").trim();
+        if (!normalized || !/^-?\d+$/.test(normalized)) {
+            return null;
+        }
+        return Number.parseInt(normalized, 10);
+    }
+
+    function parseRatingValue(value) {
+        const normalized = String(value || "").trim();
+        if (!normalized || !/^-?\d+(?:\.\d+)?$/.test(normalized)) {
+            return null;
+        }
+        return Number.parseFloat(normalized);
+    }
+
+    function parseRuntimeMinutesValue(value) {
+        const normalized = String(value || "").trim();
+        if (!normalized) {
+            return null;
+        }
+        try {
+            return normalizeRuntimeToken(normalized);
+        } catch {
+            return null;
+        }
+    }
+
+    function parseProgressCounts(value) {
+        const match = String(value || "").match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/);
+        if (!match) {
+            return { watched: null, total: null };
+        }
+        return {
+            watched: Number.parseInt(match[1], 10),
+            total: Number.parseInt(match[2], 10),
+        };
+    }
+
+    function numericValuesFrom(row, value) {
+        if (Array.isArray(value)) {
+            return value.filter((item) => Number.isFinite(item));
+        }
+        if (value === null || value === undefined || value === "") {
+            return [];
+        }
+        return Number.isFinite(value) ? [value] : [];
+    }
+
+    function buildNumericFieldPredicate(rawValue, valuesForRow, parser = parseNumericExpr) {
+        const matcher = parser(rawValue);
+        return (row) => numericValuesFrom(row, valuesForRow(row)).some((value) => matcher(value));
+    }
+
+    function buildStringFieldPredicate(rawValue, valueForRow) {
+        const matcher = createStringMatcher(rawValue);
+        return (row) => matcher(valueForRow(row));
+    }
+
+    function buildFreeTextPredicate(token) {
+        const lowered = String(token || "").trim().toLowerCase();
+        if (!lowered) {
+            return () => true;
+        }
+        return (row) => String(row.search_text || "").toLowerCase().includes(lowered);
+    }
+
+    function buildFieldPredicate(fieldName, rawValue) {
+        const field = canonicalSmartFilterField(fieldName);
+        if (!field) {
+            throw new Error(`Unknown filter field: ${fieldName}`);
+        }
+
+        if (field === "title") {
+            return buildStringFieldPredicate(rawValue, (row) => `${displayTitle(row)} ${row.title || ""}`.trim());
+        }
+        if (field === "source_id") {
+            return buildStringFieldPredicate(rawValue, (row) => row.source_id || "");
+        }
+        if (field === "item_type") {
+            const expected = normalizeItemTypeToken(rawValue);
+            return (row) => row.item_type === expected;
+        }
+        if (field === "watch_state") {
+            const expected = normalizeWatchStateToken(rawValue);
+            return (row) => row.watch_state === expected;
+        }
+        if (field === "year") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseYearValues(row.year));
+        }
+        if (field === "season") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseLeadingInteger(row.season));
+        }
+        if (field === "season_title") {
+            return buildStringFieldPredicate(rawValue, (row) => row.season_title || "");
+        }
+        if (field === "episode") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseLeadingInteger(row.episode));
+        }
+        if (field === "episode_title") {
+            return buildStringFieldPredicate(rawValue, (row) => `${displayEpisodeTitle(row)} ${row.episode_title || ""}`.trim());
+        }
+        if (field === "views") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseLeadingInteger(row.views));
+        }
+        if (field === "watch_dates") {
+            return buildStringFieldPredicate(rawValue, (row) => row.watch_dates || "");
+        }
+        if (field === "watch_year") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseYearValues(row.watch_dates));
+        }
+        if (field === "runtime_minutes") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseRuntimeMinutesValue(row.runtime_minutes), parseRuntimeExpr);
+        }
+        if (field === "average_rating") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseRatingValue(row.average_rating));
+        }
+        if (field === "num_votes") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseVotesValue(row.num_votes));
+        }
+        if (field === "genres") {
+            return buildStringFieldPredicate(rawValue, (row) => row.genres || "");
+        }
+        if (field === "title_type") {
+            return buildStringFieldPredicate(rawValue, (row) => row.title_type || "");
+        }
+        if (field === "id") {
+            return buildStringFieldPredicate(rawValue, (row) => row.id || "");
+        }
+        if (field === "parent_id") {
+            return buildStringFieldPredicate(rawValue, (row) => row.parent_id || "");
+        }
+        if (field === "level") {
+            return buildNumericFieldPredicate(rawValue, (row) => Number(row.level ?? 0));
+        }
+        if (field === "has_children") {
+            if (!String(rawValue || "").trim()) {
+                return (row) => Boolean(row.has_children);
+            }
+            const expected = parseBooleanToken(rawValue);
+            return (row) => Boolean(row.has_children) === expected;
+        }
+        if (field === "progress") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseProgressCounts(row.episode).watched);
+        }
+        if (field === "progress_total") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseProgressCounts(row.episode).total);
+        }
+
+        throw new Error(`Unsupported filter field: ${fieldName}`);
+    }
+
+    function compileSmartFilter(text) {
+        const trimmed = String(text || "").trim();
+        if (!trimmed) {
+            return {
+                predicate: () => true,
+                summary: "Smart filter ready",
+            };
+        }
+
+        const tokens = tokenizeQuery(trimmed);
+        const groups = [[]];
+        let negateNext = false;
+        let clauseCount = 0;
+
+        for (let index = 0; index < tokens.length; index += 1) {
+            const token = tokens[index];
+            const lowered = token.toLowerCase();
+
+            if (["or", "||", "--or"].includes(lowered)) {
+                if (!groups[groups.length - 1].length) {
+                    throw new Error("or must follow a filter term");
+                }
+                groups.push([]);
+                continue;
+            }
+
+            if (["not", "!", "--not"].includes(lowered)) {
+                negateNext = !negateNext;
+                continue;
+            }
+
+            let predicate;
+            if (token.startsWith("--")) {
+                const fieldName = token.slice(2);
+                const canonicalField = canonicalSmartFilterField(fieldName);
+                const isValueLess = canonicalField === "has_children";
+                let rawValue = "";
+                if (!canonicalField) {
+                    throw new Error(`Unknown filter field: ${fieldName}`);
+                }
+                if (!isValueLess) {
+                    if (index + 1 >= tokens.length) {
+                        throw new Error(`Missing value for --${fieldName}`);
+                    }
+                    rawValue = tokens[index + 1];
+                    index += 1;
+                }
+                predicate = buildFieldPredicate(fieldName, rawValue);
+            } else {
+                const separatorIndex = token.indexOf(":");
+                if (separatorIndex > 0) {
+                    const fieldName = token.slice(0, separatorIndex);
+                    const rawValue = token.slice(separatorIndex + 1);
+                    const knownField = Boolean(canonicalSmartFilterField(fieldName));
+                    if (knownField) {
+                        predicate = buildFieldPredicate(fieldName, rawValue);
+                    } else {
+                        predicate = buildFreeTextPredicate(token);
+                    }
+                } else {
+                    predicate = buildFreeTextPredicate(token);
+                }
+            }
+
+            if (negateNext) {
+                const inner = predicate;
+                predicate = (row) => !inner(row);
+                negateNext = false;
+            }
+
+            groups[groups.length - 1].push(predicate);
+            clauseCount += 1;
+        }
+
+        if (negateNext) {
+            throw new Error("not must be followed by a filter");
+        }
+
+        if (!groups.every((group) => group.length)) {
+            throw new Error("or cannot terminate a filter");
+        }
+
+        return {
+            predicate: (row) => groups.some((group) => group.every((filter) => filter(row))),
+            summary: `${clauseCount} clause${clauseCount === 1 ? "" : "s"} active${groups.length > 1 ? ` across ${groups.length} groups` : ""}`,
+        };
+    }
+
+    function syncFilterInputState() {
+        if (!elements.searchInput) {
+            return;
+        }
+        elements.searchInput.classList.toggle("is-invalid", Boolean(state.filterError));
+        elements.searchInput.setAttribute("aria-invalid", state.filterError ? "true" : "false");
+        elements.searchInput.title = state.filterError || "";
+    }
+
+    function applySmartFilterQuery(nextQuery) {
+        state.query = String(nextQuery || "").trim();
+        try {
+            const compiled = compileSmartFilter(state.query);
+            state.compiledFilter = compiled.predicate;
+            state.filterError = "";
+        } catch (error) {
+            state.filterError = error instanceof Error ? error.message : String(error);
+        }
+        syncFilterInputState();
+        render();
+    }
+
+    function closeSmartFilterHelp() {
+        if (!elements.smartFilterHelp || !elements.smartFilterHelpButton) {
+            return;
+        }
+        elements.smartFilterHelp.hidden = true;
+        elements.smartFilterHelpButton.setAttribute("aria-expanded", "false");
+    }
+
+    function toggleSmartFilterHelp() {
+        if (!elements.smartFilterHelp || !elements.smartFilterHelpButton) {
+            return;
+        }
+        const nextHidden = !elements.smartFilterHelp.hidden;
+        elements.smartFilterHelp.hidden = nextHidden;
+        elements.smartFilterHelpButton.setAttribute("aria-expanded", nextHidden ? "false" : "true");
+    }
+
     function buildAncestors(row) {
         const ancestors = [];
         let current = row;
@@ -300,7 +892,7 @@
         if (!query) {
             return true;
         }
-        return String(row.search_text || "").includes(query);
+        return state.compiledFilter(row);
     }
 
     function branchMatches(row, query) {
@@ -746,6 +1338,7 @@
 
     function render() {
         syncListThumbnailMode();
+        syncFilterInputState();
         renderHeader();
         renderRows();
         renderSelection();
@@ -770,9 +1363,23 @@
     });
 
     elements.searchInput.addEventListener("input", (event) => {
-        state.query = String(event.target.value || "").trim().toLowerCase();
-        render();
+        const nextQuery = String(event.target.value || "");
+        if (state.filterInputTimer) {
+            clearTimeout(state.filterInputTimer);
+        }
+        state.filterError = "";
+        syncFilterInputState();
+        state.filterInputTimer = window.setTimeout(() => {
+            state.filterInputTimer = null;
+            applySmartFilterQuery(nextQuery);
+        }, FILTER_INPUT_DEBOUNCE_MS);
     });
+
+    if (elements.smartFilterHelpButton) {
+        elements.smartFilterHelpButton.addEventListener("click", () => {
+            toggleSmartFilterHelp();
+        });
+    }
 
     elements.listThumbnailToggle.addEventListener("click", () => {
         if (elements.listThumbnailToggle.disabled) {
@@ -849,11 +1456,15 @@
         if (!elements.columnPickerMenu.hidden && !event.target.closest("#columnPickerMenu")) {
             closeColumnMenu();
         }
+        if (!elements.smartFilterHelp.hidden && !event.target.closest("#smartFilterHelp") && !event.target.closest("#smartFilterHelpButton")) {
+            closeSmartFilterHelp();
+        }
     });
 
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
             closeColumnMenu();
+            closeSmartFilterHelp();
         }
     });
 
@@ -871,5 +1482,6 @@
 
     elements.sourceCsv.textContent = report.meta && report.meta.source_csv ? report.meta.source_csv : "";
     renderColumnOptions();
+    syncFilterInputState();
     render();
 }());

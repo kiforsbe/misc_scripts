@@ -16,8 +16,28 @@
             <div class="smart-filter-shell">
                 <label class="smart-filter-label" for="searchInput">Filter rows</label>
                 <div class="smart-filter-row">
-                    <input id="searchInput" type="search" placeholder="Filter by title, year, season, episode, or watch year">
+                    <input id="searchInput" type="search" placeholder="Filter by text or smart query, e.g. type:episode rating:>=8 state:watched">
+                    <button id="smartFilterHelpButton" class="smart-filter-help-button" type="button" aria-expanded="false" aria-controls="smartFilterHelp">Smart Filter Help</button>
                     <button id="listThumbnailToggle" class="list-thumbnail-toggle" type="button" aria-pressed="false">List Thumbnails</button>
+                </div>
+                <div id="smartFilterHelp" class="smart-filter-help" hidden>
+                    <p class="smart-filter-help-title">Smart filter examples</p>
+                    <div class="smart-filter-help-grid">
+                        <div>
+                            <p class="smart-filter-help-label">Examples</p>
+                            <p class="smart-filter-help-text">type:episode state:watched</p>
+                            <p class="smart-filter-help-text">rating:>=8 runtime:<30m</p>
+                            <p class="smart-filter-help-text">year:2019..2021 or genres:anime</p>
+                            <p class="smart-filter-help-text">not state:unwatched progress:>0</p>
+                        </div>
+                        <div>
+                            <p class="smart-filter-help-label">Fields</p>
+                            <p class="smart-filter-help-text">title, type, state, year, season, episode, views</p>
+                            <p class="smart-filter-help-text">rating, votes, runtime, genres, watchyear</p>
+                            <p class="smart-filter-help-text">season_title, episode_title, source_id, title_type</p>
+                            <p class="smart-filter-help-text">level, parent_id, progress, total, children</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
