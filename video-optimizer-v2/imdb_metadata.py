@@ -9,6 +9,8 @@ import time
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+# pyright: reportMissingImports=false, reportMissingModuleSource=false
+import datetime
 import requests
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
@@ -59,10 +61,20 @@ class IMDbDataProvider(BaseMetadataProvider):
     MAX_CANDIDATES = 1000
     EPISODE_FUZZY_LIMIT = 750
 
-    YEAR_EXACT_BONUS = 200
-    YEAR_CLOSE_BONUS = 100
-    VOTE_BONUS_CAP = 150
-    VOTE_BONUS_MULTIPLIER = 30
+    YEAR_EXACT_BONUS = 40
+    YEAR_CLOSE_BONUS = 20
+    VOTE_BONUS_CAP = 20
+    VOTE_BONUS_MULTIPLIER = 4
+    YEAR_RECENCY_MAX_BONUS = 20
+    YEAR_RECENCY_DECAY_YEARS = 10
+    EXACT_PRIMARY_MATCH_SCORE = 1000.0
+    EXACT_ALIAS_MATCH_SCORE = 950.0
+    PREFIX_SCORE_BASE = 700.0
+    PREFIX_SCORE_RANGE = 140.0
+    PREFIX_SCORE_CAP = 899.0
+    FUZZY_SCORE_BASE = 400.0
+    FUZZY_SCORE_RANGE = 260.0
+    FUZZY_SCORE_CAP = 749.0
 
     SEARCH_CACHE_MAX = 1000
     SEARCH_CACHE_EVICT = 500
@@ -803,7 +815,13 @@ class IMDbDataProvider(BaseMetadataProvider):
 
         return None
 
-    def _apply_candidate_bonuses(self, row: RowLike, score: float, year: Optional[int]) -> float:
+    def _apply_candidate_bonuses(
+        self,
+        row: RowLike,
+        score: float,
+        year: Optional[int],
+        max_score: Optional[float] = None,
+    ) -> float:
         total_score = score
         row_year = self._row_value(row, "year")
         if year is not None and isinstance(row_year, int):
@@ -814,6 +832,13 @@ class IMDbDataProvider(BaseMetadataProvider):
         votes = self._row_value(row, "votes")
         if isinstance(votes, int) and votes > 0:
             total_score += min(self.VOTE_BONUS_CAP, self.VOTE_BONUS_MULTIPLIER * math.log10(max(1, votes)))
+        if isinstance(row_year, int):
+            current_year = datetime.datetime.now().year
+            age = max(0, current_year - row_year)
+            if age < self.YEAR_RECENCY_DECAY_YEARS:
+                total_score += self.YEAR_RECENCY_MAX_BONUS * (self.YEAR_RECENCY_DECAY_YEARS - age) / float(self.YEAR_RECENCY_DECAY_YEARS)
+        if max_score is not None:
+            return min(total_score, max_score)
         return total_score
 
     def _get_exact_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[sqlite3.Row]:
@@ -849,12 +874,57 @@ class IMDbDataProvider(BaseMetadataProvider):
         best_match = None
         best_score = -1.0
         for row in candidates:
-            base_score = 1000.0 if row["match_rank"] == 2 else 925.0
-            total_score = self._apply_candidate_bonuses(row, base_score, year)
+            base_score = self.EXACT_PRIMARY_MATCH_SCORE if row["match_rank"] == 2 else self.EXACT_ALIAS_MATCH_SCORE
+            total_score = self._apply_candidate_bonuses(row, base_score, year, max_score=base_score)
             if total_score > best_score:
                 best_score = total_score
                 best_match = self._create_title_info_from_row_fast(row, conn)
         return best_match, best_score
+
+    @staticmethod
+    def _normalize_title_for_similarity(title: str, compact: bool = False) -> str:
+        normalized = (title or "").casefold()
+        normalized = re.sub(r"[^\w\s]", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if compact:
+            return normalized.replace(" ", "")
+        return normalized
+
+    def _score_partial_title_match(
+        self,
+        query: str,
+        candidate_title: str,
+        row: RowLike,
+        year: Optional[int],
+    ) -> float:
+        query_normalized = self._normalize_title_for_similarity(query)
+        candidate_normalized = self._normalize_title_for_similarity(candidate_title)
+        query_compact = self._normalize_title_for_similarity(query, compact=True)
+        candidate_compact = self._normalize_title_for_similarity(candidate_title, compact=True)
+        if not query_normalized or not candidate_normalized:
+            return 0.0
+
+        ratio = max(
+            fuzz.ratio(query_normalized, candidate_normalized) / 100.0,
+            fuzz.ratio(query_compact, candidate_compact) / 100.0,
+        )
+        query_words = set(query_normalized.split())
+        candidate_words = set(candidate_normalized.split())
+        coverage = (len(query_words & candidate_words) / len(query_words)) if query_words else 0.0
+        quality = min(1.0, (ratio * 0.7) + (coverage * 0.3))
+
+        is_prefix_match = (
+            candidate_normalized.startswith(query_normalized)
+            or candidate_compact.startswith(query_compact)
+        )
+        if is_prefix_match:
+            base_score = self.PREFIX_SCORE_BASE + (quality * self.PREFIX_SCORE_RANGE)
+            max_score = self.PREFIX_SCORE_CAP
+        else:
+            base_score = self.FUZZY_SCORE_BASE + (quality * self.FUZZY_SCORE_RANGE)
+            max_score = self.FUZZY_SCORE_CAP
+
+        return self._apply_candidate_bonuses(row, base_score, year, max_score=max_score)
 
     @staticmethod
     def _build_prefix_search_patterns(title_lower: str) -> List[str]:
@@ -996,11 +1066,11 @@ class IMDbDataProvider(BaseMetadataProvider):
         title_matches = self._extract_matches(query, search_dict, self.FUZZY_MATCH_LIMIT)
         best_match = None
         best_score = 0.0
-        for _matched_title, fuzzy_score, row_id in title_matches:
+        for matched_title, _fuzzy_score, row_id in title_matches:
             row = candidate_by_id.get(row_id)
             if row is None:
                 continue
-            total_score = self._apply_candidate_bonuses(row, fuzzy_score, year)
+            total_score = self._score_partial_title_match(query, matched_title, row, year)
             if total_score > best_score:
                 best_score = total_score
                 best_match = self._create_title_info_from_row_fast(row, conn)

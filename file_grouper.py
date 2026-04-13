@@ -92,16 +92,24 @@ try:
     
     # Initialize metadata manager as a global variable
     METADATA_MANAGER = None
+    METADATA_MANAGER_WEIGHTS = None
     PLEX_PROVIDER = None
 
-    def get_metadata_manager():
-        """Get or initialize the metadata manager"""
-        global METADATA_MANAGER
-        if (METADATA_MANAGER is None):
-            # Initialize providers
+    def get_metadata_manager(anime_provider_weight=1.0, imdb_provider_weight=0.8):
+        """Get or initialize the metadata manager with configurable provider weights."""
+        global METADATA_MANAGER, METADATA_MANAGER_WEIGHTS
+
+        requested_weights = (float(anime_provider_weight), float(imdb_provider_weight))
+        if METADATA_MANAGER is None or METADATA_MANAGER_WEIGHTS != requested_weights:
             anime_provider = AnimeDataProvider()
+            anime_provider.provider_weight = requested_weights[0]
+
             imdb_provider = IMDbDataProvider()
+            imdb_provider.provider_weight = requested_weights[1]
+
             METADATA_MANAGER = MetadataManager([anime_provider, imdb_provider])
+            METADATA_MANAGER_WEIGHTS = requested_weights
+
         return METADATA_MANAGER
     
     def get_plex_provider():

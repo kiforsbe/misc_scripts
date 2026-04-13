@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false, reportMissingModuleSource=false
 import os
 import re
 import json
@@ -8,6 +9,7 @@ import zstandard as zstd
 import time
 from difflib import SequenceMatcher
 from datetime import timedelta
+import datetime
 from typing import Optional
 from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
@@ -99,6 +101,18 @@ class AnimeDataProvider(BaseMetadataProvider):
             # Do not force refresh during construction; this allows status checks
             # without triggering network/database work. Reload happens on first lookup.
             logging.info("Expired anime datasets detected on init: %s. Reload will occur on next data access.", ",".join(expired))
+
+    # Year-based recency boost: newer titles receive up to this many points
+    YEAR_RECENCY_MAX_BONUS = 20.0
+    # Age (in years) at which bonus falls to zero
+    YEAR_RECENCY_DECAY_YEARS = 10
+    EXACT_MATCH_SCORE = 1000.0
+    PREFIX_SCORE_BASE = 700.0
+    PREFIX_SCORE_RANGE = 140.0
+    PREFIX_SCORE_CAP = 899.0
+    FUZZY_SCORE_BASE = 400.0
+    FUZZY_SCORE_RANGE = 260.0
+    FUZZY_SCORE_CAP = 749.0
 
     def _parse_season_from_title(self, title: str) -> tuple[Optional[int], str]:
         """
@@ -807,7 +821,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             candidates = cursor.fetchmany(1)
             if candidates:
                 anime_data = candidates[0]
-                best_score = self._score_title_match(title, anime_data['synonym'])
+                best_score = self._score_title_match(title, anime_data['synonym'], candidate_year=self._row_or_dict_value(anime_data, 'year'))
             else:
                 prefix_pattern = f"{title.strip()}%"
                 cursor = conn.execute(
@@ -821,11 +835,14 @@ class AnimeDataProvider(BaseMetadataProvider):
                 )
                 direct_candidates = cursor.fetchall()
                 if direct_candidates:
-                    anime_data = max(
-                        direct_candidates,
-                        key=lambda candidate: self._score_title_match(title, candidate['synonym']),
-                    )
-                    best_score = self._score_title_match(title, anime_data['synonym'])
+                    ranked_direct_candidates = self._rank_candidates(title, direct_candidates, conn=conn)
+                    if ranked_direct_candidates:
+                        anime_data = ranked_direct_candidates[0]
+                        best_score = self._best_score_for_anime_id(
+                            conn,
+                            title,
+                            anime_data['id'],
+                        )
 
             if anime_data is None:
                 # 1. Build FTS5 query string for the title
@@ -845,16 +862,19 @@ class AnimeDataProvider(BaseMetadataProvider):
                 
                 # Post-filter candidates to prefer better matches
                 if candidates:
-                    candidates = self._rank_candidates(title, candidates)
+                    candidates = self._rank_candidates(title, candidates, conn=conn)
                     
             # 3. The first candidate is the top scorer, much better results than fuzzer
             if anime_data is None and candidates and len(candidates) > 0:
                 top_candidate = candidates[0]
-                anime_data = conn.execute(
-                    "SELECT * FROM anime_synonym_view WHERE id = ?", (top_candidate['id'],)
-                ).fetchone()
+                anime_data = top_candidate
                 if anime_data:
-                    best_score = self._score_title_match(title, top_candidate['title'])
+                    best_score = self._best_score_for_anime_id(
+                        conn,
+                        title,
+                        anime_data['id'],
+                        bm25_score=top_candidate['score'] if 'score' in top_candidate.keys() else None,
+                    )
         finally:
             self._return_connection(conn)
         if anime_data:
@@ -1011,7 +1031,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             self._return_connection(conn)
         return None
 
-    def _rank_candidates(self, query_title: str, candidates: list) -> list:
+    def _rank_candidates(self, query_title: str, candidates: list, conn=None) -> list:
         """
         Re-rank candidates based on title similarity to prefer better matches.
         Prioritizes:
@@ -1021,25 +1041,96 @@ class AnimeDataProvider(BaseMetadataProvider):
         """
         if not candidates:
             return candidates
-        
+
         scored_candidates = []
+        best_candidate_by_id = {}
+        best_score_by_id = {}
         for candidate in candidates:
-            combined_score = self._score_title_match(
-                query_title,
-                candidate['title'] if 'title' in candidate else '',
-                bm25_score=candidate['score'] if 'score' in candidate.keys() else None,
-            )
-            scored_candidates.append((combined_score, candidate))
+            candidate_id = self._row_or_dict_value(candidate, 'id')
+            if candidate_id is None:
+                continue
+            bm25_score = candidate['score'] if 'score' in candidate.keys() else None
+            if conn is not None:
+                combined_score = self._best_score_for_anime_id(
+                    conn,
+                    query_title,
+                    candidate_id,
+                    bm25_score=bm25_score,
+                )
+            else:
+                combined_score = self._score_title_match(
+                    query_title,
+                    candidate['title'] if 'title' in candidate else '',
+                    bm25_score=bm25_score,
+                    candidate_year=self._row_or_dict_value(candidate, 'year'),
+                )
+            if candidate_id not in best_score_by_id or combined_score > best_score_by_id[candidate_id]:
+                best_score_by_id[candidate_id] = combined_score
+                best_candidate_by_id[candidate_id] = candidate
+
+        for candidate_id, candidate in best_candidate_by_id.items():
+            scored_candidates.append((best_score_by_id[candidate_id], candidate))
         
         # Sort by combined score (descending) and return candidates only
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        if conn is not None:
+            ranked_rows = []
+            for _score, candidate in scored_candidates:
+                row = conn.execute(
+                    "SELECT * FROM anime_synonym_view WHERE id = ? ORDER BY year DESC LIMIT 1",
+                    (candidate['id'],),
+                ).fetchone()
+                if row is not None:
+                    ranked_rows.append(row)
+            return ranked_rows
         return [candidate for score, candidate in scored_candidates]
+
+    def _best_score_for_anime_id(
+        self,
+        conn,
+        query_title: str,
+        anime_id: int,
+        bm25_score: Optional[float] = None,
+    ) -> float:
+        rows = conn.execute(
+            "SELECT * FROM anime_synonym_view WHERE id = ?",
+            (anime_id,),
+        ).fetchall()
+        best_score = 0.0
+        seen_titles = set()
+        for row in rows:
+            candidate_year = self._row_or_dict_value(row, 'year')
+            for candidate_text in (self._row_or_dict_value(row, 'title'), self._row_or_dict_value(row, 'synonym')):
+                if not candidate_text or candidate_text in seen_titles:
+                    continue
+                seen_titles.add(candidate_text)
+                score = self._score_title_match(
+                    query_title,
+                    candidate_text,
+                    bm25_score=bm25_score,
+                    candidate_year=candidate_year,
+                )
+                if score > best_score:
+                    best_score = score
+        return best_score
+
+    @staticmethod
+    def _row_or_dict_value(row, key: str):
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row.get(key)
+        try:
+            return row[key] if key in row.keys() else None
+        except Exception:
+            return None
 
     def _score_title_match(
         self,
         query_title: str,
         candidate_title: str,
         bm25_score: Optional[float] = None,
+        candidate_year: Optional[int] = None,
     ) -> float:
         """Score how well a candidate title matches the query title."""
         query_normalized = self._normalize_title_for_similarity(query_title)
@@ -1051,7 +1142,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             return 0.0
 
         if query_normalized == candidate_normalized or query_compact == candidate_compact:
-            return 200.0
+            return self.EXACT_MATCH_SCORE
 
         ratio = max(
             SequenceMatcher(None, query_normalized, candidate_normalized).ratio(),
@@ -1060,14 +1151,40 @@ class AnimeDataProvider(BaseMetadataProvider):
         query_words = set(query_normalized.split())
         candidate_words = set(candidate_normalized.split())
         coverage = (len(query_words & candidate_words) / len(query_words)) if query_words else 0.0
+        quality = min(1.0, (ratio * 0.7) + (coverage * 0.3))
 
-        score = 70.0 + (ratio * 70.0) + (coverage * 40.0)
-        if candidate_normalized.startswith(query_normalized) or candidate_compact.startswith(query_compact):
-            score += 25.0
         if bm25_score is not None:
-            score += min(15.0, max(0.0, -float(bm25_score)))
+            quality = min(1.0, quality + min(0.05, max(0.0, -float(bm25_score)) / 100.0))
 
-        return min(score, 199.0)
+        is_prefix_match = (
+            candidate_normalized.startswith(query_normalized)
+            or candidate_compact.startswith(query_compact)
+        )
+        if is_prefix_match:
+            base_score = self.PREFIX_SCORE_BASE + (quality * self.PREFIX_SCORE_RANGE)
+            max_score = self.PREFIX_SCORE_CAP
+        else:
+            base_score = self.FUZZY_SCORE_BASE + (quality * self.FUZZY_SCORE_RANGE)
+            max_score = self.FUZZY_SCORE_CAP
+
+        # Apply year-based recency bonus (newer titles preferred)
+        year_bonus = 0.0
+        try:
+            if candidate_year is not None:
+                current_year = datetime.datetime.now().year
+                age = current_year - int(candidate_year)
+                if age < 0:
+                    age = 0
+                if age < self.YEAR_RECENCY_DECAY_YEARS:
+                    year_bonus = (
+                        self.YEAR_RECENCY_MAX_BONUS
+                        * (self.YEAR_RECENCY_DECAY_YEARS - age)
+                        / float(self.YEAR_RECENCY_DECAY_YEARS)
+                    )
+        except Exception:
+            year_bonus = 0.0
+
+        return min(base_score + year_bonus, max_score)
 
     def _normalize_title_for_similarity(self, title: str, compact: bool = False) -> str:
         normalized = (title or '').casefold()

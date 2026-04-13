@@ -370,6 +370,10 @@ Examples:
                        help='Generate thumbnails for episodes (requires ffmpeg)')
     parser.add_argument('--thumbnail-dir', metavar='PATH', 
                        help='Directory to store thumbnails (default: ~/.video_thumbnail_cache)')
+    parser.add_argument('--anime-provider-weight', type=float, default=1.0,
+                       help='Weight for the anime metadata provider (default: 1.0)')
+    parser.add_argument('--imdb-provider-weight', type=float, default=0.8,
+                       help='Weight for the IMDb metadata provider (default: 0.8). Lower than anime by default so anime wins ties and close matches.')
     
     args = parser.parse_intermixed_args()
     
@@ -403,9 +407,15 @@ Examples:
     
     try:
         if metadata_manager_available:
-            metadata_manager = get_metadata_manager()
+            metadata_manager = get_metadata_manager(
+                anime_provider_weight=args.anime_provider_weight,
+                imdb_provider_weight=args.imdb_provider_weight,
+            )
             if args.verbose >= 1:
-                print("Metadata providers initialized successfully")
+                print(
+                    "Metadata providers initialized successfully "
+                    f"(anime={args.anime_provider_weight}, imdb={args.imdb_provider_weight})"
+                )
         
         if plex_provider_available:
             plex_provider = get_plex_provider()
