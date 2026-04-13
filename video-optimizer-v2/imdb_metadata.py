@@ -152,7 +152,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     id INTEGER PRIMARY KEY,
                     title TEXT NOT NULL,
                     original_title TEXT,
-                    title_lower TEXT NOT NULL,
                     type INTEGER NOT NULL,
                     year INTEGER,
                     end_year INTEGER,
@@ -176,7 +175,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                     season INTEGER,
                     episode INTEGER,
                     title TEXT NOT NULL,
-                    title_lower TEXT NOT NULL,
                     year INTEGER,
                     rating INTEGER,
                     votes INTEGER
@@ -489,7 +487,6 @@ class IMDbDataProvider(BaseMetadataProvider):
                             title_id,
                             title,
                             self._normalize_space_collapsed_text(self._as_str(data_dict.get("originalTitle"))) or None,
-                            title.lower(),
                             self.TITLE_TYPE_CODES.get(title_type or "movie", self.TITLE_TYPE_CODES["movie"]),
                             self._as_int(data_dict.get("startYear")),
                             self._as_int(data_dict.get("endYear")),
@@ -504,8 +501,8 @@ class IMDbDataProvider(BaseMetadataProvider):
                         conn.executemany(
                             """
                             INSERT OR REPLACE INTO title_core (
-                                id, title, original_title, title_lower, type, year, end_year, runtime_minutes, genres, rating, votes
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                id, title, original_title, type, year, end_year, runtime_minutes, genres, rating, votes
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             title_core_batch,
                         )
@@ -516,8 +513,8 @@ class IMDbDataProvider(BaseMetadataProvider):
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO title_core (
-                    id, title, original_title, title_lower, type, year, end_year, runtime_minutes, genres, rating, votes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, title, original_title, type, year, end_year, runtime_minutes, genres, rating, votes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 title_core_batch,
             )
@@ -571,8 +568,8 @@ class IMDbDataProvider(BaseMetadataProvider):
     def _materialize_episode_core(self, conn: sqlite3.Connection) -> None:
         conn.execute(
             """
-            INSERT OR REPLACE INTO episode_core (id, parent_id, season, episode, title, title_lower, year, rating, votes)
-            SELECT l.id, l.parent_id, l.season, l.episode, b.title, b.title_lower, b.year, b.rating, b.votes
+            INSERT OR REPLACE INTO episode_core (id, parent_id, season, episode, title, year, rating, votes)
+            SELECT l.id, l.parent_id, l.season, l.episode, b.title, b.year, b.rating, b.votes
             FROM temp_episode_links l
             JOIN temp_episode_basics b ON b.id = l.id
             """
@@ -582,13 +579,13 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn.execute(
             """
             INSERT OR IGNORE INTO title_search (title_id, search_title, search_title_lower, is_primary)
-            SELECT id, title, title_lower, 1 FROM title_core WHERE title != ''
+            SELECT id, title, lower(title), 1 FROM title_core WHERE title != ''
             """
         )
         conn.execute(
             """
             INSERT OR IGNORE INTO episode_search (episode_id, parent_id, search_title, search_title_lower, is_primary)
-            SELECT id, parent_id, title, title_lower, 1 FROM episode_core WHERE title != ''
+            SELECT id, parent_id, title, lower(title), 1 FROM episode_core WHERE title != ''
             """
         )
 
