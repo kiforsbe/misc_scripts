@@ -3,6 +3,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Iterable, Optional, Tuple
 
+try:
+    from rapidfuzz import fuzz as rapidfuzz_fuzz
+except ImportError:
+    rapidfuzz_fuzz = None
+
 
 SEASON_TOKEN_RULES = (
     r"season\s+(?P<number>\d+)(?:[a-z])?",
@@ -226,13 +231,19 @@ def _normalize_lookup_text(text: Optional[str]) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", _clean_token(text or "").casefold())).strip()
 
 
+def _lookup_similarity_ratio(source: str, candidate: str) -> float:
+    if rapidfuzz_fuzz is not None:
+        return float(rapidfuzz_fuzz.ratio(source, candidate))
+    return SequenceMatcher(None, source, candidate).ratio() * 100.0
+
+
 def _score_lookup_title_match(source_title: str, candidate_title: str) -> Optional[float]:
     normalized_source_title = _normalize_lookup_text(source_title)
     normalized_candidate_title = _normalize_lookup_text(candidate_title)
     if not normalized_source_title or not normalized_candidate_title:
         return None
 
-    score = SequenceMatcher(None, normalized_source_title, normalized_candidate_title).ratio() * 100.0
+    score = _lookup_similarity_ratio(normalized_source_title, normalized_candidate_title)
     if normalized_source_title == normalized_candidate_title:
         score += 100.0
     elif normalized_candidate_title in normalized_source_title or normalized_source_title in normalized_candidate_title:
