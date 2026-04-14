@@ -136,6 +136,7 @@
         activeSmartFilterSuggestionIndex: -1,
         lastSmartFilterSuggestionKey: "",
         smartFilterSuggestionRefreshScheduled: false,
+        contextMenuRowId: null,
     };
 
     const elements = {
@@ -160,6 +161,7 @@
         statusWatchedItems: document.getElementById("statusWatchedItems"),
         statusPartialItems: document.getElementById("statusPartialItems"),
         statusUnwatchedItems: document.getElementById("statusUnwatchedItems"),
+        rowContextMenu: document.getElementById("rowContextMenu"),
     };
 
     function escapeHtml(value) {
@@ -381,9 +383,16 @@
         elements.columnPickerMenu.hidden = true;
     }
 
-    function openColumnMenu(clientX, clientY) {
-        elements.columnPickerMenu.hidden = false;
-        const menu = elements.columnPickerMenu;
+    function closeRowContextMenu() {
+        if (!elements.rowContextMenu) {
+            return;
+        }
+        elements.rowContextMenu.hidden = true;
+        elements.rowContextMenu.innerHTML = "";
+        state.contextMenuRowId = null;
+    }
+
+    function positionFloatingMenu(menu, clientX, clientY) {
         menu.style.left = "0px";
         menu.style.top = "0px";
         const rect = menu.getBoundingClientRect();
@@ -391,6 +400,12 @@
         const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
         menu.style.left = `${Math.min(clientX, maxLeft)}px`;
         menu.style.top = `${Math.min(clientY, maxTop)}px`;
+    }
+
+    function openColumnMenu(clientX, clientY) {
+        closeRowContextMenu();
+        elements.columnPickerMenu.hidden = false;
+        positionFloatingMenu(elements.columnPickerMenu, clientX, clientY);
     }
 
     function parseNumericValue(token) {
@@ -1295,6 +1310,7 @@
         if (state.query !== nextNormalizedQuery) {
             state.filterCollapsed.clear();
         }
+        closeRowContextMenu();
         state.query = nextNormalizedQuery;
         try {
             const compiled = compileSmartFilter(state.query);
@@ -1414,6 +1430,269 @@
             return row.episode ? `Progress ${row.episode}` : "Series";
         }
         return "";
+    }
+
+    function collectBranchRows(row) {
+        if (!row) {
+            return [];
+        }
+
+        const branchRows = [];
+        const stack = [row];
+        while (stack.length) {
+            const current = stack.pop();
+            branchRows.push(current);
+            const children = childrenMap.get(current.id) || [];
+            for (let index = children.length - 1; index >= 0; index -= 1) {
+                stack.push(children[index]);
+            }
+        }
+        return branchRows;
+    }
+
+    function collectExpandableBranchRows(row) {
+        return collectBranchRows(row).filter((branchRow) => branchRow.has_children);
+    }
+
+    function branchCanExpand(row) {
+        return collectExpandableBranchRows(row).some((branchRow) => !isRowExpanded(branchRow));
+    }
+
+    function branchCanCollapse(row) {
+        return collectExpandableBranchRows(row).some((branchRow) => isRowExpanded(branchRow));
+    }
+
+    function expandablesInView() {
+        return rows.filter((row) => row.has_children && (!state.query || branchMatches(row, state.query)));
+    }
+
+    function canExpandAllInView() {
+        return expandablesInView().some((row) => !isRowExpanded(row));
+    }
+
+    function canCollapseAllInView() {
+        return expandablesInView().some((row) => isRowExpanded(row));
+    }
+
+    function setBranchExpanded(row, expanded) {
+        collectExpandableBranchRows(row).forEach((branchRow) => {
+            if (expanded) {
+                state.expanded.add(branchRow.id);
+                if (state.query) {
+                    state.filterCollapsed.delete(branchRow.id);
+                }
+                return;
+            }
+            state.expanded.delete(branchRow.id);
+            if (state.query) {
+                state.filterCollapsed.add(branchRow.id);
+            }
+        });
+        renderRows();
+    }
+
+    function setAllExpandedInView(expanded) {
+        expandablesInView().forEach((row) => {
+            if (expanded) {
+                state.expanded.add(row.id);
+                if (state.query) {
+                    state.filterCollapsed.delete(row.id);
+                }
+                return;
+            }
+            state.expanded.delete(row.id);
+            if (state.query) {
+                state.filterCollapsed.add(row.id);
+            }
+        });
+        renderRows();
+    }
+
+    function formatRowSummary(row) {
+        const title = displayTitle(row) || formatItemType(row.item_type);
+        const details = [];
+        const subtitle = rowSubtitle(row);
+        if (subtitle) {
+            details.push(subtitle);
+        }
+        if (!subtitle && row.year) {
+            details.push(`Released ${row.year}`);
+        }
+        const episodeTitle = displayEpisodeTitle(row);
+        if (episodeTitle && episodeTitle !== title) {
+            details.push(`Episode title ${episodeTitle}`);
+        }
+        details.push(watchStateLabel(row.watch_state));
+        if (row.runtime_minutes) {
+            details.push(`Runtime ${row.runtime_minutes}`);
+        }
+        if (row.average_rating) {
+            details.push(`Rating ${row.average_rating}`);
+        }
+        if (row.views) {
+            details.push(`Views ${row.views}`);
+        }
+        if (row.genres) {
+            details.push(`Genres ${row.genres}`);
+        }
+        if (row.source_id) {
+            details.push(`Source ${row.source_id}`);
+        }
+        return details.length ? `${formatItemType(row.item_type)}: ${title} - ${details.join(" | ")}` : `${formatItemType(row.item_type)}: ${title}`;
+    }
+
+    function formatRowSummaryWithChildren(row) {
+        const branchRows = collectBranchRows(row);
+        const lines = [formatRowSummary(row)];
+        if (branchRows.length <= 1) {
+            return lines.join("\n");
+        }
+
+        branchRows.slice(1).forEach((branchRow) => {
+            const depth = Math.max(1, Number(branchRow.level || 0) - Number(row.level || 0));
+            lines.push(`${"  ".repeat(depth)}- ${formatRowSummary(branchRow)}`);
+        });
+        return lines.join("\n");
+    }
+
+    function legacyCopyText(text) {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "fixed";
+        textarea.style.top = "0";
+        textarea.style.left = "0";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus({ preventScroll: true });
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+        let succeeded = false;
+        try {
+            succeeded = Boolean(document.execCommand("copy"));
+        } catch {
+            succeeded = false;
+        }
+        document.body.removeChild(textarea);
+        return succeeded;
+    }
+
+    async function copyTextToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            try {
+                await navigator.clipboard.writeText(text);
+                return true;
+            } catch {
+                return legacyCopyText(text);
+            }
+        }
+        return legacyCopyText(text);
+    }
+
+    function rowContextMenuItems(row) {
+        const items = [];
+        const canExpandBranch = branchCanExpand(row);
+        const canCollapseBranch = branchCanCollapse(row);
+        const canExpandAll = canExpandAllInView();
+        const canCollapseAll = canCollapseAllInView();
+
+        if (row.has_children) {
+            items.push({
+                action: "toggle-row",
+                label: isRowExpanded(row) ? "Collapse" : "Expand",
+                enabled: isRowExpanded(row) ? canCollapseBranch : canExpandBranch,
+            });
+        }
+
+        items.push(
+            {
+                action: "expand-all",
+                label: "Expand all",
+                enabled: canExpandAll,
+            },
+            {
+                action: "collapse-all",
+                label: "Collapse all",
+                enabled: canCollapseAll,
+            },
+            { separator: true },
+            {
+                action: "copy-summary",
+                label: "Copy row summary",
+                enabled: true,
+            }
+        );
+
+        if (row.has_children) {
+            items.push({
+                action: "copy-summary-children",
+                label: "Copy node summary",
+                enabled: true,
+            });
+        }
+
+        return items;
+    }
+
+    function renderRowContextMenu(row) {
+        const items = rowContextMenuItems(row);
+        elements.rowContextMenu.innerHTML = items.map((item) => {
+            if (item.separator) {
+                return '<div class="row-context-menu-separator" role="separator"></div>';
+            }
+            return `
+                <button class="row-context-menu-item" type="button" role="menuitem" data-action="${escapeHtml(item.action)}" ${item.enabled ? "" : "disabled"}>
+                    <span class="row-context-menu-label">${escapeHtml(item.label)}</span>
+                </button>
+            `;
+        }).join("");
+    }
+
+    function openRowContextMenu(clientX, clientY, rowId) {
+        const row = rowMap.get(rowId);
+        if (!row || !elements.rowContextMenu) {
+            closeRowContextMenu();
+            return;
+        }
+
+        closeColumnMenu();
+        state.contextMenuRowId = rowId;
+        renderRowContextMenu(row);
+        elements.rowContextMenu.hidden = false;
+        positionFloatingMenu(elements.rowContextMenu, clientX, clientY);
+    }
+
+    async function handleRowContextMenuAction(action, rowId) {
+        const row = rowMap.get(rowId);
+        if (!row) {
+            closeRowContextMenu();
+            return;
+        }
+
+        if (action === "toggle-row") {
+            closeRowContextMenu();
+            setBranchExpanded(row, !isRowExpanded(row));
+            return;
+        }
+        if (action === "expand-all") {
+            closeRowContextMenu();
+            setAllExpandedInView(true);
+            return;
+        }
+        if (action === "collapse-all") {
+            closeRowContextMenu();
+            setAllExpandedInView(false);
+            return;
+        }
+        if (action === "copy-summary") {
+            await copyTextToClipboard(formatRowSummary(row));
+            closeRowContextMenu();
+            return;
+        }
+        if (action === "copy-summary-children") {
+            await copyTextToClipboard(formatRowSummaryWithChildren(row));
+            closeRowContextMenu();
+        }
     }
 
     function selectionItems(items) {
@@ -1903,6 +2182,26 @@
         render();
     });
 
+    elements.resultBody.addEventListener("contextmenu", (event) => {
+        const rowElement = event.target.closest("tr.tree-row[data-row-id]");
+        if (!rowElement) {
+            return;
+        }
+
+        const rowId = rowElement.getAttribute("data-row-id");
+        if (!rowId) {
+            return;
+        }
+
+        event.preventDefault();
+        if (state.selectedId !== rowId) {
+            state.selectedId = rowId;
+            renderRows();
+            renderSelection();
+        }
+        openRowContextMenu(event.clientX, event.clientY, rowId);
+    });
+
     elements.searchInput.addEventListener("input", (event) => {
         const nextQuery = String(event.target.value || "");
         if (state.filterInputTimer) {
@@ -2043,6 +2342,16 @@
         openColumnMenu(event.clientX, event.clientY);
     });
 
+    if (elements.rowContextMenu) {
+        elements.rowContextMenu.addEventListener("click", async (event) => {
+            const item = event.target.closest(".row-context-menu-item[data-action]");
+            if (!item || item.disabled || !state.contextMenuRowId) {
+                return;
+            }
+            await handleRowContextMenuAction(item.dataset.action || "", state.contextMenuRowId);
+        });
+    }
+
     elements.columnOptions.addEventListener("change", (event) => {
         const target = event.target;
         if (!(target instanceof HTMLInputElement)) {
@@ -2061,6 +2370,9 @@
         if (!elements.columnPickerMenu.hidden && !event.target.closest("#columnPickerMenu")) {
             closeColumnMenu();
         }
+        if (elements.rowContextMenu && !elements.rowContextMenu.hidden && !event.target.closest("#rowContextMenu")) {
+            closeRowContextMenu();
+        }
         if (!elements.smartFilterHelp.hidden && !event.target.closest("#smartFilterHelp") && !event.target.closest("#smartFilterHelpButton")) {
             closeSmartFilterHelp();
         }
@@ -2071,6 +2383,7 @@
 
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
+            closeRowContextMenu();
             closeColumnMenu();
             closeSmartFilterHelp();
         }
@@ -2084,11 +2397,13 @@
 
     if (elements.treegridWrap) {
         elements.treegridWrap.addEventListener("scroll", () => {
+            closeRowContextMenu();
             scheduleVirtualRender(false);
         }, { passive: true });
     }
 
     window.addEventListener("resize", () => {
+        closeRowContextMenu();
         state.virtualHeightCache.clear();
         state.lastVirtualRangeKey = "";
         scheduleVirtualRender(true);
