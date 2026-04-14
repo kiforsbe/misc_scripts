@@ -49,7 +49,6 @@
 
     const elements = {
         appWindow: document.getElementById("appWindow"),
-        sourceCsv: document.getElementById("sourceCsv"),
         searchInput: document.getElementById("searchInput"),
         smartFilterHelpButton: document.getElementById("smartFilterHelpButton"),
         smartFilterHelp: document.getElementById("smartFilterHelp"),
@@ -63,6 +62,12 @@
         selectionSubtitle: document.getElementById("selectionSubtitle"),
         selectionDetails: document.getElementById("selectionDetails"),
         mediaPreview: document.getElementById("mediaPreview"),
+        statusTotalItems: document.getElementById("statusTotalItems"),
+        statusFilteredItems: document.getElementById("statusFilteredItems"),
+        statusShownRows: document.getElementById("statusShownRows"),
+        statusWatchedItems: document.getElementById("statusWatchedItems"),
+        statusPartialItems: document.getElementById("statusPartialItems"),
+        statusUnwatchedItems: document.getElementById("statusUnwatchedItems"),
     };
 
     function escapeHtml(value) {
@@ -977,6 +982,48 @@
         return "";
     }
 
+    function formatCount(value) {
+        return Number(value || 0).toLocaleString();
+    }
+
+    function collectStatusMetrics() {
+        const metrics = {
+            totalItems: rows.length,
+            filteredItems: 0,
+            shownRows: state.virtualRows.length,
+            watchedItems: 0,
+            partialItems: 0,
+            unwatchedItems: 0,
+        };
+
+        rows.forEach((row) => {
+            if (!rowMatches(row, state.query)) {
+                return;
+            }
+
+            metrics.filteredItems += 1;
+            if (row.watch_state === "watched") {
+                metrics.watchedItems += 1;
+            } else if (row.watch_state === "partial") {
+                metrics.partialItems += 1;
+            } else if (row.watch_state === "unwatched") {
+                metrics.unwatchedItems += 1;
+            }
+        });
+
+        return metrics;
+    }
+
+    function renderStatusBar() {
+        const metrics = collectStatusMetrics();
+        elements.statusTotalItems.textContent = formatCount(metrics.totalItems);
+        elements.statusFilteredItems.textContent = formatCount(metrics.filteredItems);
+        elements.statusShownRows.textContent = formatCount(metrics.shownRows);
+        elements.statusWatchedItems.textContent = formatCount(metrics.watchedItems);
+        elements.statusPartialItems.textContent = formatCount(metrics.partialItems);
+        elements.statusUnwatchedItems.textContent = formatCount(metrics.unwatchedItems);
+    }
+
     function renderColumnOptions() {
         elements.columnOptions.innerHTML = orderedOptionalColumns().map((column) => `
             <label class="column-option">
@@ -1341,6 +1388,7 @@
         syncFilterInputState();
         renderHeader();
         renderRows();
+        renderStatusBar();
         renderSelection();
     }
 
@@ -1480,7 +1528,6 @@
         scheduleVirtualRender(true);
     });
 
-    elements.sourceCsv.textContent = report.meta && report.meta.source_csv ? report.meta.source_csv : "";
     renderColumnOptions();
     syncFilterInputState();
     render();

@@ -9,10 +9,6 @@
 <body>
     <div class="app-window" id="appWindow">
         <div class="window-pathbar">
-            <div class="address-shell">
-                <span class="address-label">Source CSV</span>
-                <div class="address-value" id="sourceCsv"></div>
-            </div>
             <div class="smart-filter-shell">
                 <label class="smart-filter-label" for="searchInput">Filter rows</label>
                 <div class="smart-filter-row">
@@ -76,6 +72,33 @@
                     <div id="selectionDetails" class="selection-details"></div>
                 </section>
             </aside>
+        </div>
+
+        <div class="status-bar" aria-label="Report status">
+            <div class="status-metric">
+                <span class="status-metric-label">Total items</span>
+                <strong id="statusTotalItems">0</strong>
+            </div>
+            <div class="status-metric">
+                <span class="status-metric-label">After filter</span>
+                <strong id="statusFilteredItems">0</strong>
+            </div>
+            <div class="status-metric">
+                <span class="status-metric-label">Rows shown</span>
+                <strong id="statusShownRows">0</strong>
+            </div>
+            <div class="status-metric">
+                <span class="status-metric-label">Watched</span>
+                <strong id="statusWatchedItems">0</strong>
+            </div>
+            <div class="status-metric">
+                <span class="status-metric-label">Partial</span>
+                <strong id="statusPartialItems">0</strong>
+            </div>
+            <div class="status-metric">
+                <span class="status-metric-label">Unwatched</span>
+                <strong id="statusUnwatchedItems">0</strong>
+            </div>
         </div>
     </div>
 
