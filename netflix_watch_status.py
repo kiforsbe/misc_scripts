@@ -435,6 +435,12 @@ def _provider_name(provider: Any) -> str:
     return type(provider).__name__
 
 
+def _has_imdb_title_reference(metadata_parent_id: Optional[str], metadata_sources: Tuple[str, ...]) -> bool:
+    if isinstance(metadata_parent_id, str) and re.fullmatch(r"tt\d+", metadata_parent_id):
+        return True
+    return any("imdb" in source.casefold() for source in metadata_sources)
+
+
 def _merge_metadata_sources(*source_groups: Tuple[str, ...]) -> Tuple[str, ...]:
     merged_sources: List[str] = []
     for source_group in source_groups:
@@ -597,7 +603,7 @@ class SeriesWatchStatus:
 class NetflixWatchStatusAnalyzer:
     def __init__(self, metadata_manager: Any = None, episode_title_overrides: Optional[Dict[str, Any]] = None):
         self.metadata_manager = metadata_manager
-        self._metadata_cache: Dict[Tuple[str, Optional[str]], Tuple[Any, ...]] = {}
+        self._metadata_cache: Dict[Tuple[str, Optional[int], Optional[str]], Tuple[Any, ...]] = {}
         self._episode_title_overrides = {
             normalized_key: normalized_value
             for raw_key, raw_value in (episode_title_overrides or {}).items()
@@ -1291,6 +1297,7 @@ class NetflixWatchStatusAnalyzer:
         if (
             media_kind == "series"
             and _provider_name(provider) != "IMDbDataProvider"
+            and not _has_imdb_title_reference(metadata_parent_id, metadata_sources)
             and hasattr(self.metadata_manager, "find_title_from_provider")
         ):
             try:

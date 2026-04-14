@@ -438,6 +438,57 @@ def test_classify_entry_merges_imdb_metadata_into_anime_series_matches():
     )
 
 
+def test_classify_entry_skips_imdb_enrichment_when_series_match_already_has_imdb_reference():
+    class AnimeProvider:
+        pass
+
+    class MetadataManager:
+        def __init__(self):
+            self.calls = []
+
+        def find_title(self, query, year=None, preferred_type=None):
+            self.calls.append(("find_title", query, year, preferred_type))
+            if query != "A.I.C.O.":
+                return None
+            return (
+                SimpleNamespace(
+                    title="A.I.C.O. Incarnation",
+                    type="anime_series",
+                    id="tt8116380",
+                    year=2018,
+                    total_seasons=1,
+                    rating=6.7,
+                    sources=(
+                        "https://myanimelist.net/anime/36039",
+                        "https://www.imdb.com/title/tt8116380/",
+                    ),
+                ),
+                AnimeProvider(),
+            )
+
+        def find_title_from_provider(self, query, provider_name, year=None, preferred_type=None):
+            self.calls.append(("find_title_from_provider", query, provider_name, year, preferred_type))
+            raise AssertionError("IMDb enrichment lookup should be skipped when the initial match already has an IMDb reference")
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=MetadataManager())
+
+    resolved = analyzer._classify_entry(parse_netflix_title("A.I.C.O.: Awakening"), prefix_counts={})
+
+    assert resolved[0] == "series"
+    assert resolved[1] == "A.I.C.O. Incarnation"
+    assert resolved[4] == "anime_series"
+    assert resolved[6] == "tt8116380"
+    assert type(resolved[5]).__name__ == "AnimeProvider"
+    assert resolved[12] == (
+        "https://myanimelist.net/anime/36039",
+        "https://www.imdb.com/title/tt8116380/",
+    )
+    assert analyzer.metadata_manager.calls == [
+        ("find_title", "A.I.C.O.: Awakening", None, "movie"),
+        ("find_title", "A.I.C.O.", None, "tv"),
+    ]
+
+
 def test_resolve_episode_metadata_uses_title_override_table_for_non_matching_titles():
     class Provider:
         def __init__(self):
