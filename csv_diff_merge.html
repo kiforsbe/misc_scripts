@@ -1,0 +1,1843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSV Diff Merge</title>
+  <style>
+    :root {
+      --bg: #eef2f6;
+      --panel: #ffffff;
+      --panel-strong: #f7f9fc;
+      --panel-muted: #eef3f8;
+      --line: #d5deea;
+      --line-strong: #becbdb;
+      --text: #182434;
+      --muted: #59697d;
+      --accent: #0f6cbd;
+      --accent-soft: #e8f2fb;
+      --success: #1b7f46;
+      --success-soft: #e7f6ec;
+      --danger: #bd3838;
+      --danger-soft: #fdecec;
+      --warn: #a66100;
+      --warn-soft: #fff1de;
+      --shadow: 0 18px 48px rgba(16, 34, 58, 0.08);
+      --radius: 16px;
+      --radius-sm: 10px;
+      --sticky-a: 0px;
+      --sticky-b: 64px;
+      --sticky-c: 224px;
+      --sticky-d: 350px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      font-family: "Aptos", "Segoe UI", "Helvetica Neue", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(15, 108, 189, 0.12), transparent 24%),
+        linear-gradient(180deg, #f7fafd 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+
+    body {
+      padding: 28px;
+    }
+
+    .app-shell {
+      display: grid;
+      gap: 18px;
+      max-width: 1800px;
+      margin: 0 auto;
+    }
+
+    .hero,
+    .panel {
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(213, 222, 234, 0.9);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+
+    .hero {
+      border-radius: 24px;
+      padding: 24px 28px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero-top {
+      display: flex;
+      gap: 20px;
+      align-items: start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .hero-copy {
+      max-width: 880px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 3vw, 3rem);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+      font-weight: 760;
+    }
+
+    .hero-copy p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      max-width: 68ch;
+      font-size: 1rem;
+      line-height: 1.5;
+    }
+
+    .privacy-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.92rem;
+      white-space: nowrap;
+    }
+
+    .toolbar-grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: minmax(260px, 1.15fr) minmax(260px, 1.15fr) minmax(280px, 1fr);
+    }
+
+    .toolbar-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .toolbar-card h2,
+    .panel h2 {
+      margin: 0;
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .drop-zone {
+      display: grid;
+      gap: 10px;
+      min-height: 140px;
+      padding: 16px;
+      border-radius: 16px;
+      border: 1.5px dashed var(--line-strong);
+      background: linear-gradient(180deg, rgba(247, 249, 252, 0.9), rgba(255, 255, 255, 0.95));
+      align-content: start;
+      transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+    }
+
+    .drop-zone.dragging {
+      border-color: var(--accent);
+      background: linear-gradient(180deg, #eef6fe, #f9fcff);
+      transform: translateY(-1px);
+    }
+
+    .drop-zone strong {
+      font-size: 1.05rem;
+    }
+
+    .drop-zone p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .file-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .file-chip,
+    .stat-chip,
+    .status-chip,
+    .filter-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      font-size: 0.82rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .status-chip.modified { background: #eef4ff; color: #305fa8; border-color: #cfdfff; }
+    .status-chip.a-only { background: var(--success-soft); color: var(--success); border-color: #b8dfc7; }
+    .status-chip.b-only { background: var(--accent-soft); color: var(--accent); border-color: #bdd5ee; }
+    .status-chip.unchanged { background: var(--panel-strong); color: var(--muted); }
+    .status-chip.ambiguous { background: var(--warn-soft); color: var(--warn); border-color: #efcf9a; }
+    .status-chip.positional { background: #f2effe; color: #5a43ad; border-color: #d9d1fb; }
+
+    .input-row,
+    .inline-controls,
+    .toolbar-actions,
+    .filter-row,
+    .stats-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .input-row label,
+    .select-wrap label,
+    .search-wrap label {
+      display: grid;
+      gap: 6px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--muted);
+    }
+
+    .button,
+    button,
+    input[type="file"]::file-selector-button {
+      border: 1px solid var(--line-strong);
+      background: linear-gradient(180deg, #ffffff, #f5f8fb);
+      color: var(--text);
+      border-radius: 11px;
+      padding: 10px 14px;
+      font: inherit;
+      font-size: 0.92rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    .button:hover,
+    button:hover,
+    input[type="file"]::file-selector-button:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .button.primary,
+    button.primary {
+      background: linear-gradient(180deg, #1b7fd4, #0f6cbd);
+      color: #fff;
+      border-color: #0f6cbd;
+    }
+
+    .button.subtle,
+    button.subtle {
+      background: var(--panel-strong);
+    }
+
+    button:disabled,
+    input:disabled,
+    select:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      color: var(--muted);
+    }
+
+    input[type="search"],
+    select {
+      min-height: 42px;
+      min-width: 150px;
+      border-radius: 11px;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      padding: 10px 12px;
+      font: inherit;
+      color: var(--text);
+    }
+
+    select[multiple] {
+      min-height: 120px;
+      padding: 6px;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 18px;
+    }
+
+    .panel {
+      border-radius: 22px;
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .stats-grid {
+      gap: 12px;
+    }
+
+    .stat-card {
+      min-width: 120px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(243,247,251,0.95));
+      display: grid;
+      gap: 4px;
+    }
+
+    .stat-card strong {
+      font-size: 1.35rem;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .stat-card span {
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .warning-banner,
+    .empty-state {
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid;
+      font-size: 0.94rem;
+      line-height: 1.45;
+    }
+
+    .warning-banner {
+      background: var(--warn-soft);
+      border-color: #efcf9a;
+      color: #774600;
+    }
+
+    .empty-state {
+      background: var(--panel-strong);
+      border-color: var(--line);
+      color: var(--muted);
+    }
+
+    .grid-panel {
+      min-height: 480px;
+      overflow: hidden;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: #fff;
+      max-height: 70vh;
+    }
+
+    table {
+      width: max-content;
+      min-width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 0.9rem;
+    }
+
+    thead th {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: linear-gradient(180deg, #f9fbfd, #eef3f8);
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.74rem;
+      font-weight: 800;
+      padding: 10px 10px;
+      border-bottom: 1px solid var(--line-strong);
+      border-right: 1px solid var(--line);
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    tbody td {
+      vertical-align: top;
+      padding: 0;
+      border-bottom: 1px solid #e5edf5;
+      border-right: 1px solid #edf2f8;
+      background: #fff;
+    }
+
+    tbody tr:hover td {
+      background: #fcfdff;
+    }
+
+    th.sticky,
+    td.sticky {
+      position: sticky;
+      z-index: 3;
+      background-clip: padding-box;
+      box-shadow: 1px 0 0 0 #e1e8f0;
+    }
+
+    th.sticky-0,
+    td.sticky-0 { left: var(--sticky-a); min-width: 64px; max-width: 64px; }
+    th.sticky-1,
+    td.sticky-1 { left: var(--sticky-b); min-width: 160px; max-width: 160px; }
+    th.sticky-2,
+    td.sticky-2 { left: var(--sticky-c); min-width: 126px; max-width: 126px; }
+    th.sticky-3,
+    td.sticky-3 { left: var(--sticky-d); min-width: 172px; max-width: 172px; }
+
+    .row-index {
+      padding: 14px 10px;
+      text-align: right;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+    }
+
+    .key-cell,
+    .status-cell,
+    .row-actions {
+      padding: 10px;
+    }
+
+    .key-cell {
+      display: grid;
+      gap: 6px;
+    }
+
+    .key-main {
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .key-sub {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .row-actions {
+      display: grid;
+      gap: 8px;
+    }
+
+    .row-action-group {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .mini-button {
+      padding: 7px 9px;
+      border-radius: 9px;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      font-size: 0.76rem;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .mini-button[data-role="danger"] {
+      color: var(--danger);
+    }
+
+    .mini-button[data-role="accent"] {
+      color: var(--accent);
+    }
+
+    .mini-button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .data-cell {
+      min-width: 210px;
+      max-width: 320px;
+    }
+
+    .cell-shell {
+      display: grid;
+      min-height: 74px;
+    }
+
+    .cell-value,
+    .cell-diff {
+      padding: 10px;
+    }
+
+    .cell-value {
+      line-height: 1.45;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .cell-shell.same .cell-value {
+      background: #fff;
+    }
+
+    .cell-shell.auto .cell-value {
+      background: linear-gradient(180deg, rgba(232, 246, 238, 0.78), rgba(255,255,255,0));
+    }
+
+    .cell-shell.unresolved {
+      background: linear-gradient(180deg, rgba(255, 241, 222, 0.72), rgba(255,255,255,0));
+    }
+
+    .cell-shell.resolved-a .cell-value {
+      background: linear-gradient(180deg, rgba(231, 246, 236, 0.9), rgba(255,255,255,0));
+    }
+
+    .cell-shell.resolved-b .cell-value {
+      background: linear-gradient(180deg, rgba(232, 242, 251, 0.95), rgba(255,255,255,0));
+    }
+
+    .cell-diff {
+      display: grid;
+      gap: 8px;
+    }
+
+    .cell-chosen {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .option-stack {
+      display: grid;
+      gap: 6px;
+    }
+
+    .option-button {
+      width: 100%;
+      text-align: left;
+      padding: 8px 9px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.9);
+      cursor: pointer;
+      font: inherit;
+      color: var(--text);
+      display: grid;
+      gap: 4px;
+    }
+
+    .option-button.active[data-side="a"] {
+      border-color: #62a57d;
+      background: #f0fbf4;
+    }
+
+    .option-button.active[data-side="b"] {
+      border-color: #66a4e0;
+      background: #eff7ff;
+    }
+
+    .option-button.missing {
+      color: var(--muted);
+      background: #fafcfe;
+      border-style: dashed;
+    }
+
+    .option-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .option-value {
+      font-size: 0.86rem;
+      line-height: 1.4;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .meta-note {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .footer-note {
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 1200px) {
+      .toolbar-grid,
+      .summary-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      body {
+        padding: 14px;
+      }
+
+      .hero,
+      .panel {
+        border-radius: 18px;
+        padding: 14px;
+      }
+
+      :root {
+        --sticky-a: 0px;
+        --sticky-b: 58px;
+        --sticky-c: 188px;
+        --sticky-d: 300px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <section class="hero">
+      <div class="hero-top">
+        <div class="hero-copy">
+          <p class="eyebrow">Standalone CSV Merge</p>
+          <h1>Review two CSVs in one spreadsheet-style merge grid.</h1>
+          <p>Load two files, inspect row and cell differences in a single flat table, choose what to keep, and export the resolved result as a merged CSV. Everything runs locally in your browser.</p>
+        </div>
+        <div class="privacy-note">
+          <strong>Browser only</strong>
+          <span>No uploads. No server. No dependencies.</span>
+        </div>
+      </div>
+
+      <div class="toolbar-grid">
+        <section class="toolbar-card">
+          <h2>File A</h2>
+          <div class="drop-zone" data-zone="a">
+            <strong>Drop the first CSV here</strong>
+            <p>Or choose a local file. This side is shown as A in cell-level decisions.</p>
+            <input id="fileA" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain">
+            <div id="fileMetaA" class="file-meta"></div>
+          </div>
+        </section>
+
+        <section class="toolbar-card">
+          <h2>File B</h2>
+          <div class="drop-zone" data-zone="b">
+            <strong>Drop the second CSV here</strong>
+            <p>Or choose a local file. This side is shown as B in cell-level decisions.</p>
+            <input id="fileB" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain">
+            <div id="fileMetaB" class="file-meta"></div>
+          </div>
+        </section>
+
+        <section class="toolbar-card">
+          <h2>Match Rules</h2>
+          <div class="select-wrap">
+            <label for="delimiterSelect">Delimiter</label>
+            <select id="delimiterSelect">
+              <option value="auto">Auto detect</option>
+              <option value=",">Comma</option>
+              <option value="\t">Tab</option>
+              <option value=";">Semicolon</option>
+              <option value="|">Pipe</option>
+            </select>
+          </div>
+          <div class="select-wrap">
+            <label for="keyColumns">Key columns</label>
+            <select id="keyColumns" multiple></select>
+          </div>
+          <div class="inline-controls">
+            <button id="autoKeyBtn" class="button subtle" type="button">Auto-detect key</button>
+            <button id="clearKeyBtn" class="button subtle" type="button">Use positional mode</button>
+          </div>
+          <div id="keySummary" class="meta-note">Load two files to inspect columns and suggested match keys.</div>
+        </section>
+      </div>
+    </section>
+
+    <section class="summary-grid">
+      <section class="panel">
+        <h2>Merge Summary</h2>
+        <div id="statsGrid" class="stats-grid"></div>
+        <div id="warningBanner" class="warning-banner hidden"></div>
+        <div class="meta-note">Primary test fixture: netflix_episode_title_overrides.csv versus netflix_episode_title_overrides_old.csv.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Filters and Export</h2>
+        <div class="filter-row">
+          <label class="search-wrap">
+            <span>Search</span>
+            <input id="searchInput" type="search" placeholder="Search keys or cell values">
+          </label>
+          <label class="select-wrap">
+            <span>Status</span>
+            <select id="statusFilter">
+              <option value="all">All rows</option>
+              <option value="modified">Modified</option>
+              <option value="a-only">Only in A</option>
+              <option value="b-only">Only in B</option>
+              <option value="unchanged">Unchanged</option>
+              <option value="ambiguous">Ambiguous</option>
+              <option value="positional">Positional fallback</option>
+            </select>
+          </label>
+          <label class="select-wrap">
+            <span>Resolution</span>
+            <select id="resolutionFilter">
+              <option value="all">All</option>
+              <option value="unresolved">Unresolved only</option>
+              <option value="resolved">Resolved only</option>
+            </select>
+          </label>
+        </div>
+        <div class="toolbar-actions">
+          <button id="recomputeBtn" class="button subtle" type="button">Recompute merge</button>
+          <button id="resolveHeuristicBtn" class="button subtle" type="button">Apply safe auto-picks</button>
+          <button id="exportBtn" class="button primary" type="button" disabled>Export merged CSV</button>
+        </div>
+        <div id="exportHint" class="meta-note">Export becomes available once all unresolved rows and cells are resolved.</div>
+      </section>
+    </section>
+
+    <section class="panel grid-panel">
+      <h2>Merged Grid</h2>
+      <div id="emptyState" class="empty-state">Load both CSV files to compute a merged review grid.</div>
+      <div id="tableWrap" class="table-wrap hidden">
+        <table>
+          <thead id="tableHead"></thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+      <div class="footer-note">Changed cells show both candidate values in the same cell. Row actions bulk-pick changed cells for that row only.</div>
+    </section>
+  </div>
+
+  <script>
+    const MISSING = "__CSV_DIFF_MISSING__";
+    const KEY_PRIORITY_GROUPS = [
+      ["netflix_original_title"],
+      ["source_id"],
+      ["id"],
+      ["guid"],
+      ["uuid"],
+      ["key"],
+      ["url"],
+      ["path"],
+      ["filename"],
+      ["email"],
+      ["netflix_title", "season_name", "netflix_episode_title"],
+      ["title", "season_name", "episode_title"],
+      ["title", "year"],
+      ["netflix_title", "season_name"],
+      ["title"]
+    ];
+
+    const state = {
+      files: {
+        a: null,
+        b: null
+      },
+      parsed: {
+        a: null,
+        b: null
+      },
+      sharedColumns: [],
+      unionColumns: [],
+      selectedKeyColumns: [],
+      suggestedKeyColumns: [],
+      mergedRows: [],
+      viewRows: [],
+      filters: {
+        query: "",
+        status: "all",
+        resolution: "all"
+      },
+      warning: "",
+      outputDelimiter: ","
+    };
+
+    const fileInputA = document.getElementById("fileA");
+    const fileInputB = document.getElementById("fileB");
+    const fileMetaA = document.getElementById("fileMetaA");
+    const fileMetaB = document.getElementById("fileMetaB");
+    const keyColumnsSelect = document.getElementById("keyColumns");
+    const keySummary = document.getElementById("keySummary");
+    const delimiterSelect = document.getElementById("delimiterSelect");
+    const autoKeyBtn = document.getElementById("autoKeyBtn");
+    const clearKeyBtn = document.getElementById("clearKeyBtn");
+    const recomputeBtn = document.getElementById("recomputeBtn");
+    const resolveHeuristicBtn = document.getElementById("resolveHeuristicBtn");
+    const exportBtn = document.getElementById("exportBtn");
+    const exportHint = document.getElementById("exportHint");
+    const searchInput = document.getElementById("searchInput");
+    const statusFilter = document.getElementById("statusFilter");
+    const resolutionFilter = document.getElementById("resolutionFilter");
+    const statsGrid = document.getElementById("statsGrid");
+    const warningBanner = document.getElementById("warningBanner");
+    const emptyState = document.getElementById("emptyState");
+    const tableWrap = document.getElementById("tableWrap");
+    const tableHead = document.getElementById("tableHead");
+    const tableBody = document.getElementById("tableBody");
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function formatBytes(value) {
+      if (!Number.isFinite(value)) {
+        return "";
+      }
+      const units = ["B", "KB", "MB", "GB"];
+      let size = value;
+      let unitIndex = 0;
+      while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+      }
+      return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+    }
+
+    function normalizeHeader(value) {
+      return String(value || "").trim();
+    }
+
+    function normalizeForKey(value) {
+      return String(value || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+    }
+
+    function isMissing(cell) {
+      return cell.kind === "missing";
+    }
+
+    function isBlankCell(cell) {
+      return isMissing(cell) || String(cell.value || "") === "";
+    }
+
+    function hasContent(cell) {
+      return !isMissing(cell) && String(cell.value || "") !== "";
+    }
+
+    function parseCsv(text, delimiter) {
+      const rows = [];
+      let currentRow = [];
+      let currentValue = "";
+      let insideQuotes = false;
+
+      for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        const nextChar = text[index + 1];
+
+        if (insideQuotes) {
+          if (char === '"') {
+            if (nextChar === '"') {
+              currentValue += '"';
+              index += 1;
+            } else {
+              insideQuotes = false;
+            }
+          } else {
+            currentValue += char;
+          }
+          continue;
+        }
+
+        if (char === '"') {
+          insideQuotes = true;
+          continue;
+        }
+
+        if (char === delimiter) {
+          currentRow.push(currentValue);
+          currentValue = "";
+          continue;
+        }
+
+        if (char === "\r") {
+          continue;
+        }
+
+        if (char === "\n") {
+          currentRow.push(currentValue);
+          rows.push(currentRow);
+          currentRow = [];
+          currentValue = "";
+          continue;
+        }
+
+        currentValue += char;
+      }
+
+      currentRow.push(currentValue);
+      if (currentRow.length > 1 || currentRow[0] !== "") {
+        rows.push(currentRow);
+      }
+
+      if (!rows.length) {
+        return { headers: [], rows: [] };
+      }
+
+      const headers = rows.shift().map(normalizeHeader);
+      const mappedRows = rows
+        .filter((row) => row.some((value) => value !== ""))
+        .map((row, rowIndex) => {
+          const record = {};
+          headers.forEach((header, headerIndex) => {
+            record[header] = row[headerIndex] ?? "";
+          });
+          return {
+            __index: rowIndex,
+            values: record
+          };
+        });
+
+      return { headers, rows: mappedRows };
+    }
+
+    function countOccurrences(line, delimiter) {
+      let count = 0;
+      let insideQuotes = false;
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index];
+        const nextChar = line[index + 1];
+        if (char === '"') {
+          if (insideQuotes && nextChar === '"') {
+            index += 1;
+          } else {
+            insideQuotes = !insideQuotes;
+          }
+          continue;
+        }
+        if (!insideQuotes && char === delimiter) {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
+    function detectDelimiter(text) {
+      const firstLine = (text.split(/\r?\n/, 1)[0] || "").trim();
+      const candidates = [",", "\t", ";", "|"];
+      const scored = candidates
+        .map((candidate) => ({ candidate, count: countOccurrences(firstLine, candidate) }))
+        .sort((left, right) => right.count - left.count);
+      return scored[0] && scored[0].count > 0 ? scored[0].candidate : ",";
+    }
+
+    function getActiveDelimiter(text) {
+      const configured = delimiterSelect.value;
+      if (configured !== "auto") {
+        return configured === "\\t" ? "\t" : configured;
+      }
+      return detectDelimiter(text);
+    }
+
+    function parseLoadedFile(fileState) {
+      if (!fileState) {
+        return null;
+      }
+      const delimiter = getActiveDelimiter(fileState.text);
+      const parsed = parseCsv(fileState.text, delimiter);
+      return {
+        ...parsed,
+        delimiter
+      };
+    }
+
+    function serializeCandidateKey(record, columns) {
+      if (!columns.length) {
+        return "";
+      }
+      const parts = [];
+      for (const column of columns) {
+        const value = normalizeForKey(record.values[column] ?? "");
+        if (!value) {
+          return "";
+        }
+        parts.push(value);
+      }
+      return parts.join("\u001f");
+    }
+
+    function evaluateKeyCandidate(columns, parsedA, parsedB) {
+      if (!columns.length) {
+        return null;
+      }
+      if (!columns.every((column) => parsedA.headers.includes(column) && parsedB.headers.includes(column))) {
+        return null;
+      }
+
+      const scoreDataset = (parsed) => {
+        const keys = parsed.rows.map((row) => serializeCandidateKey(row, columns));
+        const nonEmpty = keys.filter(Boolean);
+        const unique = new Set(nonEmpty);
+        const coverage = parsed.rows.length ? nonEmpty.length / parsed.rows.length : 0;
+        const uniqueness = nonEmpty.length ? unique.size / nonEmpty.length : 0;
+        const duplicateKeys = nonEmpty.length - unique.size;
+        return { coverage, uniqueness, duplicateKeys };
+      };
+
+      const aScore = scoreDataset(parsedA);
+      const bScore = scoreDataset(parsedB);
+      const exactPriority = KEY_PRIORITY_GROUPS.findIndex(
+        (group) => group.length === columns.length && group.every((column, index) => columns[index] === column)
+      );
+      const priorityBoost = exactPriority === -1 ? 0 : (KEY_PRIORITY_GROUPS.length - exactPriority) / KEY_PRIORITY_GROUPS.length / 5;
+      const structuralBoost = columns.length === 1 ? 0.07 : 0.03;
+      const score = ((aScore.coverage + bScore.coverage + aScore.uniqueness + bScore.uniqueness) / 4) + priorityBoost + structuralBoost;
+
+      return {
+        columns,
+        score,
+        coverage: Math.min(aScore.coverage, bScore.coverage),
+        uniqueness: Math.min(aScore.uniqueness, bScore.uniqueness),
+        duplicateKeys: aScore.duplicateKeys + bScore.duplicateKeys
+      };
+    }
+
+    function buildCandidateSets(sharedColumns) {
+      const shared = new Set(sharedColumns);
+      const candidates = [];
+
+      for (const group of KEY_PRIORITY_GROUPS) {
+        if (group.every((column) => shared.has(column))) {
+          candidates.push(group);
+        }
+      }
+
+      for (const column of sharedColumns) {
+        if (!candidates.some((candidate) => candidate.length === 1 && candidate[0] === column)) {
+          candidates.push([column]);
+        }
+      }
+
+      return candidates;
+    }
+
+    function autoDetectKeys(parsedA, parsedB) {
+      const sharedColumns = parsedA.headers.filter((header) => parsedB.headers.includes(header));
+      const candidates = buildCandidateSets(sharedColumns)
+        .map((columns) => evaluateKeyCandidate(columns, parsedA, parsedB))
+        .filter(Boolean)
+        .sort((left, right) => right.score - left.score);
+
+      const best = candidates[0] || null;
+      if (!best || best.coverage < 0.55 || best.uniqueness < 0.7) {
+        return {
+          suggested: [],
+          candidates
+        };
+      }
+
+      return {
+        suggested: best.columns,
+        candidates
+      };
+    }
+
+    function makeCell(kind, value) {
+      return {
+        kind,
+        value: kind === "missing" ? "" : String(value ?? "")
+      };
+    }
+
+    function cellComparison(cellA, cellB) {
+      if (isMissing(cellA) && isMissing(cellB)) {
+        return { changed: false, resolution: "same" };
+      }
+      if (!isMissing(cellA) && !isMissing(cellB) && cellA.value === cellB.value) {
+        return { changed: false, resolution: "same" };
+      }
+      if (hasContent(cellA) && !hasContent(cellB)) {
+        return { changed: true, resolution: "a-auto" };
+      }
+      if (hasContent(cellB) && !hasContent(cellA)) {
+        return { changed: true, resolution: "b-auto" };
+      }
+      return { changed: true, resolution: "unresolved" };
+    }
+
+    function buildMergedRow({ key, keyColumns, rowA, rowB, columns, status, positional = false, ambiguous = false }) {
+      const cells = {};
+      let changedCount = 0;
+      let unresolvedCount = 0;
+      const oneSidedRow = Boolean(rowA) !== Boolean(rowB);
+
+      for (const column of columns) {
+        const cellA = rowA && Object.prototype.hasOwnProperty.call(rowA.values, column)
+          ? makeCell("value", rowA.values[column])
+          : makeCell("missing", MISSING);
+        const cellB = rowB && Object.prototype.hasOwnProperty.call(rowB.values, column)
+          ? makeCell("value", rowB.values[column])
+          : makeCell("missing", MISSING);
+        const comparison = oneSidedRow
+          ? {
+              changed: !(isMissing(cellA) && isMissing(cellB)),
+              resolution: rowA ? "a-auto" : "b-auto"
+            }
+          : cellComparison(cellA, cellB);
+        const resolution = comparison.changed ? comparison.resolution : "same";
+        cells[column] = {
+          a: cellA,
+          b: cellB,
+          changed: comparison.changed,
+          resolution
+        };
+        if (comparison.changed) {
+          changedCount += 1;
+        }
+        if (resolution === "unresolved") {
+          unresolvedCount += 1;
+        }
+      }
+
+      let rowDecision = "include";
+      if ((status === "a-only" || status === "b-only" || ambiguous) && changedCount > 0) {
+        rowDecision = "unresolved";
+      }
+
+      const keyDisplay = keyColumns.length
+        ? keyColumns.map((column) => `${column}: ${rowA?.values[column] ?? rowB?.values[column] ?? ""}`).join(" | ")
+        : key || `row-${(rowA?.__index ?? rowB?.__index ?? 0) + 1}`;
+
+      const searchText = columns.map((column) => {
+        const cell = cells[column];
+        return [cell.a.value, cell.b.value].join(" ");
+      }).join(" ").toLowerCase();
+
+      return {
+        id: crypto.randomUUID(),
+        key,
+        keyDisplay,
+        keyColumns,
+        sourceAIndex: rowA?.__index ?? null,
+        sourceBIndex: rowB?.__index ?? null,
+        status: ambiguous ? "ambiguous" : positional ? "positional" : status,
+        rowDecision,
+        cells,
+        changedCount,
+        unresolvedCount,
+        searchText,
+        notes: ambiguous ? "Duplicate key detected. This row was not auto-matched." : positional ? "Matched by row position because no stable key was selected." : ""
+      };
+    }
+
+    function buildMapByKey(rows, keyColumns) {
+      const map = new Map();
+      for (const row of rows) {
+        const key = serializeCandidateKey(row, keyColumns);
+        if (!key) {
+          const bucket = map.get("") || [];
+          bucket.push(row);
+          map.set("", bucket);
+          continue;
+        }
+        const bucket = map.get(key) || [];
+        bucket.push(row);
+        map.set(key, bucket);
+      }
+      return map;
+    }
+
+    function mergeWithKeys(parsedA, parsedB, keyColumns) {
+      const columns = Array.from(new Set([...parsedA.headers, ...parsedB.headers]));
+      const mapA = buildMapByKey(parsedA.rows, keyColumns);
+      const mapB = buildMapByKey(parsedB.rows, keyColumns);
+      const keys = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort();
+      const mergedRows = [];
+      const warnings = [];
+
+      for (const key of keys) {
+        const rowsA = mapA.get(key) || [];
+        const rowsB = mapB.get(key) || [];
+
+        if (!key) {
+          for (const row of rowsA) {
+            mergedRows.push(buildMergedRow({ key: "", keyColumns, rowA: row, rowB: null, columns, status: "a-only", ambiguous: true }));
+          }
+          for (const row of rowsB) {
+            mergedRows.push(buildMergedRow({ key: "", keyColumns, rowA: null, rowB: row, columns, status: "b-only", ambiguous: true }));
+          }
+          warnings.push("Some rows were missing values in the selected key columns and were surfaced as ambiguous rows.");
+          continue;
+        }
+
+        if (rowsA.length > 1 || rowsB.length > 1) {
+          for (const row of rowsA) {
+            mergedRows.push(buildMergedRow({ key, keyColumns, rowA: row, rowB: null, columns, status: "a-only", ambiguous: true }));
+          }
+          for (const row of rowsB) {
+            mergedRows.push(buildMergedRow({ key, keyColumns, rowA: null, rowB: row, columns, status: "b-only", ambiguous: true }));
+          }
+          warnings.push(`Duplicate key detected for ${keyColumns.join(", ")}. Those rows were not auto-merged.`);
+          continue;
+        }
+
+        if (rowsA.length && rowsB.length) {
+          const mergedRow = buildMergedRow({ key, keyColumns, rowA: rowsA[0], rowB: rowsB[0], columns, status: "modified" });
+          if (!mergedRow.changedCount) {
+            mergedRow.status = "unchanged";
+          }
+          mergedRows.push(mergedRow);
+        } else if (rowsA.length) {
+          mergedRows.push(buildMergedRow({ key, keyColumns, rowA: rowsA[0], rowB: null, columns, status: "a-only" }));
+        } else if (rowsB.length) {
+          mergedRows.push(buildMergedRow({ key, keyColumns, rowA: null, rowB: rowsB[0], columns, status: "b-only" }));
+        }
+      }
+
+      return { mergedRows, columns, warning: Array.from(new Set(warnings)).join(" ") };
+    }
+
+    function mergeByPosition(parsedA, parsedB) {
+      const columns = Array.from(new Set([...parsedA.headers, ...parsedB.headers]));
+      const maxLength = Math.max(parsedA.rows.length, parsedB.rows.length);
+      const mergedRows = [];
+      for (let index = 0; index < maxLength; index += 1) {
+        const rowA = parsedA.rows[index] || null;
+        const rowB = parsedB.rows[index] || null;
+        let status = "modified";
+        if (rowA && !rowB) {
+          status = "a-only";
+        } else if (!rowA && rowB) {
+          status = "b-only";
+        }
+        const mergedRow = buildMergedRow({
+          key: `row-${index + 1}`,
+          keyColumns: [],
+          rowA,
+          rowB,
+          columns,
+          status,
+          positional: true
+        });
+        if (rowA && rowB && !mergedRow.changedCount) {
+          mergedRow.status = "unchanged";
+        }
+        mergedRows.push(mergedRow);
+      }
+      return {
+        mergedRows,
+        columns,
+        warning: "Using positional fallback because no key columns are selected. Row pairing is based on file order only."
+      };
+    }
+
+    function recomputeMerge() {
+      if (!state.parsed.a || !state.parsed.b) {
+        return;
+      }
+
+      state.sharedColumns = state.parsed.a.headers.filter((header) => state.parsed.b.headers.includes(header));
+      const selectedKeys = [...keyColumnsSelect.selectedOptions].map((option) => option.value);
+      state.selectedKeyColumns = selectedKeys;
+
+      const result = selectedKeys.length
+        ? mergeWithKeys(state.parsed.a, state.parsed.b, selectedKeys)
+        : mergeByPosition(state.parsed.a, state.parsed.b);
+
+      state.unionColumns = result.columns;
+      state.mergedRows = result.mergedRows;
+      state.warning = result.warning;
+      applyFilters();
+      renderAll();
+    }
+
+    function updateParsedFiles() {
+      state.parsed.a = parseLoadedFile(state.files.a);
+      state.parsed.b = parseLoadedFile(state.files.b);
+      updateFileMeta();
+      if (!state.parsed.a || !state.parsed.b) {
+        renderAll();
+        return;
+      }
+
+      const detection = autoDetectKeys(state.parsed.a, state.parsed.b);
+      state.suggestedKeyColumns = detection.suggested;
+      populateKeySelect();
+      recomputeMerge();
+    }
+
+    function populateKeySelect() {
+      const sharedColumns = state.parsed.a && state.parsed.b
+        ? state.parsed.a.headers.filter((header) => state.parsed.b.headers.includes(header))
+        : [];
+      keyColumnsSelect.innerHTML = sharedColumns
+        .map((column) => `<option value="${escapeHtml(column)}">${escapeHtml(column)}</option>`)
+        .join("");
+
+      const selected = state.selectedKeyColumns.length ? state.selectedKeyColumns : state.suggestedKeyColumns;
+      for (const option of keyColumnsSelect.options) {
+        option.selected = selected.includes(option.value);
+      }
+
+      if (!sharedColumns.length) {
+        keySummary.textContent = "No shared columns found yet.";
+        return;
+      }
+
+      keySummary.textContent = state.suggestedKeyColumns.length
+        ? `Suggested key: ${state.suggestedKeyColumns.join(" + ")}`
+        : "No stable key was auto-detected. Use positional mode or choose columns manually.";
+    }
+
+    function updateFileMeta() {
+      const renderMeta = (element, fileState, parsed) => {
+        if (!fileState) {
+          element.innerHTML = "";
+          return;
+        }
+        const chips = [
+          `<span class="file-chip">${escapeHtml(fileState.file.name)}</span>`,
+          `<span class="file-chip">${formatBytes(fileState.file.size)}</span>`
+        ];
+        if (parsed) {
+          chips.push(`<span class="file-chip">${parsed.rows.length} rows</span>`);
+          chips.push(`<span class="file-chip">${parsed.headers.length} columns</span>`);
+          chips.push(`<span class="file-chip">Delimiter: ${parsed.delimiter === "\t" ? "tab" : escapeHtml(parsed.delimiter)}</span>`);
+        }
+        element.innerHTML = chips.join("");
+      };
+
+      renderMeta(fileMetaA, state.files.a, state.parsed.a);
+      renderMeta(fileMetaB, state.files.b, state.parsed.b);
+    }
+
+    function statusPasses(row) {
+      if (state.filters.status === "all") {
+        return true;
+      }
+      return row.status === state.filters.status;
+    }
+
+    function resolutionPasses(row) {
+      if (state.filters.resolution === "all") {
+        return true;
+      }
+      if (state.filters.resolution === "unresolved") {
+        return row.rowDecision === "unresolved" || row.unresolvedCount > 0;
+      }
+      return row.rowDecision !== "unresolved" && row.unresolvedCount === 0;
+    }
+
+    function queryPasses(row) {
+      const query = state.filters.query.trim().toLowerCase();
+      if (!query) {
+        return true;
+      }
+      return row.keyDisplay.toLowerCase().includes(query) || row.searchText.includes(query);
+    }
+
+    function applyFilters() {
+      state.viewRows = state.mergedRows.filter((row) => statusPasses(row) && resolutionPasses(row) && queryPasses(row));
+    }
+
+    function recalculateRow(row) {
+      let changedCount = 0;
+      let unresolvedCount = 0;
+      for (const column of state.unionColumns) {
+        const cell = row.cells[column];
+        if (!cell) {
+          continue;
+        }
+        if (cell.changed) {
+          changedCount += 1;
+        }
+        if (cell.resolution === "unresolved") {
+          unresolvedCount += 1;
+        }
+      }
+      row.changedCount = changedCount;
+      row.unresolvedCount = unresolvedCount;
+    }
+
+    function renderStats() {
+      const stats = {
+        rows: state.mergedRows.length,
+        modified: state.mergedRows.filter((row) => row.status === "modified").length,
+        unresolved: state.mergedRows.filter((row) => row.rowDecision === "unresolved" || row.unresolvedCount > 0).length,
+        additions: state.mergedRows.filter((row) => row.status === "a-only" || row.status === "b-only").length,
+        ambiguous: state.mergedRows.filter((row) => row.status === "ambiguous").length,
+        visible: state.viewRows.length
+      };
+
+      const cards = [
+        [stats.rows, "Rows"],
+        [stats.modified, "Modified"],
+        [stats.additions, "Added or Removed"],
+        [stats.ambiguous, "Ambiguous"],
+        [stats.unresolved, "Need Review"],
+        [stats.visible, "Visible"]
+      ];
+
+      statsGrid.innerHTML = cards.map(([value, label]) => `
+        <div class="stat-card">
+          <strong>${value}</strong>
+          <span>${label}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderWarning() {
+      if (!state.warning) {
+        warningBanner.classList.add("hidden");
+        warningBanner.textContent = "";
+        return;
+      }
+      warningBanner.classList.remove("hidden");
+      warningBanner.textContent = state.warning;
+    }
+
+    function renderTable() {
+      if (!state.mergedRows.length) {
+        emptyState.classList.remove("hidden");
+        tableWrap.classList.add("hidden");
+        tableHead.innerHTML = "";
+        tableBody.innerHTML = "";
+        return;
+      }
+
+      emptyState.classList.add("hidden");
+      tableWrap.classList.remove("hidden");
+
+      const stickyHead = [
+        ["#", "sticky sticky-0"],
+        ["Match Key", "sticky sticky-1"],
+        ["Row Status", "sticky sticky-2"],
+        ["Actions", "sticky sticky-3"]
+      ];
+      tableHead.innerHTML = `<tr>${stickyHead.map(([label, className]) => `<th class="${className}">${escapeHtml(label)}</th>`).join("")}${state.unionColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>`;
+
+      tableBody.innerHTML = state.viewRows.map((row, index) => renderRow(row, index)).join("");
+    }
+
+    function renderRow(row, visibleIndex) {
+      return `
+        <tr data-row-id="${row.id}">
+          <td class="sticky sticky-0 row-index">${visibleIndex + 1}</td>
+          <td class="sticky sticky-1 key-cell">
+            <div class="key-main">${escapeHtml(row.keyDisplay)}</div>
+            <div class="key-sub">A:${row.sourceAIndex === null ? "-" : row.sourceAIndex + 2} • B:${row.sourceBIndex === null ? "-" : row.sourceBIndex + 2}</div>
+            ${row.notes ? `<div class="key-sub">${escapeHtml(row.notes)}</div>` : ""}
+          </td>
+          <td class="sticky sticky-2 status-cell">
+            <span class="status-chip ${row.status}">${escapeHtml(row.status)}</span>
+            <div class="key-sub">${row.changedCount} changed • ${row.unresolvedCount} unresolved</div>
+          </td>
+          <td class="sticky sticky-3 row-actions">${renderRowActions(row)}</td>
+          ${state.unionColumns.map((column) => renderCell(row, column)).join("")}
+        </tr>
+      `;
+    }
+
+    function renderRowActions(row) {
+      if (row.status === "unchanged") {
+        return `<div class="meta-note">No decisions needed.</div>`;
+      }
+      if (row.status === "a-only" || row.status === "b-only" || row.status === "ambiguous") {
+        const includeActive = row.rowDecision === "include" ? "active" : "";
+        const excludeActive = row.rowDecision === "exclude" ? "active" : "";
+        return `
+          <div class="row-action-group">
+            <button class="mini-button ${includeActive}" data-row-include="${row.id}">Include</button>
+            <button class="mini-button ${excludeActive}" data-row-exclude="${row.id}" data-role="danger">Exclude</button>
+          </div>
+          <div class="meta-note">Resolve whether this one-sided row should be exported.</div>
+        `;
+      }
+      return `
+        <div class="row-action-group">
+          <button class="mini-button" data-row-pick="a" data-row-id="${row.id}" data-role="accent">Pick A</button>
+          <button class="mini-button" data-row-pick="b" data-row-id="${row.id}" data-role="accent">Pick B</button>
+        </div>
+        <div class="meta-note">Bulk-pick all changed cells in this row.</div>
+      `;
+    }
+
+    function describeChosen(cell) {
+      switch (cell.resolution) {
+        case "same":
+          return "Same";
+        case "a-auto":
+          return "Auto A";
+        case "b-auto":
+          return "Auto B";
+        case "a":
+          return "Chosen A";
+        case "b":
+          return "Chosen B";
+        default:
+          return "Needs review";
+      }
+    }
+
+    function currentCellValue(cell) {
+      switch (cell.resolution) {
+        case "same":
+          return !isMissing(cell.a) ? cell.a.value : cell.b.value;
+        case "a-auto":
+        case "a":
+          return isMissing(cell.a) ? "" : cell.a.value;
+        case "b-auto":
+        case "b":
+          return isMissing(cell.b) ? "" : cell.b.value;
+        default:
+          return "";
+      }
+    }
+
+    function renderCell(row, column) {
+      const cell = row.cells[column];
+      if (!cell.changed) {
+        const value = !isMissing(cell.a) ? cell.a.value : cell.b.value;
+        return `
+          <td class="data-cell">
+            <div class="cell-shell same">
+              <div class="cell-value">${escapeHtml(value)}</div>
+            </div>
+          </td>
+        `;
+      }
+
+      const resolutionClass = cell.resolution === "unresolved"
+        ? "unresolved"
+        : cell.resolution === "a" || cell.resolution === "a-auto"
+          ? (cell.resolution === "a-auto" ? "auto" : "resolved-a")
+          : (cell.resolution === "b-auto" ? "auto" : "resolved-b");
+
+      const chosenValue = currentCellValue(cell);
+      const buttonClassA = cell.resolution === "a" || cell.resolution === "a-auto" ? "active" : "";
+      const buttonClassB = cell.resolution === "b" || cell.resolution === "b-auto" ? "active" : "";
+      const missingA = isMissing(cell.a) ? "missing" : "";
+      const missingB = isMissing(cell.b) ? "missing" : "";
+
+      return `
+        <td class="data-cell">
+          <div class="cell-shell ${resolutionClass}">
+            <div class="cell-diff">
+              <span class="cell-chosen">${escapeHtml(describeChosen(cell))}</span>
+              <div class="option-stack">
+                <button class="option-button ${buttonClassA} ${missingA}" data-cell-pick="a" data-row-id="${row.id}" data-column="${escapeHtml(column)}" data-side="a">
+                  <span class="option-label">A</span>
+                  <span class="option-value">${escapeHtml(isMissing(cell.a) ? "Missing in A" : cell.a.value)}</span>
+                </button>
+                <button class="option-button ${buttonClassB} ${missingB}" data-cell-pick="b" data-row-id="${row.id}" data-column="${escapeHtml(column)}" data-side="b">
+                  <span class="option-label">B</span>
+                  <span class="option-value">${escapeHtml(isMissing(cell.b) ? "Missing in B" : cell.b.value)}</span>
+                </button>
+              </div>
+              <div class="meta-note">Current output: ${escapeHtml(chosenValue || "")}</div>
+            </div>
+          </div>
+        </td>
+      `;
+    }
+
+    function renderExportState() {
+      const unresolvedRows = state.mergedRows.filter((row) => row.rowDecision === "unresolved" || row.unresolvedCount > 0).length;
+      exportBtn.disabled = !state.mergedRows.length || unresolvedRows > 0;
+      if (!state.mergedRows.length) {
+        exportHint.textContent = "Load two files before exporting.";
+      } else if (unresolvedRows > 0) {
+        exportHint.textContent = `${unresolvedRows} rows still need review before export.`;
+      } else {
+        exportHint.textContent = "All rows are resolved. Export will download the current merged grid as CSV.";
+      }
+    }
+
+    function renderAll() {
+      applyFilters();
+      renderStats();
+      renderWarning();
+      renderTable();
+      renderExportState();
+    }
+
+    function setCellResolution(rowId, column, side) {
+      const row = state.mergedRows.find((item) => item.id === rowId);
+      if (!row) {
+        return;
+      }
+      const cell = row.cells[column];
+      if (!cell || !cell.changed) {
+        return;
+      }
+      cell.resolution = side;
+      recalculateRow(row);
+      renderAll();
+    }
+
+    function setRowDecision(rowId, decision) {
+      const row = state.mergedRows.find((item) => item.id === rowId);
+      if (!row) {
+        return;
+      }
+      row.rowDecision = decision;
+      renderAll();
+    }
+
+    function pickRow(rowId, side) {
+      const row = state.mergedRows.find((item) => item.id === rowId);
+      if (!row) {
+        return;
+      }
+      for (const column of state.unionColumns) {
+        const cell = row.cells[column];
+        if (!cell || !cell.changed) {
+          continue;
+        }
+        cell.resolution = side;
+      }
+      recalculateRow(row);
+      renderAll();
+    }
+
+    function applySafeAutoPicks() {
+      for (const row of state.mergedRows) {
+        if (row.status === "a-only" || row.status === "b-only" || row.status === "ambiguous") {
+          continue;
+        }
+        for (const column of state.unionColumns) {
+          const cell = row.cells[column];
+          if (!cell || !cell.changed || cell.resolution !== "unresolved") {
+            continue;
+          }
+          if (hasContent(cell.a) && !hasContent(cell.b)) {
+            cell.resolution = "a-auto";
+          } else if (hasContent(cell.b) && !hasContent(cell.a)) {
+            cell.resolution = "b-auto";
+          }
+        }
+        recalculateRow(row);
+      }
+      renderAll();
+    }
+
+    function collectExportRows() {
+      const rows = [];
+      for (const row of state.mergedRows) {
+        if (row.rowDecision === "exclude") {
+          continue;
+        }
+        if (row.rowDecision === "unresolved" || row.unresolvedCount > 0) {
+          throw new Error("Cannot export while unresolved rows or cells remain.");
+        }
+        const record = {};
+        for (const column of state.unionColumns) {
+          const cell = row.cells[column];
+          record[column] = currentCellValue(cell);
+        }
+        rows.push(record);
+      }
+      return rows;
+    }
+
+    function csvEscape(value) {
+      const stringValue = String(value ?? "");
+      if (stringValue.includes('"') || stringValue.includes(",") || stringValue.includes("\n") || stringValue.includes("\r") || stringValue.includes(";") || stringValue.includes("|")) {
+        return `"${stringValue.replaceAll('"', '""')}"`;
+      }
+      return stringValue;
+    }
+
+    function exportCsv() {
+      try {
+        const rows = collectExportRows();
+        const delimiter = state.outputDelimiter;
+        const lines = [state.unionColumns.map(csvEscape).join(delimiter)];
+        for (const row of rows) {
+          lines.push(state.unionColumns.map((column) => csvEscape(row[column])).join(delimiter));
+        }
+        const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "merged.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        window.alert(error.message);
+      }
+    }
+
+    async function loadFile(side, file) {
+      if (!file) {
+        return;
+      }
+      const text = await file.text();
+      state.files[side] = { file, text };
+      updateParsedFiles();
+    }
+
+    function bindDropZones() {
+      document.querySelectorAll(".drop-zone").forEach((zone) => {
+        const side = zone.dataset.zone;
+        const prevent = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        ["dragenter", "dragover"].forEach((eventName) => {
+          zone.addEventListener(eventName, (event) => {
+            prevent(event);
+            zone.classList.add("dragging");
+          });
+        });
+        ["dragleave", "drop"].forEach((eventName) => {
+          zone.addEventListener(eventName, (event) => {
+            prevent(event);
+            zone.classList.remove("dragging");
+          });
+        });
+        zone.addEventListener("drop", async (event) => {
+          const [file] = event.dataTransfer.files;
+          await loadFile(side, file);
+        });
+      });
+    }
+
+    fileInputA.addEventListener("change", async (event) => {
+      await loadFile("a", event.target.files[0]);
+    });
+
+    fileInputB.addEventListener("change", async (event) => {
+      await loadFile("b", event.target.files[0]);
+    });
+
+    delimiterSelect.addEventListener("change", () => {
+      if (!state.files.a && !state.files.b) {
+        return;
+      }
+      updateParsedFiles();
+    });
+
+    keyColumnsSelect.addEventListener("change", () => {
+      recomputeMerge();
+    });
+
+    autoKeyBtn.addEventListener("click", () => {
+      for (const option of keyColumnsSelect.options) {
+        option.selected = state.suggestedKeyColumns.includes(option.value);
+      }
+      recomputeMerge();
+    });
+
+    clearKeyBtn.addEventListener("click", () => {
+      for (const option of keyColumnsSelect.options) {
+        option.selected = false;
+      }
+      recomputeMerge();
+    });
+
+    recomputeBtn.addEventListener("click", () => {
+      recomputeMerge();
+    });
+
+    resolveHeuristicBtn.addEventListener("click", () => {
+      applySafeAutoPicks();
+    });
+
+    exportBtn.addEventListener("click", () => {
+      exportCsv();
+    });
+
+    searchInput.addEventListener("input", (event) => {
+      state.filters.query = event.target.value;
+      renderAll();
+    });
+
+    statusFilter.addEventListener("change", (event) => {
+      state.filters.status = event.target.value;
+      renderAll();
+    });
+
+    resolutionFilter.addEventListener("change", (event) => {
+      state.filters.resolution = event.target.value;
+      renderAll();
+    });
+
+    tableBody.addEventListener("click", (event) => {
+      const cellButton = event.target.closest("[data-cell-pick]");
+      if (cellButton) {
+        setCellResolution(cellButton.dataset.rowId, cellButton.dataset.column, cellButton.dataset.cellPick);
+        return;
+      }
+      const rowPick = event.target.closest("[data-row-pick]");
+      if (rowPick) {
+        pickRow(rowPick.dataset.rowId, rowPick.dataset.rowPick);
+        return;
+      }
+      const rowInclude = event.target.closest("[data-row-include]");
+      if (rowInclude) {
+        setRowDecision(rowInclude.dataset.rowInclude, "include");
+        return;
+      }
+      const rowExclude = event.target.closest("[data-row-exclude]");
+      if (rowExclude) {
+        setRowDecision(rowExclude.dataset.rowExclude, "exclude");
+      }
+    });
+
+    bindDropZones();
+    renderAll();
+  </script>
+</body>
+</html>
