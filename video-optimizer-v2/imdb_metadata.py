@@ -51,6 +51,7 @@ class IMDbDataProvider(BaseMetadataProvider):
     RECENT_YEAR_CUTOFF = 1975
     FILTER_ADULT_CONTENT = True
     ALLOWED_TITLE_TYPES = ["movie", "tvSeries", "tvMiniSeries"]
+    FILTER_AKA_LANGUAGES = True
     AKA_ALLOWED_LANGUAGES = ("en", "ja", "jp")
 
     MAX_RETRIES = 3
@@ -453,7 +454,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     title_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
                     title_lower TEXT NOT NULL,
-                    PRIMARY KEY (title_id, title)
+                    PRIMARY KEY (title_id, title_lower)
                 ) WITHOUT ROWID;
                 """
             )
@@ -820,6 +821,8 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     @classmethod
     def _should_keep_aka_locale(cls, language: Optional[str], region: Optional[str]) -> bool:
+        if not getattr(cls, "FILTER_AKA_LANGUAGES", True):
+            return True
         normalized_language = cls._normalize_aka_language_code(language)
         normalized_region = cls._normalize_space_collapsed_text(region).lower() or None
         if normalized_language is None and normalized_region is None:
@@ -910,7 +913,7 @@ class IMDbDataProvider(BaseMetadataProvider):
 
     def _get_exact_candidates(self, conn: sqlite3.Connection, title_lower: str, year: Optional[int]) -> List[sqlite3.Row]:
         year_clause = ""
-        params: List[Any] = [title_lower, self.MIN_VOTES_THRESHOLD or 0]
+        params: List[Any] = [title_lower]
         if year is not None:
             year_clause = " AND (c.year BETWEEN ? AND ? OR c.year IS NULL)"
             params.extend([year - self.YEAR_TOLERANCE, year + self.YEAR_TOLERANCE])
@@ -924,7 +927,6 @@ class IMDbDataProvider(BaseMetadataProvider):
             FROM title_search s
             JOIN title_core c ON c.id = s.title_id
             WHERE s.search_title_lower = ?
-              AND c.votes >= ?
               {year_clause}
             ORDER BY s.is_primary DESC, c.votes DESC
             LIMIT ?
