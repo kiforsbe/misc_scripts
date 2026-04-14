@@ -411,9 +411,17 @@ def _metadata_match_is_compatible(
     normalized_raw = _normalize_lookup_text(raw_title)
     normalized_inferred = _normalize_lookup_text(inferred_series_title)
 
+    def _matches_lookup(candidate_source: str) -> bool:
+        lookup_candidates = adapt_lookup_titles(candidate_source, (resolved_title,))
+        return any(_normalize_lookup_text(candidate) == normalized_resolved for candidate in lookup_candidates[1:])
+
     if normalized_inferred:
         if resolved_kind == "series":
-            return normalized_resolved == normalized_inferred or normalized_inferred in normalized_resolved
+            return (
+                normalized_resolved == normalized_inferred
+                or normalized_inferred in normalized_resolved
+                or _matches_lookup(inferred_series_title or "")
+            )
         return False
 
     if not normalized_resolved:
@@ -426,6 +434,8 @@ def _metadata_match_is_compatible(
         or normalized_query in normalized_resolved
         or normalized_resolved in normalized_raw
         or normalized_raw in normalized_resolved
+        or _matches_lookup(query)
+        or _matches_lookup(raw_title)
     )
 
 

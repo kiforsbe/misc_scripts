@@ -345,6 +345,43 @@ def test_classify_entry_prefers_movie_match_for_implicit_single_colon_titles():
     assert analyzer.metadata_manager.calls == [("Mission: Cross", None, "movie")]
 
 
+def test_classify_entry_accepts_imdb_alias_to_canonical_movie_title():
+    class MetadataManager:
+        def __init__(self):
+            self.calls = []
+
+        def find_title(self, query, year=None, preferred_type=None):
+            self.calls.append((query, year, preferred_type))
+            if query != "Chernobyl 1986":
+                return None
+            return (
+                SimpleNamespace(
+                    title="Chernobyl: Abyss",
+                    type="movie",
+                    id="tt10648714",
+                    year=2021,
+                    rating=5.2,
+                    votes=11546,
+                    runtime_minutes=136,
+                    genres=("Drama", "History"),
+                    sources=("https://www.imdb.com/title/tt10648714/",),
+                ),
+                object(),
+            )
+
+    analyzer = NetflixWatchStatusAnalyzer(metadata_manager=MetadataManager())
+
+    resolved = analyzer._classify_entry(parse_netflix_title("Chernobyl 1986"), prefix_counts={})
+
+    assert resolved[0] == "movie"
+    assert resolved[1] == "Chernobyl: Abyss"
+    assert resolved[2] == 2021
+    assert resolved[4] == "movie"
+    assert resolved[6] == "tt10648714"
+    assert resolved[8] == 11546
+    assert analyzer.metadata_manager.calls == [("Chernobyl 1986", None, None)]
+
+
 def test_classify_entry_falls_back_to_series_match_for_implicit_single_colon_titles():
     class MetadataManager:
         def __init__(self):
