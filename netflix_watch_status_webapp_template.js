@@ -428,6 +428,116 @@
         return parseNumericExpr(transformNumericExpr(expr, normalizeRuntimeToken));
     }
 
+    function utcTimestamp(year, month, day) {
+        return Date.UTC(year, month - 1, day);
+    }
+
+    function endOfMonthDay(year, month) {
+        return new Date(Date.UTC(year, month, 0)).getUTCDate();
+    }
+
+    function parseDatePeriod(token) {
+        const trimmed = String(token || "").trim();
+        if (!trimmed) {
+            throw new Error("Date filter cannot be empty");
+        }
+
+        const fullDateMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (fullDateMatch) {
+            const year = Number.parseInt(fullDateMatch[1], 10);
+            const month = Number.parseInt(fullDateMatch[2], 10);
+            const day = Number.parseInt(fullDateMatch[3], 10);
+            if (month < 1 || month > 12) {
+                throw new Error(`Invalid month in date token: ${token}`);
+            }
+            const maxDay = endOfMonthDay(year, month);
+            if (day < 1 || day > maxDay) {
+                throw new Error(`Invalid day in date token: ${token}`);
+            }
+            const timestamp = utcTimestamp(year, month, day);
+            return { start: timestamp, end: timestamp };
+        }
+
+        const monthMatch = trimmed.match(/^(\d{4})-(\d{2})$/);
+        if (monthMatch) {
+            const year = Number.parseInt(monthMatch[1], 10);
+            const month = Number.parseInt(monthMatch[2], 10);
+            if (month < 1 || month > 12) {
+                throw new Error(`Invalid month in date token: ${token}`);
+            }
+            return {
+                start: utcTimestamp(year, month, 1),
+                end: utcTimestamp(year, month, endOfMonthDay(year, month)),
+            };
+        }
+
+        const yearMatch = trimmed.match(/^(\d{4})$/);
+        if (yearMatch) {
+            const year = Number.parseInt(yearMatch[1], 10);
+            return {
+                start: utcTimestamp(year, 1, 1),
+                end: utcTimestamp(year, 12, 31),
+            };
+        }
+
+        throw new Error(`Invalid date token: ${token}`);
+    }
+
+    function parseDateValues(value) {
+        return [...new Set((String(value || "").match(/\d{4}-\d{2}-\d{2}/g) || []).map((token) => parseDatePeriod(token).start))];
+    }
+
+    function parseReleaseDateValues(value) {
+        return parseYearValues(value).map((year) => utcTimestamp(year, 1, 1));
+    }
+
+    function parseDateExpr(expr) {
+        const trimmed = String(expr || "").trim();
+        if (!trimmed) {
+            throw new Error("Date filter cannot be empty");
+        }
+
+        const rangeMatch = trimmed.match(/^(.+?)\.\.(.+)$/);
+        if (rangeMatch) {
+            const lower = parseDatePeriod(rangeMatch[1].trim());
+            const upper = parseDatePeriod(rangeMatch[2].trim());
+            if (lower.start > upper.end) {
+                throw new Error("Date range lower bound cannot exceed upper bound");
+            }
+            return (value) => lower.start <= value && value <= upper.end;
+        }
+
+        if (trimmed.includes(",")) {
+            const periods = trimmed.split(",").map((part) => parseDatePeriod(part.trim()));
+            return (value) => periods.some((period) => period.start <= value && value <= period.end);
+        }
+
+        const comparisonMatch = trimmed.match(/^(<=|>=|!=|=|<|>)(.+)$/);
+        if (comparisonMatch) {
+            const operator = comparisonMatch[1];
+            const period = parseDatePeriod(comparisonMatch[2].trim());
+            if (operator === "=") {
+                return (value) => period.start <= value && value <= period.end;
+            }
+            if (operator === "!=") {
+                return (value) => value < period.start || value > period.end;
+            }
+            if (operator === ">") {
+                return (value) => value > period.end;
+            }
+            if (operator === ">=") {
+                return (value) => value >= period.start;
+            }
+            if (operator === "<") {
+                return (value) => value < period.start;
+            }
+            return (value) => value <= period.end;
+        }
+
+        const period = parseDatePeriod(trimmed);
+        return (value) => period.start <= value && value <= period.end;
+    }
+
     function normalizePercentToken(token) {
         const trimmed = String(token || "").trim();
         if (!trimmed) {
@@ -505,56 +615,28 @@
 
     function canonicalSmartFilterField(fieldName) {
         return ({
-            name: "title",
             title: "title",
-            year: "year",
+            releasedate: "release_date",
+            releaseyear: "release_year",
             source: "source_id",
-            source_id: "source_id",
-            sourceid: "source_id",
             type: "item_type",
-            item: "item_type",
-            item_type: "item_type",
-            itemtype: "item_type",
             state: "watch_state",
-            status: "watch_state",
-            watch: "watch_state",
-            watch_state: "watch_state",
-            watchstate: "watch_state",
             season: "season",
             season_title: "season_title",
-            seasontitle: "season_title",
             episode: "episode",
             episode_title: "episode_title",
-            episodetitle: "episode_title",
             views: "views",
-            dates: "watch_dates",
-            date: "watch_dates",
-            watch_dates: "watch_dates",
-            watchdates: "watch_dates",
+            watchdate: "watch_date",
             watchyear: "watch_year",
-            watchyears: "watch_year",
-            watch_year: "watch_year",
             runtime: "runtime_minutes",
-            runtime_minutes: "runtime_minutes",
-            runtimeminutes: "runtime_minutes",
             rating: "average_rating",
-            average_rating: "average_rating",
-            averagerating: "average_rating",
             votes: "num_votes",
-            num_votes: "num_votes",
-            numvotes: "num_votes",
-            genre: "genres",
             genres: "genres",
             title_type: "title_type",
-            titletype: "title_type",
             id: "id",
             parent: "parent_id",
-            parent_id: "parent_id",
-            parentid: "parent_id",
             level: "level",
             children: "has_children",
-            has_children: "has_children",
-            haschildren: "has_children",
             progress: "progress",
             total: "progress_total",
         })[String(fieldName || "").trim().toLowerCase()] || "";
@@ -716,7 +798,10 @@
             const expected = normalizeWatchStateToken(rawValue);
             return (row) => row.watch_state === expected;
         }
-        if (field === "year") {
+        if (field === "release_date") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseReleaseDateValues(row.year), parseDateExpr);
+        }
+        if (field === "release_year") {
             return buildNumericFieldPredicate(rawValue, (row) => parseYearValues(row.year));
         }
         if (field === "season") {
@@ -734,8 +819,8 @@
         if (field === "views") {
             return buildNumericFieldPredicate(rawValue, (row) => parseLeadingInteger(row.views));
         }
-        if (field === "watch_dates") {
-            return buildStringFieldPredicate(rawValue, (row) => row.watch_dates || "");
+        if (field === "watch_date") {
+            return buildNumericFieldPredicate(rawValue, (row) => parseDateValues(row.watch_dates), parseDateExpr);
         }
         if (field === "watch_year") {
             return buildNumericFieldPredicate(rawValue, (row) => parseYearValues(row.watch_dates));
