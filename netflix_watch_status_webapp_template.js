@@ -25,6 +25,7 @@
     const state = {
         query: "",
         compiledFilter: () => true,
+        revealMatchingDescendants: false,
         filterError: "",
         filterInputTimer: null,
         selectedId: rows[0] ? rows[0].id : null,
@@ -427,6 +428,22 @@
         return parseNumericExpr(transformNumericExpr(expr, normalizeRuntimeToken));
     }
 
+    function normalizePercentToken(token) {
+        const trimmed = String(token || "").trim();
+        if (!trimmed) {
+            throw new Error("Percentage filter cannot be empty");
+        }
+        const normalized = trimmed.replace(/%/g, "").trim();
+        if (!normalized || !/^-?\d+(?:\.\d+)?$/.test(normalized)) {
+            throw new Error(`Invalid percentage token: ${token}`);
+        }
+        return Number.parseFloat(normalized);
+    }
+
+    function parsePercentExpr(expr) {
+        return parseNumericExpr(transformNumericExpr(expr, normalizePercentToken));
+    }
+
     function tokenizeQuery(text) {
         const tokens = [];
         let current = "";
@@ -641,6 +658,14 @@
         };
     }
 
+    function parseProgressPercentValue(value) {
+        const counts = parseProgressCounts(value);
+        if (!Number.isFinite(counts.watched) || !Number.isFinite(counts.total) || counts.total <= 0) {
+            return null;
+        }
+        return (counts.watched / counts.total) * 100;
+    }
+
     function numericValuesFrom(row, value) {
         if (Array.isArray(value)) {
             return value.filter((item) => Number.isFinite(item));
@@ -674,6 +699,8 @@
         if (!field) {
             throw new Error(`Unknown filter field: ${fieldName}`);
         }
+
+        const usesPercentExpr = String(rawValue || "").includes("%");
 
         if (field === "title") {
             return buildStringFieldPredicate(rawValue, (row) => `${displayTitle(row)} ${row.title || ""}`.trim());
@@ -745,6 +772,9 @@
             return (row) => Boolean(row.has_children) === expected;
         }
         if (field === "progress") {
+            if (usesPercentExpr) {
+                return buildNumericFieldPredicate(rawValue, (row) => parseProgressPercentValue(row.episode), parsePercentExpr);
+            }
             return buildNumericFieldPredicate(rawValue, (row) => parseProgressCounts(row.episode).watched);
         }
         if (field === "progress_total") {
@@ -767,6 +797,7 @@
         const groups = [[]];
         let negateNext = false;
         let clauseCount = 0;
+        let revealMatchingDescendants = false;
 
         for (let index = 0; index < tokens.length; index += 1) {
             const token = tokens[index];
@@ -801,14 +832,21 @@
                     rawValue = tokens[index + 1];
                     index += 1;
                 }
+                if (["progress", "progress_total"].includes(canonicalField)) {
+                    revealMatchingDescendants = true;
+                }
                 predicate = buildFieldPredicate(fieldName, rawValue);
             } else {
                 const separatorIndex = token.indexOf(":");
                 if (separatorIndex > 0) {
                     const fieldName = token.slice(0, separatorIndex);
                     const rawValue = token.slice(separatorIndex + 1);
-                    const knownField = Boolean(canonicalSmartFilterField(fieldName));
+                    const canonicalField = canonicalSmartFilterField(fieldName);
+                    const knownField = Boolean(canonicalField);
                     if (knownField) {
+                        if (["progress", "progress_total"].includes(canonicalField)) {
+                            revealMatchingDescendants = true;
+                        }
                         predicate = buildFieldPredicate(fieldName, rawValue);
                     } else {
                         predicate = buildFreeTextPredicate(token);
@@ -838,6 +876,7 @@
 
         return {
             predicate: (row) => groups.some((group) => group.every((filter) => filter(row))),
+            revealMatchingDescendants,
             summary: `${clauseCount} clause${clauseCount === 1 ? "" : "s"} active${groups.length > 1 ? ` across ${groups.length} groups` : ""}`,
         };
     }
@@ -856,9 +895,11 @@
         try {
             const compiled = compileSmartFilter(state.query);
             state.compiledFilter = compiled.predicate;
+            state.revealMatchingDescendants = compiled.revealMatchingDescendants;
             state.filterError = "";
         } catch (error) {
             state.filterError = error instanceof Error ? error.message : String(error);
+            state.revealMatchingDescendants = false;
         }
         syncFilterInputState();
         render();
@@ -908,18 +949,30 @@
         return children.some((child) => branchMatches(child, query));
     }
 
-    function flattenVisibleRows(parentId) {
+    function flattenVisibleRows(parentId, includeAllDescendants) {
         const visible = [];
         const siblings = childrenMap.get(parentId || "ROOT") || [];
         const queryActive = Boolean(state.query);
 
         siblings.forEach((row) => {
-            if (!branchMatches(row, state.query)) {
+            const directMatch = rowMatches(row, state.query);
+            const visibleByQuery = includeAllDescendants || branchMatches(row, state.query);
+
+            if (!visibleByQuery) {
                 return;
             }
+
             visible.push(row);
+
+            const revealDescendants = includeAllDescendants || (
+                queryActive
+                && state.revealMatchingDescendants
+                && directMatch
+                && row.has_children
+            );
+
             if (row.has_children && (queryActive || state.expanded.has(row.id))) {
-                visible.push(...flattenVisibleRows(row.id));
+                visible.push(...flattenVisibleRows(row.id, revealDescendants));
             }
         });
 
