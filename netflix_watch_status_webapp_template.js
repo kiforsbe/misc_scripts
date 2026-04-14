@@ -1596,6 +1596,12 @@
 
     function rowSubtitle(row) {
         if (row.item_type === "series") {
+            if (row.year && row.episode) {
+                return `${row.year} - Progress ${row.episode}`;
+            }
+            if (row.episode) {
+                return `Progress ${row.episode}`;
+            }
             return row.year ? `${row.year}` : "Series";
         }
         if (row.item_type === "season") {
