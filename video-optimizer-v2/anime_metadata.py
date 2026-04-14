@@ -15,6 +15,11 @@ from tqdm import tqdm
 from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
 import enum
 
+try:
+    from rapidfuzz import fuzz as rapidfuzz_fuzz
+except ImportError:
+    rapidfuzz_fuzz = None
+
 class AnimeType(enum.IntEnum):
     TV = 1
     MOVIE = 2
@@ -799,6 +804,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             return self._search_cache[cache_key]
         best_score = 0.0
         anime_data = None  # Initialize to prevent UnboundLocalError
+        prepared_query = self._prepare_similarity_query(title)
         conn = self._get_connection()
         try:
             candidates = []
@@ -821,7 +827,11 @@ class AnimeDataProvider(BaseMetadataProvider):
             candidates = cursor.fetchmany(1)
             if candidates:
                 anime_data = candidates[0]
-                best_score = self._score_title_match(title, anime_data['synonym'], candidate_year=self._row_or_dict_value(anime_data, 'year'))
+                best_score = self._score_title_match_prepared(
+                    prepared_query,
+                    anime_data['synonym'],
+                    candidate_year=self._row_or_dict_value(anime_data, 'year'),
+                )
             else:
                 prefix_pattern = f"{title.strip()}%"
                 cursor = conn.execute(
@@ -835,13 +845,19 @@ class AnimeDataProvider(BaseMetadataProvider):
                 )
                 direct_candidates = cursor.fetchall()
                 if direct_candidates:
-                    ranked_direct_candidates = self._rank_candidates(title, direct_candidates, conn=conn)
+                    ranked_direct_candidates = self._rank_candidates(
+                        title,
+                        direct_candidates,
+                        conn=conn,
+                        prepared_query=prepared_query,
+                    )
                     if ranked_direct_candidates:
                         anime_data = ranked_direct_candidates[0]
                         best_score = self._best_score_for_anime_id(
                             conn,
                             title,
                             anime_data['id'],
+                            prepared_query=prepared_query,
                         )
 
             if anime_data is None:
@@ -862,7 +878,12 @@ class AnimeDataProvider(BaseMetadataProvider):
                 
                 # Post-filter candidates to prefer better matches
                 if candidates:
-                    candidates = self._rank_candidates(title, candidates, conn=conn)
+                    candidates = self._rank_candidates(
+                        title,
+                        candidates,
+                        conn=conn,
+                        prepared_query=prepared_query,
+                    )
                     
             # 3. The first candidate is the top scorer, much better results than fuzzer
             if anime_data is None and candidates and len(candidates) > 0:
@@ -874,6 +895,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                         title,
                         anime_data['id'],
                         bm25_score=top_candidate['score'] if 'score' in top_candidate.keys() else None,
+                        prepared_query=prepared_query,
                     )
         finally:
             self._return_connection(conn)
@@ -1031,7 +1053,7 @@ class AnimeDataProvider(BaseMetadataProvider):
             self._return_connection(conn)
         return None
 
-    def _rank_candidates(self, query_title: str, candidates: list, conn=None) -> list:
+    def _rank_candidates(self, query_title: str, candidates: list, conn=None, prepared_query=None) -> list:
         """
         Re-rank candidates based on title similarity to prefer better matches.
         Prioritizes:
@@ -1056,10 +1078,12 @@ class AnimeDataProvider(BaseMetadataProvider):
                     query_title,
                     candidate_id,
                     bm25_score=bm25_score,
+                    prepared_query=prepared_query,
                 )
             else:
-                combined_score = self._score_title_match(
-                    query_title,
+                resolved_prepared_query = prepared_query or self._prepare_similarity_query(query_title)
+                combined_score = self._score_title_match_prepared(
+                    resolved_prepared_query,
                     candidate['title'] if 'title' in candidate else '',
                     bm25_score=bm25_score,
                     candidate_year=self._row_or_dict_value(candidate, 'year'),
@@ -1091,6 +1115,7 @@ class AnimeDataProvider(BaseMetadataProvider):
         query_title: str,
         anime_id: int,
         bm25_score: Optional[float] = None,
+        prepared_query=None,
     ) -> float:
         rows = conn.execute(
             "SELECT * FROM anime_synonym_view WHERE id = ?",
@@ -1098,14 +1123,15 @@ class AnimeDataProvider(BaseMetadataProvider):
         ).fetchall()
         best_score = 0.0
         seen_titles = set()
+        resolved_prepared_query = prepared_query or self._prepare_similarity_query(query_title)
         for row in rows:
             candidate_year = self._row_or_dict_value(row, 'year')
             for candidate_text in (self._row_or_dict_value(row, 'title'), self._row_or_dict_value(row, 'synonym')):
                 if not candidate_text or candidate_text in seen_titles:
                     continue
                 seen_titles.add(candidate_text)
-                score = self._score_title_match(
-                    query_title,
+                score = self._score_title_match_prepared(
+                    resolved_prepared_query,
                     candidate_text,
                     bm25_score=bm25_score,
                     candidate_year=candidate_year,
@@ -1113,6 +1139,12 @@ class AnimeDataProvider(BaseMetadataProvider):
                 if score > best_score:
                     best_score = score
         return best_score
+
+    def _prepare_similarity_query(self, title: str):
+        query_normalized = self._normalize_title_for_similarity(title)
+        query_compact = self._normalize_title_for_similarity(title, compact=True)
+        query_words = frozenset(query_normalized.split()) if query_normalized else frozenset()
+        return query_normalized, query_compact, query_words
 
     @staticmethod
     def _row_or_dict_value(row, key: str):
@@ -1132,10 +1164,24 @@ class AnimeDataProvider(BaseMetadataProvider):
         bm25_score: Optional[float] = None,
         candidate_year: Optional[int] = None,
     ) -> float:
-        """Score how well a candidate title matches the query title."""
-        query_normalized = self._normalize_title_for_similarity(query_title)
+        prepared_query = self._prepare_similarity_query(query_title)
+        return self._score_title_match_prepared(
+            prepared_query,
+            candidate_title,
+            bm25_score=bm25_score,
+            candidate_year=candidate_year,
+        )
+
+    def _score_title_match_prepared(
+        self,
+        prepared_query,
+        candidate_title: str,
+        bm25_score: Optional[float] = None,
+        candidate_year: Optional[int] = None,
+    ) -> float:
+        """Score how well a candidate title matches a pre-normalized query."""
+        query_normalized, query_compact, query_words = prepared_query
         candidate_normalized = self._normalize_title_for_similarity(candidate_title)
-        query_compact = self._normalize_title_for_similarity(query_title, compact=True)
         candidate_compact = self._normalize_title_for_similarity(candidate_title, compact=True)
 
         if not query_normalized or not candidate_normalized:
@@ -1145,10 +1191,9 @@ class AnimeDataProvider(BaseMetadataProvider):
             return self.EXACT_MATCH_SCORE
 
         ratio = max(
-            SequenceMatcher(None, query_normalized, candidate_normalized).ratio(),
-            SequenceMatcher(None, query_compact, candidate_compact).ratio(),
+            self._similarity_ratio(query_normalized, candidate_normalized),
+            self._similarity_ratio(query_compact, candidate_compact),
         )
-        query_words = set(query_normalized.split())
         candidate_words = set(candidate_normalized.split())
         coverage = (len(query_words & candidate_words) / len(query_words)) if query_words else 0.0
         quality = min(1.0, (ratio * 0.7) + (coverage * 0.3))
@@ -1185,6 +1230,11 @@ class AnimeDataProvider(BaseMetadataProvider):
             year_bonus = 0.0
 
         return min(base_score + year_bonus, max_score)
+
+    def _similarity_ratio(self, left: str, right: str) -> float:
+        if rapidfuzz_fuzz is not None:
+            return rapidfuzz_fuzz.ratio(left, right) / 100.0
+        return SequenceMatcher(None, left, right).ratio()
 
     def _normalize_title_for_similarity(self, title: str, compact: bool = False) -> str:
         normalized = (title or '').casefold()
