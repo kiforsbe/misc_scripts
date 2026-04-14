@@ -22,6 +22,91 @@
     });
 
     const preferredDefaultColumnOrder = ["year", "runtime_minutes", "average_rating", "genres"];
+    const SMART_FILTER_FIELD_INFO = [
+        { name: "title", field: "title", hint: "Match title text" },
+        { name: "type", field: "item_type", hint: "movie, series, season, episode" },
+        { name: "state", field: "watch_state", hint: "watched, partial, unwatched" },
+        { name: "releasedate", field: "release_date", hint: "Date-aware release filter" },
+        { name: "season", field: "season", hint: "Season number" },
+        { name: "season_title", field: "season_title", hint: "Season title text" },
+        { name: "episode", field: "episode", hint: "Episode number" },
+        { name: "episode_title", field: "episode_title", hint: "Episode title text" },
+        { name: "views", field: "views", hint: "Watch count" },
+        { name: "watchdate", field: "watch_date", hint: "Date-aware watch filter" },
+        { name: "runtime", field: "runtime_minutes", hint: "Accepts 30m, 1h20m" },
+        { name: "rating", field: "average_rating", hint: "Numeric rating" },
+        { name: "votes", field: "num_votes", hint: "Vote count" },
+        { name: "genres", field: "genres", hint: "Genre text" },
+        { name: "source", field: "source_id", hint: "Source identifier" },
+        { name: "title_type", field: "title_type", hint: "Provider title type" },
+        { name: "id", field: "id", hint: "Row id" },
+        { name: "parent", field: "parent_id", hint: "Parent row id" },
+        { name: "level", field: "level", hint: "Tree level" },
+        { name: "progress", field: "progress", hint: "Count or percent watched" },
+        { name: "total", field: "progress_total", hint: "Total episodes in aggregate" },
+        { name: "children", field: "has_children", hint: "Items with child rows" },
+    ];
+
+    const smartFilterFieldNameByCanonical = new Map(SMART_FILTER_FIELD_INFO.map((entry) => [entry.field, entry.name]));
+    const smartFilterStaticValueTemplates = {
+        item_type: [
+            { value: "movie", hint: "Type" },
+            { value: "series", hint: "Type" },
+            { value: "season", hint: "Type" },
+            { value: "episode", hint: "Type" },
+        ],
+        watch_state: [
+            { value: "watched", hint: "State" },
+            { value: "partial", hint: "State" },
+            { value: "unwatched", hint: "State" },
+            { value: "aggregate", hint: "State" },
+        ],
+        release_date: [
+            { value: "<2018", hint: "Before Jan 1, 2018" },
+            { value: "2018", hint: "Any date in 2018" },
+            { value: "2018-05", hint: "Any date in May 2018" },
+            { value: "2018..2020", hint: "Date range" },
+        ],
+        watch_date: [
+            { value: "2024-01..2024-03", hint: "Month range" },
+            { value: ">=2024-02-15", hint: "Since specific date" },
+            { value: "2024", hint: "Any date in year" },
+        ],
+        runtime_minutes: [
+            { value: "<30m", hint: "Less than 30 minutes" },
+            { value: "1h20m", hint: "Duration value" },
+            { value: "45m..90m", hint: "Duration range" },
+            { value: ">=2h", hint: "Comparison" },
+        ],
+        average_rating: [
+            { value: ">=8", hint: "Comparison" },
+            { value: "7..9", hint: "Range" },
+        ],
+        num_votes: [
+            { value: ">=1000", hint: "Comparison" },
+            { value: "100..10000", hint: "Range" },
+        ],
+        progress: [
+            { value: ">0", hint: "Started watching" },
+            { value: "1..4", hint: "Watched count range" },
+            { value: "<20%", hint: "Percent watched" },
+            { value: ">=50%", hint: "Percent watched" },
+        ],
+        progress_total: [
+            { value: ">=10", hint: "Comparison" },
+            { value: "1..12", hint: "Episode total range" },
+        ],
+        has_children: [
+            { value: "", hint: "Has children" },
+            { value: "true", hint: "Boolean" },
+            { value: "false", hint: "Boolean" },
+        ],
+    };
+
+    const smartFilterDataValues = {
+        genres: uniqueSortedValues(rows.flatMap((row) => String(row.genres || "").split(",").map((genre) => genre.trim()).filter(Boolean)), 100),
+    };
+
     const state = {
         query: "",
         compiledFilter: () => true,
@@ -46,11 +131,16 @@
         virtualRenderScheduled: false,
         virtualForceRenderScheduled: false,
         lastVirtualRangeKey: "",
+        smartFilterSuggestions: [],
+        activeSmartFilterSuggestionIndex: -1,
+        lastSmartFilterSuggestionKey: "",
+        smartFilterSuggestionRefreshScheduled: false,
     };
 
     const elements = {
         appWindow: document.getElementById("appWindow"),
         searchInput: document.getElementById("searchInput"),
+        smartFilterSuggestions: document.getElementById("smartFilterSuggestions"),
         smartFilterHelpButton: document.getElementById("smartFilterHelpButton"),
         smartFilterHelp: document.getElementById("smartFilterHelp"),
         listThumbnailToggle: document.getElementById("listThumbnailToggle"),
@@ -96,6 +186,12 @@
 
     function displayEpisodeTitle(row) {
         return row.display_episode_title || row.episode_title || "";
+    }
+
+    function uniqueSortedValues(values, limit) {
+        return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))]
+            .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base", numeric: true }))
+            .slice(0, limit || Number.POSITIVE_INFINITY);
     }
 
     function hashString(value) {
@@ -613,11 +709,230 @@
         return (candidate) => String(candidate || "").toLowerCase().includes(lowered);
     }
 
+    function highlightSuggestionText(value, inputValue) {
+        const text = String(value || "");
+        const query = String(inputValue || "").trim().toLowerCase();
+        if (!query) {
+            return escapeHtml(text);
+        }
+        const matchIndex = text.toLowerCase().indexOf(query);
+        if (matchIndex < 0) {
+            return escapeHtml(text);
+        }
+        const before = escapeHtml(text.slice(0, matchIndex));
+        const match = escapeHtml(text.slice(matchIndex, matchIndex + query.length));
+        const after = escapeHtml(text.slice(matchIndex + query.length));
+        return `${before}<span class="smart-filter-suggestion-highlight">${match}</span>${after}`;
+    }
+
+    function currentSmartFilterToken(rawValue, caretIndex) {
+        const value = String(rawValue || "");
+        const caret = Number.isInteger(caretIndex) ? caretIndex : value.length;
+        let start = caret;
+        let end = caret;
+
+        while (start > 0 && !/\s/.test(value[start - 1])) {
+            start -= 1;
+        }
+        while (end < value.length && !/\s/.test(value[end])) {
+            end += 1;
+        }
+
+        const token = value.slice(start, end);
+        const separatorIndex = token.indexOf(":");
+        return {
+            start,
+            end,
+            token,
+            separatorIndex,
+            fieldName: separatorIndex > 0 ? token.slice(0, separatorIndex) : "",
+            rawValue: separatorIndex > 0 ? token.slice(separatorIndex + 1) : "",
+        };
+    }
+
+    function smartFilterFieldSuggestions(query) {
+        const lowered = String(query || "").trim().toLowerCase();
+        return SMART_FILTER_FIELD_INFO
+            .filter((entry) => !lowered || entry.name.includes(lowered))
+            .map((entry) => ({
+                key: `field:${entry.name}`,
+                insertText: `${entry.name}:`,
+                displayText: `${entry.name}:`,
+                matchText: entry.name,
+                hint: entry.hint,
+            }));
+    }
+
+    function smartFilterValueSuggestions(field, query) {
+        const lowered = String(query || "").trim().toLowerCase();
+        const fieldName = smartFilterFieldNameByCanonical.get(field) || field;
+        const staticSuggestions = (smartFilterStaticValueTemplates[field] || []).map((entry) => ({
+            key: `value:${field}:${entry.value || "(empty)"}`,
+            value: entry.value,
+            hint: entry.hint,
+        }));
+        const dynamicSuggestions = (field === "genres" ? (smartFilterDataValues.genres || []) : []).map((value) => ({
+            key: `value:${field}:${value}`,
+            value,
+            hint: "Value",
+        }));
+
+        const combined = [...staticSuggestions, ...dynamicSuggestions];
+        const deduped = [...new Map(combined.map((entry) => [String(entry.value), entry])).values()];
+        const matching = deduped.filter((entry) => !lowered || String(entry.value || "").toLowerCase().includes(lowered));
+        const ranked = matching.sort((left, right) => {
+            const leftValue = String(left.value || "").toLowerCase();
+            const rightValue = String(right.value || "").toLowerCase();
+            const leftStarts = lowered && leftValue.startsWith(lowered) ? 0 : 1;
+            const rightStarts = lowered && rightValue.startsWith(lowered) ? 0 : 1;
+            if (leftStarts !== rightStarts) {
+                return leftStarts - rightStarts;
+            }
+            return leftValue.localeCompare(rightValue, undefined, { sensitivity: "base", numeric: true });
+        });
+
+        return ranked.slice(0, 10).map((entry) => ({
+            key: entry.key,
+            insertText: `${fieldName}:${entry.value}`,
+            displayText: `${fieldName}:${entry.value}`,
+            matchText: String(entry.value || ""),
+            hint: entry.hint,
+        }));
+    }
+
+    function renderSmartFilterSuggestions(rawValue) {
+        if (!elements.smartFilterSuggestions || !elements.searchInput) {
+            return;
+        }
+
+        const caretIndex = elements.searchInput.selectionStart ?? String(rawValue || "").length;
+        const tokenInfo = currentSmartFilterToken(rawValue, caretIndex);
+        const suggestionKey = `${rawValue}|${caretIndex}`;
+        if (state.lastSmartFilterSuggestionKey === suggestionKey) {
+            return;
+        }
+
+        let suggestions = [];
+        if (tokenInfo.separatorIndex > 0) {
+            const canonicalField = canonicalSmartFilterField(tokenInfo.fieldName);
+            if (canonicalField) {
+                suggestions = smartFilterValueSuggestions(canonicalField, tokenInfo.rawValue);
+            } else {
+                suggestions = smartFilterFieldSuggestions(tokenInfo.fieldName);
+            }
+        } else {
+            suggestions = smartFilterFieldSuggestions(tokenInfo.token);
+            if (!String(tokenInfo.token || "").trim()) {
+                suggestions = suggestions.slice(0, 12);
+            }
+        }
+
+        state.smartFilterSuggestions = suggestions;
+        state.activeSmartFilterSuggestionIndex = suggestions.length ? 0 : -1;
+        state.lastSmartFilterSuggestionKey = suggestionKey;
+
+        if (!suggestions.length) {
+            hideSmartFilterSuggestions();
+            return;
+        }
+
+        elements.smartFilterSuggestions.innerHTML = suggestions.map((suggestion, index) => `
+            <div id="smartFilterSuggestion-${index}" class="smart-filter-suggestion-item ${index === state.activeSmartFilterSuggestionIndex ? "active" : ""}" role="option" aria-selected="${index === state.activeSmartFilterSuggestionIndex ? "true" : "false"}" data-index="${index}">
+                <span class="smart-filter-suggestion-main">${highlightSuggestionText(suggestion.displayText, tokenInfo.separatorIndex > 0 ? tokenInfo.rawValue : tokenInfo.token)}</span>
+                <span class="smart-filter-suggestion-hint">${escapeHtml(suggestion.hint || "Field")}</span>
+            </div>
+        `).join("");
+        elements.smartFilterSuggestions.hidden = false;
+        elements.searchInput.setAttribute("aria-expanded", "true");
+        elements.searchInput.setAttribute("aria-activedescendant", `smartFilterSuggestion-${state.activeSmartFilterSuggestionIndex}`);
+    }
+
+    function refreshSmartFilterSuggestionsFromInput() {
+        if (!elements.searchInput) {
+            return;
+        }
+        renderSmartFilterSuggestions(String(elements.searchInput.value || ""));
+    }
+
+    function scheduleSmartFilterSuggestionRefresh() {
+        if (state.smartFilterSuggestionRefreshScheduled) {
+            return;
+        }
+        state.smartFilterSuggestionRefreshScheduled = true;
+        requestAnimationFrame(() => {
+            state.smartFilterSuggestionRefreshScheduled = false;
+            refreshSmartFilterSuggestionsFromInput();
+        });
+    }
+
+    function hideSmartFilterSuggestions() {
+        if (!elements.smartFilterSuggestions || !elements.searchInput) {
+            return;
+        }
+        elements.smartFilterSuggestions.hidden = true;
+        elements.smartFilterSuggestions.innerHTML = "";
+        elements.searchInput.setAttribute("aria-expanded", "false");
+        elements.searchInput.removeAttribute("aria-activedescendant");
+        state.smartFilterSuggestions = [];
+        state.activeSmartFilterSuggestionIndex = -1;
+        state.lastSmartFilterSuggestionKey = "";
+    }
+
+    function areSmartFilterSuggestionsVisible() {
+        return Boolean(elements.smartFilterSuggestions && !elements.smartFilterSuggestions.hidden && state.smartFilterSuggestions.length);
+    }
+
+    function updateActiveSmartFilterSuggestion() {
+        if (!elements.smartFilterSuggestions || !elements.searchInput) {
+            return;
+        }
+        const items = Array.from(elements.smartFilterSuggestions.querySelectorAll(".smart-filter-suggestion-item"));
+        items.forEach((item, index) => {
+            const active = index === state.activeSmartFilterSuggestionIndex;
+            item.classList.toggle("active", active);
+            item.setAttribute("aria-selected", active ? "true" : "false");
+            if (active) {
+                elements.searchInput.setAttribute("aria-activedescendant", item.id);
+                item.scrollIntoView({ block: "nearest" });
+            }
+        });
+    }
+
+    function moveSmartFilterSuggestionSelection(delta) {
+        if (!areSmartFilterSuggestionsVisible()) {
+            return;
+        }
+        const nextIndex = Math.max(0, Math.min(state.smartFilterSuggestions.length - 1, state.activeSmartFilterSuggestionIndex + delta));
+        state.activeSmartFilterSuggestionIndex = nextIndex;
+        updateActiveSmartFilterSuggestion();
+    }
+
+    function applySmartFilterSuggestion(index) {
+        if (!elements.searchInput || index < 0 || index >= state.smartFilterSuggestions.length) {
+            return false;
+        }
+        const suggestion = state.smartFilterSuggestions[index];
+        const inputValue = String(elements.searchInput.value || "");
+        const caretIndex = elements.searchInput.selectionStart ?? inputValue.length;
+        const tokenInfo = currentSmartFilterToken(inputValue, caretIndex);
+        const before = inputValue.slice(0, tokenInfo.start);
+        const after = inputValue.slice(tokenInfo.end);
+        const needsTrailingSpace = after && !/^\s/.test(after);
+        const nextValue = `${before}${suggestion.insertText}${needsTrailingSpace ? " " : ""}${after}`;
+        const nextCaret = before.length + suggestion.insertText.length + (needsTrailingSpace ? 1 : 0);
+
+        elements.searchInput.value = nextValue;
+        elements.searchInput.focus({ preventScroll: true });
+        elements.searchInput.setSelectionRange(nextCaret, nextCaret);
+        hideSmartFilterSuggestions();
+        elements.searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+    }
+
     function canonicalSmartFilterField(fieldName) {
         return ({
             title: "title",
             releasedate: "release_date",
-            releaseyear: "release_year",
             source: "source_id",
             type: "item_type",
             state: "watch_state",
@@ -627,7 +942,6 @@
             episode_title: "episode_title",
             views: "views",
             watchdate: "watch_date",
-            watchyear: "watch_year",
             runtime: "runtime_minutes",
             rating: "average_rating",
             votes: "num_votes",
@@ -1555,11 +1869,75 @@
         }
         state.filterError = "";
         syncFilterInputState();
+        renderSmartFilterSuggestions(nextQuery);
         state.filterInputTimer = window.setTimeout(() => {
             state.filterInputTimer = null;
             applySmartFilterQuery(nextQuery);
         }, FILTER_INPUT_DEBOUNCE_MS);
     });
+
+    elements.searchInput.addEventListener("focus", () => {
+        scheduleSmartFilterSuggestionRefresh();
+    });
+
+    elements.searchInput.addEventListener("click", () => {
+        scheduleSmartFilterSuggestionRefresh();
+    });
+
+    elements.searchInput.addEventListener("mouseup", () => {
+        scheduleSmartFilterSuggestionRefresh();
+    });
+
+    elements.searchInput.addEventListener("select", () => {
+        scheduleSmartFilterSuggestionRefresh();
+    });
+
+    elements.searchInput.addEventListener("blur", () => {
+        window.setTimeout(() => {
+            hideSmartFilterSuggestions();
+        }, 120);
+    });
+
+    elements.searchInput.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" && areSmartFilterSuggestionsVisible()) {
+            event.preventDefault();
+            moveSmartFilterSuggestionSelection(1);
+            return;
+        }
+        if (event.key === "ArrowUp" && areSmartFilterSuggestionsVisible()) {
+            event.preventDefault();
+            moveSmartFilterSuggestionSelection(-1);
+            return;
+        }
+        if ((event.key === "Enter" || event.key === "Tab") && areSmartFilterSuggestionsVisible() && state.activeSmartFilterSuggestionIndex >= 0) {
+            event.preventDefault();
+            applySmartFilterSuggestion(state.activeSmartFilterSuggestionIndex);
+            return;
+        }
+        if (event.key === "Escape") {
+            hideSmartFilterSuggestions();
+        }
+    });
+
+    elements.searchInput.addEventListener("keyup", (event) => {
+        if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+            scheduleSmartFilterSuggestionRefresh();
+        }
+    });
+
+    if (elements.smartFilterSuggestions) {
+        elements.smartFilterSuggestions.addEventListener("mousedown", (event) => {
+            event.preventDefault();
+            const item = event.target.closest(".smart-filter-suggestion-item[data-index]");
+            if (!item) {
+                return;
+            }
+            const index = Number(item.dataset.index);
+            if (Number.isInteger(index)) {
+                applySmartFilterSuggestion(index);
+            }
+        });
+    }
 
     if (elements.smartFilterHelpButton) {
         elements.smartFilterHelpButton.addEventListener("click", () => {
@@ -1645,12 +2023,21 @@
         if (!elements.smartFilterHelp.hidden && !event.target.closest("#smartFilterHelp") && !event.target.closest("#smartFilterHelpButton")) {
             closeSmartFilterHelp();
         }
+        if (!event.target.closest(".smart-filter-entry")) {
+            hideSmartFilterSuggestions();
+        }
     });
 
     document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
             closeColumnMenu();
             closeSmartFilterHelp();
+        }
+    });
+
+    document.addEventListener("selectionchange", () => {
+        if (document.activeElement === elements.searchInput) {
+            scheduleSmartFilterSuggestionRefresh();
         }
     });
 

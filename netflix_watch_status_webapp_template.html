@@ -12,7 +12,10 @@
             <div class="smart-filter-shell">
                 <label class="smart-filter-label" for="searchInput">Filter rows</label>
                 <div class="smart-filter-row">
-                    <input id="searchInput" type="search" placeholder="Filter by text or smart query, e.g. type:episode rating:>=8 state:watched">
+                    <div class="smart-filter-entry">
+                        <input id="searchInput" type="search" placeholder="Filter by text or smart query, e.g. type:episode rating:>=8 state:watched" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="smartFilterSuggestions" aria-haspopup="listbox">
+                        <div id="smartFilterSuggestions" class="smart-filter-suggestions" role="listbox" hidden></div>
+                    </div>
                     <button id="smartFilterHelpButton" class="smart-filter-help-button" type="button" aria-expanded="false" aria-controls="smartFilterHelp">Smart Filter Help</button>
                     <button id="listThumbnailToggle" class="list-thumbnail-toggle" type="button" aria-pressed="false">List Thumbnails</button>
                 </div>
@@ -23,14 +26,14 @@
                             <p class="smart-filter-help-label">Examples</p>
                             <p class="smart-filter-help-text">type:episode state:watched</p>
                             <p class="smart-filter-help-text">rating:>=8 runtime:<30m</p>
-                            <p class="smart-filter-help-text">releasedate:<2018 or releaseyear:2019</p>
+                            <p class="smart-filter-help-text">releasedate:<2018 or releasedate:2019</p>
                             <p class="smart-filter-help-text">type:season progress:1..4</p>
                             <p class="smart-filter-help-text">watchdate:2024-01..2024-03 progress:<20%</p>
                         </div>
                         <div>
                             <p class="smart-filter-help-label">Fields</p>
-                            <p class="smart-filter-help-text">title, type, state, releasedate, releaseyear, season, season_title</p>
-                            <p class="smart-filter-help-text">episode, episode_title, views, watchdate, watchyear, runtime</p>
+                            <p class="smart-filter-help-text">title, type, state, releasedate, season, season_title</p>
+                            <p class="smart-filter-help-text">episode, episode_title, views, watchdate, runtime</p>
                             <p class="smart-filter-help-text">rating, votes, genres, source, title_type, id, parent, level</p>
                             <p class="smart-filter-help-text">progress, total, children</p>
                         </div>
