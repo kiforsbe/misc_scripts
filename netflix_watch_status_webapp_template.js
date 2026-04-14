@@ -115,6 +115,7 @@
         filterInputTimer: null,
         selectedId: rows[0] ? rows[0].id : null,
         expanded: new Set(),
+        filterCollapsed: new Set(),
         shownColumns: new Set(defaultColumnOrder.filter((key) => defaultVisibleColumns.has(key))),
         columnOrder: [
             ...preferredDefaultColumnOrder.filter((key) => defaultColumnOrder.includes(key)),
@@ -1290,7 +1291,11 @@
     }
 
     function applySmartFilterQuery(nextQuery) {
-        state.query = String(nextQuery || "").trim();
+        const nextNormalizedQuery = String(nextQuery || "").trim();
+        if (state.query !== nextNormalizedQuery) {
+            state.filterCollapsed.clear();
+        }
+        state.query = nextNormalizedQuery;
         try {
             const compiled = compileSmartFilter(state.query);
             state.compiledFilter = compiled.predicate;
@@ -1340,6 +1345,22 @@
         return state.compiledFilter(row);
     }
 
+    function isRowExpanded(row) {
+        if (!row || !row.has_children) {
+            return false;
+        }
+
+        if (state.filterCollapsed.has(row.id)) {
+            return false;
+        }
+
+        if (state.query) {
+            return true;
+        }
+
+        return state.expanded.has(row.id);
+    }
+
     function branchMatches(row, query) {
         if (rowMatches(row, query)) {
             return true;
@@ -1370,7 +1391,7 @@
                 && row.has_children
             );
 
-            if (row.has_children && (queryActive || state.expanded.has(row.id))) {
+            if (row.has_children && isRowExpanded(row)) {
                 visible.push(...flattenVisibleRows(row.id, revealDescendants));
             }
         });
@@ -1551,7 +1572,21 @@
     }
 
     function toggleRow(rowId) {
-        if (state.expanded.has(rowId)) {
+        const row = rowMap.get(rowId);
+        if (!row || !row.has_children) {
+            return;
+        }
+
+        const expanded = isRowExpanded(row);
+        if (state.query) {
+            if (expanded) {
+                state.filterCollapsed.add(rowId);
+                state.expanded.delete(rowId);
+            } else {
+                state.filterCollapsed.delete(rowId);
+                state.expanded.add(rowId);
+            }
+        } else if (expanded) {
             state.expanded.delete(rowId);
         } else {
             state.expanded.add(rowId);
@@ -1576,7 +1611,7 @@
     }
 
     function titleCellMarkup(row) {
-        const expanded = state.expanded.has(row.id);
+        const expanded = isRowExpanded(row);
         const toggleLabel = expanded ? "Collapse" : "Expand";
         const thumbnail = row.thumbnail || {};
         const subtitle = rowSubtitle(row);
