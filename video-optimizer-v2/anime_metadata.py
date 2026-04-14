@@ -404,6 +404,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                 """)
                 
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_synonyms_id ON synonyms(id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_synonyms_title_nocase ON synonyms(title COLLATE NOCASE)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_id ON sources(id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_related_src_id ON related(id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_related_dst_id ON related(related_id)")
@@ -809,21 +810,7 @@ class AnimeDataProvider(BaseMetadataProvider):
         try:
             candidates = []
             # 0. Try exact match first
-            cursor = conn.execute(
-                """
-                SELECT * FROM anime_synonym_view
-                WHERE synonym = ? COLLATE NOCASE OR title = ? COLLATE NOCASE
-                ORDER BY CASE
-                    WHEN synonym = ? COLLATE NOCASE THEN 0
-                    WHEN title = ? COLLATE NOCASE THEN 1
-                    ELSE 2
-                END,
-                LENGTH(synonym),
-                year DESC
-                LIMIT 1
-                """,
-                (title, title, title, title)
-            )
+            cursor = self._get_exact_candidates(conn, title)
             candidates = cursor.fetchmany(1)
             if candidates:
                 anime_data = candidates[0]
@@ -834,15 +821,7 @@ class AnimeDataProvider(BaseMetadataProvider):
                 )
             else:
                 prefix_pattern = f"{title.strip()}%"
-                cursor = conn.execute(
-                    """
-                    SELECT * FROM anime_synonym_view
-                    WHERE synonym LIKE ? COLLATE NOCASE OR title LIKE ? COLLATE NOCASE
-                    ORDER BY LENGTH(synonym), year DESC
-                    LIMIT 25
-                    """,
-                    (prefix_pattern, prefix_pattern)
-                )
+                cursor = self._get_prefix_candidates(conn, prefix_pattern)
                 direct_candidates = cursor.fetchall()
                 if direct_candidates:
                     ranked_direct_candidates = self._rank_candidates(
@@ -912,6 +891,60 @@ class AnimeDataProvider(BaseMetadataProvider):
                 except Exception:
                     self._search_cache.clear()
             return result
+
+    def _get_exact_candidates(self, conn: sqlite3.Connection, title: str) -> sqlite3.Cursor:
+        return conn.execute(
+            """
+            SELECT
+                a.id,
+                a.title,
+                s.title AS synonym,
+                ty.text AS type,
+                a.episodes,
+                st.text AS status,
+                a.year,
+                a.duration,
+                a.tags,
+                a.score,
+                a.season_number,
+                a.base_title
+            FROM synonyms s
+            JOIN anime_title a ON s.id = a.id
+            LEFT JOIN anime_type ty ON a.type = ty.id
+            LEFT JOIN anime_status st ON a.status = st.id
+            WHERE s.title = ? COLLATE NOCASE
+            ORDER BY LENGTH(s.title), a.year DESC
+            LIMIT 1
+            """,
+            (title,),
+        )
+
+    def _get_prefix_candidates(self, conn: sqlite3.Connection, prefix_pattern: str) -> sqlite3.Cursor:
+        return conn.execute(
+            """
+            SELECT
+                a.id,
+                a.title,
+                s.title AS synonym,
+                ty.text AS type,
+                a.episodes,
+                st.text AS status,
+                a.year,
+                a.duration,
+                a.tags,
+                a.score,
+                a.season_number,
+                a.base_title
+            FROM synonyms s
+            JOIN anime_title a ON s.id = a.id
+            LEFT JOIN anime_type ty ON a.type = ty.id
+            LEFT JOIN anime_status st ON a.status = st.id
+            WHERE s.title LIKE ? COLLATE NOCASE
+            ORDER BY LENGTH(s.title), a.year DESC
+            LIMIT 25
+            """,
+            (prefix_pattern,),
+        )
 
     def _create_title_info_from_row(self, row) -> TitleInfo:
         """Create TitleInfo object from a database row for anime."""
