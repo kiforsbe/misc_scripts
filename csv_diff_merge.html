@@ -1573,6 +1573,9 @@
       if (!isMissing(cellA) && !isMissing(cellB) && cellA.value === cellB.value) {
         return { changed: false, resolution: "same" };
       }
+      if (!hasContent(cellA) && !hasContent(cellB)) {
+        return { changed: false, resolution: "same" };
+      }
       if (hasContent(cellA) && !hasContent(cellB)) {
         return { changed: true, resolution: "a-auto" };
       }
@@ -2577,7 +2580,15 @@
 
     function applySafeAutoPicks() {
       for (const row of state.mergedRows) {
-        if (row.status === "a-only" || row.status === "b-only" || row.status === "ambiguous") {
+        if (row.status === "a-only") {
+          row.rowDecision = "exclude";
+          continue;
+        }
+        if (row.status === "b-only") {
+          row.rowDecision = "include";
+          continue;
+        }
+        if (row.status === "ambiguous") {
           continue;
         }
         for (const column of state.unionColumns) {
@@ -2585,7 +2596,10 @@
           if (!cell || !cell.changed || cell.resolution !== "unresolved") {
             continue;
           }
-          if (hasContent(cell.a) && !hasContent(cell.b)) {
+          if (!hasContent(cell.a) && !hasContent(cell.b)) {
+            cell.changed = false;
+            cell.resolution = "same";
+          } else if (hasContent(cell.a) && !hasContent(cell.b)) {
             cell.resolution = "a-auto";
           } else if (hasContent(cell.b) && !hasContent(cell.a)) {
             cell.resolution = "b-auto";
