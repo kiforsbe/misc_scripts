@@ -471,10 +471,13 @@
 
     table {
       width: max-content;
-      min-width: 100%;
       border-collapse: separate;
       border-spacing: 0;
       font-size: 0.74rem;
+    }
+
+    col.col-sticky-0 {
+      width: 48px;
     }
 
     thead th {
@@ -492,6 +495,57 @@
       border-right: 1px solid var(--line);
       text-align: left;
       white-space: nowrap;
+    }
+
+    thead th.resizable-column {
+      position: sticky;
+      padding-right: 12px;
+    }
+
+    .column-header-label {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .column-resize-handle {
+      position: absolute;
+      top: 0;
+      right: -4px;
+      width: 8px;
+      height: 100%;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: col-resize;
+      touch-action: none;
+      z-index: 7;
+    }
+
+    .column-resize-handle::after {
+      content: "";
+      position: absolute;
+      top: 6px;
+      bottom: 6px;
+      left: 50%;
+      width: 2px;
+      transform: translateX(-50%);
+      border-radius: 999px;
+      background: transparent;
+      transition: background 120ms ease;
+    }
+
+    thead th.resizable-column:hover .column-resize-handle::after,
+    .column-resize-handle:focus-visible::after,
+    .table-wrap.resizing-columns .column-resize-handle::after {
+      background: rgba(106, 162, 255, 0.75);
+    }
+
+    .table-wrap.resizing-columns,
+    .table-wrap.resizing-columns * {
+      cursor: col-resize;
+      user-select: none;
     }
 
     tbody td {
@@ -634,8 +688,8 @@
     }
 
     .data-cell {
-      min-width: 180px;
-      max-width: 280px;
+      min-width: 0;
+      max-width: none;
       position: relative;
     }
 
@@ -1010,6 +1064,7 @@
       <div id="emptyState" class="empty-state">Load both CSV files to compute a merged review grid.</div>
       <div id="tableWrap" class="table-wrap hidden">
         <table>
+          <colgroup id="tableColGroup"></colgroup>
           <thead id="tableHead"></thead>
           <tbody id="tableBody"></tbody>
         </table>
@@ -1085,10 +1140,14 @@
         status: "all",
         resolution: "all"
       },
+      columnWidths: {},
       activeCell: null,
       warning: "",
       outputDelimiter: ","
     };
+
+    const RESIZABLE_COLUMN_MIN_WIDTH = 60;
+    let activeColumnResize = null;
 
     const fileInputA = document.getElementById("fileA");
     const fileInputB = document.getElementById("fileB");
@@ -1110,6 +1169,7 @@
     const warningBanner = document.getElementById("warningBanner");
     const emptyState = document.getElementById("emptyState");
     const tableWrap = document.getElementById("tableWrap");
+    const tableColGroup = document.getElementById("tableColGroup");
     const tableHead = document.getElementById("tableHead");
     const tableBody = document.getElementById("tableBody");
     const cellInspector = document.getElementById("cellInspector");
@@ -1609,6 +1669,7 @@
         : mergeByPosition(state.parsed.a, state.parsed.b);
 
       state.unionColumns = result.columns;
+      pruneColumnWidths();
       state.mergedRows = result.mergedRows;
       state.warning = result.warning;
       applyFilters();
@@ -1763,10 +1824,111 @@
       warningBanner.textContent = state.warning;
     }
 
+    function pruneColumnWidths() {
+      const nextWidths = {};
+      for (const column of state.unionColumns) {
+        const width = state.columnWidths[column];
+        if (Number.isFinite(width)) {
+          nextWidths[column] = Math.max(RESIZABLE_COLUMN_MIN_WIDTH, width);
+        }
+      }
+      state.columnWidths = nextWidths;
+    }
+
+    function renderColGroup() {
+      tableColGroup.innerHTML = [
+        '<col class="col-sticky-0">',
+        '<col class="col-sticky-1">',
+        ...state.unionColumns.map((column) => {
+          const width = state.columnWidths[column];
+          const widthStyle = Number.isFinite(width) ? ` style="width: ${width}px;"` : "";
+          return `<col data-column="${escapeHtml(column)}"${widthStyle}>`;
+        })
+      ].join("");
+    }
+
+    function setRenderedColumnWidth(column, width) {
+      const col = tableColGroup.querySelector(`[data-column="${CSS.escape(column)}"]`);
+      if (!col) {
+        return;
+      }
+      col.style.width = `${width}px`;
+    }
+
+    function measureAutoColumnWidth(column) {
+      const escapedColumn = CSS.escape(column);
+      const headerLabel = tableHead.querySelector(`th[data-column="${escapedColumn}"] .column-header-label`);
+      let maxWidth = headerLabel ? Math.ceil(headerLabel.scrollWidth) : 0;
+
+      const cellContents = tableBody.querySelectorAll(
+        `td.data-cell[data-column="${escapedColumn}"] .cell-value, td.data-cell[data-column="${escapedColumn}"] .cell-primary`
+      );
+      for (const content of cellContents) {
+        maxWidth = Math.max(maxWidth, Math.ceil(content.scrollWidth));
+      }
+
+      return Math.max(RESIZABLE_COLUMN_MIN_WIDTH, maxWidth + 24);
+    }
+
+    function applyAutoColumnWidths() {
+      for (const column of state.unionColumns) {
+        if (Number.isFinite(state.columnWidths[column])) {
+          setRenderedColumnWidth(column, state.columnWidths[column]);
+          continue;
+        }
+        setRenderedColumnWidth(column, measureAutoColumnWidth(column));
+      }
+    }
+
+    function renderResizableHeader(column) {
+      return `
+        <th class="resizable-column" data-column="${escapeHtml(column)}">
+          <span class="column-header-label">${escapeHtml(column)}</span>
+          <button
+            class="column-resize-handle"
+            data-resize-column="${escapeHtml(column)}"
+            type="button"
+            tabindex="-1"
+            aria-hidden="true"
+          ></button>
+        </th>
+      `;
+    }
+
+    function startColumnResize(column, startX, startWidth) {
+      activeColumnResize = {
+        column,
+        startX,
+        startWidth
+      };
+      tableWrap.classList.add("resizing-columns");
+    }
+
+    function handleColumnResize(event) {
+      if (!activeColumnResize) {
+        return;
+      }
+      const nextWidth = Math.max(
+        RESIZABLE_COLUMN_MIN_WIDTH,
+        Math.round(activeColumnResize.startWidth + (event.clientX - activeColumnResize.startX))
+      );
+      state.columnWidths[activeColumnResize.column] = nextWidth;
+      setRenderedColumnWidth(activeColumnResize.column, nextWidth);
+    }
+
+    function stopColumnResize() {
+      if (!activeColumnResize) {
+        return;
+      }
+      activeColumnResize = null;
+      tableWrap.classList.remove("resizing-columns");
+    }
+
     function renderTable() {
       if (!state.mergedRows.length) {
         emptyState.classList.remove("hidden");
         tableWrap.classList.add("hidden");
+        tableColGroup.innerHTML = "";
         tableHead.innerHTML = "";
         tableBody.innerHTML = "";
         return;
@@ -1779,9 +1941,11 @@
         ["#", "sticky sticky-0"],
         ["Status", "sticky sticky-1"]
       ];
-      tableHead.innerHTML = `<tr>${stickyHead.map(([label, className]) => `<th class="${className}">${escapeHtml(label)}</th>`).join("")}${state.unionColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>`;
+      renderColGroup();
+      tableHead.innerHTML = `<tr>${stickyHead.map(([label, className]) => `<th class="${className}">${escapeHtml(label)}</th>`).join("")}${state.unionColumns.map((column) => renderResizableHeader(column)).join("")}</tr>`;
 
       tableBody.innerHTML = state.viewRows.map((row, index) => renderRow(row, index)).join("");
+      applyAutoColumnWidths();
     }
 
     function renderRow(row, visibleIndex) {
@@ -1930,7 +2094,7 @@
       if (!cell.changed) {
         const value = !isMissing(cell.a) ? cell.a.value : cell.b.value;
         return `
-          <td class="data-cell">
+          <td class="data-cell" data-column="${escapeHtml(column)}">
             <div class="cell-shell same">
               <div class="cell-value">${escapeHtml(value)}</div>
             </div>
@@ -1949,7 +2113,7 @@
       const previewValue = compactText((chosenValue || fallbackValue || "Empty"), 44);
 
       return `
-        <td class="data-cell">
+        <td class="data-cell" data-column="${escapeHtml(column)}">
           <div class="cell-shell ${resolutionClass}">
             <button class="compact-cell ${resolutionClass}" data-cell-open="${row.id}" data-column="${escapeHtml(column)}" type="button">
               <div class="cell-main-line">
@@ -2301,9 +2465,40 @@
       }
     });
 
+    tableHead.addEventListener("pointerdown", (event) => {
+      const resizeHandle = event.target.closest("[data-resize-column]");
+      if (!resizeHandle) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const header = resizeHandle.closest("th[data-column]");
+      if (!header) {
+        return;
+      }
+      startColumnResize(
+        header.dataset.column,
+        event.clientX,
+        header.getBoundingClientRect().width
+      );
+    });
+
+    document.addEventListener("pointermove", (event) => {
+      handleColumnResize(event);
+    });
+
+    document.addEventListener("pointerup", () => {
+      stopColumnResize();
+    });
+
+    document.addEventListener("pointercancel", () => {
+      stopColumnResize();
+    });
+
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         closeCellInspector();
+        stopColumnResize();
       }
     });
 
