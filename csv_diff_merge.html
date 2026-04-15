@@ -770,7 +770,6 @@
       min-width: 0;
       max-width: none;
       position: relative;
-      overflow: visible;
     }
 
     .cell-shell {
@@ -780,30 +779,11 @@
       height: 100%;
     }
 
-    .cell-shell.has-dropdown {
-      position: relative;
-      inset: auto;
-      display: grid;
-      align-content: start;
-      height: auto;
-      min-height: 100%;
-      z-index: 5;
-    }
-
     .data-cell > .cell-shell {
       position: absolute;
       inset: 0;
       display: flex;
       min-height: 0;
-    }
-
-    .data-cell > .cell-shell.has-dropdown {
-      position: relative;
-      inset: auto;
-      display: grid;
-      align-content: start;
-      height: auto;
-      min-height: 100%;
     }
 
     .data-cell:hover {
@@ -857,8 +837,7 @@
     }
 
     .compact-cell.is-open {
-      padding-bottom: 8px;
-      min-height: 32px;
+      box-shadow: inset 0 0 0 1px rgba(124, 176, 255, 0.85);
     }
 
     .compact-cell:hover {
@@ -927,17 +906,18 @@
     .cell-badge.choice-unresolved { color: #ffd782; border-color: rgba(255, 215, 130, 0.36); background: rgba(243, 196, 109, 0.16); }
 
     .cell-dropdown {
-      position: relative;
+      position: fixed;
       display: grid;
       gap: 8px;
-      margin: 0 8px 8px;
-      width: calc(100% - 16px);
+      width: min(360px, calc(100vw - 24px));
+      max-width: calc(100vw - 24px);
       box-sizing: border-box;
       padding: 10px;
       border-radius: 12px;
       border: 1px solid var(--line-strong);
       background: linear-gradient(180deg, #242c40, #1e2537);
       box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+      z-index: 40;
     }
 
     .cell-dropdown::before {
@@ -1028,6 +1008,23 @@
     .cell-dropdown-close {
       min-width: 30px;
       padding: 3px 8px;
+    }
+
+    .cell-dropdown-choice {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line-strong);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .cell-dropdown-choice.active {
+      border-color: var(--accent);
+      background: rgba(106, 162, 255, 0.18);
     }
 
     .hidden {
@@ -1196,9 +1193,11 @@
           <tbody id="tableBody"></tbody>
         </table>
       </div>
-      <div class="footer-note">Changed cells stay compact in the grid. Click any changed cell to open its inline resolver.</div>
+      <div class="footer-note">Changed cells stay compact in the grid. Click any changed cell to open its resolver dropdown.</div>
     </section>
   </div>
+
+  <div id="cellDropdown" class="cell-dropdown hidden" aria-live="polite"></div>
 
   <script>
     const MISSING = "__CSV_DIFF_MISSING__";
@@ -1283,6 +1282,7 @@
     const tableColGroup = document.getElementById("tableColGroup");
     const tableHead = document.getElementById("tableHead");
     const tableBody = document.getElementById("tableBody");
+    const cellDropdown = document.getElementById("cellDropdown");
 
     function escapeHtml(value) {
       return String(value)
@@ -2254,6 +2254,7 @@
 
       if (!state.virtualRows.length) {
         tableBody.innerHTML = `<tr><td colspan="${colSpan}"><div class="empty-state">No rows match the current filters.</div></td></tr>`;
+        renderFloatingCellDropdown();
         return;
       }
 
@@ -2279,6 +2280,7 @@
       }
 
       tableBody.innerHTML = html;
+      renderFloatingCellDropdown();
 
       if (forceMeasurement) {
         measureVisibleRows();
@@ -2428,41 +2430,35 @@
     }
 
     function renderCellDropdown(row, column, cell) {
-      if (!isActiveCell(row.id, column)) {
-        return "";
-      }
-
       const current = describeChosen(cell);
       const currentValue = currentCellValue(cell);
       const isA = cell.resolution === "a" || cell.resolution === "a-auto";
       const isB = cell.resolution === "b" || cell.resolution === "b-auto";
 
       return `
-        <div class="cell-dropdown" aria-live="polite">
-          <div class="cell-dropdown-header">
-            <div>
-              <div class="cell-dropdown-title">Resolve ${escapeHtml(column)}</div>
-              <div class="cell-dropdown-meta">${escapeHtml(`${row.keyDisplay} • ${row.status}`)}</div>
+        <div class="cell-dropdown-header">
+          <div>
+            <div class="cell-dropdown-title">Resolve ${escapeHtml(column)}</div>
+            <div class="cell-dropdown-meta">${escapeHtml(`${row.keyDisplay} • ${row.status}`)}</div>
+          </div>
+          <button class="button subtle cell-dropdown-close" data-cell-close="${row.id}" data-column="${escapeHtml(column)}" type="button" aria-label="Close resolver">×</button>
+        </div>
+        <div class="cell-dropdown-current">Current output: ${escapeHtml(current)}${currentValue ? ` • ${escapeHtml(currentValue)}` : ""}</div>
+        <div class="cell-dropdown-options">
+          <section class="cell-dropdown-option${isA ? " active" : ""}">
+            <div class="cell-dropdown-option-header">
+              <span>Option A</span>
             </div>
-            <button class="button subtle cell-dropdown-close" data-cell-close="${row.id}" data-column="${escapeHtml(column)}" type="button" aria-label="Close resolver">×</button>
-          </div>
-          <div class="cell-dropdown-current">Current output: ${escapeHtml(current)}${currentValue ? ` • ${escapeHtml(currentValue)}` : ""}</div>
-          <div class="cell-dropdown-options">
-            <section class="cell-dropdown-option${isA ? " active" : ""}">
-              <div class="cell-dropdown-option-header">
-                <span>Option A</span>
-                <button class="button subtle" data-cell-pick="a" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isA ? "Chosen A" : "Choose A"}</button>
-              </div>
-              <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.a) || "")}</div>
-            </section>
-            <section class="cell-dropdown-option${isB ? " active" : ""}">
-              <div class="cell-dropdown-option-header">
-                <span>Option B</span>
-                <button class="button subtle" data-cell-pick="b" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isB ? "Chosen B" : "Choose B"}</button>
-              </div>
-              <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.b) || "")}</div>
-            </section>
-          </div>
+            <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.a) || "")}</div>
+            <button class="cell-dropdown-choice${isA ? " active" : ""}" data-cell-pick="a" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isA ? "Keep A" : "Choose A"}</button>
+          </section>
+          <section class="cell-dropdown-option${isB ? " active" : ""}">
+            <div class="cell-dropdown-option-header">
+              <span>Option B</span>
+            </div>
+            <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.b) || "")}</div>
+            <button class="cell-dropdown-choice${isB ? " active" : ""}" data-cell-pick="b" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isB ? "Keep B" : "Choose B"}</button>
+          </section>
         </div>
       `;
     }
@@ -2493,16 +2489,64 @@
 
       return `
         <td class="data-cell" data-column="${escapeHtml(column)}">
-          <div class="cell-shell ${resolutionClass}${active ? " has-dropdown" : ""}">
+          <div class="cell-shell ${resolutionClass}">
             <button class="compact-cell ${resolutionClass}${active ? " is-open" : ""}" data-cell-open="${row.id}" data-column="${escapeHtml(column)}" type="button" aria-expanded="${active ? "true" : "false"}">
               <div class="cell-main-line">
                 <span class="cell-primary ${chosenValue ? "" : "cell-placeholder"}">${escapeHtml(previewValue || "Empty")}</span>
               </div>
             </button>
-            ${renderCellDropdown(row, column, cell)}
           </div>
         </td>
       `;
+    }
+
+    function activeCellButton() {
+      if (!state.activeCell) {
+        return null;
+      }
+      const escapedColumn = CSS.escape(state.activeCell.column);
+      return tableBody.querySelector(`[data-cell-open="${state.activeCell.rowId}"][data-column="${escapedColumn}"]`);
+    }
+
+    function positionCellDropdown(anchor) {
+      const rect = anchor.getBoundingClientRect();
+      const dropdownWidth = Math.min(360, window.innerWidth - 24);
+      const left = Math.min(
+        Math.max(12, rect.left),
+        Math.max(12, window.innerWidth - dropdownWidth - 12)
+      );
+      const top = Math.min(rect.bottom + 8, Math.max(12, window.innerHeight - 20));
+
+      cellDropdown.style.left = `${left}px`;
+      cellDropdown.style.top = `${top}px`;
+    }
+
+    function renderFloatingCellDropdown() {
+      if (!state.activeCell) {
+        cellDropdown.classList.add("hidden");
+        cellDropdown.innerHTML = "";
+        return;
+      }
+
+      const row = getRowById(state.activeCell.rowId);
+      const column = state.activeCell.column;
+      if (!row || !row.cells[column] || !row.cells[column].changed) {
+        state.activeCell = null;
+        cellDropdown.classList.add("hidden");
+        cellDropdown.innerHTML = "";
+        return;
+      }
+
+      const anchor = activeCellButton();
+      if (!anchor) {
+        cellDropdown.classList.add("hidden");
+        cellDropdown.innerHTML = "";
+        return;
+      }
+
+      cellDropdown.innerHTML = renderCellDropdown(row, column, row.cells[column]);
+      cellDropdown.classList.remove("hidden");
+      positionCellDropdown(anchor);
     }
 
     function renderExportState() {
@@ -2523,6 +2567,7 @@
       renderWarning();
       renderTable();
       renderExportState();
+      renderFloatingCellDropdown();
     }
 
     function setCellResolution(rowId, column, side) {
@@ -2600,6 +2645,7 @@
       }
       state.activeCell = { rowId, column };
       renderTable();
+      renderFloatingCellDropdown();
     }
 
     function closeCellInspector() {
@@ -2608,6 +2654,7 @@
       }
       state.activeCell = null;
       renderTable();
+      renderFloatingCellDropdown();
     }
 
     function applySafeAutoPicks() {
@@ -2792,16 +2839,6 @@
         toggleRowAction(rowToggle.dataset.rowToggle);
         return;
       }
-      const cellPick = event.target.closest("[data-cell-pick]");
-      if (cellPick) {
-        setCellResolution(cellPick.dataset.rowId, cellPick.dataset.column, cellPick.dataset.cellPick);
-        return;
-      }
-      const cellClose = event.target.closest("[data-cell-close]");
-      if (cellClose) {
-        closeCellInspector();
-        return;
-      }
       const cellOpen = event.target.closest("[data-cell-open]");
       if (cellOpen) {
         openCellInspector(cellOpen.dataset.cellOpen, cellOpen.dataset.column);
@@ -2820,6 +2857,18 @@
       const rowExclude = event.target.closest("[data-row-exclude]");
       if (rowExclude) {
         setRowDecision(rowExclude.dataset.rowExclude, "exclude");
+      }
+    });
+
+    cellDropdown.addEventListener("click", (event) => {
+      const cellPick = event.target.closest("[data-cell-pick]");
+      if (cellPick) {
+        setCellResolution(cellPick.dataset.rowId, cellPick.dataset.column, cellPick.dataset.cellPick);
+        return;
+      }
+      const cellClose = event.target.closest("[data-cell-close]");
+      if (cellClose) {
+        closeCellInspector();
       }
     });
 
@@ -2843,6 +2892,7 @@
 
     tableWrap.addEventListener("scroll", () => {
       scheduleVirtualRender(false);
+      renderFloatingCellDropdown();
     });
 
     document.addEventListener("pointermove", (event) => {
@@ -2864,9 +2914,20 @@
       }
     });
 
+    document.addEventListener("pointerdown", (event) => {
+      if (!state.activeCell) {
+        return;
+      }
+      if (event.target.closest("#cellDropdown") || event.target.closest("[data-cell-open]")) {
+        return;
+      }
+      closeCellInspector();
+    });
+
     window.addEventListener("resize", () => {
       state.lastVirtualRangeKey = "";
       scheduleVirtualRender(true);
+      renderFloatingCellDropdown();
     });
 
     bindDropZones();
