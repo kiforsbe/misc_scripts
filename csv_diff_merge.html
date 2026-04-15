@@ -26,8 +26,6 @@
       --shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
       --sticky-a: 0px;
       --sticky-b: 48px;
-      --sticky-c: 320px;
-      --sticky-d: 460px;
     }
 
     * {
@@ -209,12 +207,52 @@
       color: var(--text);
     }
 
-    .status-chip.modified { background: rgba(243, 196, 109, 0.12); color: var(--warn); border-color: rgba(243, 196, 109, 0.24); }
+    .status-chip {
+      min-width: 28px;
+      justify-content: center;
+      padding: 3px 8px;
+      font-size: 0.78rem;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+    }
+
+    .status-toggle {
+      appearance: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+    }
+
+    .status-toggle:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+    }
+
+    .status-toggle:focus-visible {
+      outline: 2px solid rgba(124, 176, 255, 0.7);
+      outline-offset: 1px;
+    }
+
+    .status-toggle.action-exclude {
+      opacity: 0.55;
+    }
+
+    .status-toggle.action-a {
+      border-color: rgba(124, 176, 255, 0.35);
+      box-shadow: 0 0 0 1px rgba(124, 176, 255, 0.12) inset;
+    }
+
+    .status-toggle.action-b {
+      border-color: rgba(55, 210, 181, 0.34);
+      box-shadow: 0 0 0 1px rgba(55, 210, 181, 0.14) inset;
+    }
+
+    .status-chip.modified { background: rgba(255, 255, 255, 0.04); color: #cfd8ef; border-color: rgba(255, 255, 255, 0.08); }
     .status-chip.a-only { background: rgba(255, 108, 143, 0.12); color: #ff8cab; border-color: rgba(255, 108, 143, 0.24); }
     .status-chip.b-only { background: rgba(55, 210, 181, 0.14); color: var(--success); border-color: rgba(55, 210, 181, 0.26); }
-    .status-chip.unchanged { background: rgba(255, 255, 255, 0.04); color: #a9b5d0; }
-    .status-chip.ambiguous { background: rgba(255, 168, 82, 0.14); color: #ffb567; border-color: rgba(255, 181, 103, 0.26); }
-    .status-chip.positional { background: rgba(145, 124, 255, 0.16); color: #b8abff; border-color: rgba(184, 171, 255, 0.28); }
+    .status-chip.unchanged { background: rgba(255, 255, 255, 0.04); color: #a9b5d0; border-color: rgba(255, 255, 255, 0.08); }
+    .status-chip.ambiguous { background: rgba(255, 255, 255, 0.04); color: #ffb567; border-color: rgba(255, 255, 255, 0.08); }
+    .status-chip.positional { background: rgba(255, 255, 255, 0.04); color: #b8abff; border-color: rgba(255, 255, 255, 0.08); }
 
     .input-row label,
     .select-wrap label,
@@ -398,30 +436,24 @@
     }
 
     tbody tr.status-unchanged td,
-    tbody tr.status-unchanged td.sticky {
+    tbody tr.status-unchanged td.sticky,
+    tbody tr.status-modified td,
+    tbody tr.status-modified td.sticky,
+    tbody tr.status-ambiguous td,
+    tbody tr.status-ambiguous td.sticky,
+    tbody tr.status-positional td,
+    tbody tr.status-positional td.sticky {
       background: #23293c;
     }
 
-    tbody tr.status-modified td,
-    tbody tr.status-modified td.sticky {
-      background: rgba(115, 92, 38, 0.33);
-    }
-
     tbody tr.status-a-only td,
-    tbody tr.status-a-only td.sticky,
-    tbody tr.status-ambiguous td,
-    tbody tr.status-ambiguous td.sticky {
+    tbody tr.status-a-only td.sticky {
       background: rgba(94, 42, 61, 0.44);
     }
 
     tbody tr.status-b-only td,
     tbody tr.status-b-only td.sticky {
       background: rgba(25, 91, 90, 0.46);
-    }
-
-    tbody tr.status-positional td,
-    tbody tr.status-positional td.sticky {
-      background: rgba(72, 56, 120, 0.34);
     }
 
     th.sticky,
@@ -442,16 +474,10 @@
     th.sticky-0,
     td.sticky-0 { left: var(--sticky-a); min-width: 48px; max-width: 48px; }
     th.sticky-1,
-    td.sticky-1 { left: var(--sticky-b); min-width: 272px; max-width: 272px; }
-    th.sticky-2,
-    td.sticky-2 { left: var(--sticky-c); min-width: 140px; max-width: 140px; }
-    th.sticky-3,
-    td.sticky-3 { left: var(--sticky-d); min-width: 128px; max-width: 128px; }
+    td.sticky-1 { left: var(--sticky-b); min-width: 72px; max-width: 72px; }
 
     .row-index,
-    .key-cell,
-    .status-cell,
-    .row-actions {
+    .status-cell {
       padding: 6px 8px;
     }
 
@@ -462,21 +488,12 @@
       font-weight: 700;
     }
 
-    .key-cell,
-    .status-cell,
-    .row-actions {
+    .status-cell {
       display: grid;
       gap: 4px;
       align-content: start;
       align-self: start;
-    }
-
-    .key-main {
-      font-weight: 700;
-      line-height: 1.2;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      justify-items: start;
     }
 
     .key-sub {
@@ -493,34 +510,25 @@
       max-width: 100%;
     }
 
-    .status-cell .key-sub,
-    .row-actions .meta-note {
-      max-width: 100%;
-    }
-
-    .row-actions .row-action-group {
+    .status-cell .row-action-group {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       width: 100%;
     }
 
-    .row-actions .mini-button {
+    .status-cell .mini-button {
       width: 100%;
       text-align: center;
     }
 
-    .row-actions .meta-note {
-      display: none;
-    }
-
     .mini-button {
-      padding: 4px 6px;
+      padding: 3px 6px;
       border-radius: 6px;
       border: 1px solid var(--line-strong);
       background: rgba(255, 255, 255, 0.04);
       color: var(--text);
       font: inherit;
-      font-size: 0.64rem;
+      font-size: 0.6rem;
       font-weight: 900;
       cursor: pointer;
     }
@@ -546,11 +554,27 @@
 
     .cell-shell {
       display: grid;
-      min-height: 32px;
+      width: 100%;
+      min-height: 36px;
+      height: 100%;
+    }
+
+    .data-cell:hover .cell-shell {
+      box-shadow: inset 0 0 0 1px #7cb0ff;
+    }
+
+    .data-cell:focus-within .cell-shell {
+      box-shadow: inset 0 0 0 1px #7cb0ff;
     }
 
     .cell-value {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      min-height: 36px;
+      height: 100%;
       padding: 7px 8px;
+      box-sizing: border-box;
       line-height: 1.25;
       word-break: break-word;
       white-space: pre-wrap;
@@ -562,31 +586,44 @@
     }
 
     .compact-cell {
+      appearance: none;
+      -webkit-appearance: none;
       width: 100%;
       display: grid;
+      align-content: center;
       gap: 4px;
+      min-height: 36px;
+      height: 100%;
+      margin: 0;
       padding: 6px 8px;
       border: 0;
+      border-radius: 0;
+      box-sizing: border-box;
       text-align: left;
       color: inherit;
       background: transparent;
+      box-shadow: none;
       cursor: pointer;
     }
 
     .compact-cell:hover {
-      background: rgba(255, 255, 255, 0.05);
+      background: transparent;
     }
 
-    .compact-cell.unresolved {
+    .compact-cell:focus-visible {
+      outline: none;
+    }
+
+    .cell-shell.unresolved {
       box-shadow: inset 0 0 0 1px rgba(243, 196, 109, 0.45);
     }
 
-    .compact-cell.resolved-a {
+    .cell-shell.resolved-a {
       box-shadow: inset 0 0 0 1px rgba(255, 108, 143, 0.28);
     }
 
-    .compact-cell.resolved-b,
-    .compact-cell.auto {
+    .cell-shell.resolved-b,
+    .cell-shell.auto {
       box-shadow: inset 0 0 0 1px rgba(55, 210, 181, 0.26);
     }
 
@@ -740,8 +777,6 @@
       :root {
         --sticky-a: 0px;
         --sticky-b: 44px;
-        --sticky-c: 220px;
-        --sticky-d: 348px;
       }
     }
   </style>
@@ -1625,9 +1660,7 @@
 
       const stickyHead = [
         ["#", "sticky sticky-0"],
-        ["Match Key", "sticky sticky-1"],
-        ["Row Status", "sticky sticky-2"],
-        ["Actions", "sticky sticky-3"]
+        ["Status", "sticky sticky-1"]
       ];
       tableHead.innerHTML = `<tr>${stickyHead.map(([label, className]) => `<th class="${className}">${escapeHtml(label)}</th>`).join("")}${state.unionColumns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>`;
 
@@ -1636,61 +1669,109 @@
 
     function renderRow(row, visibleIndex) {
       const unresolvedClass = row.rowDecision === "unresolved" || row.unresolvedCount > 0 ? " row-needs-review" : "";
-      const keyMeta = row.sourceAIndex === null && row.sourceBIndex === null
-        ? ""
-        : `A:${row.sourceAIndex === null ? "-" : row.sourceAIndex + 2} • B:${row.sourceBIndex === null ? "-" : row.sourceBIndex + 2}`;
       return `
         <tr data-row-id="${row.id}" class="status-${row.status}${unresolvedClass}">
           <td class="sticky sticky-0 row-index">${visibleIndex + 1}</td>
-          <td class="sticky sticky-1 key-cell">
-            <div class="key-main">${escapeHtml(row.keyDisplay)}</div>
-            ${keyMeta ? `<div class="key-sub">${escapeHtml(keyMeta)}</div>` : ""}
-          </td>
-          <td class="sticky sticky-2 status-cell">
-            <span class="status-chip ${row.status}">${escapeHtml(row.status)}</span>
-            <div class="key-sub">${row.changedCount} changed • ${row.unresolvedCount} unresolved</div>
-          </td>
-          <td class="sticky sticky-3 row-actions">${renderRowActions(row)}</td>
+          <td class="sticky sticky-1 status-cell">${renderStatusCell(row)}</td>
           ${state.unionColumns.map((column) => renderCell(row, column)).join("")}
         </tr>
       `;
     }
 
-    function renderRowActions(row) {
+    function getRowToggleState(row) {
+      if (row.status === "a-only" || row.status === "b-only" || row.status === "ambiguous") {
+        return row.rowDecision === "exclude" ? "exclude" : row.rowDecision === "include" ? "include" : "unresolved";
+      }
+
+      let sideA = 0;
+      let sideB = 0;
+      let unresolved = 0;
+      for (const column of state.unionColumns) {
+        const cell = row.cells[column];
+        if (!cell || !cell.changed) {
+          continue;
+        }
+        if (cell.resolution === "a" || cell.resolution === "a-auto") {
+          sideA += 1;
+        } else if (cell.resolution === "b" || cell.resolution === "b-auto") {
+          sideB += 1;
+        } else {
+          unresolved += 1;
+        }
+      }
+
+      if (unresolved > 0 || (sideA > 0 && sideB > 0)) {
+        return "unresolved";
+      }
+      if (sideA > 0) {
+        return "a";
+      }
+      if (sideB > 0) {
+        return "b";
+      }
+      return "unresolved";
+    }
+
+    function getRowToggleMeta(row) {
+      const toggleState = getRowToggleState(row);
+      const marker = row.status === "b-only"
+        ? "+"
+        : row.status === "a-only"
+          ? "-"
+          : row.status === "modified" || row.status === "positional"
+            ? "~"
+            : row.status === "ambiguous"
+              ? "?"
+              : "";
+
+      if (row.status === "a-only" || row.status === "b-only" || row.status === "ambiguous") {
+        const currentAction = toggleState === "exclude"
+          ? "Drop row"
+          : toggleState === "include"
+            ? "Keep row"
+            : "Needs row decision";
+        const nextAction = toggleState === "exclude"
+          ? "Keep row"
+          : toggleState === "include"
+            ? "Drop row"
+            : "Keep row";
+        return {
+          marker,
+          toggleState,
+          title: `${currentAction}. Click to switch to ${nextAction}.`,
+          ariaLabel: `${marker || "row"} status. ${currentAction}. Click to switch to ${nextAction}.`
+        };
+      }
+
+      const currentAction = toggleState === "a"
+        ? "Use A values"
+        : toggleState === "b"
+          ? "Use B values"
+          : "Needs row pick";
+      const nextAction = toggleState === "a" ? "Use B values" : "Use A values";
+      return {
+        marker,
+        toggleState,
+        title: `${currentAction}. Click to switch to ${nextAction} for changed cells in this row.`,
+        ariaLabel: `${marker || "row"} status. ${currentAction}. Click to switch to ${nextAction}.`
+      };
+    }
+
+    function renderStatusCell(row) {
+      const { marker, toggleState, title, ariaLabel } = getRowToggleMeta(row);
+
       if (row.status === "unchanged") {
         return ``;
       }
-      if (row.status === "a-only" || row.status === "b-only" || row.status === "ambiguous") {
-        const includeActive = row.rowDecision === "include" ? "active" : "";
-        const excludeActive = row.rowDecision === "exclude" ? "active" : "";
-        return `
-          <div class="row-action-group">
-            <button class="mini-button ${includeActive}" data-row-include="${row.id}">Keep</button>
-            <button class="mini-button ${excludeActive}" data-row-exclude="${row.id}" data-role="danger">Drop</button>
-          </div>
-        `;
-      }
       return `
-        <div class="row-action-group">
-          <button class="mini-button" data-row-pick="a" data-row-id="${row.id}" data-role="accent">Pick A</button>
-          <button class="mini-button" data-row-pick="b" data-row-id="${row.id}" data-role="accent">Pick B</button>
-        </div>
+        <button
+          class="status-chip status-toggle ${row.status}${toggleState ? ` action-${toggleState}` : ""}"
+          data-row-toggle="${row.id}"
+          type="button"
+          title="${escapeHtml(title)}"
+          aria-label="${escapeHtml(ariaLabel)}"
+        >${escapeHtml(marker)}</button>
       `;
-    }
-
-    function describeChoiceBadge(cell) {
-      switch (cell.resolution) {
-        case "a":
-          return { label: "A", className: "choice-a" };
-        case "b":
-          return { label: "B", className: "choice-b" };
-        case "a-auto":
-          return { label: "Auto A", className: "choice-auto" };
-        case "b-auto":
-          return { label: "Auto B", className: "choice-auto" };
-        default:
-          return { label: "Review", className: "choice-unresolved" };
-      }
     }
 
     function describeChosen(cell) {
@@ -1738,7 +1819,6 @@
         `;
       }
 
-      const choice = describeChoiceBadge(cell);
       const resolutionClass = cell.resolution === "unresolved"
         ? "unresolved"
         : cell.resolution === "a" || cell.resolution === "a-auto"
@@ -1746,20 +1826,16 @@
           : (cell.resolution === "b-auto" ? "auto" : "resolved-b");
 
       const chosenValue = currentCellValue(cell);
-      const previewValue = cell.resolution === "unresolved"
-        ? `${compactText(displayCellValue(cell.a) || "Missing")} ⇄ ${compactText(displayCellValue(cell.b) || "Missing")}`
-        : compactText(chosenValue || "");
-      const sourceSummary = `A: ${compactText(displayCellValue(cell.a) || "Missing", 20)} • B: ${compactText(displayCellValue(cell.b) || "Missing", 20)}`;
+      const fallbackValue = hasContent(cell.b) ? cell.b.value : hasContent(cell.a) ? cell.a.value : "";
+      const previewValue = compactText((chosenValue || fallbackValue || "Empty"), 44);
 
       return `
         <td class="data-cell">
           <div class="cell-shell ${resolutionClass}">
             <button class="compact-cell ${resolutionClass}" data-cell-open="${row.id}" data-column="${escapeHtml(column)}" type="button">
               <div class="cell-main-line">
-                <span class="cell-badge ${choice.className}">${escapeHtml(choice.label)}</span>
                 <span class="cell-primary ${chosenValue ? "" : "cell-placeholder"}">${escapeHtml(previewValue || "Empty")}</span>
               </div>
-              <div class="cell-secondary">${escapeHtml(sourceSummary)}</div>
             </button>
           </div>
         </td>
@@ -1824,6 +1900,26 @@
       }
       recalculateRow(row);
       renderAll();
+    }
+
+    function toggleRowAction(rowId) {
+      const row = getRowById(rowId);
+      if (!row || row.status === "unchanged") {
+        return;
+      }
+
+      if (row.status === "a-only" || row.status === "b-only" || row.status === "ambiguous") {
+        const nextDecision = row.rowDecision === "exclude"
+          ? "include"
+          : row.rowDecision === "include"
+            ? "exclude"
+            : "include";
+        setRowDecision(rowId, nextDecision);
+        return;
+      }
+
+      const toggleState = getRowToggleState(row);
+      pickRow(rowId, toggleState === "a" ? "b" : "a");
     }
 
     function openCellInspector(rowId, column) {
@@ -2060,6 +2156,11 @@
     });
 
     tableBody.addEventListener("click", (event) => {
+      const rowToggle = event.target.closest("[data-row-toggle]");
+      if (rowToggle) {
+        toggleRowAction(rowToggle.dataset.rowToggle);
+        return;
+      }
       const cellOpen = event.target.closest("[data-cell-open]");
       if (cellOpen) {
         openCellInspector(cellOpen.dataset.cellOpen, cellOpen.dataset.column);
