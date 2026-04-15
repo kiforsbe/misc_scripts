@@ -581,29 +581,56 @@
       background: rgba(25, 91, 90, 0.46);
     }
 
+    tbody tr {
+      --sticky-row-bg: #23293c;
+      --sticky-row-bg-hover: #283149;
+    }
+
+    tbody tr.status-a-only {
+      --sticky-row-bg: #342531;
+      --sticky-row-bg-hover: #3a2935;
+    }
+
+    tbody tr.status-b-only {
+      --sticky-row-bg: #1f4648;
+      --sticky-row-bg-hover: #245154;
+    }
+
     th.sticky,
     td.sticky {
       position: sticky;
       z-index: 3;
+      --sticky-cell-bg: transparent;
       background-clip: padding-box;
-      box-shadow: 1px 0 0 0 rgba(70, 81, 109, 0.7);
+      box-shadow: inset 0 0 0 999px var(--sticky-cell-bg), 1px 0 0 0 rgba(70, 81, 109, 0.7);
       overflow: hidden;
     }
 
     tbody td.sticky {
       z-index: 4;
-      box-shadow: 1px 0 0 0 rgba(70, 81, 109, 0.7);
       overflow: hidden;
+      --sticky-cell-bg: var(--sticky-row-bg);
+      background: var(--sticky-row-bg);
+    }
+
+    tbody tr:hover td.sticky,
+    tbody tr.status-unchanged td.sticky,
+    tbody tr.status-modified td.sticky,
+    tbody tr.status-ambiguous td.sticky,
+    tbody tr.status-positional td.sticky,
+    tbody tr.status-a-only td.sticky,
+    tbody tr.status-b-only td.sticky {
+      background: var(--sticky-row-bg);
     }
 
     th.sticky-0,
     td.sticky-0 {
-      z-index: 6;
+      z-index: 7;
     }
 
     th.sticky-1,
     td.sticky-1 {
-      z-index: 6;
+      z-index: 7;
     }
 
     tbody td.sticky-0 {
@@ -618,6 +645,23 @@
     td.sticky-0 { left: var(--sticky-a); min-width: 48px; max-width: 48px; }
     th.sticky-1,
     td.sticky-1 { left: var(--sticky-b); max-width: 72px; }
+
+    thead th.sticky {
+      --sticky-cell-bg: #2a3147;
+      background: #2a3147;
+    }
+
+    tbody td.sticky > .cell-shell,
+    tbody td.sticky > .row-index,
+    tbody td.sticky > .status-cell {
+      background: var(--sticky-row-bg);
+    }
+
+    tbody tr:hover td.sticky > .cell-shell,
+    tbody tr:hover td.sticky > .row-index,
+    tbody tr:hover td.sticky > .status-cell {
+      background: var(--sticky-row-bg-hover);
+    }
 
     th.sticky-1 {
       text-align: center;
