@@ -591,9 +591,27 @@
     }
 
     tbody td.sticky {
-      position: static;
-      box-shadow: none;
-      overflow: visible;
+      z-index: 4;
+      box-shadow: 1px 0 0 0 rgba(70, 81, 109, 0.7);
+      overflow: hidden;
+    }
+
+    th.sticky-0,
+    td.sticky-0 {
+      z-index: 6;
+    }
+
+    th.sticky-1,
+    td.sticky-1 {
+      z-index: 6;
+    }
+
+    tbody td.sticky-0 {
+      z-index: 6;
+    }
+
+    tbody td.sticky-1 {
+      z-index: 6;
     }
 
     th.sticky-0,
@@ -603,6 +621,10 @@
 
     th.sticky-1 {
       text-align: center;
+    }
+
+    th.sticky-0 {
+      text-align: right;
     }
 
     .row-index,
