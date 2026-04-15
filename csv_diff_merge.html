@@ -770,6 +770,7 @@
       min-width: 0;
       max-width: none;
       position: relative;
+      overflow: visible;
     }
 
     .cell-shell {
@@ -779,11 +780,30 @@
       height: 100%;
     }
 
+    .cell-shell.has-dropdown {
+      position: relative;
+      inset: auto;
+      display: grid;
+      align-content: start;
+      height: auto;
+      min-height: 100%;
+      z-index: 5;
+    }
+
     .data-cell > .cell-shell {
       position: absolute;
       inset: 0;
       display: flex;
       min-height: 0;
+    }
+
+    .data-cell > .cell-shell.has-dropdown {
+      position: relative;
+      inset: auto;
+      display: grid;
+      align-content: start;
+      height: auto;
+      min-height: 100%;
     }
 
     .data-cell:hover {
@@ -834,6 +854,11 @@
       background: transparent;
       box-shadow: none;
       cursor: pointer;
+    }
+
+    .compact-cell.is-open {
+      padding-bottom: 8px;
+      min-height: 32px;
     }
 
     .compact-cell:hover {
@@ -901,42 +926,57 @@
     .cell-badge.choice-auto { color: #9ed2ff; border-color: rgba(158, 210, 255, 0.3); background: rgba(106, 162, 255, 0.16); }
     .cell-badge.choice-unresolved { color: #ffd782; border-color: rgba(255, 215, 130, 0.36); background: rgba(243, 196, 109, 0.16); }
 
-    .cell-inspector {
-      position: fixed;
-      right: 12px;
-      bottom: 12px;
-      width: min(400px, calc(100vw - 24px));
+    .cell-dropdown {
+      position: relative;
       display: grid;
-      gap: 10px;
-      padding: 12px;
-      border-radius: 14px;
+      gap: 8px;
+      margin: 0 8px 8px;
+      width: calc(100% - 16px);
+      box-sizing: border-box;
+      padding: 10px;
+      border-radius: 12px;
       border: 1px solid var(--line-strong);
       background: linear-gradient(180deg, #242c40, #1e2537);
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-      z-index: 30;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
     }
 
-    .inspector-header {
+    .cell-dropdown::before {
+      content: "";
+      position: absolute;
+      top: -7px;
+      left: 18px;
+      width: 12px;
+      height: 12px;
+      border-top: 1px solid var(--line-strong);
+      border-left: 1px solid var(--line-strong);
+      background: #242c40;
+      transform: rotate(45deg);
+    }
+
+    .cell-dropdown-header {
       display: flex;
       justify-content: space-between;
-      gap: 10px;
-      align-items: start;
+      gap: 8px;
+      align-items: center;
     }
 
-    .inspector-title {
+    .cell-dropdown-title {
       margin: 0;
-      font-size: 0.86rem;
+      font-size: 0.7rem;
       font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
     }
 
-    .inspector-meta {
-      margin: 4px 0 0;
+    .cell-dropdown-meta {
+      margin: 2px 0 0;
       color: var(--muted);
-      font-size: 0.68rem;
+      font-size: 0.64rem;
       line-height: 1.35;
     }
 
-    .inspector-current {
+    .cell-dropdown-current {
       padding: 8px 10px;
       border-radius: 8px;
       background: rgba(255, 255, 255, 0.04);
@@ -945,12 +985,12 @@
       color: var(--muted);
     }
 
-    .inspector-options {
+    .cell-dropdown-options {
       display: grid;
       gap: 8px;
     }
 
-    .inspector-option {
+    .cell-dropdown-option {
       display: grid;
       gap: 6px;
       padding: 10px;
@@ -959,12 +999,12 @@
       background: rgba(255, 255, 255, 0.03);
     }
 
-    .inspector-option.active {
+    .cell-dropdown-option.active {
       border-color: var(--accent);
       background: rgba(106, 162, 255, 0.12);
     }
 
-    .inspector-option-header {
+    .cell-dropdown-option-header {
       display: flex;
       justify-content: space-between;
       gap: 8px;
@@ -976,13 +1016,18 @@
       font-weight: 800;
     }
 
-    .inspector-value {
+    .cell-dropdown-value {
       max-height: 180px;
       overflow: auto;
       font-size: 0.78rem;
       line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
+    }
+
+    .cell-dropdown-close {
+      min-width: 30px;
+      padding: 3px 8px;
     }
 
     .hidden {
@@ -1151,36 +1196,9 @@
           <tbody id="tableBody"></tbody>
         </table>
       </div>
-      <div class="footer-note">Changed cells stay compact in the grid. Click any changed cell to open the resolver panel.</div>
+      <div class="footer-note">Changed cells stay compact in the grid. Click any changed cell to open its inline resolver.</div>
     </section>
   </div>
-
-  <aside id="cellInspector" class="cell-inspector hidden" aria-live="polite">
-    <div class="inspector-header">
-      <div>
-        <h3 id="inspectorTitle" class="inspector-title">Resolve cell</h3>
-        <p id="inspectorMeta" class="inspector-meta"></p>
-      </div>
-      <button id="inspectorClose" class="button subtle" type="button">Close</button>
-    </div>
-    <div id="inspectorCurrent" class="inspector-current"></div>
-    <div class="inspector-options">
-      <section id="inspectorOptionA" class="inspector-option">
-        <div class="inspector-option-header">
-          <span>Option A</span>
-          <button id="inspectorPickA" class="button subtle" type="button">Choose A</button>
-        </div>
-        <div id="inspectorValueA" class="inspector-value"></div>
-      </section>
-      <section id="inspectorOptionB" class="inspector-option">
-        <div class="inspector-option-header">
-          <span>Option B</span>
-          <button id="inspectorPickB" class="button subtle" type="button">Choose B</button>
-        </div>
-        <div id="inspectorValueB" class="inspector-value"></div>
-      </section>
-    </div>
-  </aside>
 
   <script>
     const MISSING = "__CSV_DIFF_MISSING__";
@@ -1265,17 +1283,6 @@
     const tableColGroup = document.getElementById("tableColGroup");
     const tableHead = document.getElementById("tableHead");
     const tableBody = document.getElementById("tableBody");
-    const cellInspector = document.getElementById("cellInspector");
-    const inspectorTitle = document.getElementById("inspectorTitle");
-    const inspectorMeta = document.getElementById("inspectorMeta");
-    const inspectorCurrent = document.getElementById("inspectorCurrent");
-    const inspectorOptionA = document.getElementById("inspectorOptionA");
-    const inspectorOptionB = document.getElementById("inspectorOptionB");
-    const inspectorValueA = document.getElementById("inspectorValueA");
-    const inspectorValueB = document.getElementById("inspectorValueB");
-    const inspectorPickA = document.getElementById("inspectorPickA");
-    const inspectorPickB = document.getElementById("inspectorPickB");
-    const inspectorClose = document.getElementById("inspectorClose");
 
     function escapeHtml(value) {
       return String(value)
@@ -2412,6 +2419,54 @@
       }
     }
 
+    function isActiveCell(rowId, column) {
+      return Boolean(
+        state.activeCell
+        && state.activeCell.rowId === rowId
+        && state.activeCell.column === column
+      );
+    }
+
+    function renderCellDropdown(row, column, cell) {
+      if (!isActiveCell(row.id, column)) {
+        return "";
+      }
+
+      const current = describeChosen(cell);
+      const currentValue = currentCellValue(cell);
+      const isA = cell.resolution === "a" || cell.resolution === "a-auto";
+      const isB = cell.resolution === "b" || cell.resolution === "b-auto";
+
+      return `
+        <div class="cell-dropdown" aria-live="polite">
+          <div class="cell-dropdown-header">
+            <div>
+              <div class="cell-dropdown-title">Resolve ${escapeHtml(column)}</div>
+              <div class="cell-dropdown-meta">${escapeHtml(`${row.keyDisplay} • ${row.status}`)}</div>
+            </div>
+            <button class="button subtle cell-dropdown-close" data-cell-close="${row.id}" data-column="${escapeHtml(column)}" type="button" aria-label="Close resolver">×</button>
+          </div>
+          <div class="cell-dropdown-current">Current output: ${escapeHtml(current)}${currentValue ? ` • ${escapeHtml(currentValue)}` : ""}</div>
+          <div class="cell-dropdown-options">
+            <section class="cell-dropdown-option${isA ? " active" : ""}">
+              <div class="cell-dropdown-option-header">
+                <span>Option A</span>
+                <button class="button subtle" data-cell-pick="a" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isA ? "Chosen A" : "Choose A"}</button>
+              </div>
+              <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.a) || "")}</div>
+            </section>
+            <section class="cell-dropdown-option${isB ? " active" : ""}">
+              <div class="cell-dropdown-option-header">
+                <span>Option B</span>
+                <button class="button subtle" data-cell-pick="b" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isB ? "Chosen B" : "Choose B"}</button>
+              </div>
+              <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.b) || "")}</div>
+            </section>
+          </div>
+        </div>
+      `;
+    }
+
     function renderCell(row, column) {
       const cell = row.cells[column];
       if (!cell.changed) {
@@ -2434,15 +2489,17 @@
       const chosenValue = currentCellValue(cell);
       const fallbackValue = hasContent(cell.b) ? cell.b.value : hasContent(cell.a) ? cell.a.value : "";
       const previewValue = compactText((chosenValue || fallbackValue || "Empty"), 44);
+      const active = isActiveCell(row.id, column);
 
       return `
         <td class="data-cell" data-column="${escapeHtml(column)}">
-          <div class="cell-shell ${resolutionClass}">
-            <button class="compact-cell ${resolutionClass}" data-cell-open="${row.id}" data-column="${escapeHtml(column)}" type="button">
+          <div class="cell-shell ${resolutionClass}${active ? " has-dropdown" : ""}">
+            <button class="compact-cell ${resolutionClass}${active ? " is-open" : ""}" data-cell-open="${row.id}" data-column="${escapeHtml(column)}" type="button" aria-expanded="${active ? "true" : "false"}">
               <div class="cell-main-line">
                 <span class="cell-primary ${chosenValue ? "" : "cell-placeholder"}">${escapeHtml(previewValue || "Empty")}</span>
               </div>
             </button>
+            ${renderCellDropdown(row, column, cell)}
           </div>
         </td>
       `;
@@ -2466,7 +2523,6 @@
       renderWarning();
       renderTable();
       renderExportState();
-      renderInspector();
     }
 
     function setCellResolution(rowId, column, side) {
@@ -2480,6 +2536,7 @@
       }
       cell.resolution = side;
       recalculateRow(row);
+      state.activeCell = { rowId, column };
       renderAll();
     }
 
@@ -2537,45 +2594,20 @@
       if (!cell || !cell.changed) {
         return;
       }
+      if (isActiveCell(rowId, column)) {
+        closeCellInspector();
+        return;
+      }
       state.activeCell = { rowId, column };
-      renderInspector();
+      renderTable();
     }
 
     function closeCellInspector() {
-      state.activeCell = null;
-      renderInspector();
-    }
-
-    function renderInspector() {
       if (!state.activeCell) {
-        cellInspector.classList.add("hidden");
         return;
       }
-
-      const row = getRowById(state.activeCell.rowId);
-      const column = state.activeCell.column;
-      if (!row || !row.cells[column] || !row.cells[column].changed) {
-        state.activeCell = null;
-        cellInspector.classList.add("hidden");
-        return;
-      }
-
-      const cell = row.cells[column];
-      const current = describeChosen(cell);
-      const currentValue = currentCellValue(cell);
-      const isA = cell.resolution === "a" || cell.resolution === "a-auto";
-      const isB = cell.resolution === "b" || cell.resolution === "b-auto";
-
-      inspectorTitle.textContent = column;
-      inspectorMeta.textContent = `${row.keyDisplay} • ${row.status}`;
-      inspectorCurrent.textContent = `Current output: ${current} ${currentValue ? `• ${currentValue}` : ""}`;
-      inspectorValueA.textContent = displayCellValue(cell.a) || "";
-      inspectorValueB.textContent = displayCellValue(cell.b) || "";
-      inspectorOptionA.classList.toggle("active", isA);
-      inspectorOptionB.classList.toggle("active", isB);
-      inspectorPickA.textContent = isA ? "Chosen A" : "Choose A";
-      inspectorPickB.textContent = isB ? "Chosen B" : "Choose B";
-      cellInspector.classList.remove("hidden");
+      state.activeCell = null;
+      renderTable();
     }
 
     function applySafeAutoPicks() {
@@ -2739,24 +2771,6 @@
       exportCsv();
     });
 
-    inspectorClose.addEventListener("click", () => {
-      closeCellInspector();
-    });
-
-    inspectorPickA.addEventListener("click", () => {
-      if (!state.activeCell) {
-        return;
-      }
-      setCellResolution(state.activeCell.rowId, state.activeCell.column, "a");
-    });
-
-    inspectorPickB.addEventListener("click", () => {
-      if (!state.activeCell) {
-        return;
-      }
-      setCellResolution(state.activeCell.rowId, state.activeCell.column, "b");
-    });
-
     searchInput.addEventListener("input", (event) => {
       state.filters.query = event.target.value;
       renderAll();
@@ -2776,6 +2790,16 @@
       const rowToggle = event.target.closest("[data-row-toggle]");
       if (rowToggle) {
         toggleRowAction(rowToggle.dataset.rowToggle);
+        return;
+      }
+      const cellPick = event.target.closest("[data-cell-pick]");
+      if (cellPick) {
+        setCellResolution(cellPick.dataset.rowId, cellPick.dataset.column, cellPick.dataset.cellPick);
+        return;
+      }
+      const cellClose = event.target.closest("[data-cell-close]");
+      if (cellClose) {
+        closeCellInspector();
         return;
       }
       const cellOpen = event.target.closest("[data-cell-open]");
