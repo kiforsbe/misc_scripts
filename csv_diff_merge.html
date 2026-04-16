@@ -802,7 +802,7 @@
       flex: 1 1 auto;
       width: 100%;
       min-height: 100%;
-      padding: 5px 8px;
+      padding: 5px 32px 5px 8px;
       box-sizing: border-box;
       line-height: 1.25;
       overflow: hidden;
@@ -825,7 +825,7 @@
       gap: 4px;
       min-height: 100%;
       margin: 0;
-      padding: 4px 8px;
+      padding: 4px 32px 4px 8px;
       border: 0;
       border-radius: 0;
       box-sizing: border-box;
@@ -859,6 +859,10 @@
     .cell-shell.resolved-b,
     .cell-shell.auto {
       background: rgba(55, 210, 181, 0.05);
+    }
+
+    .cell-shell.resolved-custom {
+      background: rgba(106, 162, 255, 0.09);
     }
 
     .cell-main-line {
@@ -933,86 +937,20 @@
       transform: rotate(45deg);
     }
 
-    .cell-dropdown-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-      align-items: center;
-    }
-
-    .cell-dropdown-title {
-      margin: 0;
-      font-size: 0.7rem;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-    }
-
-    .cell-dropdown-meta {
-      margin: 2px 0 0;
-      color: var(--muted);
-      font-size: 0.64rem;
-      line-height: 1.35;
-    }
-
-    .cell-dropdown-current {
-      padding: 8px 10px;
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid var(--line);
-      font-size: 0.72rem;
-      color: var(--muted);
-    }
-
     .cell-dropdown-options {
       display: grid;
-      gap: 8px;
+      gap: 6px;
     }
 
     .cell-dropdown-option {
-      display: grid;
-      gap: 6px;
-      padding: 10px;
-      border-radius: 10px;
-      border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.03);
-    }
-
-    .cell-dropdown-option.active {
-      border-color: var(--accent);
-      background: rgba(106, 162, 255, 0.12);
-    }
-
-    .cell-dropdown-option-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-      align-items: center;
-      font-size: 0.68rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      font-weight: 800;
-    }
-
-    .cell-dropdown-value {
-      max-height: 180px;
-      overflow: auto;
-      font-size: 0.78rem;
-      line-height: 1.35;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .cell-dropdown-close {
-      min-width: 30px;
-      padding: 3px 8px;
+      display: contents;
     }
 
     .cell-dropdown-choice {
       width: 100%;
-      padding: 8px 10px;
+      display: grid;
+      gap: 6px;
+      padding: 10px;
       border-radius: 8px;
       border: 1px solid var(--line-strong);
       background: rgba(255, 255, 255, 0.05);
@@ -1025,6 +963,87 @@
     .cell-dropdown-choice.active {
       border-color: var(--accent);
       background: rgba(106, 162, 255, 0.18);
+    }
+
+    .cell-dropdown-choice-label {
+      font-size: 0.66rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .cell-dropdown-choice-value {
+      max-height: 180px;
+      overflow: auto;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+    }
+
+    .cell-dropdown-custom {
+      display: grid;
+      gap: 6px;
+      margin-top: 2px;
+    }
+
+    .cell-dropdown-custom-label {
+      font-size: 0.66rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .cell-dropdown-textarea {
+      width: 100%;
+      min-height: 92px;
+      resize: vertical;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--line-strong);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      font: inherit;
+      line-height: 1.35;
+      box-sizing: border-box;
+    }
+
+    .cell-dropdown-custom-actions {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .cell-copy-button {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      border: 1px solid rgba(106, 162, 255, 0.2);
+      background: rgba(20, 28, 44, 0.72);
+      color: var(--muted);
+      font-size: 0.68rem;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 120ms ease;
+      z-index: 2;
+    }
+
+    .data-cell:hover .cell-copy-button,
+    .data-cell:focus-within .cell-copy-button,
+    .cell-copy-button:focus-visible {
+      opacity: 1;
     }
 
     .hidden {
@@ -1616,7 +1635,8 @@
           a: cellA,
           b: cellB,
           changed: comparison.changed,
-          resolution
+          resolution,
+          customValue: ""
         };
         if (comparison.changed) {
           changedCount += 1;
@@ -2298,6 +2318,7 @@
 
       let sideA = 0;
       let sideB = 0;
+      let custom = 0;
       let unresolved = 0;
       for (const column of state.unionColumns) {
         const cell = row.cells[column];
@@ -2308,12 +2329,15 @@
           sideA += 1;
         } else if (cell.resolution === "b" || cell.resolution === "b-auto") {
           sideB += 1;
+        } else if (cell.resolution === "custom") {
+          custom += 1;
         } else {
           unresolved += 1;
         }
       }
 
-      if (unresolved > 0 || (sideA > 0 && sideB > 0)) {
+      const resolvedModes = Number(sideA > 0) + Number(sideB > 0) + Number(custom > 0);
+      if (unresolved > 0 || resolvedModes > 1) {
         return "unresolved";
       }
       if (sideA > 0) {
@@ -2321,6 +2345,9 @@
       }
       if (sideB > 0) {
         return "b";
+      }
+      if (custom > 0) {
+        return "custom";
       }
       return "unresolved";
     }
@@ -2360,6 +2387,8 @@
         ? "Use A values"
         : toggleState === "b"
           ? "Use B values"
+          : toggleState === "custom"
+            ? "Uses custom values"
           : "Needs row pick";
       const nextAction = toggleState === "a" ? "Use B values" : "Use A values";
       return {
@@ -2401,6 +2430,8 @@
           return "Chosen A";
         case "b":
           return "Chosen B";
+        case "custom":
+          return "Custom";
         default:
           return "Needs review";
       }
@@ -2416,6 +2447,8 @@
         case "b-auto":
         case "b":
           return isMissing(cell.b) ? "" : cell.b.value;
+        case "custom":
+          return String(cell.customValue ?? "");
         default:
           return "";
       }
@@ -2430,35 +2463,32 @@
     }
 
     function renderCellDropdown(row, column, cell) {
-      const current = describeChosen(cell);
-      const currentValue = currentCellValue(cell);
       const isA = cell.resolution === "a" || cell.resolution === "a-auto";
       const isB = cell.resolution === "b" || cell.resolution === "b-auto";
+      const isCustom = cell.resolution === "custom";
 
       return `
-        <div class="cell-dropdown-header">
-          <div>
-            <div class="cell-dropdown-title">Resolve ${escapeHtml(column)}</div>
-            <div class="cell-dropdown-meta">${escapeHtml(`${row.keyDisplay} • ${row.status}`)}</div>
-          </div>
-          <button class="button subtle cell-dropdown-close" data-cell-close="${row.id}" data-column="${escapeHtml(column)}" type="button" aria-label="Close resolver">×</button>
-        </div>
-        <div class="cell-dropdown-current">Current output: ${escapeHtml(current)}${currentValue ? ` • ${escapeHtml(currentValue)}` : ""}</div>
         <div class="cell-dropdown-options">
-          <section class="cell-dropdown-option${isA ? " active" : ""}">
-            <div class="cell-dropdown-option-header">
-              <span>Option A</span>
-            </div>
-            <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.a) || "")}</div>
-            <button class="cell-dropdown-choice${isA ? " active" : ""}" data-cell-pick="a" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isA ? "Keep A" : "Choose A"}</button>
+          <section class="cell-dropdown-option">
+            <button class="cell-dropdown-choice${isA ? " active" : ""}" data-cell-pick="a" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">
+              <span class="cell-dropdown-choice-label">A</span>
+              <span class="cell-dropdown-choice-value">${escapeHtml(displayCellValue(cell.a) || "")}</span>
+            </button>
           </section>
-          <section class="cell-dropdown-option${isB ? " active" : ""}">
-            <div class="cell-dropdown-option-header">
-              <span>Option B</span>
-            </div>
-            <div class="cell-dropdown-value">${escapeHtml(displayCellValue(cell.b) || "")}</div>
-            <button class="cell-dropdown-choice${isB ? " active" : ""}" data-cell-pick="b" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isB ? "Keep B" : "Choose B"}</button>
+          <section class="cell-dropdown-option">
+            <button class="cell-dropdown-choice${isB ? " active" : ""}" data-cell-pick="b" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">
+              <span class="cell-dropdown-choice-label">B</span>
+              <span class="cell-dropdown-choice-value">${escapeHtml(displayCellValue(cell.b) || "")}</span>
+            </button>
           </section>
+          <div class="cell-dropdown-custom">
+            <label class="cell-dropdown-custom-label" for="customCellInput">Custom</label>
+            <textarea id="customCellInput" class="cell-dropdown-textarea" spellcheck="false" placeholder="Type a custom value for this cell">${escapeHtml(cell.customValue || "")}</textarea>
+            <div class="cell-dropdown-custom-actions">
+              <button class="button subtle" data-cell-custom-apply="true" data-row-id="${row.id}" data-column="${escapeHtml(column)}" type="button">${isCustom ? "Update custom text" : "Use custom text"}</button>
+              <button class="button subtle" data-cell-copy="${row.id}" data-column="${escapeHtml(column)}" type="button">Copy current</button>
+            </div>
+          </div>
         </div>
       `;
     }
@@ -2470,6 +2500,7 @@
         return `
           <td class="data-cell" data-column="${escapeHtml(column)}">
             <div class="cell-shell same">
+              <button class="cell-copy-button" data-cell-copy="${row.id}" data-column="${escapeHtml(column)}" type="button" title="Copy cell text" aria-label="Copy cell text">⧉</button>
               <div class="cell-value">${escapeHtml(value)}</div>
             </div>
           </td>
@@ -2480,7 +2511,9 @@
         ? "unresolved"
         : cell.resolution === "a" || cell.resolution === "a-auto"
           ? (cell.resolution === "a-auto" ? "auto" : "resolved-a")
-          : (cell.resolution === "b-auto" ? "auto" : "resolved-b");
+          : cell.resolution === "b" || cell.resolution === "b-auto"
+            ? (cell.resolution === "b-auto" ? "auto" : "resolved-b")
+            : "resolved-custom";
 
       const chosenValue = currentCellValue(cell);
       const fallbackValue = hasContent(cell.b) ? cell.b.value : hasContent(cell.a) ? cell.a.value : "";
@@ -2490,6 +2523,7 @@
       return `
         <td class="data-cell" data-column="${escapeHtml(column)}">
           <div class="cell-shell ${resolutionClass}">
+            <button class="cell-copy-button" data-cell-copy="${row.id}" data-column="${escapeHtml(column)}" type="button" title="Copy cell text" aria-label="Copy cell text">⧉</button>
             <button class="compact-cell ${resolutionClass}${active ? " is-open" : ""}" data-cell-open="${row.id}" data-column="${escapeHtml(column)}" type="button" aria-expanded="${active ? "true" : "false"}">
               <div class="cell-main-line">
                 <span class="cell-primary ${chosenValue ? "" : "cell-placeholder"}">${escapeHtml(previewValue || "Empty")}</span>
@@ -2570,6 +2604,36 @@
       renderFloatingCellDropdown();
     }
 
+    async function copyTextToClipboard(text) {
+      const value = String(text ?? "");
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "readonly");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+
+    async function copyCellValue(rowId, column) {
+      const row = getRowById(rowId);
+      if (!row) {
+        return;
+      }
+      const cell = row.cells[column];
+      if (!cell) {
+        return;
+      }
+      await copyTextToClipboard(currentCellValue(cell));
+    }
+
     function setCellResolution(rowId, column, side) {
       const row = getRowById(rowId);
       if (!row) {
@@ -2579,7 +2643,24 @@
       if (!cell || !cell.changed) {
         return;
       }
+      cell.customValue = "";
       cell.resolution = side;
+      recalculateRow(row);
+      state.activeCell = { rowId, column };
+      renderAll();
+    }
+
+    function setCustomCellValue(rowId, column, value) {
+      const row = getRowById(rowId);
+      if (!row) {
+        return;
+      }
+      const cell = row.cells[column];
+      if (!cell || !cell.changed) {
+        return;
+      }
+      cell.customValue = String(value ?? "");
+      cell.resolution = "custom";
       recalculateRow(row);
       state.activeCell = { rowId, column };
       renderAll();
@@ -2839,6 +2920,11 @@
         toggleRowAction(rowToggle.dataset.rowToggle);
         return;
       }
+      const cellCopy = event.target.closest("[data-cell-copy]");
+      if (cellCopy) {
+        copyCellValue(cellCopy.dataset.cellCopy, cellCopy.dataset.column);
+        return;
+      }
       const cellOpen = event.target.closest("[data-cell-open]");
       if (cellOpen) {
         openCellInspector(cellOpen.dataset.cellOpen, cellOpen.dataset.column);
@@ -2861,9 +2947,20 @@
     });
 
     cellDropdown.addEventListener("click", (event) => {
+      const cellCopy = event.target.closest("[data-cell-copy]");
+      if (cellCopy) {
+        copyCellValue(cellCopy.dataset.cellCopy, cellCopy.dataset.column);
+        return;
+      }
       const cellPick = event.target.closest("[data-cell-pick]");
       if (cellPick) {
         setCellResolution(cellPick.dataset.rowId, cellPick.dataset.column, cellPick.dataset.cellPick);
+        return;
+      }
+      const cellCustomApply = event.target.closest("[data-cell-custom-apply]");
+      if (cellCustomApply) {
+        const customInput = document.getElementById("customCellInput");
+        setCustomCellValue(cellCustomApply.dataset.rowId, cellCustomApply.dataset.column, customInput ? customInput.value : "");
         return;
       }
       const cellClose = event.target.closest("[data-cell-close]");
