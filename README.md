@@ -1104,6 +1104,35 @@ This is **not** a real HTTP proxy, but a tool to fetch a specific file or simila
 #### Requires
 - No external dependencies required (uses only Python standard libraries)
 
+### socks5_http_tunneler.py
+A one-file local HTTP tunneler that accepts a target URL via query string and forwards upstream traffic through a configured SOCKS5 proxy. It rewrites redirected and embedded upstream URLs into local proxy paths so navigation continues through the local endpoint while upstream requests still look native to the target host.
+
+#### Features
+- Accepts entry URLs in the form `http://localhost:8080/?url=http://example.com`
+- Forwards both HTTP and HTTPS upstream requests through a user-supplied SOCKS5 proxy
+- Rewrites `Location` headers, common HTML URL attributes, CSS `url(...)` references, `srcset`, and meta refresh redirects into local proxy paths
+- Injects a small client-side shim so browser-side `fetch`, `XMLHttpRequest`, `history`, `window.open`, and form submissions continue using the local tunnel
+- Supports verbose `--debug` logging for request resolution, upstream headers, response metadata, and rewrite previews
+- Supports strict upstream TLS verification by default, optional private CA trust with `--ca-bundle`, or explicit bypass with `--insecure`
+
+#### Usage Examples
+```bash
+# Start the tunnel through a SOCKS5 proxy
+python socks5_http_tunneler.py --socks5 127.0.0.1:1080
+
+# Enable debug logging
+python socks5_http_tunneler.py --socks5 socks5://127.0.0.1:1080 --debug
+
+# Trust a private proxy root CA bundle for upstream HTTPS
+python socks5_http_tunneler.py --socks5 socks5://127.0.0.1:1080 --ca-bundle C:\path\to\proxy-root-ca.pem
+
+# Disable upstream HTTPS verification entirely
+python socks5_http_tunneler.py --socks5 socks5://127.0.0.1:1080 --insecure
+```
+
+#### Requires
+- requests with SOCKS support: `pip install "requests[socks]"`
+
 ### radio_station_checker.py
 A multi-threaded Python script that checks the availability of radio stations from SII, PLS, and M3U playlist files. It provides a real-time terminal interface with virtualized rendering for performance, displaying station status, response times, and metadata in an organized table format.
 
