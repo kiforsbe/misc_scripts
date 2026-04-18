@@ -1,0 +1,103 @@
+namespaces:
+  atom: http://www.w3.org/2005/Atom
+  nyaa: https://nyaa.land/xmlns/nyaa
+
+channel:
+  title:
+    selector: title
+    regex: '^(?P<query>.+?) :: Nyaa$'
+    format: 'Nyaa - "{query}" - Torrent File RSS'
+  description:
+    selector: title
+    regex: '^(?P<query>.+?) :: Nyaa$'
+    format: 'RSS Feed for "{query}"'
+  link:
+    value: https://nyaa.land/
+  self_link:
+    format: '{request_url}'
+  namespaced:
+    atom:link:
+      attrs:
+        href:
+          field: self_link
+        rel:
+          value: self
+        type:
+          value: application/rss+xml
+
+items:
+  selector: table.torrent-list tbody tr
+  namespaced:
+    nyaa:seeders:
+      field: seeders
+    nyaa:leechers:
+      field: leechers
+    nyaa:downloads:
+      field: downloads
+    nyaa:infoHash:
+      field: infoHash
+    nyaa:categoryId:
+      field: categoryId
+    nyaa:category:
+      field: category
+    nyaa:size:
+      field: size
+    nyaa:comments:
+      field: comments
+    nyaa:trusted:
+      field: trusted
+    nyaa:remake:
+      field: remake
+  fields:
+    title:
+      selector: 'a[href^="/view/"]'
+      attr: title
+      transform: normalize_whitespace
+    link:
+      selector: 'a[href^="/download/"]'
+      attr: href
+      resolve_url: true
+    guid:
+      selector: 'a[href^="/view/"]'
+      attr: href
+      resolve_url: true
+    id:
+      selector: 'a[href^="/view/"]'
+      attr: href
+      regex: '/view/(?P<id>\d+)'
+      format: '{id}'
+    pubDate:
+      selector: td[data-timestamp]
+      attr: data-timestamp
+      transform: unix_to_rfc2822_utc
+    seeders:
+      selector: td:nth-of-type(6)
+    leechers:
+      selector: td:nth-of-type(7)
+    downloads:
+      selector: td:nth-of-type(8)
+    infoHash:
+      selector: 'a[href^="magnet:?"]'
+      attr: href
+      regex: 'btih:(?P<hash>[A-Fa-f0-9]+)'
+      format: '{hash}'
+    categoryId:
+      selector: 'td:first-child a'
+      attr: href
+      regex: '[?&]c=(?P<category>\d+_\d+)'
+      format: '{category}'
+    category:
+      selector: 'td:first-child a'
+      attr: title
+    size:
+      selector: td:nth-of-type(4)
+    comments:
+      default: '0'
+    trusted:
+      from_root: true
+      attr: class
+      transform: nyaa_trusted_from_class
+    remake:
+      default: 'No'
+    description:
+      format: '<a href="{guid}">#{id} | {title}</a> | {size} | {category} | {infoHash}'
