@@ -112,6 +112,7 @@ REWRITE_FEED_TEXT_PATTERN = re.compile(
 
 
 def normalize_socks_proxy(value: str) -> str:
+    # Force a canonical SOCKS URL form so requests gets one consistent proxy string.
     raw_value = value.strip()
     if not raw_value:
         raise ValueError("SOCKS5 proxy must not be empty")
@@ -167,6 +168,7 @@ def probe_socks_proxy(socks_proxy: str, timeout: float) -> Optional[str]:
     try:
         with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout) as sock:
             sock.settimeout(timeout)
+            # Perform the initial SOCKS5 negotiation so dead listeners and auth mismatches fail early.
             sock.sendall(bytes([0x05, len(methods), *methods]))
             response = sock.recv(2)
             if len(response) != 2 or response[0] != 0x05:
@@ -196,6 +198,7 @@ def choose_live_socks_proxy(socks_proxies: list[str], timeout: float, debug_enab
     remaining = list(socks_proxies)
     failures: list[tuple[str, str]] = []
 
+    # Sample without replacement so startup picks a random live server but still tries the whole pool if needed.
     while remaining:
         index = random.randrange(len(remaining))
         candidate = remaining.pop(index)
@@ -254,6 +257,7 @@ class ProxyApplication:
             if session is None:
                 session = requests.Session()
                 session.trust_env = False
+                # Keep one upstream session per client IP so cookies and connection reuse stay isolated.
                 session.proxies = {
                     "http": self.socks_proxy,
                     "https": self.socks_proxy,
@@ -317,6 +321,7 @@ class ProxyApplication:
         )
 
         if parsed.path == "/" and query.get("url"):
+            # The entry URL is only a bootstrap format; normal browsing should move onto canonical /proxy/... paths.
             candidate = query["url"][0].strip()
             if is_http_url(candidate):
                 debug_log(self.debug_enabled, f"Resolved target from query parameter: {candidate}")
@@ -333,6 +338,7 @@ class ProxyApplication:
         if referer:
             upstream_referer = self.local_to_upstream_url(referer)
             if upstream_referer:
+                # Relative asset requests rely on the last proxied page to recover their upstream base URL.
                 relative_request = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
                 resolved = urllib.parse.urljoin(upstream_referer, relative_request)
                 debug_log(self.debug_enabled, f"Resolved request relative to Referer: {resolved}")
@@ -355,6 +361,7 @@ class ProxyApplication:
         if not candidate or candidate.startswith(("#", "data:", "javascript:", "mailto:", "tel:", "about:")):
             return value
 
+        # Preserve absolute form only when the source was already absolute; relative links stay local-path based.
         preserve_absolute = False
         if candidate.startswith("//"):
             absolute = urllib.parse.urlsplit(base_url).scheme + ":" + candidate
@@ -427,6 +434,7 @@ class ProxyApplication:
         return "<rss" in lowered or "<feed" in lowered or "<rdf:rdf" in lowered
 
     def rewrite_feed_xml(self, text: str, base_url: str, local_origin: Optional[str] = None) -> str:
+        # Use text substitutions instead of XML reserialization so prefixes, namespace aliases, and formatting survive unchanged.
         def replace_attr(match: re.Match[str]) -> str:
             value = match.group("value")
             rewritten = self.rewrite_embedded_url(value, base_url, local_origin)
@@ -451,6 +459,7 @@ class ProxyApplication:
         return rewritten
 
     def inject_runtime_shim(self, html_text: str) -> str:
+        # Runtime interception covers client-side fetch/XHR/navigation APIs that static HTML rewriting cannot see.
         shim = (
             "<script>"
             "(function(){"
@@ -647,11 +656,13 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
             if lowered in HOP_BY_HOP_HEADERS or lowered in {"host", "content-length", "cookie", "accept-encoding"}:
                 continue
             if lowered == "referer":
+                # Referer needs to point back to the true upstream page instead of the local proxy URL.
                 rewritten = self.app.local_to_upstream_url(value)
                 if rewritten:
                     upstream_headers[name] = rewritten
                 continue
             if lowered == "origin":
+                # CORS-sensitive endpoints expect the upstream origin, not the local tunnel origin.
                 upstream_headers[name] = upstream_origin
                 continue
             upstream_headers[name] = value
@@ -774,6 +785,7 @@ def main() -> None:
 
     failed_socks_proxies: list[tuple[str, str]] = []
     if args.socks5_file:
+        # Resolve one working SOCKS endpoint at startup and keep it fixed for the lifetime of the process.
         socks5_file_path = Path(args.socks5_file).expanduser().resolve()
         if not socks5_file_path.is_file():
             raise SystemExit(f"SOCKS proxy list file not found: {socks5_file_path}")
