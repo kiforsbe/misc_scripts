@@ -2,8 +2,10 @@ import argparse
 import html
 import http.server
 from pathlib import Path
+import random
 import re
 import socketserver
+import socket
 import sys
 import threading
 import urllib.parse
@@ -127,6 +129,85 @@ def normalize_socks_proxy(value: str) -> str:
         parsed = parsed._replace(scheme="socks5h")
 
     return urllib.parse.urlunsplit(parsed)
+
+
+def load_socks_proxy_candidates(file_path: Path) -> list[str]:
+    try:
+        entries = file_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise SystemExit(f"Unable to read SOCKS proxy list file {file_path}: {exc}") from exc
+
+    proxies: list[str] = []
+    for line_number, raw_line in enumerate(entries, start=1):
+        candidate = raw_line.strip()
+        if not candidate or candidate.startswith("#"):
+            continue
+        try:
+            proxies.append(normalize_socks_proxy(candidate))
+        except ValueError as exc:
+            raise SystemExit(f"Invalid SOCKS proxy on line {line_number} in {file_path}: {exc}") from exc
+
+    if not proxies:
+        raise SystemExit(f"SOCKS proxy list file is empty: {file_path}")
+
+    return proxies
+
+
+def probe_socks_proxy(socks_proxy: str, timeout: float) -> Optional[str]:
+    parsed = urllib.parse.urlsplit(socks_proxy)
+    if not parsed.hostname or parsed.port is None:
+        return "missing host or port"
+
+    username = urllib.parse.unquote(parsed.username) if parsed.username else None
+    password = urllib.parse.unquote(parsed.password) if parsed.password else None
+    methods = [0x00]
+    if username is not None:
+        methods.append(0x02)
+
+    try:
+        with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(bytes([0x05, len(methods), *methods]))
+            response = sock.recv(2)
+            if len(response) != 2 or response[0] != 0x05:
+                return "invalid SOCKS5 greeting response"
+            if response[1] == 0xFF:
+                return "SOCKS5 server rejected available authentication methods"
+            if response[1] == 0x02:
+                if username is None or password is None:
+                    return "SOCKS5 server requires username/password authentication"
+                username_bytes = username.encode("utf-8")
+                password_bytes = password.encode("utf-8")
+                if len(username_bytes) > 255 or len(password_bytes) > 255:
+                    return "SOCKS5 username/password is too long"
+                auth_request = bytes([0x01, len(username_bytes)]) + username_bytes + bytes([len(password_bytes)]) + password_bytes
+                sock.sendall(auth_request)
+                auth_response = sock.recv(2)
+                if len(auth_response) != 2 or auth_response[1] != 0x00:
+                    return "SOCKS5 username/password authentication failed"
+            elif response[1] != 0x00:
+                return f"unsupported SOCKS5 authentication method selected: {response[1]}"
+            return None
+    except OSError as exc:
+        return str(exc)
+
+
+def choose_live_socks_proxy(socks_proxies: list[str], timeout: float, debug_enabled: bool = False) -> tuple[str, list[tuple[str, str]]]:
+    remaining = list(socks_proxies)
+    failures: list[tuple[str, str]] = []
+
+    while remaining:
+        index = random.randrange(len(remaining))
+        candidate = remaining.pop(index)
+        debug_log(debug_enabled, f"Probing SOCKS proxy candidate: {candidate}")
+        failure_reason = probe_socks_proxy(candidate, timeout)
+        if failure_reason is None:
+            debug_log(debug_enabled, f"Selected live SOCKS proxy candidate: {candidate}")
+            return candidate, failures
+        failures.append((candidate, failure_reason))
+        debug_log(debug_enabled, f"Rejected SOCKS proxy candidate {candidate}: {failure_reason}")
+
+    raise SystemExit("No working SOCKS5 proxies found in the provided list")
 
 
 def is_http_url(value: str) -> bool:
@@ -659,7 +740,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "Entry URL format: http://localhost:8080/?url=http://example.com"
         )
     )
-    parser.add_argument("--socks5", required=True, help="SOCKS5 proxy to use, for example 127.0.0.1:1080 or socks5h://127.0.0.1:1080")
+    socks_group = parser.add_mutually_exclusive_group(required=True)
+    socks_group.add_argument("--socks5", help="SOCKS5 proxy to use, for example 127.0.0.1:1080 or socks5h://127.0.0.1:1080")
+    socks_group.add_argument("--socks5-file", help="Text file with one SOCKS5 proxy per line; one live entry is selected at random at startup")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind locally (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8080, help="Local port to listen on (default: 8080)")
     parser.add_argument("--timeout", type=float, default=30.0, help="Upstream request timeout in seconds (default: 30)")
@@ -689,11 +772,28 @@ def main() -> None:
             raise SystemExit(f"CA bundle file not found: {ca_bundle_path}")
         verify_tls = str(ca_bundle_path)
 
-    app = ProxyApplication(args.socks5, args.timeout, debug_enabled=args.debug, verify_tls=verify_tls)
+    failed_socks_proxies: list[tuple[str, str]] = []
+    if args.socks5_file:
+        socks5_file_path = Path(args.socks5_file).expanduser().resolve()
+        if not socks5_file_path.is_file():
+            raise SystemExit(f"SOCKS proxy list file not found: {socks5_file_path}")
+        socks5_candidates = load_socks_proxy_candidates(socks5_file_path)
+        selected_socks5, failed_socks_proxies = choose_live_socks_proxy(socks5_candidates, args.timeout, args.debug)
+    else:
+        selected_socks5 = args.socks5
+
+    app = ProxyApplication(selected_socks5, args.timeout, debug_enabled=args.debug, verify_tls=verify_tls)
 
     with ThreadedHTTPServer((args.host, args.port), SocksTunnelHandler, app) as server:
         print(f"Serving SOCKS5 HTTP tunneler on http://{args.host}:{args.port}")
         print(f"SOCKS5 upstream: {app.socks_proxy}")
+        if args.socks5_file:
+            print(f"SOCKS5 proxy list: {socks5_file_path}")
+            if failed_socks_proxies:
+                print("SOCKS5 proxies that failed startup probing:")
+                for failed_proxy, reason in failed_socks_proxies:
+                    print(f"  - {failed_proxy} ({reason})")
+            print(f"Chosen SOCKS5 proxy for this session: {app.socks_proxy}")
         print(f"Open: http://{args.host}:{args.port}/?url=http://google.com")
         if args.insecure:
             print("Upstream TLS verification disabled")
