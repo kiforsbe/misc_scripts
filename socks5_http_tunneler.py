@@ -50,6 +50,13 @@ CSS_CONTENT_TYPES = (
     "text/css",
 )
 
+FEED_XML_CONTENT_TYPES = (
+    "application/atom+xml",
+    "application/rss+xml",
+    "application/xml",
+    "text/xml",
+)
+
 JAVASCRIPT_CONTENT_TYPES = (
     "application/javascript",
     "application/x-javascript",
@@ -72,6 +79,32 @@ REWRITE_CSS_URL_PATTERN = re.compile(
 )
 REWRITE_META_REFRESH_PATTERN = re.compile(
     r"(?P<prefix><meta\b[^>]*http-equiv\s*=\s*['\"]?refresh['\"]?[^>]*content\s*=\s*['\"])(?P<value>.*?)(?P<suffix>['\"])",
+    re.IGNORECASE | re.DOTALL,
+)
+
+FEED_URL_TEXT_TAGS = {
+    "comments",
+    "docs",
+    "icon",
+    "id",
+    "link",
+    "logo",
+    "uri",
+    "url",
+}
+
+FEED_URL_ATTRIBUTES = {
+    "href",
+    "src",
+    "url",
+}
+
+REWRITE_FEED_ATTR_PATTERN = re.compile(
+    r"(?P<name>(?:[a-zA-Z_][\w.-]*:)?(?:href|src|url))\s*=\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
+    re.IGNORECASE | re.DOTALL,
+)
+REWRITE_FEED_TEXT_PATTERN = re.compile(
+    r"(?P<open><(?P<tag>(?:[a-zA-Z_][\w.-]*:)?(?:comments|docs|icon|id|link|logo|uri|url))\b[^>]*>)(?P<value>[^<]*?)(?P<close></(?P=tag)\s*>)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -164,6 +197,12 @@ class ProxyApplication:
             local_url = f"{local_url}#{parsed.fragment}"
         return local_url
 
+    def build_local_proxy_url(self, upstream_url: str, local_origin: Optional[str] = None) -> str:
+        local_path = self.build_local_proxy_path(upstream_url)
+        if local_origin:
+            return urllib.parse.urljoin(local_origin.rstrip("/") + "/", local_path.lstrip("/"))
+        return local_path
+
     def local_to_upstream_url(self, local_url: str) -> Optional[str]:
         parsed = urllib.parse.urlsplit(local_url)
         query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
@@ -230,73 +269,105 @@ class ProxyApplication:
         debug_log(self.debug_enabled, "Unable to resolve request to an upstream URL")
         return None, False
 
-    def rewrite_embedded_url(self, value: str, base_url: str) -> str:
+    def rewrite_embedded_url(self, value: str, base_url: str, local_origin: Optional[str] = None) -> str:
         candidate = html.unescape(value.strip())
         if not candidate or candidate.startswith(("#", "data:", "javascript:", "mailto:", "tel:", "about:")):
             return value
 
+        preserve_absolute = False
         if candidate.startswith("//"):
             absolute = urllib.parse.urlsplit(base_url).scheme + ":" + candidate
         elif is_http_url(candidate):
             absolute = candidate
+            preserve_absolute = True
         elif candidate.startswith("/"):
             absolute = urllib.parse.urljoin(base_url, candidate)
         else:
             return value
 
+        if preserve_absolute:
+            return self.build_local_proxy_url(absolute, local_origin)
         return self.build_local_proxy_path(absolute)
 
-    def rewrite_srcset(self, value: str, base_url: str) -> str:
+    def rewrite_srcset(self, value: str, base_url: str, local_origin: Optional[str] = None) -> str:
         rewritten_entries: list[str] = []
         for part in value.split(","):
             segment = part.strip()
             if not segment:
                 continue
             pieces = segment.split()
-            rewritten_url = self.rewrite_embedded_url(pieces[0], base_url)
+            rewritten_url = self.rewrite_embedded_url(pieces[0], base_url, local_origin)
             if len(pieces) > 1:
                 rewritten_entries.append(" ".join([rewritten_url] + pieces[1:]))
             else:
                 rewritten_entries.append(rewritten_url)
         return ", ".join(rewritten_entries)
 
-    def rewrite_css_urls(self, text: str, base_url: str) -> str:
+    def rewrite_css_urls(self, text: str, base_url: str, local_origin: Optional[str] = None) -> str:
         def replace(match: re.Match[str]) -> str:
             value = match.group("value")
-            rewritten = self.rewrite_embedded_url(value, base_url)
+            rewritten = self.rewrite_embedded_url(value, base_url, local_origin)
             quote = match.group("quote")
             return f"url({quote}{rewritten}{quote})"
 
         return REWRITE_CSS_URL_PATTERN.sub(replace, text)
 
-    def rewrite_html(self, text: str, base_url: str) -> str:
+    def rewrite_html(self, text: str, base_url: str, local_origin: Optional[str] = None) -> str:
         def replace_attr(match: re.Match[str]) -> str:
             name = match.group("name")
             quote = match.group("quote")
             value = match.group("value")
-            rewritten = self.rewrite_embedded_url(value, base_url)
+            rewritten = self.rewrite_embedded_url(value, base_url, local_origin)
             return f"{name}={quote}{rewritten}{quote}"
 
         def replace_srcset(match: re.Match[str]) -> str:
             name = match.group("name")
             quote = match.group("quote")
             value = match.group("value")
-            rewritten = self.rewrite_srcset(value, base_url)
+            rewritten = self.rewrite_srcset(value, base_url, local_origin)
             return f"{name}={quote}{rewritten}{quote}"
 
         def replace_meta_refresh(match: re.Match[str]) -> str:
             value = match.group("value")
             parts = re.split(r"(;\s*url=)", value, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 3:
-                rewritten = self.rewrite_embedded_url(parts[2], base_url)
+                rewritten = self.rewrite_embedded_url(parts[2], base_url, local_origin)
                 return f"{match.group('prefix')}{parts[0]}{parts[1]}{rewritten}{match.group('suffix')}"
             return match.group(0)
 
         rewritten = REWRITE_ATTR_PATTERN.sub(replace_attr, text)
         rewritten = REWRITE_SRCSET_PATTERN.sub(replace_srcset, rewritten)
-        rewritten = self.rewrite_css_urls(rewritten, base_url)
+        rewritten = self.rewrite_css_urls(rewritten, base_url, local_origin)
         rewritten = REWRITE_META_REFRESH_PATTERN.sub(replace_meta_refresh, rewritten)
         return self.inject_runtime_shim(rewritten)
+
+    def looks_like_feed_xml(self, text: str) -> bool:
+        lowered = text[:4096].lower()
+        return "<rss" in lowered or "<feed" in lowered or "<rdf:rdf" in lowered
+
+    def rewrite_feed_xml(self, text: str, base_url: str, local_origin: Optional[str] = None) -> str:
+        def replace_attr(match: re.Match[str]) -> str:
+            value = match.group("value")
+            rewritten = self.rewrite_embedded_url(value, base_url, local_origin)
+            if rewritten == value:
+                return match.group(0)
+            return f"{match.group('name')}={match.group('quote')}{rewritten}{match.group('quote')}"
+
+        def replace_text(match: re.Match[str]) -> str:
+            value = match.group("value")
+            stripped_value = value.strip()
+            if not stripped_value:
+                return match.group(0)
+            rewritten = self.rewrite_embedded_url(stripped_value, base_url, local_origin)
+            if rewritten == stripped_value:
+                return match.group(0)
+            leading = value[: len(value) - len(value.lstrip())]
+            trailing = value[len(value.rstrip()) :]
+            return f"{match.group('open')}{leading}{rewritten}{trailing}{match.group('close')}"
+
+        rewritten = REWRITE_FEED_ATTR_PATTERN.sub(replace_attr, text)
+        rewritten = REWRITE_FEED_TEXT_PATTERN.sub(replace_text, rewritten)
+        return rewritten
 
     def inject_runtime_shim(self, html_text: str) -> str:
         shim = (
@@ -355,30 +426,36 @@ class ProxyApplication:
             return html_text[:insert_at] + shim + html_text[insert_at:]
         return shim + html_text
 
-    def rewrite_text_response(self, text: str, content_type: str, base_url: str) -> str:
+    def rewrite_text_response(self, text: str, content_type: str, base_url: str, local_origin: Optional[str] = None) -> str:
         lowered = content_type.lower()
         if any(content_type_name in lowered for content_type_name in HTML_CONTENT_TYPES):
             debug_log(self.debug_enabled, f"Rewriting HTML response for {base_url} content_type={content_type}")
-            return self.rewrite_html(text, base_url)
+            return self.rewrite_html(text, base_url, local_origin)
         if any(content_type_name in lowered for content_type_name in CSS_CONTENT_TYPES):
             debug_log(self.debug_enabled, f"Rewriting CSS response for {base_url} content_type={content_type}")
-            return self.rewrite_css_urls(text, base_url)
+            return self.rewrite_css_urls(text, base_url, local_origin)
+        if any(content_type_name in lowered for content_type_name in FEED_XML_CONTENT_TYPES) and self.looks_like_feed_xml(text):
+            debug_log(self.debug_enabled, f"Rewriting feed XML response for {base_url} content_type={content_type}")
+            return self.rewrite_feed_xml(text, base_url, local_origin)
         debug_log(self.debug_enabled, f"Leaving response body unchanged for {base_url} content_type={content_type}")
         return text
 
-    def rewrite_header_url(self, value: str, base_url: str) -> str:
+    def rewrite_header_url(self, value: str, base_url: str, local_origin: Optional[str] = None) -> str:
         candidate = value.strip()
         if not candidate:
             return value
-        if not is_http_url(candidate):
+        preserve_absolute = is_http_url(candidate)
+        if not preserve_absolute:
             candidate = urllib.parse.urljoin(base_url, candidate)
+        if preserve_absolute:
+            return self.build_local_proxy_url(candidate, local_origin)
         return self.build_local_proxy_path(candidate)
 
-    def rewrite_refresh_header(self, value: str, base_url: str) -> str:
+    def rewrite_refresh_header(self, value: str, base_url: str, local_origin: Optional[str] = None) -> str:
         parts = re.split(r"(;\s*url=)", value, maxsplit=1, flags=re.IGNORECASE)
         if len(parts) != 3:
             return value
-        return f"{parts[0]}{parts[1]}{self.rewrite_header_url(parts[2], base_url)}"
+        return f"{parts[0]}{parts[1]}{self.rewrite_header_url(parts[2], base_url, local_origin)}"
 
 
 class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
@@ -505,11 +582,17 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
         upstream_headers.setdefault("Accept-Encoding", "gzip, deflate")
         return upstream_headers
 
+    def get_local_origin(self) -> Optional[str]:
+        host = self.headers.get("Host", "").strip()
+        if not host:
+            return None
+        return f"http://{host}"
+
     def prepare_response_payload(self, response: requests.Response, base_url: str) -> tuple[bytes, str, str]:
         content_type = response.headers.get("Content-Type", "application/octet-stream")
         payload = response.content
         text, encoding = decode_text(payload, content_type, response)
-        rewritten_text = self.app.rewrite_text_response(text, content_type, base_url)
+        rewritten_text = self.app.rewrite_text_response(text, content_type, base_url, self.get_local_origin())
         if rewritten_text is text:
             if self.app.debug_enabled and payload:
                 debug_log(self.app.debug_enabled, f"Response preview: {truncate_for_debug(text)}")
@@ -519,6 +602,7 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
         return rewritten_text.encode(encoding, errors="replace"), content_type, encoding
 
     def copy_response_headers(self, response: requests.Response, base_url: str, content_type: str) -> None:
+        local_origin = self.get_local_origin()
         rewritten_header_names: list[str] = []
         for name, value in response.headers.items():
             lowered = name.lower()
@@ -527,11 +611,11 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
             if lowered == "content-type":
                 continue
             if lowered == "location":
-                self.send_header(name, self.app.rewrite_header_url(value, base_url))
+                self.send_header(name, self.app.rewrite_header_url(value, base_url, local_origin))
                 rewritten_header_names.append(name)
                 continue
             if lowered == "refresh":
-                self.send_header(name, self.app.rewrite_refresh_header(value, base_url))
+                self.send_header(name, self.app.rewrite_refresh_header(value, base_url, local_origin))
                 rewritten_header_names.append(name)
                 continue
             self.send_header(name, value)
