@@ -1,5 +1,7 @@
 import argparse
+import csv
 from dataclasses import dataclass
+from datetime import datetime
 import html
 import http.server
 from pathlib import Path
@@ -70,6 +72,7 @@ JAVASCRIPT_CONTENT_TYPES = (
 MAX_DEBUG_BODY_PREVIEW = 240
 DEFAULT_PROXY_ROTATION_SECONDS = 60.0 * 60.0
 DEFAULT_CLIENT_IDLE_TIMEOUT_SECONDS = 5.0 * 60.0
+DEFAULT_PROXY_BLACKLIST_FILE = Path.home() / ".socks5-proxy-blacklist.csv"
 ROTATION_INTERVAL_PATTERN = re.compile(
     r"^(?:(?P<minutes>\d+(?:\.\d+)?)m)?(?:(?P<seconds>\d+(?:\.\d+)?)s)?$",
     re.IGNORECASE,
@@ -162,6 +165,78 @@ def load_socks_proxy_candidates(file_path: Path) -> list[str]:
     return proxies
 
 
+def load_socks_proxy_blacklist(file_path: Path) -> dict[str, tuple[str, str]]:
+    try:
+        with file_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != ["proxy", "failure_reason", "failed_at"]:
+                raise SystemExit(
+                    f"Invalid SOCKS proxy blacklist CSV header in {file_path}; expected: proxy,failure_reason,failed_at"
+                )
+
+            blacklisted: dict[str, tuple[str, str]] = {}
+            for line_number, row in enumerate(reader, start=2):
+                candidate = (row.get("proxy") or "").strip()
+                failure_reason = (row.get("failure_reason") or "").strip()
+                failed_at = (row.get("failed_at") or "").strip()
+                if not candidate:
+                    continue
+                try:
+                    blacklisted[normalize_socks_proxy(candidate)] = (failure_reason, failed_at)
+                except ValueError as exc:
+                    raise SystemExit(f"Invalid SOCKS proxy on line {line_number} in blacklist {file_path}: {exc}") from exc
+            return blacklisted
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise SystemExit(f"Unable to read SOCKS proxy blacklist file {file_path}: {exc}") from exc
+
+
+def filter_blacklisted_socks_proxies(
+    socks_proxies: list[str],
+    blacklisted_socks_proxies: dict[str, tuple[str, str]],
+) -> tuple[list[str], list[str]]:
+    allowed: list[str] = []
+    removed: list[str] = []
+    for socks_proxy in socks_proxies:
+        if socks_proxy in blacklisted_socks_proxies:
+            removed.append(socks_proxy)
+            continue
+        allowed.append(socks_proxy)
+    return allowed, removed
+
+
+def append_socks_proxy_blacklist_entries(
+    file_path: Path,
+    failures: list[tuple[str, str]],
+    known_blacklist: dict[str, tuple[str, str]],
+) -> list[str]:
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    new_entries = [(socks_proxy, failure_reason, timestamp) for socks_proxy, failure_reason in failures if socks_proxy not in known_blacklist]
+    if not new_entries:
+        return []
+
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_exists = file_path.exists()
+        with file_path.open("a", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            if not file_exists:
+                writer.writerow(["proxy", "failure_reason", "failed_at"])
+            for socks_proxy, failure_reason, failed_at in new_entries:
+                writer.writerow([socks_proxy, failure_reason, failed_at])
+    except OSError as exc:
+        raise SystemExit(f"Unable to update SOCKS proxy blacklist file {file_path}: {exc}") from exc
+
+    for socks_proxy, failure_reason, failed_at in new_entries:
+        known_blacklist[socks_proxy] = (failure_reason, failed_at)
+    return [socks_proxy for socks_proxy, _failure_reason, _failed_at in new_entries]
+
+
+def progress_log(message: str) -> None:
+    sys.stderr.write(f"{message}\n")
+
+
 def probe_socks_proxy(socks_proxy: str, timeout: float) -> Optional[str]:
     parsed = urllib.parse.urlsplit(socks_proxy)
     if not parsed.hostname or parsed.port is None:
@@ -202,20 +277,34 @@ def probe_socks_proxy(socks_proxy: str, timeout: float) -> Optional[str]:
         return str(exc)
 
 
-def choose_live_socks_proxy(socks_proxies: list[str], timeout: float, debug_enabled: bool = False) -> tuple[str, list[tuple[str, str]]]:
+def choose_live_socks_proxy(
+    socks_proxies: list[str],
+    timeout: float,
+    debug_enabled: bool = False,
+    blacklist_file_path: Optional[Path] = None,
+    blacklisted_socks_proxies: Optional[dict[str, tuple[str, str]]] = None,
+) -> tuple[str, list[tuple[str, str]]]:
     remaining = list(socks_proxies)
     failures: list[tuple[str, str]] = []
+    total_candidates = len(remaining)
+    known_blacklist = blacklisted_socks_proxies if blacklisted_socks_proxies is not None else {}
 
     # Sample without replacement so startup picks a random live server but still tries the whole pool if needed.
     while remaining:
         index = random.randrange(len(remaining))
         candidate = remaining.pop(index)
+        attempted = total_candidates - len(remaining)
+        progress_log(f"Probing SOCKS proxy {attempted}/{total_candidates}: {candidate}")
         debug_log(debug_enabled, f"Probing SOCKS proxy candidate: {candidate}")
         failure_reason = probe_socks_proxy(candidate, timeout)
         if failure_reason is None:
+            progress_log(f"SOCKS proxy probe succeeded: {candidate}")
             debug_log(debug_enabled, f"Selected live SOCKS proxy candidate: {candidate}")
             return candidate, failures
         failures.append((candidate, failure_reason))
+        progress_log(f"SOCKS proxy probe failed: {candidate} ({failure_reason})")
+        if blacklist_file_path is not None:
+            append_socks_proxy_blacklist_entries(blacklist_file_path, [(candidate, failure_reason)], known_blacklist)
         debug_log(debug_enabled, f"Rejected SOCKS proxy candidate {candidate}: {failure_reason}")
 
     raise SystemExit("No working SOCKS5 proxies found in the provided list")
@@ -226,11 +315,19 @@ def choose_rotated_socks_proxy(
     timeout: float,
     debug_enabled: bool = False,
     current_proxy: Optional[str] = None,
+    blacklist_file_path: Optional[Path] = None,
+    blacklisted_socks_proxies: Optional[dict[str, tuple[str, str]]] = None,
 ) -> tuple[str, list[tuple[str, str]]]:
     candidates = list(socks_proxies)
     if current_proxy and len(candidates) > 1:
         candidates = [candidate for candidate in candidates if candidate != current_proxy]
-    return choose_live_socks_proxy(candidates, timeout, debug_enabled)
+    return choose_live_socks_proxy(
+        candidates,
+        timeout,
+        debug_enabled,
+        blacklist_file_path=blacklist_file_path,
+        blacklisted_socks_proxies=blacklisted_socks_proxies,
+    )
 
 
 def is_http_url(value: str) -> bool:
@@ -316,6 +413,8 @@ class ProxyApplication:
         socks_proxy_candidates: Optional[list[str]] = None,
         rotation_interval_seconds: Optional[float] = None,
         client_idle_timeout_seconds: float = DEFAULT_CLIENT_IDLE_TIMEOUT_SECONDS,
+        proxy_blacklist_file_path: Optional[Path] = None,
+        blacklisted_socks_proxies: Optional[dict[str, tuple[str, str]]] = None,
     ) -> None:
         self.socks_proxy = normalize_socks_proxy(socks_proxy)
         self.timeout = timeout
@@ -324,6 +423,8 @@ class ProxyApplication:
         self._socks_proxy_candidates = list(socks_proxy_candidates or [])
         self._rotation_interval_seconds = rotation_interval_seconds
         self._client_idle_timeout_seconds = client_idle_timeout_seconds
+        self._proxy_blacklist_file_path = proxy_blacklist_file_path
+        self._blacklisted_socks_proxies = blacklisted_socks_proxies if blacklisted_socks_proxies is not None else {}
         self._sessions: dict[str, CachedUpstreamSession] = {}
         self._lock = threading.Lock()
         self._background_stop_event = threading.Event()
@@ -386,8 +487,15 @@ class ProxyApplication:
             self.timeout,
             self.debug_enabled,
             current_proxy=current_proxy,
+            blacklist_file_path=self._proxy_blacklist_file_path,
+            blacklisted_socks_proxies=self._blacklisted_socks_proxies,
         )
         with self._lock:
+            if failures:
+                failed_proxies = {proxy for proxy, _reason in failures}
+                self._socks_proxy_candidates = [
+                    candidate for candidate in self._socks_proxy_candidates if candidate not in failed_proxies
+                ]
             self.socks_proxy = next_proxy
             self._close_sessions_locked()
         debug_log(
@@ -1013,13 +1121,33 @@ def main() -> None:
     failed_socks_proxies: list[tuple[str, str]] = []
     socks5_candidates: list[str] = []
     rotation_interval_seconds: Optional[float] = None
+    socks5_blacklist_file_path = DEFAULT_PROXY_BLACKLIST_FILE
+    blacklisted_socks_proxies: dict[str, tuple[str, str]] = {}
     if args.socks5_file:
         # Resolve one working SOCKS endpoint at startup, then rotate across the list on a timer.
         socks5_file_path = Path(args.socks5_file).expanduser().resolve()
         if not socks5_file_path.is_file():
             raise SystemExit(f"SOCKS proxy list file not found: {socks5_file_path}")
         socks5_candidates = load_socks_proxy_candidates(socks5_file_path)
-        selected_socks5, failed_socks_proxies = choose_live_socks_proxy(socks5_candidates, args.timeout, args.debug)
+        blacklisted_socks_proxies = load_socks_proxy_blacklist(socks5_blacklist_file_path)
+        socks5_candidates, removed_blacklisted_proxies = filter_blacklisted_socks_proxies(socks5_candidates, blacklisted_socks_proxies)
+        if removed_blacklisted_proxies:
+            print(f"Removed {len(removed_blacklisted_proxies)} blacklisted SOCKS5 proxies from the startup pool")
+            print(f"SOCKS5 proxy blacklist: {socks5_blacklist_file_path}")
+        if not socks5_candidates:
+            raise SystemExit(
+                f"All SOCKS5 proxies from {socks5_file_path} are blacklisted in {socks5_blacklist_file_path}"
+            )
+        selected_socks5, failed_socks_proxies = choose_live_socks_proxy(
+            socks5_candidates,
+            args.timeout,
+            args.debug,
+            blacklist_file_path=socks5_blacklist_file_path,
+            blacklisted_socks_proxies=blacklisted_socks_proxies,
+        )
+        if failed_socks_proxies:
+            failed_startup_proxies = {proxy for proxy, _reason in failed_socks_proxies}
+            socks5_candidates = [candidate for candidate in socks5_candidates if candidate not in failed_startup_proxies]
         rotation_interval_seconds = args.rotation_interval or DEFAULT_PROXY_ROTATION_SECONDS
     else:
         selected_socks5 = args.socks5
@@ -1032,6 +1160,8 @@ def main() -> None:
         socks_proxy_candidates=socks5_candidates,
         rotation_interval_seconds=rotation_interval_seconds,
         client_idle_timeout_seconds=args.client_idle_timeout,
+        proxy_blacklist_file_path=socks5_blacklist_file_path if args.socks5_file else None,
+        blacklisted_socks_proxies=blacklisted_socks_proxies,
     )
 
     with ThreadedHTTPServer((args.host, args.port), SocksTunnelHandler, app) as server:
@@ -1042,6 +1172,7 @@ def main() -> None:
         print(f"Client idle timeout: {format_rotation_interval(args.client_idle_timeout)}")
         if args.socks5_file:
             print(f"SOCKS5 proxy list: {socks5_file_path}")
+            print(f"SOCKS5 proxy blacklist: {socks5_blacklist_file_path}")
             if failed_socks_proxies:
                 print("SOCKS5 proxies that failed startup probing:")
                 for failed_proxy, reason in failed_socks_proxies:
