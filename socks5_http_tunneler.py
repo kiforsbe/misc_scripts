@@ -66,6 +66,11 @@ JAVASCRIPT_CONTENT_TYPES = (
 )
 
 MAX_DEBUG_BODY_PREVIEW = 240
+DEFAULT_PROXY_ROTATION_SECONDS = 10.0 * 60.0
+ROTATION_INTERVAL_PATTERN = re.compile(
+    r"^(?:(?P<minutes>\d+(?:\.\d+)?)m)?(?:(?P<seconds>\d+(?:\.\d+)?)s)?$",
+    re.IGNORECASE,
+)
 
 REWRITE_ATTR_PATTERN = re.compile(
     r"(?P<name>href|src|action|poster|formaction|manifest)\s*=\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
@@ -213,6 +218,18 @@ def choose_live_socks_proxy(socks_proxies: list[str], timeout: float, debug_enab
     raise SystemExit("No working SOCKS5 proxies found in the provided list")
 
 
+def choose_rotated_socks_proxy(
+    socks_proxies: list[str],
+    timeout: float,
+    debug_enabled: bool = False,
+    current_proxy: Optional[str] = None,
+) -> tuple[str, list[tuple[str, str]]]:
+    candidates = list(socks_proxies)
+    if current_proxy and len(candidates) > 1:
+        candidates = [candidate for candidate in candidates if candidate != current_proxy]
+    return choose_live_socks_proxy(candidates, timeout, debug_enabled)
+
+
 def is_http_url(value: str) -> bool:
     return value.startswith("http://") or value.startswith("https://")
 
@@ -242,14 +259,121 @@ def decode_text(payload: bytes, content_type: str, response: requests.Response) 
         return payload.decode("utf-8", errors="replace"), "utf-8"
 
 
+def parse_rotation_interval(value: str) -> float:
+    raw_value = value.strip().lower()
+    if not raw_value:
+        raise argparse.ArgumentTypeError("rotation interval must not be empty")
+
+    if raw_value[-1].isdigit():
+        raw_value = f"{raw_value}m"
+
+    match = ROTATION_INTERVAL_PATTERN.fullmatch(raw_value)
+    if not match or not match.group(0):
+        raise argparse.ArgumentTypeError(
+            "rotation interval must look like 5, 5m, 45s, or 5m34s"
+        )
+
+    minutes = float(match.group("minutes") or 0.0)
+    seconds = float(match.group("seconds") or 0.0)
+    total_seconds = minutes * 60.0 + seconds
+    if total_seconds <= 0:
+        raise argparse.ArgumentTypeError("rotation interval must be greater than 0")
+    return total_seconds
+
+
+def format_rotation_interval(total_seconds: float) -> str:
+    minutes = int(total_seconds // 60)
+    seconds = total_seconds - minutes * 60
+    parts: list[str] = []
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        if seconds.is_integer():
+            parts.append(f"{int(seconds)}s")
+        else:
+            parts.append(f"{seconds:g}s")
+    return "".join(parts)
+
+
 class ProxyApplication:
-    def __init__(self, socks_proxy: str, timeout: float, debug_enabled: bool = False, verify_tls: bool | str = True) -> None:
+    def __init__(
+        self,
+        socks_proxy: str,
+        timeout: float,
+        debug_enabled: bool = False,
+        verify_tls: bool | str = True,
+        socks_proxy_candidates: Optional[list[str]] = None,
+        rotation_interval_seconds: Optional[float] = None,
+    ) -> None:
         self.socks_proxy = normalize_socks_proxy(socks_proxy)
         self.timeout = timeout
         self.debug_enabled = debug_enabled
         self.verify_tls = verify_tls
+        self._socks_proxy_candidates = list(socks_proxy_candidates or [])
+        self._rotation_interval_seconds = rotation_interval_seconds
         self._sessions: dict[str, requests.Session] = {}
         self._lock = threading.Lock()
+        self._rotation_stop_event = threading.Event()
+        self._rotation_thread: Optional[threading.Thread] = None
+
+    def _close_sessions_locked(self) -> None:
+        for session in self._sessions.values():
+            session.close()
+        self._sessions.clear()
+
+    def rotate_socks_proxy(self) -> tuple[str, list[tuple[str, str]]]:
+        current_proxy = self.socks_proxy
+        next_proxy, failures = choose_rotated_socks_proxy(
+            self._socks_proxy_candidates,
+            self.timeout,
+            self.debug_enabled,
+            current_proxy=current_proxy,
+        )
+        with self._lock:
+            self.socks_proxy = next_proxy
+            self._close_sessions_locked()
+        debug_log(
+            self.debug_enabled,
+            f"Rotated SOCKS proxy from {current_proxy} to {next_proxy}; cleared cached upstream sessions",
+        )
+        return next_proxy, failures
+
+    def start_proxy_rotation(self) -> None:
+        if not self._socks_proxy_candidates or self._rotation_interval_seconds is None:
+            return
+        if len(self._socks_proxy_candidates) < 2:
+            debug_log(self.debug_enabled, "Skipping proxy rotation because the proxy list has fewer than 2 entries")
+            return
+        if self._rotation_thread is not None:
+            return
+
+        def run_rotation_loop() -> None:
+            interval_seconds = self._rotation_interval_seconds
+            assert interval_seconds is not None
+            while not self._rotation_stop_event.wait(interval_seconds):
+                try:
+                    next_proxy, failures = self.rotate_socks_proxy()
+                    if failures:
+                        failed_summary = "; ".join(f"{proxy} ({reason})" for proxy, reason in failures)
+                        debug_log(
+                            self.debug_enabled,
+                            f"Rotation switched to {next_proxy} after rejecting candidates: {failed_summary}",
+                        )
+                except SystemExit as exc:
+                    debug_log(self.debug_enabled, f"Proxy rotation skipped because no working replacement proxy was found: {exc}")
+
+        self._rotation_thread = threading.Thread(target=run_rotation_loop, name="socks-proxy-rotation", daemon=True)
+        self._rotation_thread.start()
+        debug_log(
+            self.debug_enabled,
+            f"Started proxy rotation thread interval_seconds={self._rotation_interval_seconds}",
+        )
+
+    def stop_proxy_rotation(self) -> None:
+        self._rotation_stop_event.set()
+        if self._rotation_thread is not None:
+            self._rotation_thread.join(timeout=1.0)
+            self._rotation_thread = None
 
     def get_session(self, client_key: str) -> requests.Session:
         with self._lock:
@@ -757,6 +881,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind locally (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8080, help="Local port to listen on (default: 8080)")
     parser.add_argument("--timeout", type=float, default=30.0, help="Upstream request timeout in seconds (default: 30)")
+    parser.add_argument(
+        "--rotation-interval",
+        type=parse_rotation_interval,
+        help="Time between random proxy rotations when using --socks5-file, for example 5, 5m, 45s, or 5m34s (default: 10m)",
+    )
     parser.add_argument("--debug", action="store_true", help="Print verbose request, rewrite, and upstream response diagnostics")
     tls_group = parser.add_mutually_exclusive_group()
     tls_group.add_argument(
@@ -774,6 +903,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_argument_parser()
     args = parser.parse_args()
+    if args.socks5 and args.rotation_interval is not None:
+        raise SystemExit("--rotation-interval can only be used with --socks5-file")
+
     verify_tls: bool | str = True
     if args.insecure:
         verify_tls = False
@@ -784,19 +916,30 @@ def main() -> None:
         verify_tls = str(ca_bundle_path)
 
     failed_socks_proxies: list[tuple[str, str]] = []
+    socks5_candidates: list[str] = []
+    rotation_interval_seconds: Optional[float] = None
     if args.socks5_file:
-        # Resolve one working SOCKS endpoint at startup and keep it fixed for the lifetime of the process.
+        # Resolve one working SOCKS endpoint at startup, then rotate across the list on a timer.
         socks5_file_path = Path(args.socks5_file).expanduser().resolve()
         if not socks5_file_path.is_file():
             raise SystemExit(f"SOCKS proxy list file not found: {socks5_file_path}")
         socks5_candidates = load_socks_proxy_candidates(socks5_file_path)
         selected_socks5, failed_socks_proxies = choose_live_socks_proxy(socks5_candidates, args.timeout, args.debug)
+        rotation_interval_seconds = args.rotation_interval or DEFAULT_PROXY_ROTATION_SECONDS
     else:
         selected_socks5 = args.socks5
 
-    app = ProxyApplication(selected_socks5, args.timeout, debug_enabled=args.debug, verify_tls=verify_tls)
+    app = ProxyApplication(
+        selected_socks5,
+        args.timeout,
+        debug_enabled=args.debug,
+        verify_tls=verify_tls,
+        socks_proxy_candidates=socks5_candidates,
+        rotation_interval_seconds=rotation_interval_seconds,
+    )
 
     with ThreadedHTTPServer((args.host, args.port), SocksTunnelHandler, app) as server:
+        app.start_proxy_rotation()
         print(f"Serving SOCKS5 HTTP tunneler on http://{args.host}:{args.port}")
         print(f"SOCKS5 upstream: {app.socks_proxy}")
         if args.socks5_file:
@@ -806,6 +949,8 @@ def main() -> None:
                 for failed_proxy, reason in failed_socks_proxies:
                     print(f"  - {failed_proxy} ({reason})")
             print(f"Chosen SOCKS5 proxy for this session: {app.socks_proxy}")
+            assert rotation_interval_seconds is not None
+            print(f"SOCKS5 proxy rotation interval: {format_rotation_interval(rotation_interval_seconds)}")
         print(f"Open: http://{args.host}:{args.port}/?url=http://google.com")
         if args.insecure:
             print("Upstream TLS verification disabled")
@@ -823,6 +968,7 @@ def main() -> None:
             print("\nShutting down tunneler.")
             server.shutdown()
         finally:
+            app.stop_proxy_rotation()
             server.server_close()
 
 
