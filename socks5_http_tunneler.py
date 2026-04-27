@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import dataclass
 import html
 import http.server
 from pathlib import Path
@@ -8,6 +9,7 @@ import socketserver
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 from typing import Optional
 
@@ -66,7 +68,8 @@ JAVASCRIPT_CONTENT_TYPES = (
 )
 
 MAX_DEBUG_BODY_PREVIEW = 240
-DEFAULT_PROXY_ROTATION_SECONDS = 10.0 * 60.0
+DEFAULT_PROXY_ROTATION_SECONDS = 60.0 * 60.0
+DEFAULT_CLIENT_IDLE_TIMEOUT_SECONDS = 5.0 * 60.0
 ROTATION_INTERVAL_PATTERN = re.compile(
     r"^(?:(?P<minutes>\d+(?:\.\d+)?)m)?(?:(?P<seconds>\d+(?:\.\d+)?)s)?$",
     re.IGNORECASE,
@@ -295,6 +298,14 @@ def format_rotation_interval(total_seconds: float) -> str:
     return "".join(parts)
 
 
+@dataclass
+class CachedUpstreamSession:
+    session: requests.Session
+    proxy_url: str
+    last_activity: float
+    in_use: int = 0
+
+
 class ProxyApplication:
     def __init__(
         self,
@@ -304,6 +315,7 @@ class ProxyApplication:
         verify_tls: bool | str = True,
         socks_proxy_candidates: Optional[list[str]] = None,
         rotation_interval_seconds: Optional[float] = None,
+        client_idle_timeout_seconds: float = DEFAULT_CLIENT_IDLE_TIMEOUT_SECONDS,
     ) -> None:
         self.socks_proxy = normalize_socks_proxy(socks_proxy)
         self.timeout = timeout
@@ -311,15 +323,61 @@ class ProxyApplication:
         self.verify_tls = verify_tls
         self._socks_proxy_candidates = list(socks_proxy_candidates or [])
         self._rotation_interval_seconds = rotation_interval_seconds
-        self._sessions: dict[str, requests.Session] = {}
+        self._client_idle_timeout_seconds = client_idle_timeout_seconds
+        self._sessions: dict[str, CachedUpstreamSession] = {}
         self._lock = threading.Lock()
-        self._rotation_stop_event = threading.Event()
+        self._background_stop_event = threading.Event()
         self._rotation_thread: Optional[threading.Thread] = None
+        self._idle_session_reaper_thread: Optional[threading.Thread] = None
+
+    def _close_cached_session_locked(self, client_key: str, cached_session: CachedUpstreamSession, reason: str) -> None:
+        cached_session.session.close()
+        self._sessions.pop(client_key, None)
+        debug_log(
+            self.debug_enabled,
+            f"Closed upstream session for client={client_key} proxy={cached_session.proxy_url} reason={reason}",
+        )
 
     def _close_sessions_locked(self) -> None:
-        for session in self._sessions.values():
-            session.close()
-        self._sessions.clear()
+        current_items = list(self._sessions.items())
+        for client_key, cached_session in current_items:
+            if cached_session.in_use > 0:
+                continue
+            self._close_cached_session_locked(client_key, cached_session, "proxy rotation")
+
+    def _close_idle_sessions_locked(self, now: float) -> None:
+        current_items = list(self._sessions.items())
+        for client_key, cached_session in current_items:
+            if cached_session.in_use > 0:
+                continue
+            idle_for = now - cached_session.last_activity
+            if idle_for < self._client_idle_timeout_seconds:
+                continue
+            self._close_cached_session_locked(
+                client_key,
+                cached_session,
+                f"client idle timeout after {format_rotation_interval(idle_for)}",
+            )
+
+    def _create_session_locked(self, client_key: str) -> CachedUpstreamSession:
+        session = requests.Session()
+        session.trust_env = False
+        session.proxies = {
+            "http": self.socks_proxy,
+            "https": self.socks_proxy,
+        }
+        session.verify = self.verify_tls
+        cached_session = CachedUpstreamSession(
+            session=session,
+            proxy_url=self.socks_proxy,
+            last_activity=time.monotonic(),
+        )
+        self._sessions[client_key] = cached_session
+        debug_log(
+            self.debug_enabled,
+            f"Created upstream session for client={client_key} proxies={session.proxies} verify_tls={session.verify}",
+        )
+        return cached_session
 
     def rotate_socks_proxy(self) -> tuple[str, list[tuple[str, str]]]:
         current_proxy = self.socks_proxy
@@ -334,7 +392,7 @@ class ProxyApplication:
             self._close_sessions_locked()
         debug_log(
             self.debug_enabled,
-            f"Rotated SOCKS proxy from {current_proxy} to {next_proxy}; cleared cached upstream sessions",
+            f"Rotated SOCKS proxy from {current_proxy} to {next_proxy}; idle cached upstream sessions were closed and future sessions stay lazy",
         )
         return next_proxy, failures
 
@@ -350,7 +408,7 @@ class ProxyApplication:
         def run_rotation_loop() -> None:
             interval_seconds = self._rotation_interval_seconds
             assert interval_seconds is not None
-            while not self._rotation_stop_event.wait(interval_seconds):
+            while not self._background_stop_event.wait(interval_seconds):
                 try:
                     next_proxy, failures = self.rotate_socks_proxy()
                     if failures:
@@ -369,30 +427,58 @@ class ProxyApplication:
             f"Started proxy rotation thread interval_seconds={self._rotation_interval_seconds}",
         )
 
+    def start_idle_session_reaper(self) -> None:
+        if self._idle_session_reaper_thread is not None:
+            return
+
+        def run_idle_session_reaper() -> None:
+            wait_seconds = min(self._client_idle_timeout_seconds, 1.0)
+            while not self._background_stop_event.wait(wait_seconds):
+                with self._lock:
+                    self._close_idle_sessions_locked(time.monotonic())
+
+        self._idle_session_reaper_thread = threading.Thread(
+            target=run_idle_session_reaper,
+            name="upstream-session-idle-reaper",
+            daemon=True,
+        )
+        self._idle_session_reaper_thread.start()
+        debug_log(
+            self.debug_enabled,
+            f"Started idle session reaper timeout_seconds={self._client_idle_timeout_seconds}",
+        )
+
     def stop_proxy_rotation(self) -> None:
-        self._rotation_stop_event.set()
+        self._background_stop_event.set()
         if self._rotation_thread is not None:
             self._rotation_thread.join(timeout=1.0)
             self._rotation_thread = None
+        if self._idle_session_reaper_thread is not None:
+            self._idle_session_reaper_thread.join(timeout=1.0)
+            self._idle_session_reaper_thread = None
 
-    def get_session(self, client_key: str) -> requests.Session:
+    def acquire_session(self, client_key: str) -> requests.Session:
         with self._lock:
-            session = self._sessions.get(client_key)
-            if session is None:
-                session = requests.Session()
-                session.trust_env = False
-                # Keep one upstream session per client IP so cookies and connection reuse stay isolated.
-                session.proxies = {
-                    "http": self.socks_proxy,
-                    "https": self.socks_proxy,
-                }
-                session.verify = self.verify_tls
-                self._sessions[client_key] = session
-                debug_log(
-                    self.debug_enabled,
-                    f"Created upstream session for client={client_key} proxies={session.proxies} verify_tls={session.verify}",
-                )
-            return session
+            cached_session = self._sessions.get(client_key)
+            if cached_session is not None and cached_session.proxy_url != self.socks_proxy and cached_session.in_use == 0:
+                self._close_cached_session_locked(client_key, cached_session, "stale proxy assignment")
+                cached_session = None
+            if cached_session is None:
+                cached_session = self._create_session_locked(client_key)
+            cached_session.in_use += 1
+            cached_session.last_activity = time.monotonic()
+            return cached_session.session
+
+    def release_session(self, client_key: str) -> None:
+        with self._lock:
+            cached_session = self._sessions.get(client_key)
+            if cached_session is None:
+                return
+            if cached_session.in_use > 0:
+                cached_session.in_use -= 1
+            cached_session.last_activity = time.monotonic()
+            if cached_session.proxy_url != self.socks_proxy and cached_session.in_use == 0:
+                self._close_cached_session_locked(client_key, cached_session, "proxy rotated while session was active")
 
     def build_local_proxy_path(self, upstream_url: str) -> str:
         parsed = urllib.parse.urlsplit(upstream_url)
@@ -723,53 +809,56 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
         request_body = self.read_request_body()
         upstream_headers = self.build_upstream_headers(target_url)
         client_key = self.client_address[0]
-        session = self.app.get_session(client_key)
-
-        debug_log(
-            self.app.debug_enabled,
-            f"Forwarding upstream request method={self.command} url={target_url} body_bytes={len(request_body)} header_count={len(upstream_headers)}",
-        )
-        if self.app.debug_enabled:
-            debug_log(self.app.debug_enabled, f"Upstream request headers: {upstream_headers}")
+        session = self.app.acquire_session(client_key)
 
         try:
-            upstream_response = session.request(
-                method=self.command,
-                url=target_url,
-                headers=upstream_headers,
-                data=request_body,
-                allow_redirects=False,
-                timeout=self.app.timeout,
+            debug_log(
+                self.app.debug_enabled,
+                f"Forwarding upstream request method={self.command} url={target_url} body_bytes={len(request_body)} header_count={len(upstream_headers)}",
             )
-        except requests.exceptions.SSLError as exc:
-            debug_log(self.app.debug_enabled, f"Upstream TLS verification failed: {exc!r}")
-            self.send_error(
-                502,
-                "Upstream TLS certificate verification failed. Supply --ca-bundle <pem> for a trusted private CA, or use --insecure if you trust the target path or SOCKS proxy.",
+            if self.app.debug_enabled:
+                debug_log(self.app.debug_enabled, f"Upstream request headers: {upstream_headers}")
+
+            try:
+                upstream_response = session.request(
+                    method=self.command,
+                    url=target_url,
+                    headers=upstream_headers,
+                    data=request_body,
+                    allow_redirects=False,
+                    timeout=self.app.timeout,
+                )
+            except requests.exceptions.SSLError as exc:
+                debug_log(self.app.debug_enabled, f"Upstream TLS verification failed: {exc!r}")
+                self.send_error(
+                    502,
+                    "Upstream TLS certificate verification failed. Supply --ca-bundle <pem> for a trusted private CA, or use --insecure if you trust the target path or SOCKS proxy.",
+                )
+                return
+            except requests.RequestException as exc:
+                debug_log(self.app.debug_enabled, f"Upstream request failed: {exc!r}")
+                self.send_error(502, f"Upstream proxy error: {exc}")
+                return
+
+            debug_log(
+                self.app.debug_enabled,
+                f"Received upstream response status={upstream_response.status_code} reason={upstream_response.reason!r} final_url={upstream_response.url} content_type={upstream_response.headers.get('Content-Type', '')!r} body_bytes={len(upstream_response.content)}",
             )
-            return
-        except requests.RequestException as exc:
-            debug_log(self.app.debug_enabled, f"Upstream request failed: {exc!r}")
-            self.send_error(502, f"Upstream proxy error: {exc}")
-            return
 
-        debug_log(
-            self.app.debug_enabled,
-            f"Received upstream response status={upstream_response.status_code} reason={upstream_response.reason!r} final_url={upstream_response.url} content_type={upstream_response.headers.get('Content-Type', '')!r} body_bytes={len(upstream_response.content)}",
-        )
+            payload, content_type, encoding = self.prepare_response_payload(upstream_response, target_url)
+            debug_log(
+                self.app.debug_enabled,
+                f"Prepared downstream payload content_type={content_type!r} encoding={encoding!r} body_bytes={len(payload)}",
+            )
+            self.send_response(upstream_response.status_code)
+            self.copy_response_headers(upstream_response, target_url, content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
 
-        payload, content_type, encoding = self.prepare_response_payload(upstream_response, target_url)
-        debug_log(
-            self.app.debug_enabled,
-            f"Prepared downstream payload content_type={content_type!r} encoding={encoding!r} body_bytes={len(payload)}",
-        )
-        self.send_response(upstream_response.status_code)
-        self.copy_response_headers(upstream_response, target_url, content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-
-        if self.command != "HEAD":
-            self.wfile.write(payload)
+            if self.command != "HEAD":
+                self.wfile.write(payload)
+        finally:
+            self.app.release_session(client_key)
 
     def build_upstream_headers(self, target_url: str) -> dict[str, str]:
         upstream_headers: dict[str, str] = {}
@@ -884,7 +973,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rotation-interval",
         type=parse_rotation_interval,
-        help="Time between random proxy rotations when using --socks5-file, for example 5, 5m, 45s, or 5m34s (default: 10m)",
+        help="Time between random proxy rotations when using --socks5-file, for example 5, 5m, 45s, or 5m34s (default: 60m)",
+    )
+    parser.add_argument(
+        "--client-idle-timeout",
+        type=parse_rotation_interval,
+        default=DEFAULT_CLIENT_IDLE_TIMEOUT_SECONDS,
+        help="Close an upstream proxy session after this much client inactivity, for example 30s, 2m, or 2m30s (default: 5m)",
     )
     parser.add_argument("--debug", action="store_true", help="Print verbose request, rewrite, and upstream response diagnostics")
     tls_group = parser.add_mutually_exclusive_group()
@@ -936,12 +1031,15 @@ def main() -> None:
         verify_tls=verify_tls,
         socks_proxy_candidates=socks5_candidates,
         rotation_interval_seconds=rotation_interval_seconds,
+        client_idle_timeout_seconds=args.client_idle_timeout,
     )
 
     with ThreadedHTTPServer((args.host, args.port), SocksTunnelHandler, app) as server:
         app.start_proxy_rotation()
+        app.start_idle_session_reaper()
         print(f"Serving SOCKS5 HTTP tunneler on http://{args.host}:{args.port}")
         print(f"SOCKS5 upstream: {app.socks_proxy}")
+        print(f"Client idle timeout: {format_rotation_interval(args.client_idle_timeout)}")
         if args.socks5_file:
             print(f"SOCKS5 proxy list: {socks5_file_path}")
             if failed_socks_proxies:
