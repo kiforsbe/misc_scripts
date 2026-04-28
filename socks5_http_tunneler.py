@@ -23,6 +23,13 @@ except ImportError as exc:  # pragma: no cover - import guard
         "This script requires requests with SOCKS support. Install it with: pip install \"requests[socks]\""
     ) from exc
 
+try:
+    from tqdm import tqdm
+except ImportError as exc:  # pragma: no cover - import guard
+    raise SystemExit(
+        f"This script requires tqdm for proxy testing progress bars. Install it with: {sys.executable} -m pip install tqdm"
+    ) from exc
+
 from urllib3.exceptions import InsecureRequestWarning
 
 
@@ -77,6 +84,7 @@ DEFAULT_PROXY_ROTATION_SECONDS = 60.0 * 60.0
 DEFAULT_CLIENT_IDLE_TIMEOUT_SECONDS = 5.0 * 60.0
 DEFAULT_PROXY_BLACKLIST_FILE = Path.home() / ".socks5-proxy-blacklist.csv"
 DEFAULT_PROXY_WHITELIST_FILE = Path.home() / ".socks5-proxy-whitelist.csv"
+PROXY_PROGRESS_REFRESH_SECONDS = 0.1
 ROTATION_INTERVAL_PATTERN = re.compile(
     r"^(?:(?P<minutes>\d+(?:\.\d+)?)m)?(?:(?P<seconds>\d+(?:\.\d+)?)s)?$",
     re.IGNORECASE,
@@ -300,6 +308,64 @@ def progress_log(message: str) -> None:
     sys.stderr.write(f"{message}\n")
 
 
+def format_proxy_progress_label(socks_proxy: str, max_length: int = 56) -> str:
+    if len(socks_proxy) <= max_length:
+        return socks_proxy
+    return socks_proxy[: max_length - 3] + "..."
+
+
+def probe_socks_proxy_with_progress(
+    socks_proxy: str,
+    timeout: float,
+    attempt_number: int,
+    total_candidates: int,
+) -> Optional[str]:
+    result: dict[str, object] = {}
+    completed = threading.Event()
+    timer_total = max(timeout, PROXY_PROGRESS_REFRESH_SECONDS)
+    timer_label = format_proxy_progress_label(socks_proxy)
+
+    def worker() -> None:
+        try:
+            result["failure_reason"] = probe_socks_proxy(socks_proxy, timeout)
+        except BaseException as exc:  # pragma: no cover - should not happen, but preserve failures from the worker thread.
+            result["exception"] = exc
+        finally:
+            completed.set()
+
+    worker_thread = threading.Thread(target=worker, name="socks-proxy-probe", daemon=True)
+    worker_thread.start()
+    started_at = time.monotonic()
+    last_elapsed = 0.0
+
+    with tqdm(
+        total=timer_total,
+        desc=f"  Proxy {attempt_number}/{total_candidates}",
+        unit="s",
+        leave=False,
+        dynamic_ncols=True,
+        file=sys.stderr,
+        bar_format="{desc}: |{bar}| {n:.1f}/{total:.1f}s [{elapsed}<{remaining}] {postfix}",
+    ) as timer_progress:
+        timer_progress.set_postfix_str(timer_label)
+        while not completed.wait(PROXY_PROGRESS_REFRESH_SECONDS):
+            elapsed = min(time.monotonic() - started_at, timer_total)
+            increment = elapsed - last_elapsed
+            if increment > 0:
+                timer_progress.update(increment)
+                last_elapsed = elapsed
+
+        worker_thread.join()
+        elapsed = min(time.monotonic() - started_at, timer_total)
+        increment = elapsed - last_elapsed
+        if increment > 0:
+            timer_progress.update(increment)
+
+    if "exception" in result:
+        raise result["exception"]  # type: ignore[misc]
+    return result.get("failure_reason")  # type: ignore[return-value]
+
+
 def probe_socks_proxy(socks_proxy: str, timeout: float) -> Optional[str]:
     parsed = urllib.parse.urlsplit(socks_proxy)
     if not parsed.hostname or parsed.port is None:
@@ -357,27 +423,39 @@ def choose_live_socks_proxy(
     known_whitelist = whitelisted_socks_proxies if whitelisted_socks_proxies is not None else {}
 
     # Shuffle once so probe order is explicitly random without replacement.
-    while remaining:
-        candidate = remaining.pop()
-        attempted = total_candidates - len(remaining)
-        progress_log(f"Probing SOCKS proxy {attempted}/{total_candidates}: {candidate}")
-        debug_log(debug_enabled, f"Probing SOCKS proxy candidate: {candidate}")
-        failure_reason = probe_socks_proxy(candidate, timeout)
-        if failure_reason is None:
-            if whitelist_file_path is not None:
-                append_socks_proxy_whitelist_entries(
-                    whitelist_file_path,
-                    [candidate],
-                    known_whitelist,
-                )
-            progress_log(f"SOCKS proxy probe succeeded: {candidate}")
-            debug_log(debug_enabled, f"Selected live SOCKS proxy candidate: {candidate}")
-            return candidate, failures
-        failures.append((candidate, failure_reason))
-        progress_log(f"SOCKS proxy probe failed: {candidate} ({failure_reason})")
-        if blacklist_file_path is not None:
-            append_socks_proxy_blacklist_entries(blacklist_file_path, [(candidate, failure_reason)], known_blacklist)
-        debug_log(debug_enabled, f"Rejected SOCKS proxy candidate {candidate}: {failure_reason}")
+    with tqdm(
+        total=total_candidates,
+        desc="Testing proxies",
+        unit="proxy",
+        dynamic_ncols=True,
+        file=sys.stderr,
+        bar_format="{desc}: |{bar}| {n_fmt}/{total_fmt} tested [{elapsed}<{remaining}] {postfix}",
+    ) as total_progress:
+        total_progress.set_postfix_str("failed=0")
+        while remaining:
+            candidate = remaining.pop()
+            attempted = total_candidates - len(remaining)
+            total_progress.set_postfix_str(f"failed={len(failures)} current={attempted}/{total_candidates}")
+            debug_log(debug_enabled, f"Probing SOCKS proxy candidate: {candidate}")
+            failure_reason = probe_socks_proxy_with_progress(candidate, timeout, attempted, total_candidates)
+            total_progress.update(1)
+            if failure_reason is None:
+                if whitelist_file_path is not None:
+                    append_socks_proxy_whitelist_entries(
+                        whitelist_file_path,
+                        [candidate],
+                        known_whitelist,
+                    )
+                tqdm.write(f"SOCKS proxy probe succeeded: {candidate}", file=sys.stderr)
+                debug_log(debug_enabled, f"Selected live SOCKS proxy candidate: {candidate}")
+                total_progress.set_postfix_str(f"failed={len(failures)}")
+                return candidate, failures
+            failures.append((candidate, failure_reason))
+            total_progress.set_postfix_str(f"failed={len(failures)}")
+            tqdm.write(f"SOCKS proxy probe failed: {candidate} ({failure_reason})", file=sys.stderr)
+            if blacklist_file_path is not None:
+                append_socks_proxy_blacklist_entries(blacklist_file_path, [(candidate, failure_reason)], known_blacklist)
+            debug_log(debug_enabled, f"Rejected SOCKS proxy candidate {candidate}: {failure_reason}")
 
     raise SystemExit("No working SOCKS5 proxies found in the provided list")
 
