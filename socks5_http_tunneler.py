@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.parse
 from typing import Optional
+import warnings
 
 try:
     import requests
@@ -21,6 +22,8 @@ except ImportError as exc:  # pragma: no cover - import guard
     raise SystemExit(
         "This script requires requests with SOCKS support. Install it with: pip install \"requests[socks]\""
     ) from exc
+
+from urllib3.exceptions import InsecureRequestWarning
 
 
 HOP_BY_HOP_HEADERS = {
@@ -412,6 +415,12 @@ def debug_log(enabled: bool, message: str) -> None:
         sys.stderr.write(f"[DEBUG] {message}\n")
 
 
+def configure_runtime_noise(debug_enabled: bool, verify_tls: bool | str) -> None:
+    if debug_enabled or verify_tls is not False:
+        return
+    warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+
+
 def truncate_for_debug(value: str, limit: int = MAX_DEBUG_BODY_PREVIEW) -> str:
     compact = re.sub(r"\s+", " ", value)
     if len(compact) <= limit:
@@ -782,10 +791,8 @@ class ProxyApplication:
         elif is_http_url(candidate):
             absolute = candidate
             preserve_absolute = True
-        elif candidate.startswith("/"):
-            absolute = urllib.parse.urljoin(base_url, candidate)
         else:
-            return value
+            absolute = urllib.parse.urljoin(base_url, candidate)
 
         if preserve_absolute:
             return self.build_local_proxy_url(absolute, local_origin)
@@ -841,7 +848,7 @@ class ProxyApplication:
         rewritten = REWRITE_SRCSET_PATTERN.sub(replace_srcset, rewritten)
         rewritten = self.rewrite_css_urls(rewritten, base_url, local_origin)
         rewritten = REWRITE_META_REFRESH_PATTERN.sub(replace_meta_refresh, rewritten)
-        return self.inject_runtime_shim(rewritten)
+        return self.inject_runtime_shim(rewritten, base_url)
 
     def looks_like_feed_xml(self, text: str) -> bool:
         lowered = text[:4096].lower()
@@ -872,20 +879,23 @@ class ProxyApplication:
         rewritten = REWRITE_FEED_TEXT_PATTERN.sub(replace_text, rewritten)
         return rewritten
 
-    def inject_runtime_shim(self, html_text: str) -> str:
+    def inject_runtime_shim(self, html_text: str, base_url: str) -> str:
         # Runtime interception covers client-side fetch/XHR/navigation APIs that static HTML rewriting cannot see.
+        encoded_upstream_base_url = html.escape(base_url, quote=True)
         shim = (
             "<script>"
             "(function(){"
             "const localOrigin=window.location.origin;"
+            f"const upstreamBaseUrl=\"{encoded_upstream_base_url}\";"
             "function toProxy(input){"
             "if(typeof input!==\"string\"||!input){return input;}"
             "if(input.startsWith(\"#\")||input.startsWith(\"data:\")||input.startsWith(\"javascript:\")||input.startsWith(\"mailto:\")||input.startsWith(\"tel:\")){return input;}"
             "try{"
             "const url=new URL(input,window.location.href);"
             "if(!/^https?:$/.test(url.protocol)){return input;}"
-            "if(url.origin===localOrigin){return input;}"
-            "return \"/proxy/\"+url.protocol.slice(0,-1)+\"/\"+url.host+url.pathname+url.search+url.hash;"
+            "if(url.origin===localOrigin&&url.pathname.startsWith(\"/proxy/\")){return url.pathname+url.search+url.hash;}"
+            "const upstreamUrl=url.origin===localOrigin?new URL(input,upstreamBaseUrl):url;"
+            "return \"/proxy/\"+upstreamUrl.protocol.slice(0,-1)+\"/\"+upstreamUrl.host+upstreamUrl.pathname+upstreamUrl.search+upstreamUrl.hash;"
             "}catch(_error){return input;}"
             "}"
             "const nativeFetch=window.fetch;"
@@ -1187,6 +1197,9 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
         return self.rfile.read(body_length)
 
     def log_message(self, format: str, *args) -> None:
+        app = getattr(self.server, "app", None)
+        if app is None or not app.debug_enabled:
+            return
         sys.stderr.write(
             "%s - - [%s] %s\n"
             % (self.client_address[0], self.log_date_time_string(), format % args)
@@ -1309,6 +1322,7 @@ def main() -> None:
         proxy_whitelist_file_path=socks5_whitelist_file_path if args.socks5_file else None,
         whitelisted_socks_proxies=whitelisted_socks_proxies,
     )
+    configure_runtime_noise(args.debug, verify_tls)
 
     with ThreadedHTTPServer((args.host, args.port), SocksTunnelHandler, app) as server:
         app.start_proxy_rotation()
