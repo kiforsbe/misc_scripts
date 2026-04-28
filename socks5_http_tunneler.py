@@ -437,6 +437,9 @@ def parse_rotation_interval(value: str) -> float:
     if not raw_value:
         raise argparse.ArgumentTypeError("rotation interval must not be empty")
 
+    if raw_value in {"0", "off", "disabled"}:
+        return 0.0
+
     if raw_value[-1].isdigit():
         raw_value = f"{raw_value}m"
 
@@ -449,8 +452,8 @@ def parse_rotation_interval(value: str) -> float:
     minutes = float(match.group("minutes") or 0.0)
     seconds = float(match.group("seconds") or 0.0)
     total_seconds = minutes * 60.0 + seconds
-    if total_seconds <= 0:
-        raise argparse.ArgumentTypeError("rotation interval must be greater than 0")
+    if total_seconds < 0:
+        raise argparse.ArgumentTypeError("rotation interval must be 0 or greater")
     return total_seconds
 
 
@@ -466,6 +469,12 @@ def format_rotation_interval(total_seconds: float) -> str:
         else:
             parts.append(f"{seconds:g}s")
     return "".join(parts)
+
+
+def format_optional_interval(total_seconds: Optional[float]) -> str:
+    if total_seconds is None or total_seconds <= 0:
+        return "disabled"
+    return format_rotation_interval(total_seconds)
 
 
 @dataclass
@@ -496,8 +505,10 @@ class ProxyApplication:
         self.debug_enabled = debug_enabled
         self.verify_tls = verify_tls
         self._socks_proxy_candidates = list(socks_proxy_candidates or [])
-        self._rotation_interval_seconds = rotation_interval_seconds
-        self._client_idle_timeout_seconds = client_idle_timeout_seconds
+        self._rotation_interval_seconds = rotation_interval_seconds if rotation_interval_seconds and rotation_interval_seconds > 0 else None
+        self._client_idle_timeout_seconds = (
+            client_idle_timeout_seconds if client_idle_timeout_seconds > 0 else None
+        )
         self._proxy_blacklist_file_path = proxy_blacklist_file_path
         self._blacklisted_socks_proxies = blacklisted_socks_proxies if blacklisted_socks_proxies is not None else {}
         self._proxy_whitelist_file_path = proxy_whitelist_file_path
@@ -524,6 +535,8 @@ class ProxyApplication:
             self._close_cached_session_locked(client_key, cached_session, "proxy rotation")
 
     def _close_idle_sessions_locked(self, now: float) -> None:
+        if self._client_idle_timeout_seconds is None:
+            return
         current_items = list(self._sessions.items())
         for client_key, cached_session in current_items:
             if cached_session.in_use > 0:
@@ -615,11 +628,15 @@ class ProxyApplication:
         )
 
     def start_idle_session_reaper(self) -> None:
+        if self._client_idle_timeout_seconds is None:
+            return
         if self._idle_session_reaper_thread is not None:
             return
 
         def run_idle_session_reaper() -> None:
-            wait_seconds = min(self._client_idle_timeout_seconds, 1.0)
+            timeout_seconds = self._client_idle_timeout_seconds
+            assert timeout_seconds is not None
+            wait_seconds = min(timeout_seconds, 1.0)
             while not self._background_stop_event.wait(wait_seconds):
                 with self._lock:
                     self._close_idle_sessions_locked(time.monotonic())
@@ -1160,13 +1177,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rotation-interval",
         type=parse_rotation_interval,
-        help="Time between random proxy rotations when using --socks5-file, for example 5, 5m, 45s, or 5m34s (default: 60m)",
+        help="Time between random proxy rotations when using --socks5-file, for example 5, 5m, 45s, or 5m34s; use 0, off, or disabled to disable (default: 60m)",
     )
     parser.add_argument(
         "--client-idle-timeout",
         type=parse_rotation_interval,
         default=DEFAULT_CLIENT_IDLE_TIMEOUT_SECONDS,
-        help="Close an upstream proxy session after this much client inactivity, for example 30s, 2m, or 2m30s (default: 5m)",
+        help="Close an upstream proxy session after this much client inactivity, for example 30s, 2m, or 2m30s; use 0, off, or disabled to disable (default: 5m)",
     )
     parser.add_argument("--debug", action="store_true", help="Print verbose request, rewrite, and upstream response diagnostics")
     tls_group = parser.add_mutually_exclusive_group()
@@ -1232,7 +1249,9 @@ def main() -> None:
         if failed_socks_proxies:
             failed_startup_proxies = {proxy for proxy, _reason in failed_socks_proxies}
             socks5_candidates = [candidate for candidate in socks5_candidates if candidate not in failed_startup_proxies]
-        rotation_interval_seconds = args.rotation_interval or DEFAULT_PROXY_ROTATION_SECONDS
+        rotation_interval_seconds = (
+            DEFAULT_PROXY_ROTATION_SECONDS if args.rotation_interval is None else args.rotation_interval
+        )
     else:
         selected_socks5 = args.socks5
 
@@ -1255,7 +1274,7 @@ def main() -> None:
         app.start_idle_session_reaper()
         print(f"Serving SOCKS5 HTTP tunneler on http://{args.host}:{args.port}")
         print(f"SOCKS5 upstream: {app.socks_proxy}")
-        print(f"Client idle timeout: {format_rotation_interval(args.client_idle_timeout)}")
+        print(f"Client idle timeout: {format_optional_interval(app._client_idle_timeout_seconds)}")
         if args.socks5_file:
             print(f"SOCKS5 proxy list: {socks5_file_path}")
             print(f"SOCKS5 proxy blacklist: {socks5_blacklist_file_path}")
@@ -1265,8 +1284,7 @@ def main() -> None:
                 for failed_proxy, reason in failed_socks_proxies:
                     print(f"  - {failed_proxy} ({reason})")
             print(f"Chosen SOCKS5 proxy for this session: {app.socks_proxy}")
-            assert rotation_interval_seconds is not None
-            print(f"SOCKS5 proxy rotation interval: {format_rotation_interval(rotation_interval_seconds)}")
+            print(f"SOCKS5 proxy rotation interval: {format_optional_interval(app._rotation_interval_seconds)}")
         print(f"Open: http://{args.host}:{args.port}/?url=http://google.com")
         if args.insecure:
             print("Upstream TLS verification disabled")
