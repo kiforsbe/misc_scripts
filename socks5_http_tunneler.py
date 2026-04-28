@@ -965,9 +965,50 @@ class ProxyApplication:
 class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
     server_version = "socks5_http_tunneler/1.0"
 
+    DOWNSTREAM_DISCONNECT_EXCEPTIONS = (
+        BrokenPipeError,
+        ConnectionAbortedError,
+        ConnectionResetError,
+    )
+
     @property
     def app(self) -> ProxyApplication:
         return self.server.app  # type: ignore[attr-defined]
+
+    def try_send_error(self, code: int, message: str) -> bool:
+        try:
+            self.send_error(code, message)
+            return True
+        except self.DOWNSTREAM_DISCONNECT_EXCEPTIONS as exc:
+            debug_log(
+                self.app.debug_enabled,
+                f"Client disconnected while sending error response code={code}: {exc!r}",
+            )
+            return False
+
+    def try_send_downstream_response(
+        self,
+        status_code: int,
+        upstream_response: requests.Response,
+        target_url: str,
+        payload: bytes,
+        content_type: str,
+    ) -> bool:
+        try:
+            self.send_response(status_code)
+            self.copy_response_headers(upstream_response, target_url, content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+
+            if self.command != "HEAD":
+                self.wfile.write(payload)
+            return True
+        except self.DOWNSTREAM_DISCONNECT_EXCEPTIONS as exc:
+            debug_log(
+                self.app.debug_enabled,
+                f"Client disconnected while sending upstream response status={status_code}: {exc!r}",
+            )
+            return False
 
     def do_GET(self) -> None:
         self.handle_proxy_request()
@@ -993,7 +1034,7 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
     def handle_proxy_request(self) -> None:
         target_url, should_redirect = self.app.resolve_upstream_url(self)
         if not target_url:
-            self.send_error(400, "Missing or invalid target URL. Use /?url=http://example.com")
+            self.try_send_error(400, "Missing or invalid target URL. Use /?url=http://example.com")
             return
 
         debug_log(
@@ -1034,14 +1075,14 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
                 )
             except requests.exceptions.SSLError as exc:
                 debug_log(self.app.debug_enabled, f"Upstream TLS verification failed: {exc!r}")
-                self.send_error(
+                self.try_send_error(
                     502,
                     "Upstream TLS certificate verification failed. Supply --ca-bundle <pem> for a trusted private CA, or use --insecure if you trust the target path or SOCKS proxy.",
                 )
                 return
             except requests.RequestException as exc:
                 debug_log(self.app.debug_enabled, f"Upstream request failed: {exc!r}")
-                self.send_error(502, f"Upstream proxy error: {exc}")
+                self.try_send_error(502, f"Upstream proxy error: {exc}")
                 return
 
             debug_log(
@@ -1054,13 +1095,13 @@ class SocksTunnelHandler(http.server.BaseHTTPRequestHandler):
                 self.app.debug_enabled,
                 f"Prepared downstream payload content_type={content_type!r} encoding={encoding!r} body_bytes={len(payload)}",
             )
-            self.send_response(upstream_response.status_code)
-            self.copy_response_headers(upstream_response, target_url, content_type)
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-
-            if self.command != "HEAD":
-                self.wfile.write(payload)
+            self.try_send_downstream_response(
+                upstream_response.status_code,
+                upstream_response,
+                target_url,
+                payload,
+                content_type,
+            )
         finally:
             self.app.release_session(client_key)
 
