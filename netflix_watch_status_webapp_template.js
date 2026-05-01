@@ -762,10 +762,14 @@
             if (!expected) {
                 throw new Error("Exact filter value cannot be empty");
             }
+            if (expected.includes("*") || expected.includes("?")) {
+                const regex = globToRegExp(expected);
+                return (candidate) => regex.test(normalizeStringFilterValue(candidate));
+            }
             return (candidate) => normalizeStringFilterValue(candidate) === expected;
         }
         if (value.includes("*") || value.includes("?")) {
-            const regex = globToRegExp(value);
+            const regex = globToRegExp(`*${value}*`);
             return (candidate) => regex.test(String(candidate || ""));
         }
         const lowered = normalizeStringFilterValue(value);
