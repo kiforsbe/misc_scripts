@@ -461,6 +461,15 @@ def _merge_metadata_sources(*source_groups: Tuple[str, ...]) -> Tuple[str, ...]:
     return tuple(merged_sources)
 
 
+def _build_imdb_enrichment_queries(query: str, resolved_title: Optional[str]) -> Tuple[str, ...]:
+    candidates: List[str] = []
+    for candidate in (query, resolved_title):
+        cleaned = str(candidate or "").strip()
+        if cleaned and cleaned.casefold() not in {value.casefold() for value in candidates}:
+            candidates.append(cleaned)
+    return tuple(candidates)
+
+
 @dataclass
 class NetflixHistoryEntry:
     raw_title: str
@@ -1310,24 +1319,27 @@ class NetflixWatchStatusAnalyzer:
             and not _has_imdb_title_reference(metadata_parent_id, metadata_sources)
             and hasattr(self.metadata_manager, "find_title_from_provider")
         ):
-            try:
-                imdb_match = self.metadata_manager.find_title_from_provider(
-                    query,
-                    "imdbdataprovider",
-                    year=year,
-                    preferred_type="tv",
-                )
-            except TypeError:
+            for imdb_query in _build_imdb_enrichment_queries(query, resolved_title):
                 try:
-                    imdb_match = self.metadata_manager.find_title_from_provider(query, "imdbdataprovider")
+                    imdb_match = self.metadata_manager.find_title_from_provider(
+                        imdb_query,
+                        "imdbdataprovider",
+                        year=year,
+                        preferred_type="tv",
+                    )
+                except TypeError:
+                    try:
+                        imdb_match = self.metadata_manager.find_title_from_provider(imdb_query, "imdbdataprovider")
+                    except Exception:
+                        imdb_match = (None, None)
                 except Exception:
                     imdb_match = (None, None)
-            except Exception:
-                imdb_match = (None, None)
 
-            imdb_info = imdb_match[0] if imdb_match else None
-            imdb_provider = imdb_match[1] if imdb_match and len(imdb_match) > 1 else None
-            if imdb_info is not None and getattr(imdb_info, "type", None) == "tv":
+                imdb_info = imdb_match[0] if imdb_match else None
+                imdb_provider = imdb_match[1] if imdb_match and len(imdb_match) > 1 else None
+                if imdb_info is None or getattr(imdb_info, "type", None) != "tv":
+                    continue
+
                 provider = imdb_provider or provider
                 metadata_parent_id = getattr(imdb_info, "id", None) or metadata_parent_id
                 resolved_total_seasons = getattr(imdb_info, "total_seasons", None) or resolved_total_seasons
@@ -1336,6 +1348,7 @@ class NetflixWatchStatusAnalyzer:
                     tuple(getattr(imdb_info, "sources", []) or ()),
                 )
                 metadata_type = "tv"
+                break
 
         self._metadata_cache[metadata_cache_key] = (media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources)
         return media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources
@@ -2119,7 +2132,26 @@ def _entry_requires_episode_mapping(entry: NetflixHistoryEntry) -> bool:
 def _entry_has_imdb_episode_metadata(entry: NetflixHistoryEntry) -> bool:
     if isinstance(entry.resolved_episode_source_id, str) and re.fullmatch(r"tt\d+", entry.resolved_episode_source_id):
         return True
-    return entry.resolved_episode is not None
+    return False
+
+
+def _entry_imdb_mapping_status(entry: NetflixHistoryEntry) -> str:
+    title_mapped = _entry_has_imdb_title_metadata(entry)
+    episode_required = _entry_requires_episode_mapping(entry)
+    episode_mapped = _entry_has_imdb_episode_metadata(entry)
+    if title_mapped and (not episode_required or episode_mapped):
+        return "mapped"
+    if title_mapped:
+        return "episode_unmapped"
+    return "title_unmapped"
+
+
+def _imdb_mapping_status_rank(status: str) -> int:
+    if status == "title_unmapped":
+        return 2
+    if status == "episode_unmapped":
+        return 1
+    return 0
 
 
 def _entry_found_source(entry: NetflixHistoryEntry) -> str:
@@ -2131,31 +2163,7 @@ def _entry_found_source(entry: NetflixHistoryEntry) -> str:
         labels.append("anime")
     if _entry_has_imdb_title_metadata(entry) or _entry_has_imdb_episode_metadata(entry):
         labels.append("imdb")
-    if not labels:
-        provider_label = _provider_name(entry.metadata_provider)
-        if provider_label:
-            labels.append(provider_label)
     return "+".join(dict.fromkeys(labels))
-
-
-def _combine_found_sources(*source_values: str) -> str:
-    labels: List[str] = []
-    for source_value in source_values:
-        for label in str(source_value or "").split("+"):
-            cleaned_label = label.strip()
-            if cleaned_label:
-                labels.append(cleaned_label)
-    return "+".join(dict.fromkeys(labels))
-
-
-def _override_found_source(override: Optional[NetflixTitleOverride]) -> str:
-    if override is None:
-        return ""
-    if override.source_id and re.fullmatch(r"tt\d+", override.source_id):
-        return "imdb"
-    if override.title or override.year is not None or override.episode_title:
-        return "imdb"
-    return ""
 
 
 def build_unmapped_imdb_override_rows(
@@ -2171,12 +2179,6 @@ def build_unmapped_imdb_override_rows(
         for raw_title, override in (overrides or {}).items()
     }
     for entry in entries:
-        title_mapped = _entry_has_imdb_title_metadata(entry)
-        episode_required = _entry_requires_episode_mapping(entry)
-        episode_mapped = _entry_has_imdb_episode_metadata(entry)
-        if title_mapped and (not episode_required or episode_mapped):
-            continue
-
         netflix_title = (entry.parsed.title or entry.raw_title).strip()
         season_name = (entry.parsed.season_title or "").strip()
         netflix_episode_title = (entry.parsed.episode_title or "").strip()
@@ -2186,8 +2188,12 @@ def build_unmapped_imdb_override_rows(
             (overrides[key] for key in _build_episode_title_override_lookup_keys(entry.parsed) if key in overrides),
             None,
         )
+        imdb_mapping_status = _entry_imdb_mapping_status(entry)
+        if imdb_mapping_status == "mapped" and override is None:
+            continue
         had_override = "yes" if override is not None else ""
-        found_source = _combine_found_sources(_entry_found_source(entry), _override_found_source(override))
+        title_mapped = _entry_has_imdb_title_metadata(entry)
+        found_source = _entry_found_source(entry)
 
         has_resolved_title_hint = bool(entry.resolved_title and entry.resolved_title != netflix_title)
         mapped_title = entry.resolved_title if has_resolved_title_hint else ""
@@ -2209,6 +2215,7 @@ def build_unmapped_imdb_override_rows(
                 "season_name": season_name,
                 "netflix_episode_title": netflix_episode_title,
                 "expected_type": entry.expected_type,
+                "imdb_mapping_status": imdb_mapping_status,
                 "title": mapped_title,
                 "year": mapped_year,
                 "source_id": mapped_source_id,
@@ -2230,6 +2237,8 @@ def build_unmapped_imdb_override_rows(
             row["found_source"] = found_source
         if not row["expected_type"] and entry.expected_type:
             row["expected_type"] = entry.expected_type
+        if _imdb_mapping_status_rank(imdb_mapping_status) > _imdb_mapping_status_rank(row["imdb_mapping_status"]):
+            row["imdb_mapping_status"] = imdb_mapping_status
         if not row["had_override"] and had_override:
             row["had_override"] = had_override
 
@@ -2244,11 +2253,19 @@ def build_unmapped_imdb_override_rows(
 
 
 def summarize_unmapped_imdb_override_rows(rows: List[Dict[str, str]]) -> Dict[str, int]:
-    with_override = sum(1 for row in rows if row.get("had_override") == "yes")
+    failed_rows = [row for row in rows if row.get("imdb_mapping_status") != "mapped"]
+    override_pass_rows = [
+        row for row in rows
+        if row.get("imdb_mapping_status") == "mapped" and row.get("had_override") == "yes"
+    ]
+    with_override = sum(1 for row in failed_rows if row.get("had_override") == "yes")
     return {
-        "total": len(rows),
+        "export_total": len(rows),
+        "failed": len(failed_rows),
+        "override_passed": len(override_pass_rows),
+        "total": len(failed_rows),
         "with_override": with_override,
-        "without_override": len(rows) - with_override,
+        "without_override": len(failed_rows) - with_override,
     }
 
 
@@ -2269,6 +2286,7 @@ def export_unmapped_imdb_overrides(
                 "season_name",
                 "netflix_episode_title",
                 "expected_type",
+                "imdb_mapping_status",
                 "title",
                 "year",
                 "source_id",
@@ -2756,6 +2774,9 @@ def main() -> None:
         safe_write_line(f"IMDb-unmapped override rows: {unmapped_stats['total']}")
         safe_write_line(f"IMDb-unmapped rows with existing override: {unmapped_stats['with_override']}")
         safe_write_line(f"IMDb-unmapped rows without override: {unmapped_stats['without_override']}")
+        safe_write_line(
+            f"IMDb override CSV rows exported: {unmapped_stats['export_total']} ({unmapped_stats['failed']} failed, {unmapped_stats['override_passed']} passed via override)"
+        )
         safe_write_line(f"IMDb-unmapped override template exported to: {unmapped_output_path}")
         return
 
@@ -2764,6 +2785,9 @@ def main() -> None:
     safe_write_line(f"IMDb-unmapped override rows: {unmapped_stats['total']}")
     safe_write_line(f"IMDb-unmapped rows with existing override: {unmapped_stats['with_override']}")
     safe_write_line(f"IMDb-unmapped rows without override: {unmapped_stats['without_override']}")
+    safe_write_line(
+        f"IMDb override CSV rows exported: {unmapped_stats['export_total']} ({unmapped_stats['failed']} failed, {unmapped_stats['override_passed']} passed via override)"
+    )
     safe_write_line(f"IMDb-unmapped override template exported to: {unmapped_output_path}")
 
 
