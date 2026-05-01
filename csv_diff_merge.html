@@ -3004,6 +3004,10 @@
         });
         zone.addEventListener("drop", async (event) => {
           const [file] = event.dataTransfer.files;
+          const input = side === "a" ? fileInputA : fileInputB;
+          if (input && event.dataTransfer.files?.length) {
+            input.files = event.dataTransfer.files;
+          }
           await loadFile(side, file);
         });
       });
