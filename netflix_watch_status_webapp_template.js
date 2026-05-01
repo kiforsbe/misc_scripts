@@ -23,7 +23,7 @@
 
     const preferredDefaultColumnOrder = ["year", "runtime_minutes", "average_rating", "genres"];
     const SMART_FILTER_FIELD_INFO = [
-        { name: "title", field: "title", hint: "Match title text" },
+        { name: "title", field: "title", hint: "Top-level title text" },
         { name: "type", field: "item_type", hint: "movie, series, season, episode" },
         { name: "state", field: "watch_state", hint: "watched, partial, unwatched" },
         { name: "releasedate", field: "release_date", hint: "Date-aware release filter" },
@@ -110,7 +110,10 @@
     const state = {
         query: "",
         compiledFilter: () => true,
+        compiledHighlightFilter: () => false,
         revealMatchingDescendants: false,
+        revealTopLevelTitleDescendants: false,
+        hasEpisodeTitleClause: false,
         filterError: "",
         filterInputTimer: null,
         selectedId: rows[0] ? rows[0].id : null,
@@ -190,6 +193,19 @@
 
     function displayEpisodeTitle(row) {
         return row.display_episode_title || row.episode_title || "";
+    }
+
+    function topLevelRow(row) {
+        let current = row || null;
+        while (current && current.parent_id) {
+            current = rowMap.get(current.parent_id) || null;
+        }
+        return current;
+    }
+
+    function topLevelTitleText(row) {
+        const topLevel = topLevelRow(row);
+        return topLevel ? `${displayTitle(topLevel)} ${topLevel.title || ""}`.trim() : "";
     }
 
     function uniqueSortedValues(values, limit) {
@@ -1107,16 +1123,21 @@
         return (row) => String(row.search_text || "").toLowerCase().includes(lowered);
     }
 
-    function buildFieldPredicate(fieldName, rawValue) {
+    function buildFieldPredicate(fieldName, rawValue, options = {}) {
         const field = canonicalSmartFilterField(fieldName);
         if (!field) {
             throw new Error(`Unknown filter field: ${fieldName}`);
         }
 
+        const titleScope = options.titleScope || "top-level";
+
         const usesPercentExpr = String(rawValue || "").includes("%");
 
         if (field === "title") {
-            return buildStringFieldPredicate(rawValue, (row) => `${displayTitle(row)} ${row.title || ""}`.trim());
+            if (titleScope === "local") {
+                return buildStringFieldPredicate(rawValue, (row) => (row.level === 0 ? `${displayTitle(row)} ${row.title || ""}`.trim() : ""));
+            }
+            return buildStringFieldPredicate(rawValue, (row) => topLevelTitleText(row));
         }
         if (field === "source_id") {
             return buildStringFieldPredicate(rawValue, (row) => row.source_id || "");
@@ -1200,11 +1221,12 @@
         throw new Error(`Unsupported filter field: ${fieldName}`);
     }
 
-    function compileSmartFilter(text) {
+    function compileSmartFilter(text, options = {}) {
         const trimmed = String(text || "").trim();
         if (!trimmed) {
             return {
                 predicate: () => true,
+                hasEpisodeTitleClause: false,
                 summary: "Smart filter ready",
             };
         }
@@ -1214,6 +1236,8 @@
         let negateNext = false;
         let clauseCount = 0;
         let revealMatchingDescendants = false;
+        let revealTopLevelTitleDescendants = false;
+        let hasEpisodeTitleClause = false;
 
         for (let index = 0; index < tokens.length; index += 1) {
             const token = tokens[index];
@@ -1251,7 +1275,13 @@
                 if (["progress", "progress_total"].includes(canonicalField)) {
                     revealMatchingDescendants = true;
                 }
-                predicate = buildFieldPredicate(fieldName, rawValue);
+                if (!negateNext && canonicalField === "title") {
+                    revealTopLevelTitleDescendants = true;
+                }
+                if (!negateNext && canonicalField === "episode_title") {
+                    hasEpisodeTitleClause = true;
+                }
+                predicate = buildFieldPredicate(fieldName, rawValue, options);
             } else {
                 const separatorIndex = token.indexOf(":");
                 if (separatorIndex > 0) {
@@ -1263,7 +1293,13 @@
                         if (["progress", "progress_total"].includes(canonicalField)) {
                             revealMatchingDescendants = true;
                         }
-                        predicate = buildFieldPredicate(fieldName, rawValue);
+                        if (!negateNext && canonicalField === "title") {
+                            revealTopLevelTitleDescendants = true;
+                        }
+                        if (!negateNext && canonicalField === "episode_title") {
+                            hasEpisodeTitleClause = true;
+                        }
+                        predicate = buildFieldPredicate(fieldName, rawValue, options);
                     } else {
                         predicate = buildFreeTextPredicate(token);
                     }
@@ -1293,6 +1329,8 @@
         return {
             predicate: (row) => groups.some((group) => group.every((filter) => filter(row))),
             revealMatchingDescendants,
+            revealTopLevelTitleDescendants,
+            hasEpisodeTitleClause,
             summary: `${clauseCount} clause${clauseCount === 1 ? "" : "s"} active${groups.length > 1 ? ` across ${groups.length} groups` : ""}`,
         };
     }
@@ -1315,12 +1353,19 @@
         state.query = nextNormalizedQuery;
         try {
             const compiled = compileSmartFilter(state.query);
+            const compiledHighlight = compileSmartFilter(state.query, { titleScope: "local" });
             state.compiledFilter = compiled.predicate;
+            state.compiledHighlightFilter = compiledHighlight.predicate;
             state.revealMatchingDescendants = compiled.revealMatchingDescendants;
+            state.revealTopLevelTitleDescendants = compiled.revealTopLevelTitleDescendants;
+            state.hasEpisodeTitleClause = compiled.hasEpisodeTitleClause;
             state.filterError = "";
         } catch (error) {
             state.filterError = error instanceof Error ? error.message : String(error);
+            state.compiledHighlightFilter = () => false;
             state.revealMatchingDescendants = false;
+            state.revealTopLevelTitleDescendants = false;
+            state.hasEpisodeTitleClause = false;
         }
         syncFilterInputState();
         render();
@@ -1360,6 +1405,20 @@
             return true;
         }
         return state.compiledFilter(row);
+    }
+
+    function rowHasDirectFilterMatch(row) {
+        if (!state.query) {
+            return false;
+        }
+        if (state.compiledHighlightFilter(row)) {
+            return true;
+        }
+        return Boolean(
+            state.hasEpisodeTitleClause
+            && row.item_type === "episode"
+            && rowMatches(row, state.query)
+        );
     }
 
     function isRowExpanded(row) {
@@ -1403,9 +1462,12 @@
 
             const revealDescendants = includeAllDescendants || (
                 queryActive
-                && state.revealMatchingDescendants
                 && directMatch
                 && row.has_children
+                && (
+                    state.revealMatchingDescendants
+                    || (state.revealTopLevelTitleDescendants && row.level === 0)
+                )
             );
 
             if (row.has_children && isRowExpanded(row)) {
@@ -2142,8 +2204,9 @@
 
     function renderVirtualRow(row, index, visibleColumns) {
         const watchStateClass = watchStateRowClass(row.watch_state);
+        const directFilterMatchClass = rowHasDirectFilterMatch(row) ? "is-filter-match" : "";
         return `
-            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${watchStateClass}" data-row-id="${escapeHtml(row.id)}" data-virtual-index="${index}">
+            <tr class="tree-row ${row.id === state.selectedId ? "is-selected" : ""} ${watchStateClass} ${directFilterMatchClass}" data-row-id="${escapeHtml(row.id)}" data-virtual-index="${index}">
                 <td class="gutter-column">${gutterCellMarkup(row)}</td>
                 <td class="column-${escapeHtml(nameColumn.key)} ${nameColumn.align === "right" ? "align-right" : ""} ${nameColumn.align === "center" ? "align-center" : ""}">${cellMarkup(row, nameColumn)}</td>
                 ${visibleColumns.map((column) => `<td class="column-${escapeHtml(column.key)} ${column.align === "right" ? "align-right" : ""} ${column.align === "center" ? "align-center" : ""}">${cellMarkup(row, column)}</td>`).join("")}

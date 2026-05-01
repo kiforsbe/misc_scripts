@@ -512,6 +512,10 @@ input:focus,
     background: linear-gradient(90deg, var(--selection) 0%, rgba(178, 7, 16, 0.04) 100%);
 }
 
+.treegrid tbody tr.is-filter-match:not(.is-selected) {
+    background: linear-gradient(90deg, rgba(255, 237, 184, 0.56) 0%, rgba(255, 248, 229, 0.2) 100%);
+}
+
 .treegrid tbody tr:hover td.right-gutter-column {
     background: transparent;
 }
@@ -821,6 +825,17 @@ input:focus,
 
 .tree-row.is-selected .gutter-column {
     background: transparent;
+}
+
+.tree-row.is-filter-match .tree-title {
+    text-decoration: underline;
+    text-decoration-color: rgba(166, 106, 0, 0.9);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 0.16em;
+}
+
+.tree-row.is-filter-match .tree-subtitle {
+    color: #8a5a00;
 }
 
 .tree-row.is-watched .item-pill,
