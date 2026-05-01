@@ -1366,6 +1366,9 @@ class NetflixWatchStatusAnalyzer:
                 provider = imdb_provider or provider
                 metadata_parent_id = getattr(imdb_info, "id", None) or metadata_parent_id
                 resolved_total_seasons = getattr(imdb_info, "total_seasons", None) or resolved_total_seasons
+                metadata_average_rating = getattr(imdb_info, "rating", None) or metadata_average_rating
+                metadata_num_votes = getattr(imdb_info, "votes", None) or metadata_num_votes
+                metadata_runtime_minutes = getattr(imdb_info, "runtime_minutes", None) or metadata_runtime_minutes
                 metadata_sources = _merge_metadata_sources(
                     metadata_sources,
                     tuple(getattr(imdb_info, "sources", []) or ()),
@@ -1631,8 +1634,13 @@ def _entry_metadata_row_fields(
     num_votes = num_votes_override if num_votes_override is not None else (
         entry.resolved_episode_votes if row_item_type == "episode" else entry.metadata_num_votes
     )
+    resolved_runtime_minutes = (
+        entry.resolved_episode_runtime_minutes
+        if row_item_type == "episode" and entry.resolved_episode_runtime_minutes is not None
+        else entry.metadata_runtime_minutes
+    )
     runtime_minutes = runtime_minutes_override if runtime_minutes_override is not None else _format_runtime_minutes(
-        entry.resolved_episode_runtime_minutes if row_item_type == "episode" else entry.metadata_runtime_minutes
+        resolved_runtime_minutes
     )
     return {
         "source_id": "" if row_item_type == "season" else _format_source_id(source_id),
