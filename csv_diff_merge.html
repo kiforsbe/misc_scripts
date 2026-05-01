@@ -2607,8 +2607,12 @@
     async function copyTextToClipboard(text) {
       const value = String(text ?? "");
       if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(value);
-        return;
+        try {
+          await navigator.clipboard.writeText(value);
+          return;
+        } catch (error) {
+          // Fall back when clipboard permissions are denied on local file pages.
+        }
       }
 
       const textarea = document.createElement("textarea");
@@ -2617,7 +2621,9 @@
       textarea.style.position = "fixed";
       textarea.style.opacity = "0";
       document.body.appendChild(textarea);
+      textarea.focus();
       textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
       document.execCommand("copy");
       textarea.remove();
     }
