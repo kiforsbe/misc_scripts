@@ -1,43 +1,20 @@
 netflix_original_title,netflix_title,season_name,netflix_episode_title,expected_type,title,year,source_id,episode_title,had_override,imdb_mapping_status,found_source
-7SEEDS: Part 1: Autumn Begins,7SEEDS,Part 1,Autumn Begins,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Cold Dew,7SEEDS,Part 1,Cold Dew,series,,,,,,title_unmapped,
-7SEEDS: Part 1: End of Heat,7SEEDS,Part 1,End of Heat,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Grain Rain,7SEEDS,Part 1,Grain Rain,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Greater Heat,7SEEDS,Part 1,Greater Heat,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Heavy Snow,7SEEDS,Part 1,Heavy Snow,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Insects Awaken,7SEEDS,Part 1,Insects Awaken,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Lesser Heat,7SEEDS,Part 1,Lesser Heat,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Light Snow,7SEEDS,Part 1,Light Snow,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Spring Begins,7SEEDS,Part 1,Spring Begins,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Summer Solstice,7SEEDS,Part 1,Summer Solstice,series,,,,,,title_unmapped,
-7SEEDS: Part 1: Winter Solstice,7SEEDS,Part 1,Winter Solstice,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Autumnal Equinox,7SEEDS,Part 2,Autumnal Equinox,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Frost Descends,7SEEDS,Part 2,Frost Descends,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Grain Full,7SEEDS,Part 2,Grain Full,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Grain in Ear,7SEEDS,Part 2,Grain in Ear,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Greater Cold,7SEEDS,Part 2,Greater Cold,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Lesser Cold,7SEEDS,Part 2,Lesser Cold,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Pure Brightness,7SEEDS,Part 2,Pure Brightness,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Rain Water,7SEEDS,Part 2,Rain Water,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Summer Begins,7SEEDS,Part 2,Summer Begins,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Vernal Equinox,7SEEDS,Part 2,Vernal Equinox,series,,,,,,title_unmapped,
-7SEEDS: Part 2: White Dew,7SEEDS,Part 2,White Dew,series,,,,,,title_unmapped,
-7SEEDS: Part 2: Winter Begins,7SEEDS,Part 2,Winter Begins,series,,,,,,title_unmapped,
 After Trek: Episode 2,After Trek,,,series,After Trek,2017,tt7423198,Context Is for Kings,yes,mapped,imdb
 Al Pitcher - Fy Fan Sweden!,Al Pitcher - Fy Fan Sweden!,,,movie,,,,,,title_unmapped,
 Alice in Borderland: Season 1: Episode 1,Alice in Borderland,Season 1,,series,,,,,,title_unmapped,
 Alice in Borderland: Season 2: Episode 1,Alice in Borderland,Season 2,,series,,,,,,title_unmapped,
-Alice: Limited Series: Episode 3,Alice,Limited Series,,series,,2009,tt1461312,,,episode_unmapped,imdb
+Alice: Limited Series: Episode 3,Alice,Limited Series,,series,,2009,tt1461312,,yes,episode_unmapped,imdb
 Along with the Gods: The Last 49 Days,Along with the Gods,,The Last 49 Days,series,,,,,,title_unmapped,
 Along with the Gods: The Two Worlds,Along with the Gods,,The Two Worlds,series,,,,,,title_unmapped,
 Always a Witch: Season 1: A Leap in Time,Always a Witch,Season 1,A Leap in Time,series,Always a Witch,2019,tt8001250,Un salto en el tiempo,yes,mapped,imdb
-Annihilation,Annihilation,,,movie,Animation!,2006,,,,title_unmapped,anime
-Ash vs. Evil Dead: Episode 10,Ash vs. Evil Dead,,,series,Ash vs Evil Dead,2015,tt4189022,,,episode_unmapped,imdb
-Awake,Awake,,,series,,1984,tt1839683,,,episode_unmapped,anime+imdb
+Annihilation,Annihilation,,,movie,Annihilation,2018,tt2798920,,yes,mapped,imdb
+Ash vs. Evil Dead: Episode 10,Ash vs. Evil Dead,,,series,Ash vs Evil Dead,2015,tt4189022,,yes,episode_unmapped,imdb
+Awake,Awake,,,series,,1984,tt1839683,,yes,episode_unmapped,anime+imdb
 "BASTARD‼ -Heavy Metal, Dark Fantasy-: Season 1: Rampage","BASTARD‼ -Heavy Metal, Dark Fantasy-",Season 1,Rampage,series,,,,,,title_unmapped,
 "BASTARD‼ -Heavy Metal, Dark Fantasy-: Season 1: The Arrival","BASTARD‼ -Heavy Metal, Dark Fantasy-",Season 1,The Arrival,series,,,,,,title_unmapped,
 Bee and PuppyCat: Again for the First Time,Bee and PuppyCat,,Again for the First Time,series,Bee and PuppyCat,2013,tt4163486,,yes,episode_unmapped,imdb
 Below Deck Mediterranean: Preview Special,Below Deck Mediterranean,,Preview Special,series,Below Deck Mediterranean,2016,tt5665418,,yes,episode_unmapped,imdb
+Biohackers: Season 2: Awake,Biohackers,Season 2,Awake,series,,2020,tt9849210,,yes,mapped,imdb
 Blazing Transfer Students: Enter the Kakerus!!,Blazing Transfer Students,,Enter the Kakerus!!,series,,,,,,title_unmapped,
 Bleach,Bleach,,,series,Bleach,2004,tt0434665,,yes,episode_unmapped,anime+imdb
 "Blue Exorcist: Stop, Time",Blue Exorcist,,"Stop, Time",series,Blue Exorcist,2011,tt1799631,Toki yo tomare,yes,mapped,anime+imdb
@@ -77,12 +54,12 @@ Bordertown: The Fury (Part One),Bordertown,,The Fury (Part One),series,Bordertow
 Bordertown: The Fury (Part Two),Bordertown,,The Fury (Part Two),series,Bordertown,2016,tt4937942,Raivotar Osa 2,yes,mapped,imdb
 Bordertown: The Lady in the Lake (Part One),Bordertown,,The Lady in the Lake (Part One),series,Bordertown,2016,tt4937942,Nainen J�rvess� Osa 1,yes,mapped,imdb
 Bordertown: The Lady in the Lake (Part Two),Bordertown,,The Lady in the Lake (Part Two),series,Bordertown,2016,tt4937942,Nainen J�rvess� Osa 2,yes,mapped,imdb
-Borgen - Power & Glory: A Near-Arctic State,Borgen - Power & Glory,,A Near-Arctic State,series,Rome: Power & Glory,1998,tt0237666,,,episode_unmapped,imdb
-Borgen - Power & Glory: Inuit Nunaat: Land of the People,Borgen - Power & Glory,,Inuit Nunaat: Land of the People,series,Rome: Power & Glory,1998,tt0237666,,,episode_unmapped,imdb
-Borgen - Power & Glory: Just Make It Go Away,Borgen - Power & Glory,,Just Make It Go Away,series,Rome: Power & Glory,1998,tt0237666,,,episode_unmapped,imdb
-Borgen - Power & Glory: Power in Denmark,Borgen - Power & Glory,,Power in Denmark,series,Rome: Power & Glory,1998,tt0237666,,,episode_unmapped,imdb
-Borgen - Power & Glory: The Minister Doesn’t Wish to Comment,Borgen - Power & Glory,,The Minister Doesn’t Wish to Comment,series,Rome: Power & Glory,1998,tt0237666,,,episode_unmapped,imdb
-Bubble,Bubble,,,series,,2022,tt0965404,,,episode_unmapped,anime+imdb
+Borgen - Power & Glory: A Near-Arctic State,Borgen - Power & Glory,,A Near-Arctic State,series,Rome: Power & Glory,1998,tt0237666,,yes,episode_unmapped,imdb
+Borgen - Power & Glory: Inuit Nunaat: Land of the People,Borgen - Power & Glory,,Inuit Nunaat: Land of the People,series,Rome: Power & Glory,1998,tt0237666,,yes,episode_unmapped,imdb
+Borgen - Power & Glory: Just Make It Go Away,Borgen - Power & Glory,,Just Make It Go Away,series,Rome: Power & Glory,1998,tt0237666,,yes,episode_unmapped,imdb
+Borgen - Power & Glory: Power in Denmark,Borgen - Power & Glory,,Power in Denmark,series,Rome: Power & Glory,1998,tt0237666,,yes,episode_unmapped,imdb
+Borgen - Power & Glory: The Minister Doesn’t Wish to Comment,Borgen - Power & Glory,,The Minister Doesn’t Wish to Comment,series,Rome: Power & Glory,1998,tt0237666,,yes,episode_unmapped,imdb
+Bubble,Bubble,,,series,,2022,tt0965404,,yes,episode_unmapped,anime+imdb
 Call of the Night: 1St Night: First Flight,Call of the Night,,First Flight,series,,,,,,title_unmapped,
 Call of the Night: 2Nd Night: Do You Do Line?,Call of the Night,,Do You Do Line?,series,,,,,,title_unmapped,
 Call of the Night: 3Rd Night: A Lot Came Out,Call of the Night,,A Lot Came Out,series,,,,,,title_unmapped,
@@ -91,7 +68,7 @@ Call of the Night: 3Rd Night: A Lot Came Out,Call of the Night,,A Lot Came Out,s
 "Capitani: Season 1: Out of Childhood, Out of Childhood",Capitani,Season 1,"Out of Childhood, Out of Childhood",series,Capitani,2019,tt10483610,"Aus der Kannerzäit, aus der Kannerzaït",yes,mapped,imdb
 CAROLE & TUESDAY: Part 2: A Change is Gonna Come,CAROLE & TUESDAY,Part 2,A Change is Gonna Come,series,Carole & Tuesday,2019,tt8107988,A Change is Gonna Come,yes,episode_unmapped,anime+imdb
 CAROLE & TUESDAY: Part 2: Just Like Heaven,CAROLE & TUESDAY,Part 2,Just Like Heaven,series,Carole & Tuesday,2019,tt8107988,Just Like Heaven,yes,episode_unmapped,anime+imdb
-Chef's Table: Volume 6: Mashama Bailey,Chef's Table: Volume 6,,Mashama Bailey,series,Chef's Table: Noodles,2024,tt33323674,,,episode_unmapped,imdb
+Chef's Table: Volume 6: Mashama Bailey,Chef's Table: Volume 6,,Mashama Bailey,series,Chef's Table: Noodles,2024,tt33323674,,yes,episode_unmapped,imdb
 Children of the Whales: Disappear From This World,Children of the Whales,,Disappear From This World,series,Children of the Whales,2017,tt7484994,Konoyo kara kie te shimae,yes,mapped,anime+imdb
 Children of the Whales: Glad to Be Born Here,Children of the Whales,,Glad to Be Born Here,series,Children of the Whales,2017,tt7484994,Koko ni umarete yokatta,yes,mapped,anime+imdb
 Children of the Whales: I Don't Care About This World Anymore,Children of the Whales,,I Don't Care About This World Anymore,series,Children of the Whales,2017,tt7484994,"Konna sekai wa, mô dô demo ii",yes,mapped,anime+imdb
@@ -219,8 +196,8 @@ Diablero: Season 1: An Arcane Incantation,Diablero,Season 1,An Arcane Incantatio
 "Diablero: Season 1: Leg of a Dog, Heart of a Chicken",Diablero,Season 1,"Leg of a Dog, Heart of a Chicken",series,,,,,,title_unmapped,
 Diablero: Season 1: The Conclave,Diablero,Season 1,The Conclave,series,,,,,,title_unmapped,
 Diablero: Season 1: The Hidden Children,Diablero,Season 1,The Hidden Children,series,,,,,,title_unmapped,
-Dragon Quest Your Story,Dragon Quest Your Story,,,movie,Dragon Quest: Your Story,2019,,,,title_unmapped,anime
-Dramaworld: Episode 1,Dramaworld,,,series,,2016,tt5468694,,,episode_unmapped,imdb
+Dragon Quest Your Story,Dragon Quest Your Story,,,movie,Dragon Quest: Your Story,2019,,,yes,title_unmapped,anime
+Dramaworld: Episode 1,Dramaworld,,,series,,2016,tt5468694,,yes,episode_unmapped,imdb
 Drifting Home,Drifting Home,,,movie,,,,,,title_unmapped,
 Dune,Dune,,,movie,,,,,,title_unmapped,
 Elite: Season 1: Welcome,Elite,Season 1,Welcome,series,Elite,2018,tt7134908,Bienvenidos,yes,mapped,imdb
@@ -233,7 +210,6 @@ Equinox: The Blood Runs in the Veins,Equinox,,The Blood Runs in the Veins,series
 Equinox: The Girl Is Gone,Equinox,,The Girl Is Gone,series,Equinox,2020,tt10973800,Pigen er væk,yes,mapped,imdb
 Equinox: What Is It You See When You're Asleep?,Equinox,,What Is It You See When You're Asleep?,series,Equinox,2020,tt10973800,"Hvad er det du ser, når du sover?",yes,mapped,imdb
 Fate/Apocrypha: Apocrypha: The Great Holy Grail War,Fate/Apocrypha: Apocrypha,,The Great Holy Grail War,series,Fate/Apocrypha,2017,tt6424454,The Holy Grail War,yes,mapped,anime+imdb
-Fate: The Winx Saga - The Afterparty,Fate,,The Winx Saga - The Afterparty,series,,,,,,title_unmapped,
 Feria: The Darkest Light: Bloody Feria,Feria: The Darkest Light,,Bloody Feria,series,Feria: The Darkest Light,2022,tt13323004,Feria de sangre,yes,mapped,imdb
 Feria: The Darkest Light: Offering,Feria: The Darkest Light,,Offering,series,Feria: The Darkest Light,2022,tt13323004,Ofrenda,yes,mapped,imdb
 Feria: The Darkest Light: The God of Fire,Feria: The Darkest Light,,The God of Fire,series,Feria: The Darkest Light,2022,tt13323004,Dios del fuego,yes,mapped,imdb
@@ -245,18 +221,18 @@ Ghost in the Shell,Ghost in the Shell,,,movie,,,,,,title_unmapped,
 Ghost in the Shell: SAC_2045: Season 1: NO NOISE NO LIFE - Sustainable War,Ghost in the Shell: SAC_2045,Season 1,NO NOISE NO LIFE - Sustainable War,series,,,,,,title_unmapped,
 "Girls und Panzer: Tankery, Here It Comes",Girls und Panzer,,"Tankery, Here It Comes",series,Girls und Panzer,2012,tt2294076,"Sensha-dô, hajimemasu!",yes,mapped,anime+imdb
 God Troubles Me: Episode 1,God Troubles Me,,,series,,,,,,title_unmapped,
-Godzilla Singular Point: Encipher,Godzilla Singular Point,,Encipher,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Enfatico,Godzilla Singular Point,,Enfatico,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Erumpent,Godzilla Singular Point,,Erumpent,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Explorer,Godzilla Singular Point,,Explorer,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Gadabout,Godzilla Singular Point,,Gadabout,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Gamesome,Godzilla Singular Point,,Gamesome,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Graftage,Godzilla Singular Point,,Graftage,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Omniarch,Godzilla Singular Point,,Omniarch,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Relaunch,Godzilla Singular Point,,Relaunch,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Theorist,Godzilla Singular Point,,Theorist,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Tigerish,Godzilla Singular Point,,Tigerish,series,Godzilla Singular Point,2021,tt13229934,,,,
-Godzilla Singular Point: Together,Godzilla Singular Point,,Together,series,Godzilla Singular Point,2021,tt13229934,,,,
+Godzilla Singular Point: Encipher,Godzilla Singular Point,,Encipher,series,Godzilla Singular Point,2021,tt13229934,Rikigaku no Genri,yes,mapped,anime+imdb
+Godzilla Singular Point: Enfatico,Godzilla Singular Point,,Enfatico,series,Godzilla Singular Point,2021,tt13229934,Jikan no Gimonfu,yes,mapped,anime+imdb
+Godzilla Singular Point: Erumpent,Godzilla Singular Point,,Erumpent,series,Godzilla Singular Point,2021,tt13229934,Rikigaku no Genri,yes,mapped,anime+imdb
+Godzilla Singular Point: Explorer,Godzilla Singular Point,,Explorer,series,Godzilla Singular Point,2021,tt13229934,Tatakai no owari,yes,mapped,anime+imdb
+Godzilla Singular Point: Gadabout,Godzilla Singular Point,,Gadabout,series,Godzilla Singular Point,2021,tt13229934,Hayaki Koto Kaze no,yes,mapped,anime+imdb
+Godzilla Singular Point: Gamesome,Godzilla Singular Point,,Gamesome,series,Godzilla Singular Point,2021,tt13229934,Midsummer Devil Festival / Manatsu Oni Matsuri,yes,mapped,anime+imdb
+Godzilla Singular Point: Graftage,Godzilla Singular Point,,Graftage,series,Godzilla Singular Point,2021,tt13229934,Taore yuku hito no,yes,mapped,anime+imdb
+Godzilla Singular Point: Omniarch,Godzilla Singular Point,,Omniarch,series,Godzilla Singular Point,2021,tt13229934,Maboroshi no Sugata,yes,mapped,anime+imdb
+Godzilla Singular Point: Relaunch,Godzilla Singular Point,,Relaunch,series,Godzilla Singular Point,2021,tt13229934,Hajimari no futari,yes,mapped,anime+imdb
+Godzilla Singular Point: Theorist,Godzilla Singular Point,,Theorist,series,Godzilla Singular Point,2021,tt13229934,Riron naki Sūji,yes,mapped,anime+imdb
+Godzilla Singular Point: Tigerish,Godzilla Singular Point,,Tigerish,series,Godzilla Singular Point,2021,tt13229934,Nobae’s Terror / Nobae no Kyōfu,yes,mapped,anime+imdb
+Godzilla Singular Point: Together,Godzilla Singular Point,,Together,series,Godzilla Singular Point,2021,tt13229934,Nobae’s Terror / Nobae no Kyōfu,yes,mapped,anime+imdb
 Good Witch: Season 1: Apologies and Remembrances,Good Witch,Season 1,Apologies and Remembrances,series,Good Witch,2015,tt3906732,,yes,episode_unmapped,anime+imdb
 Good Witch: Season 1: Do the Right Thing,Good Witch,Season 1,Do the Right Thing,series,,,,,,title_unmapped,
 Good Witch: Season 1: Running Scared,Good Witch,Season 1,Running Scared,series,,,,,,title_unmapped,
@@ -283,11 +259,11 @@ Guilty Crown: Void-Sampling,Guilty Crown,,Void-Sampling,series,Guilty Crown,2011
 Halo 4: Forward Unto Dawn,Halo 4,,Forward Unto Dawn,series,Halo 4: Forward Unto Dawn,2012,tt2262308,,yes,episode_unmapped,imdb
 Happiness: Limited Series: Epsiode 11,Happiness,Limited Series,Epsiode 11,series,Happiness,2021,tt14979052,Backup Power,yes,mapped,anime+imdb
 Harlock: Space Pirate,Harlock,,Space Pirate,series,,,,,,title_unmapped,
-Heartless: Episode 1,Heartless,,,series,,2014,tt2151454,,,episode_unmapped,imdb
+Heartless: Episode 1,Heartless,,,series,,2014,tt2151454,,yes,episode_unmapped,imdb
 Heaven Official's Blessing: Episode 1,Heaven Official's Blessing,,,series,,,,,,title_unmapped,
-Helsinki Crimes: Episode 1,Helsinki Crimes,,,series,,2022,tt17605198,,,episode_unmapped,imdb
-HERO MASK: Part l: Episode 1,HERO MASK: Part l,,,series,Hero Mask,2018,tt9316078,,,episode_unmapped,imdb
-HERO MASK: Part ll: Episode 16,HERO MASK: Part ll,,,series,Hero Mask,2018,tt9316078,,,episode_unmapped,imdb
+Helsinki Crimes: Episode 1,Helsinki Crimes,,,series,,2022,tt17605198,,yes,episode_unmapped,imdb
+HERO MASK: Part l: Episode 1,HERO MASK: Part l,,,series,Hero Mask,2018,tt9316078,,yes,episode_unmapped,anime+imdb
+HERO MASK: Part ll: Episode 16,HERO MASK: Part ll,,,series,Hero Mask 2nd Season,2019,tt9316078,,yes,episode_unmapped,anime+imdb
 High Seas: Season 1: The Rings,High Seas,Season 1,The Rings,series,High Seas,2019,tt8961508,Los anillos,yes,mapped,imdb
 Hotel Beau Séjour: Full Moon,Hotel Beau Séjour,,Full Moon,series,Hotel Beau Séjour,2016,tt3543082,Volle maan,yes,mapped,imdb
 Hotel Beau Séjour: The Body,Hotel Beau Séjour,,The Body,series,Hotel Beau Séjour,2016,tt3543082,Het lijk,yes,mapped,imdb
@@ -295,7 +271,7 @@ Hotel Beau Séjour: The Confession,Hotel Beau Séjour,,The Confession,series,Hot
 Hotel Beau Séjour: The Five,Hotel Beau Séjour,,The Five,series,Hotel Beau Séjour,2016,tt3543082,De vijf,yes,mapped,imdb
 Hotel Beau Séjour: The Night,Hotel Beau Séjour,,The Night,series,Hotel Beau Séjour,2016,tt3543082,De nacht,yes,mapped,imdb
 Hotel Beau Séjour: The Wedding,Hotel Beau Séjour,,The Wedding,series,Hotel Beau Séjour,2016,tt3543082,De bruiloft,yes,mapped,imdb
-House of Cards: Season 4: Chapter 40,House of Cards,Season 4,,series,,2013,tt1856010,,,episode_unmapped,imdb
+House of Cards: Season 4: Chapter 40,House of Cards,Season 4,,series,,2013,tt1856010,,yes,episode_unmapped,imdb
 I'm Quitting Heroing: I’m Quitting Heroing: A Little Bit of Thought Goes A Long Way for Efficiency!,I'm Quitting Heroing: I’m Quitting Heroing,,A Little Bit of Thought Goes A Long Way for Efficiency!,series,,,,,,title_unmapped,
 "I'm Quitting Heroing: I’m Quitting Heroing: I'll Save the World, Even If That Means Destroying It",I'm Quitting Heroing: I’m Quitting Heroing,,"I'll Save the World, Even If That Means Destroying It",series,,,,,,title_unmapped,
 I'm Quitting Heroing: I’m Quitting Heroing: I'm Quitting Heroing,I'm Quitting Heroing: I’m Quitting Heroing,,I'm Quitting Heroing,series,,,,,,title_unmapped,
@@ -303,7 +279,7 @@ I'm Quitting Heroing: I’m Quitting Heroing: I'm Quitting Heroing,I'm Quitting 
 I'm Quitting Heroing: I’m Quitting Heroing: My Next Interview's at the Demon Queen's Palace!,I'm Quitting Heroing: I’m Quitting Heroing,,My Next Interview's at the Demon Queen's Palace!,series,,,,,,title_unmapped,
 I'm Quitting Heroing: I’m Quitting Heroing: Strive to Ease the Burden on Your Future Self!,I'm Quitting Heroing: I’m Quitting Heroing,,Strive to Ease the Burden on Your Future Self!,series,,,,,,title_unmapped,
 IF,IF,,,movie,,,,,,title_unmapped,
-Initial D,Initial D,,,series,Initial D First Stage,1998,tt0385426,,,episode_unmapped,anime+imdb
+Initial D,Initial D,,,series,Initial D First Stage,1998,tt0385426,,yes,episode_unmapped,anime+imdb
 Into the Night: Season 1: Ayaz,Into the Night,Season 1,Ayaz,series,,,,,,title_unmapped,
 Into the Night: Season 1: Jakub,Into the Night,Season 1,Jakub,series,,,,,,title_unmapped,
 Into the Night: Season 1: Mathieu,Into the Night,Season 1,Mathieu,series,,,,,,title_unmapped,
@@ -329,30 +305,30 @@ Invisible City: Season 2: My Biggest Wish,Invisible City,Season 2,My Biggest Wis
 Invisible City: Season 2: The Life We Always Dreamed Of,Invisible City,Season 2,The Life We Always Dreamed Of,series,Invisible City,2021,tt8878862,A vida que a gente sempre quis,yes,mapped,imdb
 Invisible City: Season 2: Your Fear Is Your Poison,Invisible City,Season 2,Your Fear Is Your Poison,series,Invisible City,2021,tt8878862,O teu medo é o teu veneno,yes,mapped,imdb
 IO,IO,,,series,Io,2025,tt13587032,,,episode_unmapped,anime+imdb
-Jin: Episode 1,Jin,,,series,,2009,tt1529721,,,episode_unmapped,imdb
+Jin: Episode 1,Jin,,,series,,2009,tt1529721,,yes,episode_unmapped,imdb
 Jin: Jin (Final): Episode 1,Jin: Jin (Final),,,series,Jin,2009,tt1529721,,yes,title_unmapped,imdb
 JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: A Hero's Proof,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,A Hero's Proof,series,,,,,,title_unmapped,
 JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: A Hundred Against Two,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,A Hundred Against Two,series,,,,,,title_unmapped,
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: A Race Toward the Blink,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,A Race Toward the Blink,series,JoJo's Bizarre Adventure,2012,tt2359704,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Bloody Battle! JoJo & Dio,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Bloody Battle! JoJo & Dio,series,Steel Ball Run: JoJo's Bizarre Adventure,2026,tt38268282,,,episode_unmapped,imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: A Race Toward the Blink,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,A Race Toward the Blink,series,JoJo's Bizarre Adventure,2012,tt2359704,Dio the Invader,yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Bloody Battle! JoJo & Dio,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Bloody Battle! JoJo & Dio,series,JoJo's Bizarre Adventure,2012,tt2359704,Kessen JoJo & Dio,yes,episode_unmapped,anime+imdb
 JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: JoJo vs. The Ultimate Lifeform,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,JoJo vs. The Ultimate Lifeform,series,,,,,,title_unmapped,
 "JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Lisa Lisa, Hamon Coach",JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,"Lisa Lisa, Hamon Coach",series,,,,,,title_unmapped,
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: New York's JoJo,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,New York's JoJo,series,Steel Ball Run: JoJo's Bizarre Adventure,2026,tt38268282,,,episode_unmapped,imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: New York's JoJo,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,New York's JoJo,series,JoJo's Bizarre Adventure,2012,tt2359704,Dio to no seishun (“Youth with Dio”),yes,episode_unmapped,anime+imdb
 JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Overdrive,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Overdrive,series,,,,,,title_unmapped,
 JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Sorrowful Successor,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Sorrowful Successor,series,,,,,,title_unmapped,
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: The Deeper Plan,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,The Deeper Plan,series,JoJo's Bizarre Adventure,2012,tt2359704,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: The Game Master,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,The Game Master,series,JoJo's Bizarre Adventure,2012,tt2359704,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: The Pillar Man,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,The Pillar Man,series,JoJo's Bizarre Adventure,2012,tt2359704,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Tomorrow's Courage,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Tomorrow's Courage,series,Steel Ball Run: JoJo's Bizarre Adventure,2026,tt38268282,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Ultimate Warriors from Ancient Times,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Ultimate Warriors from Ancient Times,series,Steel Ball Run: JoJo's Bizarre Adventure,2026,tt38268282,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Von Stroheim's Revenge,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Von Stroheim's Revenge,series,Steel Ball Run: JoJo's Bizarre Adventure,2026,tt38268282,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Young Caesar,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Young Caesar,series,Steel Ball Run: JoJo's Bizarre Adventure,2026,tt38268282,,,episode_unmapped,imdb
-JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Youth with Dio,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Youth with Dio,series,Steel Ball Run: JoJo's Bizarre Adventure,2026,tt38268282,,,episode_unmapped,imdb
-Jumper,Jumper,,,series,Jumper!,2022,,,,title_unmapped,anime
-Kakegurui: Episode 1,Kakegurui,,,series,Kakegurui××,2019,tt7131720,,,episode_unmapped,anime+imdb
-Kakegurui: Kakegurui xx: Compulsive Gambling Girls Redux,Kakegurui: Kakegurui xx,,Compulsive Gambling Girls Redux,series,Kakegurui××,2019,tt32063523,,,episode_unmapped,anime+imdb
-Kakegurui: Kakegurui xx: The Hollywood Girl,Kakegurui: Kakegurui xx,,The Hollywood Girl,series,Kakegurui××,2019,tt32063523,,,episode_unmapped,anime+imdb
-Kakegurui: Kakegurui xx: The Momobami Clan Girls,Kakegurui: Kakegurui xx,,The Momobami Clan Girls,series,Kakegurui××,2019,tt32063523,,,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: The Deeper Plan,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,The Deeper Plan,series,JoJo's Bizarre Adventure,2012,tt2359704,Hamon shissô ôbâdoraibu (“Overdrive”),yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: The Game Master,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,The Game Master,series,JoJo's Bizarre Adventure,2012,tt2359704,Ankoku no kishi-tachi (“The Dark Knights”),yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: The Pillar Man,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,The Pillar Man,series,JoJo's Bizarre Adventure,2012,tt2359704,Atashi no yûki (“Pluck for Tomorrow”),yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Tomorrow's Courage,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Tomorrow's Courage,series,JoJo's Bizarre Adventure,2012,tt2359704,Atashi no yûki (“Pluck for Tomorrow”),yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Ultimate Warriors from Ancient Times,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Ultimate Warriors from Ancient Times,series,JoJo's Bizarre Adventure,2012,tt2359704,Uketsugu mono (“The Successor”),yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Von Stroheim's Revenge,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Von Stroheim's Revenge,series,JoJo's Bizarre Adventure,2012,tt2359704,Saigo no hamon (“The Final Ripple!”),yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Young Caesar,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Young Caesar,series,JoJo's Bizarre Adventure,2012,tt2359704,A Letter from the Past,yes,episode_unmapped,anime+imdb
+JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency: Youth with Dio,JoJo's Bizarre Adventure: Phantom Blood/Battle Tendency,,Youth with Dio,series,Steel Ball Run: JoJo's Bizarre Adventure,2012,tt2359704,Dio to no seishun,,episode_unmapped,imdb
+Jumper,Jumper,,,series,Jumper!,2022,,,yes,title_unmapped,anime
+Kakegurui: Episode 1,Kakegurui,,,series,Kakegurui,2018,tt7691766,,yes,episode_unmapped,anime+imdb
+Kakegurui: Kakegurui xx: Compulsive Gambling Girls Redux,Kakegurui: Kakegurui xx,,Compulsive Gambling Girls Redux,series,Kakegurui,2019,tt7691766,,yes,episode_unmapped,anime+imdb
+Kakegurui: Kakegurui xx: The Hollywood Girl,Kakegurui: Kakegurui xx,,The Hollywood Girl,series,Kakegurui,2019,tt7691766,,yes,episode_unmapped,anime+imdb
+Kakegurui: Kakegurui xx: The Momobami Clan Girls,Kakegurui: Kakegurui xx,,The Momobami Clan Girls,series,Kakegurui,2019,tt7691766,,yes,episode_unmapped,anime+imdb
 Kingdom,Kingdom,,,series,Kingdom,2019,tt6611916,,yes,episode_unmapped,anime+imdb
 Kingdom: Ashin of the North,Kingdom,,Ashin of the North,series,Kingdom: Ashin of the North,2021,tt6611916,,yes,episode_unmapped,anime+imdb
 Kingdom: Season 1: Episode 1,Kingdom,Season 1,,series,Kingdom 2nd Season,2013,tt6611916,,yes,mapped,anime+imdb
@@ -390,21 +366,30 @@ LAST HOPE: Part 2: The Target in the Sky,LAST HOPE,Part 2,The Target in the Sky,
 LAST HOPE: Part 2: The Tower Of Grudges,LAST HOPE,Part 2,The Tower Of Grudges,series,LAST HOPE,2018,tt8893554,The Tower of Grudges,,,
 LEGO Elves: Secrets of Elvendale: The Goblin King,LEGO Elves: Secrets of Elvendale,,The Goblin King,series,Lego Elves: Secrets of Elvendale,2017,tt7322926,The Goblin King,yes,mapped,imdb
 LEGO Elves: Secrets of Elvendale: Uninvited Guest,LEGO Elves: Secrets of Elvendale,,Uninvited Guest,series,Lego Elves: Secrets of Elvendale,2017,tt7322926,Uninvited Guest,yes,mapped,imdb
-Lemony Snicket's A Series of Unfortunate Events,Lemony Snicket's A Series of Unfortunate Events,,,series,A Series of Unfortunate Events,2017,tt4834206,,,episode_unmapped,imdb
+Lemony Snicket's A Series of Unfortunate Events,Lemony Snicket's A Series of Unfortunate Events,,,series,A Series of Unfortunate Events,2017,tt4834206,,yes,episode_unmapped,imdb
 Little Witch Academia: Season 1: Starting Over,Little Witch Academia,Season 1,Starting Over,series,Little Witch Academia,2017,tt6352180,A New Beginning,yes,mapped,anime+imdb
 Lookism: Friends,Lookism,,Friends,series,,,,,,title_unmapped,
 Lookism: New Life,Lookism,,New Life,series,,,,,,title_unmapped,
+Lookism: Recommendation,Lookism,,Recommendation,series,,,,,,title_unmapped,
 Lookism: Special Training,Lookism,,Special Training,series,,,,,,title_unmapped,
 Lost in Starlight,Lost in Starlight,,,movie,,,,,,title_unmapped,
-Lupin: Part 2: Chapter 6,Lupin,Part 2,,series,,2021,tt2531336,,,episode_unmapped,imdb
-Luther: Episode 1,Luther,,,series,,2010,tt1474684,,,episode_unmapped,imdb
-maboroshi,maboroshi,,,movie,Alice to Therese no Maboroshi Koujou,2023,,,,title_unmapped,anime
+Lupin: Part 2: Chapter 6,Lupin,Part 2,,series,,2021,tt2531336,,yes,episode_unmapped,imdb
+Luther: Episode 1,Luther,,,series,,2010,tt1474684,,yes,episode_unmapped,imdb
+maboroshi,maboroshi,,,movie,Alice to Therese no Maboroshi Koujou,2023,,,yes,title_unmapped,anime
 Making 1899,Making 1899,,,movie,Making 1899,2022,tt23830102,,yes,episode_unmapped,imdb
 Making The Witcher: Season 2,Making The Witcher,Season 2,,movie,Making the Witcher: Season 2,2021,tt16464142,,yes,episode_unmapped,imdb
+Manhunt: Unabomber: Abri,Manhunt: Unabomber,,Abri,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
+Manhunt: Unabomber: Fruit of the Poisonous Tree,Manhunt: Unabomber,,Fruit of the Poisonous Tree,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
+Manhunt: Unabomber: Lincoln,Manhunt: Unabomber,,Lincoln,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
+Manhunt: Unabomber: Publish or Perish,Manhunt: Unabomber,,Publish or Perish,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
+Manhunt: Unabomber: Pure Wudder,Manhunt: Unabomber,,Pure Wudder,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
+Manhunt: Unabomber: Ted,Manhunt: Unabomber,,Ted,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
+Manhunt: Unabomber: UNABOM,Manhunt: Unabomber,,UNABOM,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
+Manhunt: Unabomber: USA vs. Theodore J. Kaczynski,Manhunt: Unabomber,,USA vs. Theodore J. Kaczynski,series,Manhunt,2024,tt16912512,,,episode_unmapped,imdb
 Marianne: Your Dreams,Marianne,,Your Dreams,series,Marianne,2019,tt10875696,Tu les rêves,yes,mapped,imdb
 Marvel's Guardians of the Galaxy:,Marvel's Guardians of the Galaxy:,,,series,Guardians of the Galaxy,2015,tt4176370,,yes,episode_unmapped,imdb
 Missing: The Other Side: Missing: The Other Side 2: Episode 1,Missing: The Other Side: Missing: The Other Side 2,,,series,Missing: The Other Side,2020,tt12867916,,yes,episode_unmapped,imdb
-Mobile Suit Gundam Hathaway,Mobile Suit Gundam Hathaway,,,movie,Kidou Senshi Gundam: Senkou no Hathaway,2021,,,,title_unmapped,anime
+Mobile Suit Gundam Hathaway,Mobile Suit Gundam Hathaway,,,movie,Kidou Senshi Gundam: Senkou no Hathaway,2021,,,yes,title_unmapped,anime
 Mobile Suit Gundam I,Mobile Suit Gundam I,,,movie,Kidou Senshi Gundam I,1981,,,,title_unmapped,anime
 Mobile Suit Gundam: Iron-Blooded Orphans: Season 2: Awakening Calamity,Mobile Suit Gundam: Iron-Blooded Orphans,Season 2,Awakening Calamity,series,,,,,,title_unmapped,
 Mobile Suit Gundam: Iron-Blooded Orphans: Season 2: Battle before Dawn,Mobile Suit Gundam: Iron-Blooded Orphans,Season 2,Battle before Dawn,series,,,,,,title_unmapped,
@@ -419,7 +404,7 @@ Mobile Suit Gundam: Iron-Blooded Orphans: Season 2: Revealed Intentions,Mobile S
 Mobile Suit Gundam: Iron-Blooded Orphans: Season 2: Sovereign of Mars,Mobile Suit Gundam: Iron-Blooded Orphans,Season 2,Sovereign of Mars,series,,,,,,title_unmapped,
 Mobile Suit Gundam: Iron-Blooded Orphans: Season 2: The Man Who Holds the Soul,Mobile Suit Gundam: Iron-Blooded Orphans,Season 2,The Man Who Holds the Soul,series,,,,,,title_unmapped,
 Mobile Suit Gundam: Iron-Blooded Orphans: Season 2: The Trigger of Success,Mobile Suit Gundam: Iron-Blooded Orphans,Season 2,The Trigger of Success,series,,,,,,title_unmapped,
-Money Heist: Part 1: Episode 10,Money Heist,Part 1,,series,,2017,tt6468322,,,episode_unmapped,imdb
+Money Heist: Part 1: Episode 10,Money Heist,Part 1,,series,,2017,tt6468322,,yes,episode_unmapped,imdb
 Monster: CHAPTER 1,Monster,,,series,"Monster (Music, 2025)",2025,tt13207736,,,episode_unmapped,anime+imdb
 My Happy Marriage: Season 1: About My Husband-to-Be,My Happy Marriage,Season 1,About My Husband-to-Be,series,,,,,,title_unmapped,
 My Happy Marriage: Season 1: Determination and Thunder,My Happy Marriage,Season 1,Determination and Thunder,series,,,,,,title_unmapped,
@@ -433,8 +418,8 @@ My Happy Marriage: Season 1: Ripples,My Happy Marriage,Season 1,Ripples,series,,
 "My Happy Marriage: Season 1: Summer Cherry Blossoms, and the Mistake",My Happy Marriage,Season 1,"Summer Cherry Blossoms, and the Mistake",series,,,,,,title_unmapped,
 My Happy Marriage: Season 1: The Gift,My Happy Marriage,Season 1,The Gift,series,,,,,,title_unmapped,
 My Happy Marriage: Season 1: The Meeting,My Happy Marriage,Season 1,The Meeting,series,,,,,,title_unmapped,
-My Next Guest with David Letterman and Volodymyr Zelenskyy,My Next Guest with David Letterman and Volodymyr Zelenskyy,,,series,My Next Guest Needs No Introduction with David Letterman,2018,tt7829834,,,episode_unmapped,imdb
-NiNoKuni,NiNoKuni,,,movie,Ni no Kuni,2019,,,,title_unmapped,anime
+My Next Guest with David Letterman and Volodymyr Zelenskyy,My Next Guest with David Letterman and Volodymyr Zelenskyy,,,series,My Next Guest Needs No Introduction with David Letterman,2018,tt7829834,,yes,episode_unmapped,imdb
+NiNoKuni,NiNoKuni,,,movie,Ni no Kuni,2019,,,yes,title_unmapped,anime
 Norsemen: Season 1: The Homecoming,Norsemen,Season 1,The Homecoming,series,,,,,,title_unmapped,
 Occupied: April,Occupied,,April,series,,,,,,title_unmapped,
 Occupied: August,Occupied,,August,series,,,,,,title_unmapped,
@@ -446,19 +431,19 @@ Occupied: May,Occupied,,May,series,,,,,,title_unmapped,
 Occupied: November,Occupied,,November,series,,,,,,title_unmapped,
 Occupied: October,Occupied,,October,series,,,,,,title_unmapped,
 Occupied: September,Occupied,,September,series,,,,,,title_unmapped,
-One Piece: Egghead Arc ①: Episode 1089,One Piece: Egghead Arc ①,,,series,One Piece,2023,tt11737520,,,episode_unmapped,imdb
+One Piece: Egghead Arc ①: Episode 1089,One Piece: Egghead Arc ①,,,series,One Piece,2023,tt11737520,,yes,episode_unmapped,imdb
 ONE PIECE: Season 1: EAT AT BARATIE!,ONE PIECE,Season 1,EAT AT BARATIE!,series,One Piece,2023,tt11737520,Eat at Baratie!,yes,mapped,imdb
 ONE PIECE: Season 1: TELL NO TALES,ONE PIECE,Season 1,TELL NO TALES,series,One Piece,2023,tt11737520,Tell No Tales,yes,mapped,imdb
 ONE PIECE: Season 1: THE CHEF AND THE CHORE BOY,ONE PIECE,Season 1,THE CHEF AND THE CHORE BOY,series,One Piece,2023,tt11737520,The Chef and the Chore Boy,yes,mapped,imdb
 ONE PIECE: Season 1: THE PIRATES ARE COMING,ONE PIECE,Season 1,THE PIRATES ARE COMING,series,One Piece,2023,tt11737520,The Pirates Are Coming,yes,mapped,imdb
 ONE PIECE: Season 1: WORST IN THE EAST,ONE PIECE,Season 1,WORST IN THE EAST,series,One Piece,2023,tt11737520,Worst in the East,yes,mapped,imdb
-Our Planet: Our Planet II: Chapter 1: World on the Move,Our Planet: Our Planet II,,World on the Move,series,Our Planet,2019,tt9253866,,,episode_unmapped,imdb
-Pandora,Pandora,,,series,,2023,tt10207090,,,episode_unmapped,anime+imdb
+Our Planet: Our Planet II: Chapter 1: World on the Move,Our Planet: Our Planet II,,World on the Move,series,Our Planet,2019,tt9253866,,yes,episode_unmapped,imdb
+Pandora,Pandora,,,series,,2023,tt10207090,,yes,episode_unmapped,anime+imdb
 Paprika:,Paprika:,,,movie,Paprika,2006,,,,title_unmapped,anime
 Paradise,Paradise,,,series,Paradise,2023,tt27444205,,yes,episode_unmapped,anime+imdb
 Phantom,Phantom,,,movie,,,,,,title_unmapped,
-Princess Mononoke,Princess Mononoke,,,movie,Mononoke Hime,1997,,,,title_unmapped,anime
-Push,Push,,,series,,1987,tt2323135,,,episode_unmapped,anime+imdb
+Princess Mononoke,Princess Mononoke,,,movie,Mononoke Hime,1997,,,yes,title_unmapped,anime
+Push,Push,,,series,,1987,tt2323135,,yes,episode_unmapped,anime+imdb
 Qi Refining for 3000 Years: Episode 1,Qi Refining for 3000 Years,,,series,,,,,,title_unmapped,
 QLIMAX THE SOURCE,QLIMAX THE SOURCE,,,movie,Qlimax: The Source,2020,tt13517474,,yes,mapped,imdb
 Quicksand: Limited Series: Custody,Quicksand,Limited Series,Custody,series,Quicksand,2019,tt7340738,,yes,episode_unmapped,imdb
@@ -466,37 +451,37 @@ Quicksand: Limited Series: The Funeral,Quicksand,Limited Series,The Funeral,seri
 Quicksand: Limited Series: The Trial,Quicksand,Limited Series,The Trial,series,Quicksand,2019,tt7340738,Rättegången,yes,mapped,imdb
 Quicksand: Limited Series: The Witnesses,Quicksand,Limited Series,The Witnesses,series,Quicksand,2019,tt7340738,Vittnena,yes,mapped,imdb
 Ragnarok,Ragnarok,,,series,Ragnarok,2012,tt9251798,,yes,episode_unmapped,anime+imdb
-Ragnarok: Season 1: 541 Meters,Ragnarok,Season 1,541 Meters,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 1: Atomic Number 48,Ragnarok,Season 1,Atomic Number 48,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 1: Ginnungagap,Ragnarok,Season 1,Ginnungagap,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 1: Jutulheim,Ragnarok,Season 1,Jutulheim,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 1: New Boy,Ragnarok,Season 1,New Boy,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-"Ragnarok: Season 1: Yes, We Love This Country",Ragnarok,Season 1,"Yes, We Love This Country",series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 2: All You Need Is Love,Ragnarok,Season 2,All You Need Is Love,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 2: Brothers in Arms,Ragnarok,Season 2,Brothers in Arms,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-"Ragnarok: Season 2: God Is God, Though All Men Death Had Tasted",Ragnarok,Season 2,"God Is God, Though All Men Death Had Tasted",series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 2: Know Yourself,Ragnarok,Season 2,Know Yourself,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 2: Power to the People,Ragnarok,Season 2,Power to the People,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-"Ragnarok: Season 2: What Happened to the Nice, Old Lady?",Ragnarok,Season 2,"What Happened to the Nice, Old Lady?",series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 3: A Farewell to Arms,Ragnarok,Season 3,A Farewell to Arms,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 3: Losing My Religion,Ragnarok,Season 3,Losing My Religion,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 3: My Precious,Ragnarok,Season 3,My Precious,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 3: Ragnarok,Ragnarok,Season 3,Ragnarok,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 3: Till Death Do Us Part,Ragnarok,Season 3,Till Death Do Us Part,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ragnarok: Season 3: War Is Over,Ragnarok,Season 3,War Is Over,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,mapped,anime+imdb
-Ranma1/2: Season 1: Because Thereʼs Someone He Likes,Ranma1/2,Season 1,Because Thereʼs Someone He Likes,series,Ranma ½ (2024),2024,tt12656726,,,episode_unmapped,anime+imdb
-Ranma1/2: Season 1: Here's Ranma,Ranma1/2,Season 1,Here's Ranma,series,Ranma ½ (2024),2024,tt12656726,,,episode_unmapped,anime+imdb
-Ranma1/2: Season 1: Hot Competition,Ranma1/2,Season 1,Hot Competition,series,Ranma ½ (2024),2024,tt12656726,,,episode_unmapped,anime+imdb
-Ranma1/2: Season 1: I Hate Men!,Ranma1/2,Season 1,I Hate Men!,series,Ranma ½ (2024),2024,tt12656726,,,episode_unmapped,anime+imdb
-"Ranma1/2: Season 1: Kodachi, The Black Rose",Ranma1/2,Season 1,"Kodachi, The Black Rose",series,Ranma ½ (2024),2024,tt12656726,,,episode_unmapped,anime+imdb
-Ranma1/2: Season 1: The Hunter,Ranma1/2,Season 1,The Hunter,series,Ranma ½ (2024),2024,tt12656726,,,episode_unmapped,anime+imdb
-Ranma1/2: Season 1: Who Says You're Cute,Ranma1/2,Season 1,Who Says You're Cute,series,Ranma ½ (2024),2024,tt12656726,,,episode_unmapped,anime+imdb
-Rebecca,Rebecca,,,series,,2020,tt0119991,,,episode_unmapped,anime+imdb
+Ragnarok: Season 1: 541 Meters,Ragnarok,Season 1,541 Meters,series,Ragnarok,2020,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 1: Atomic Number 48,Ragnarok,Season 1,Atomic Number 48,series,Ragnarok,2020,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 1: Ginnungagap,Ragnarok,Season 1,Ginnungagap,series,Ragnarok,2020,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 1: Jutulheim,Ragnarok,Season 1,Jutulheim,series,Ragnarok,2020,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 1: New Boy,Ragnarok,Season 1,New Boy,series,Ragnarok,2020,tt9251798,,yes,mapped,anime+imdb
+"Ragnarok: Season 1: Yes, We Love This Country",Ragnarok,Season 1,"Yes, We Love This Country",series,Ragnarok,2020,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 2: All You Need Is Love,Ragnarok,Season 2,All You Need Is Love,series,Ragnarok,2021,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 2: Brothers in Arms,Ragnarok,Season 2,Brothers in Arms,series,Ragnarok,2021,tt9251798,,yes,mapped,anime+imdb
+"Ragnarok: Season 2: God Is God, Though All Men Death Had Tasted",Ragnarok,Season 2,"God Is God, Though All Men Death Had Tasted",series,Ragnarok,2021,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 2: Know Yourself,Ragnarok,Season 2,Know Yourself,series,Ragnarok,2021,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 2: Power to the People,Ragnarok,Season 2,Power to the People,series,Ragnarok,2021,tt9251798,,yes,mapped,anime+imdb
+"Ragnarok: Season 2: What Happened to the Nice, Old Lady?",Ragnarok,Season 2,"What Happened to the Nice, Old Lady?",series,Ragnarok,2021,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 3: A Farewell to Arms,Ragnarok,Season 3,A Farewell to Arms,series,Ragnarok,2023,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 3: Losing My Religion,Ragnarok,Season 3,Losing My Religion,series,Ragnarok,2023,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 3: My Precious,Ragnarok,Season 3,My Precious,series,Ragnarok,2023,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 3: Ragnarok,Ragnarok,Season 3,Ragnarok,series,Ragnarok,2023,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 3: Till Death Do Us Part,Ragnarok,Season 3,Till Death Do Us Part,series,Ragnarok,2023,tt9251798,,yes,mapped,anime+imdb
+Ragnarok: Season 3: War Is Over,Ragnarok,Season 3,War Is Over,series,Ragnarok,2023,tt9251798,,yes,mapped,anime+imdb
+Ranma1/2: Season 1: Because Thereʼs Someone He Likes,Ranma1/2,Season 1,Because Thereʼs Someone He Likes,series,Ranma ½ (2024),2024,tt32766897,,yes,episode_unmapped,anime+imdb
+Ranma1/2: Season 1: Here's Ranma,Ranma1/2,Season 1,Here's Ranma,series,Ranma ½ (2024),2024,tt32766897,,yes,episode_unmapped,anime+imdb
+Ranma1/2: Season 1: Hot Competition,Ranma1/2,Season 1,Hot Competition,series,Ranma ½ (2024),2024,tt32766897,,yes,episode_unmapped,anime+imdb
+Ranma1/2: Season 1: I Hate Men!,Ranma1/2,Season 1,I Hate Men!,series,Ranma ½ (2024),2024,tt32766897,,yes,episode_unmapped,anime+imdb
+"Ranma1/2: Season 1: Kodachi, The Black Rose",Ranma1/2,Season 1,"Kodachi, The Black Rose",series,Ranma ½ (2024),2024,tt32766897,,yes,episode_unmapped,anime+imdb
+Ranma1/2: Season 1: The Hunter,Ranma1/2,Season 1,The Hunter,series,Ranma ½ (2024),2024,tt32766897,,yes,episode_unmapped,anime+imdb
+Ranma1/2: Season 1: Who Says You're Cute,Ranma1/2,Season 1,Who Says You're Cute,series,Ranma ½ (2024),2024,tt12656726,,yes,episode_unmapped,anime+imdb
+Rebecca,Rebecca,,,series,,2020,tt0119991,,yes,episode_unmapped,anime+imdb
 Rebel Moon — Part One: A Child of Fire,Rebel Moon — Part One,,A Child of Fire,series,,,,,,title_unmapped,
 Rebel Moon — Part One: Director’s Cut,Rebel Moon — Part One,,Director’s Cut,series,,,,,,title_unmapped,
 Record of Ragnarok: Season 1: Ragnarok,Record of Ragnarok,Season 1,Ragnarok,series,Nihon Animator Mihonichi,2014,tt9251798,,yes,episode_unmapped,anime+imdb
 RED,RED,,,movie,,,,,,title_unmapped,
-RoboCop,RoboCop,,,series,,2019,tt0108909,,,episode_unmapped,anime+imdb
+RoboCop,RoboCop,,,series,,2019,tt0108909,,yes,episode_unmapped,anime+imdb
 Ronja the Robber's Daughter: Part 1: One Eye to the Sky,Ronja the Robber's Daughter,Part 1,One Eye to the Sky,series,Ronja the Robber's Daughter,2024,tt15379396,Ett öga mot skyn,yes,mapped,anime+imdb
 Sea Power: Episode 1,Sea Power,,,series,,,,,,title_unmapped,
 Sense8: Creating the World,Sense8,,Creating the World,series,Sense8,2015,tt2431438,,yes,episode_unmapped,imdb
@@ -510,21 +495,22 @@ Squid Game: Season 1: Hell,Squid Game,Season 1,Hell,series,Squid Game,2021,tt109
 "Squid Game: Season 1: Red Light, Green Light",Squid Game,Season 1,"Red Light, Green Light",series,Squid Game,2021,tt10919420,Mugunghwa kkochi pideon nal,yes,mapped,imdb
 Star Trek: Enterprise: Broken Bow: Part 1 & 2,Star Trek: Enterprise: Broken Bow,,Part 1 & 2,series,Star Trek: Enterprise,2001,tt0060028,,yes,title_unmapped,anime
 Strangers From Hell: Episode 1,Strangers From Hell,,,series,,,,,,title_unmapped,
-Suzume,Suzume,,,movie,Suzume no Tojimari,2022,,,,title_unmapped,anime
-Taxi Driver: Episode 1,Taxi Driver,,,series,,2021,tt13759970,,,episode_unmapped,imdb
+Suzume,Suzume,,,movie,Suzume no Tojimari,2022,,,yes,title_unmapped,anime
+Taxi Driver: Episode 1,Taxi Driver,,,series,,2021,tt13759970,,yes,episode_unmapped,imdb
 The Adventures of Tintin: The Secret of the Unicorn: Part 1,The Adventures of Tintin: The Secret of the Unicorn,Part 1,,series,The Adventures of Tintin,2011,tt0983193,,yes,episode_unmapped,imdb
 The Barrier: Another World,The Barrier,,Another World,series,The Barrier,2020,tt9460858,,yes,episode_unmapped,imdb
 The Bombardment,The Bombardment,,,movie,,,,,,title_unmapped,
-The Bridge: Episode 1,The Bridge,,,series,,2011,tt1733785,,,episode_unmapped,imdb
-The Chestnut Man: Kastanjemanden: Episode 1,The Chestnut Man: Kastanjemanden,,,series,The Chestnut Man,2021,tt10834220,,,episode_unmapped,imdb
-The Code: Episode 1,The Code,,,series,,2014,tt3914672,,,episode_unmapped,imdb
+The Bridge: Episode 1,The Bridge,,,series,,2011,tt1733785,,yes,episode_unmapped,imdb
+The Chestnut Man: Kastanjemanden: Episode 1,The Chestnut Man: Kastanjemanden,,,series,The Chestnut Man,2021,tt10834220,,yes,episode_unmapped,imdb
+The Code: Episode 1,The Code,,,series,,2014,tt3914672,,yes,episode_unmapped,imdb
 The Daily Life of the Immortal King: Episode 1,The Daily Life of the Immortal King,,,series,,,,,,title_unmapped,
-The Fall: Episode 1,The Fall,,,series,,2013,tt2294189,,,episode_unmapped,imdb
+The Fall: Episode 1,The Fall,,,series,,2013,tt2294189,,yes,episode_unmapped,imdb
 The Flash: Season 6: Crisis on Infinite Earths: Hour Three,The Flash,Season 6: Crisis on Infinite Earths,Hour Three,series,The Flash,2014,tt3107288,,yes,episode_unmapped,imdb
 The Grimm Variations: Cinderella,The Grimm Variations,,Cinderella,series,,,,,,title_unmapped,
 The Hunger Games: Mockingjay - Part 1,The Hunger Games,,Mockingjay - Part 1,series,,,,,,title_unmapped,
 The Hunger Games: Mockingjay - Part 2,The Hunger Games,,Mockingjay - Part 2,series,,,,,,title_unmapped,
 The King's Avatar: Episode 1,The King's Avatar,,,series,,,,,,title_unmapped,
+The Movies That Made Us: Season 3: Robocop,The Movies That Made Us,Season 3,Robocop,series,,2019,tt10681222,,yes,mapped,imdb
 The Neighbor: Season 1: It Came from Outer Space,The Neighbor,Season 1,It Came from Outer Space,series,The Neighbor,2019,tt9731222,,yes,episode_unmapped,anime+imdb
 The OA: Part I: Chapter 5: Paradise,The OA,Part I,Paradise,series,Paradise (Music),2018,tt27444205,,yes,mapped,anime+imdb
 The Office (U.S.): Season 1: Pilot,The Office (U.S.),Season 1,Pilot,series,The Office,2026,tt34231110,,,episode_unmapped,imdb
@@ -532,30 +518,30 @@ The Returned: Claire,The Returned,,Claire,series,The Returned,2012,tt2521668,,ye
 The Returned: Helen,The Returned,,Helen,series,The Returned,2012,tt2521668,,yes,episode_unmapped,imdb
 The Returned: Rowan,The Returned,,Rowan,series,The Returned,2012,tt2521668,,yes,episode_unmapped,imdb
 The Returned: Tony and Adam,The Returned,,Tony and Adam,series,The Returned,2012,tt2521668,,yes,episode_unmapped,imdb
-The Seven Deadly Sins: A Little Girl's Dream,The Seven Deadly Sins,,A Little Girl's Dream,series,The Seven Deadly Sins: Four Knights of the Apocalypse,2023,tt20228550,,,episode_unmapped,imdb
-The Seven Deadly Sins: Bloodcurdling Canon,The Seven Deadly Sins,,Bloodcurdling Canon,series,The Seven Deadly Sins,2014,tt3909224,Senritsu no Kanon,yes,mapped,anime+imdb
-The Seven Deadly Sins: Dark Pulse,The Seven Deadly Sins,,Dark Pulse,series,The Seven Deadly Sins,2014,tt3909224,,yes,episode_unmapped,anime+imdb
-The Seven Deadly Sins: Despair Descends,The Seven Deadly Sins,,Despair Descends,series,The Seven Deadly Sins,2014,tt3909224,Zetsubo Korin,yes,mapped,anime+imdb
-The Seven Deadly Sins: Even If It Costs Me My Life,The Seven Deadly Sins,,Even If It Costs Me My Life,series,The Seven Deadly Sins,2014,tt3909224,Kono Inochi ni Kaete mo,yes,mapped,anime+imdb
-The Seven Deadly Sins: Even if You Should Die,The Seven Deadly Sins,,Even if You Should Die,series,The Seven Deadly Sins: Four Knights of the Apocalypse,2023,tt20228550,,,episode_unmapped,imdb
-The Seven Deadly Sins: Pent-up Feelings,The Seven Deadly Sins,,Pent-up Feelings,series,The Seven Deadly Sins,2014,tt3909224,,yes,episode_unmapped,anime+imdb
-The Seven Deadly Sins: The Fearsome Pursuer,The Seven Deadly Sins,,The Fearsome Pursuer,series,The Seven Deadly Sins,2014,tt3909224,Osorubeki Tsuisekisha,yes,mapped,anime+imdb
-The Seven Deadly Sins: The First Sacrifice,The Seven Deadly Sins,,The First Sacrifice,series,The Seven Deadly Sins: Four Knights of the Apocalypse,2023,tt20228550,,,episode_unmapped,imdb
+The Seven Deadly Sins: A Little Girl's Dream,The Seven Deadly Sins,,A Little Girl's Dream,series,The Seven Deadly Sins,2019,tt3909224,,yes,episode_unmapped,anime+imdb
+The Seven Deadly Sins: Bloodcurdling Canon,The Seven Deadly Sins,,Bloodcurdling Canon,series,The Seven Deadly Sins,2019,tt3909224,Senritsu no Kanon,yes,mapped,anime+imdb
+The Seven Deadly Sins: Dark Pulse,The Seven Deadly Sins,,Dark Pulse,series,The Seven Deadly Sins,2019,tt3909224,,yes,episode_unmapped,anime+imdb
+The Seven Deadly Sins: Despair Descends,The Seven Deadly Sins,,Despair Descends,series,The Seven Deadly Sins,2019,tt3909224,Zetsubo Korin,yes,mapped,anime+imdb
+The Seven Deadly Sins: Even If It Costs Me My Life,The Seven Deadly Sins,,Even If It Costs Me My Life,series,The Seven Deadly Sins,2019,tt3909224,Kono Inochi ni Kaete mo,yes,mapped,anime+imdb
+The Seven Deadly Sins: Even if You Should Die,The Seven Deadly Sins,,Even if You Should Die,series,The Seven Deadly Sins,2019,tt3909224,,yes,episode_unmapped,anime+imdb
+The Seven Deadly Sins: Pent-up Feelings,The Seven Deadly Sins,,Pent-up Feelings,series,The Seven Deadly Sins,2019,tt3909224,,yes,episode_unmapped,anime+imdb
+The Seven Deadly Sins: The Fearsome Pursuer,The Seven Deadly Sins,,The Fearsome Pursuer,series,The Seven Deadly Sins,2019,tt3909224,Osorubeki Tsuisekisha,yes,mapped,anime+imdb
+The Seven Deadly Sins: The First Sacrifice,The Seven Deadly Sins,,The First Sacrifice,series,The Seven Deadly Sins,2019,tt3909224,,yes,episode_unmapped,anime+imdb
 The Seven Deadly Sins: The Heroes,The Seven Deadly Sins,,The Heroes,series,,,,,,title_unmapped,
-The Seven Deadly Sins: The Vaizel Fighting Festival,The Seven Deadly Sins,,The Vaizel Fighting Festival,series,The Seven Deadly Sins: Four Knights of the Apocalypse,2023,tt20228550,,,episode_unmapped,imdb
-The Seven Deadly Sins: What I Can Do For You,The Seven Deadly Sins,,What I Can Do For You,series,The Seven Deadly Sins,2014,tt3909224,Kimi no Tame ni Dekiru Koto,yes,mapped,anime+imdb
+The Seven Deadly Sins: The Vaizel Fighting Festival,The Seven Deadly Sins,,The Vaizel Fighting Festival,series,The Seven Deadly Sins,2019,tt3909224,,yes,episode_unmapped,anime+imdb
+The Seven Deadly Sins: What I Can Do For You,The Seven Deadly Sins,,What I Can Do For You,series,The Seven Deadly Sins,2019,tt3909224,Kimi no Tame ni Dekiru Koto,yes,mapped,anime+imdb
 The Signal: Limited Series: Departure,The Signal,Limited Series,Departure,series,The Signal,2024,tt25375256,Aufbruch,yes,mapped,imdb
 The Signal: Limited Series: Vanished,The Signal,Limited Series,Vanished,series,The Signal,2024,tt25375256,Verschwunden,yes,mapped,imdb
 The Square,The Square,,,movie,,,,,,title_unmapped,
 The White Helmets,The White Helmets,,,movie,The White Helmets,2021,tt13406094,,,episode_unmapped,imdb
 The Witcher: Sirens of the Deep,The Witcher,,Sirens of the Deep,series,The Witcher,2019,tt5180504,,yes,episode_unmapped,imdb
-To the Lake: Episode 1,To the Lake,,,series,,2019,tt9151230,,,episode_unmapped,imdb
+To the Lake: Episode 1,To the Lake,,,series,,2019,tt9151230,,yes,episode_unmapped,imdb
 Tokyo Ghoul: Tokyo Ghoul:re: Episode 24,Tokyo Ghoul: Tokyo Ghoul:re,,,series,Tokyo Ghoul:re,2018,tt8213522,,yes,episode_unmapped,anime+imdb
-Tokyo Ghoul: Tokyo Ghoul:re: Morse: Remembrances,Tokyo Ghoul: re,,Morse: Remembrances,series,Tokyo Ghoul:re,2018,tt8213522,,,episode_unmapped,anime+imdb
+Tokyo Ghoul: Tokyo Ghoul:re: Morse: Remembrances,Tokyo Ghoul: re,,Morse: Remembrances,series,Tokyo Ghoul:re,2018,tt8213522,,yes,episode_unmapped,anime+imdb
 "Tougen Anki: If You Want To Make It, Keep On Winning",Tougen Anki,,"If You Want To Make It, Keep On Winning",series,Tougen Anki: Dark Demon of Paradise,2025,tt32344704,,yes,episode_unmapped,anime+imdb
 Tougen Anki: Oni’s Blood,Tougen Anki,,Oni’s Blood,series,Tougen Anki: Dark Demon of Paradise,2025,tt32344704,,yes,episode_unmapped,anime+imdb
-Transformers: War for Cybertron: Kingdom: Kingdom: Episode 1,Transformers: War for Cybertron: Kingdom: Kingdom,,,series,Transformers: War for Cybertron Trilogy,2020,tt9789660,,,episode_unmapped,imdb
-Trapped: Episode 1,Trapped,,,series,,2015,tt3561180,,,episode_unmapped,imdb
+Transformers: War for Cybertron: Kingdom: Kingdom: Episode 1,Transformers: War for Cybertron: Kingdom: Kingdom,,,series,Transformers: War for Cybertron Trilogy,2020,tt9789660,,yes,episode_unmapped,imdb
+Trapped: Episode 1,Trapped,,,series,,2015,tt3561180,,yes,episode_unmapped,imdb
 Trigger: Limited Series: Episode 1,Trigger,Limited Series,,series,,,,,,title_unmapped,
 Tuntematon sotilas: Episode 1,Tuntematon sotilas,,,series,,,,,,title_unmapped,
 T・P BON: Season 1: I Won't Be Erased!,T・P BON,Season 1,I Won't Be Erased!,series,T.P BON,2024,tt29402539,I Won't Be Erased!,yes,mapped,anime+imdb
@@ -569,13 +555,13 @@ Unknown: Cosmic Time Machine,Unknown,,Cosmic Time Machine,series,Unknown: Cosmic
 Unknown: Killer Robots,Unknown,,Killer Robots,series,Unknown: Killer Robots,2023,tt31039897,,yes,episode_unmapped,anime+imdb
 Vagabond: Episode 1,Vagabond,,,series,,,,,,title_unmapped,
 Wakfu: Season 1: The Child from the Mist,Wakfu,Season 1,The Child from the Mist,series,Wakfu,2007,tt1807824,,yes,episode_unmapped,imdb
-Weak Hero: Class 1: Episode 1,Weak Hero: Class 1,,,series,Weak Hero Class 1,2022,tt20234568,,,episode_unmapped,imdb
-Weak Hero: Class 2: Episode 1,Weak Hero: Class 2,,,series,Weak Hero Class 1,2022,tt20234568,,,episode_unmapped,imdb
-WHAT / IF: Part I: Pilot,WHAT / IF,Part I,Pilot,series,What If...?,2021,tt10168312,,,episode_unmapped,imdb
+Weak Hero: Class 1: Episode 1,Weak Hero: Class 1,,,series,Weak Hero Class 1,2022,tt20234568,,yes,episode_unmapped,imdb
+Weak Hero: Class 2: Episode 1,Weak Hero: Class 2,,,series,Weak Hero Class 1,2022,tt20234568,,yes,episode_unmapped,imdb
+WHAT / IF: Part I: Pilot,WHAT / IF,Part I,Pilot,series,What If...?,2021,tt10168312,,yes,episode_unmapped,imdb
 Who Am I,Who Am I,,,series,Who Am I?,2012,tt10474134,,,episode_unmapped,anime+imdb
-Wizards: Tales of Arcadia: Season 1: History in the Making,Wizards: Tales of Arcadia,Season 1,History in the Making,series,3Below: Tales of Arcadia,2018,tt7736544,,,episode_unmapped,imdb
-Wizards: Tales of Arcadia: Season 1: Spellbound,Wizards: Tales of Arcadia,Season 1,Spellbound,series,3Below: Tales of Arcadia,2018,tt7736544,,,episode_unmapped,imdb
-Wizards: Tales of Arcadia: Season 1: Witch Hunt,Wizards: Tales of Arcadia,Season 1,Witch Hunt,series,3Below: Tales of Arcadia,2018,tt7736544,,,episode_unmapped,imdb
+Wizards: Tales of Arcadia: Season 1: History in the Making,Wizards: Tales of Arcadia,Season 1,History in the Making,series,3Below: Tales of Arcadia,2018,tt7736544,,yes,episode_unmapped,imdb
+Wizards: Tales of Arcadia: Season 1: Spellbound,Wizards: Tales of Arcadia,Season 1,Spellbound,series,3Below: Tales of Arcadia,2018,tt7736544,,yes,episode_unmapped,imdb
+Wizards: Tales of Arcadia: Season 1: Witch Hunt,Wizards: Tales of Arcadia,Season 1,Witch Hunt,series,3Below: Tales of Arcadia,2018,tt7736544,,yes,episode_unmapped,imdb
 Wolf King: Season 1: The Rise of the Wolf,Wolf King,Season 1,The Rise of the Wolf,series,,,,,,title_unmapped,
 Words Bubble Up Like Soda Pop,Words Bubble Up Like Soda Pop,,,movie,,,,,,title_unmapped,
 Ōoku: The Inner Chambers: Episode 1,Ōoku: The Inner Chambers,,,series,,,,,,title_unmapped,
