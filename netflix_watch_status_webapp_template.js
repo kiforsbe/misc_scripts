@@ -161,6 +161,7 @@
         statusWatchedItems: document.getElementById("statusWatchedItems"),
         statusPartialItems: document.getElementById("statusPartialItems"),
         statusUnwatchedItems: document.getElementById("statusUnwatchedItems"),
+        statusWatchtime: document.getElementById("statusWatchtime"),
         rowContextMenu: document.getElementById("rowContextMenu"),
     };
 
@@ -1738,6 +1739,33 @@
         return Number(value || 0).toLocaleString();
     }
 
+    function formatDurationMinutes(totalMinutes) {
+        const minutes = Math.max(0, Number(totalMinutes) || 0);
+        if (minutes < 60) {
+            return `${minutes}m`;
+        }
+
+        const hours = Math.floor(minutes / 60);
+        const remainingMinutes = minutes % 60;
+        if (hours < 24) {
+            return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+        }
+
+        const days = Math.floor(hours / 24);
+        const remainingHours = hours % 24;
+        if (!remainingHours && !remainingMinutes) {
+            return `${days}d`;
+        }
+        if (!remainingMinutes) {
+            return `${days}d ${remainingHours}h`;
+        }
+        return `${days}d ${remainingHours}h ${remainingMinutes}m`;
+    }
+
+    function isRuntimeLeafRow(row) {
+        return !row.has_children && (row.item_type === "movie" || row.item_type === "episode");
+    }
+
     function collectStatusMetrics() {
         const metrics = {
             totalItems: rows.length,
@@ -1746,6 +1774,8 @@
             watchedItems: 0,
             partialItems: 0,
             unwatchedItems: 0,
+            watchedRuntimeMinutes: 0,
+            totalRuntimeMinutes: 0,
         };
 
         rows.forEach((row) => {
@@ -1761,6 +1791,20 @@
             } else if (row.watch_state === "unwatched") {
                 metrics.unwatchedItems += 1;
             }
+
+            if (!isRuntimeLeafRow(row)) {
+                return;
+            }
+
+            const runtimeMinutes = parseRuntimeMinutesValue(row.runtime_minutes);
+            if (!Number.isFinite(runtimeMinutes) || runtimeMinutes <= 0) {
+                return;
+            }
+
+            metrics.totalRuntimeMinutes += runtimeMinutes;
+            if (row.watch_state === "watched") {
+                metrics.watchedRuntimeMinutes += runtimeMinutes;
+            }
         });
 
         return metrics;
@@ -1774,6 +1818,7 @@
         elements.statusWatchedItems.textContent = formatCount(metrics.watchedItems);
         elements.statusPartialItems.textContent = formatCount(metrics.partialItems);
         elements.statusUnwatchedItems.textContent = formatCount(metrics.unwatchedItems);
+        elements.statusWatchtime.textContent = `${formatDurationMinutes(metrics.watchedRuntimeMinutes)} / ${formatDurationMinutes(metrics.totalRuntimeMinutes)}`;
     }
 
     function renderColumnOptions() {
