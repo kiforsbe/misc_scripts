@@ -722,8 +722,8 @@
     .status-cell {
       display: grid;
       gap: 4px;
-      align-content: start;
-      align-self: start;
+      align-content: center;
+      align-self: stretch;
       justify-items: center;
       height: 100%;
       text-align: center;
@@ -741,11 +741,18 @@
     .status-chip {
       width: fit-content;
       max-width: 100%;
+      min-width: 28px;
+      min-height: 28px;
+      justify-content: center;
+      align-items: center;
+      padding: 0;
+      line-height: 1;
     }
 
-    .status-cell .status-toggle {
+    .status-cell .status-toggle,
+    .status-cell .status-chip {
       display: inline-flex;
-      align-self: start;
+      align-self: center;
       justify-self: center;
       inline-size: 28px;
       block-size: 28px;
