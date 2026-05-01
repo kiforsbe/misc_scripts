@@ -206,6 +206,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     episode INTEGER,
                     title TEXT NOT NULL,
                     year INTEGER,
+                    runtime_minutes INTEGER,
                     rating INTEGER,
                     votes INTEGER
                 ) WITHOUT ROWID;
@@ -340,6 +341,16 @@ class IMDbDataProvider(BaseMetadataProvider):
         finally:
             self._return_connection(conn)
 
+    def _has_episode_runtime_support(self) -> bool:
+        conn = self._get_connection()
+        try:
+            columns = conn.execute("PRAGMA table_info(episode_core)").fetchall()
+            return any(str(row[1]) == "runtime_minutes" for row in columns)
+        except Exception:
+            return False
+        finally:
+            self._return_connection(conn)
+
     def _verify_data_integrity(self) -> None:
         with sqlite3.connect(self._db_path) as conn:
             logging.info("title_core=%s", conn.execute("SELECT COUNT(*) FROM title_core").fetchone()[0])
@@ -355,7 +366,12 @@ class IMDbDataProvider(BaseMetadataProvider):
                 return
             self._clear_loaded_state()
 
-        if self._is_data_current() and self._has_title_search_data() and self._has_episode_title_data():
+        if (
+            self._is_data_current()
+            and self._has_title_search_data()
+            and self._has_episode_title_data()
+            and self._has_episode_runtime_support()
+        ):
             self._mark_database_loaded(now_ts)
             return
 
@@ -439,6 +455,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                     title TEXT NOT NULL,
                     title_lower TEXT NOT NULL,
                     year INTEGER,
+                    runtime_minutes INTEGER,
                     rating INTEGER,
                     votes INTEGER
                 ) WITHOUT ROWID;
@@ -547,11 +564,19 @@ class IMDbDataProvider(BaseMetadataProvider):
                         title = self._normalize_space_collapsed_text(self._as_str(data_dict.get("primaryTitle")))
                         if title:
                             episode_basics_batch.append(
-                                (title_id, title, title.lower(), self._as_int(data_dict.get("startYear")), rating_int, votes)
+                                (
+                                    title_id,
+                                    title,
+                                    title.lower(),
+                                    self._as_int(data_dict.get("startYear")),
+                                    self._as_int(data_dict.get("runtimeMinutes")),
+                                    rating_int,
+                                    votes,
+                                )
                             )
                         if len(episode_basics_batch) >= chunk_size:
                             conn.executemany(
-                                "INSERT OR REPLACE INTO temp_episode_basics (id, title, title_lower, year, rating, votes) VALUES (?, ?, ?, ?, ?, ?)",
+                                "INSERT OR REPLACE INTO temp_episode_basics (id, title, title_lower, year, runtime_minutes, rating, votes) VALUES (?, ?, ?, ?, ?, ?, ?)",
                                 episode_basics_batch,
                             )
                             episode_basics_batch = []
@@ -604,7 +629,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         if episode_basics_batch:
             self._timed_executemany(
                 conn,
-                "INSERT OR REPLACE INTO temp_episode_basics (id, title, title_lower, year, rating, votes) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO temp_episode_basics (id, title, title_lower, year, runtime_minutes, rating, votes) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 episode_basics_batch,
             )
 
@@ -654,8 +679,8 @@ class IMDbDataProvider(BaseMetadataProvider):
         self._timed_execute(
             conn,
             """
-            INSERT OR REPLACE INTO episode_core (id, parent_id, season, episode, title, year, rating, votes)
-            SELECT l.id, l.parent_id, l.season, l.episode, b.title, b.year, b.rating, b.votes
+            INSERT OR REPLACE INTO episode_core (id, parent_id, season, episode, title, year, runtime_minutes, rating, votes)
+            SELECT l.id, l.parent_id, l.season, l.episode, b.title, b.year, b.runtime_minutes, b.rating, b.votes
             FROM temp_episode_links l
             JOIN temp_episode_basics b ON b.id = l.id
             """
@@ -1310,7 +1335,12 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn = self._get_connection()
         try:
             row = conn.execute(
-                "SELECT id, title, year, rating, votes FROM episode_core WHERE parent_id = ? AND season = ? AND episode = ? LIMIT 1",
+                """
+                SELECT e.id, e.title, e.year, e.rating, e.votes, e.runtime_minutes
+                FROM episode_core e
+                WHERE e.parent_id = ? AND e.season = ? AND e.episode = ?
+                LIMIT 1
+                """,
                 (internal_parent_id, season, episode),
             ).fetchone()
             if row is None:
@@ -1322,6 +1352,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 parent_id=parent_id,
                 id=f"tt{row['id']:07d}",
                 year=row["year"],
+                runtime_minutes=row["runtime_minutes"],
                 rating=float(row["rating"] / 10.0) if row["rating"] else None,
                 votes=row["votes"],
             )
@@ -1344,11 +1375,14 @@ class IMDbDataProvider(BaseMetadataProvider):
         conn = self._get_connection()
         try:
             params: List[Any] = [internal_parent_id]
-            sql = "SELECT id, season, episode, title, year, rating, votes FROM episode_core WHERE parent_id = ?"
+            sql = (
+                "SELECT e.id, e.season, e.episode, e.title, e.year, e.rating, e.votes, e.runtime_minutes "
+                "FROM episode_core e WHERE e.parent_id = ?"
+            )
             if season is not None:
-                sql += " AND season = ?"
+                sql += " AND e.season = ?"
                 params.append(season)
-            sql += " ORDER BY season, episode, id"
+            sql += " ORDER BY e.season, e.episode, e.id"
             rows = conn.execute(sql, tuple(params)).fetchall()
 
             episodes: List[EpisodeInfo] = []
@@ -1363,6 +1397,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                         parent_id=parent_id,
                         id=f"tt{row['id']:07d}",
                         year=row["year"],
+                        runtime_minutes=row["runtime_minutes"],
                         rating=float(row["rating"] / 10.0) if row["rating"] else None,
                         votes=row["votes"],
                     )
@@ -1403,7 +1438,7 @@ class IMDbDataProvider(BaseMetadataProvider):
         try:
             params: List[Any] = [internal_parent_id, normalized_query]
             exact_sql = (
-                "SELECT e.id, e.season, e.episode, e.title, e.year, e.rating, e.votes "
+                "SELECT e.id, e.season, e.episode, e.title, e.year, e.rating, e.votes, e.runtime_minutes "
                 "FROM episode_search s JOIN episode_core e ON e.id = s.episode_id "
                 "WHERE s.parent_id = ? AND s.search_title_lower = ?"
             )
@@ -1420,13 +1455,14 @@ class IMDbDataProvider(BaseMetadataProvider):
                     parent_id=parent_id,
                     id=f"tt{exact_row['id']:07d}",
                     year=exact_row["year"],
+                    runtime_minutes=exact_row["runtime_minutes"],
                     rating=float(exact_row["rating"] / 10.0) if exact_row["rating"] else None,
                     votes=exact_row["votes"],
                 )
 
             token_params: List[Any] = [internal_parent_id]
             fuzzy_sql = (
-                "SELECT s.search_title, e.id, e.season, e.episode, e.title, e.year, e.rating, e.votes "
+                "SELECT s.search_title, e.id, e.season, e.episode, e.title, e.year, e.rating, e.votes, e.runtime_minutes "
                 "FROM episode_search s JOIN episode_core e ON e.id = s.episode_id "
                 "WHERE s.parent_id = ?"
             )
@@ -1444,7 +1480,7 @@ class IMDbDataProvider(BaseMetadataProvider):
             if not candidate_rows:
                 fallback_params: List[Any] = [internal_parent_id]
                 fallback_sql = (
-                    "SELECT s.search_title, e.id, e.season, e.episode, e.title, e.year, e.rating, e.votes "
+                    "SELECT s.search_title, e.id, e.season, e.episode, e.title, e.year, e.rating, e.votes, e.runtime_minutes "
                     "FROM episode_search s JOIN episode_core e ON e.id = s.episode_id "
                     "WHERE s.parent_id = ?"
                 )
@@ -1479,6 +1515,7 @@ class IMDbDataProvider(BaseMetadataProvider):
                 parent_id=parent_id,
                 id=f"tt{best_row['id']:07d}",
                 year=best_row["year"],
+                runtime_minutes=best_row["runtime_minutes"],
                 rating=float(best_row["rating"] / 10.0) if best_row["rating"] else None,
                 votes=best_row["votes"],
             )

@@ -39,6 +39,7 @@ class EpisodeInfo:
     parent_id: str  # Reference to parent TitleInfo
     id: Optional[str] = None
     year: Optional[int] = None
+    runtime_minutes: Optional[int] = None
     rating: Optional[float] = None
     votes: Optional[int] = None
     plot: Optional[str] = None

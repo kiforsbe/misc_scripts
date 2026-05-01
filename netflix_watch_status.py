@@ -502,6 +502,7 @@ class NetflixHistoryEntry:
     resolved_episode: Optional[int] = None
     resolved_episode_title: Optional[str] = None
     resolved_episode_source_id: Optional[str] = None
+    resolved_episode_runtime_minutes: Optional[int] = None
     resolved_episode_rating: Optional[float] = None
     resolved_episode_votes: Optional[int] = None
     resolved_title_year: Optional[int] = None
@@ -528,6 +529,7 @@ class NetflixHistoryEntry:
             "resolved_episode": self.resolved_episode,
             "resolved_episode_title": self.resolved_episode_title,
             "resolved_episode_source_id": self.resolved_episode_source_id,
+            "resolved_episode_runtime_minutes": self.resolved_episode_runtime_minutes,
             "resolved_episode_rating": self.resolved_episode_rating,
             "resolved_episode_votes": self.resolved_episode_votes,
             "resolved_title_year": self.resolved_title_year,
@@ -770,7 +772,7 @@ class NetflixWatchStatusAnalyzer:
             unit="entry",
         ):
             media_kind, resolved_title, resolved_title_year, resolved_total_seasons, metadata_type, metadata_provider, metadata_parent_id, metadata_average_rating, metadata_num_votes, metadata_runtime_minutes, metadata_genres, metadata_title_type, metadata_sources = self._classify_entry(parsed, prefix_counts)
-            resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year = self._resolve_episode_metadata(
+            resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_runtime_minutes, resolved_episode_rating, resolved_episode_votes, resolved_episode_year = self._resolve_episode_metadata(
                 parsed=parsed,
                 media_kind=media_kind,
                 metadata_type=metadata_type,
@@ -794,6 +796,7 @@ class NetflixWatchStatusAnalyzer:
                     resolved_episode=resolved_episode,
                     resolved_episode_title=resolved_episode_title,
                     resolved_episode_source_id=resolved_episode_source_id,
+                    resolved_episode_runtime_minutes=resolved_episode_runtime_minutes,
                     resolved_episode_rating=resolved_episode_rating,
                     resolved_episode_votes=resolved_episode_votes,
                     resolved_title_year=resolved_title_year,
@@ -1002,11 +1005,12 @@ class NetflixWatchStatusAnalyzer:
         metadata_parent_id: Optional[str],
         resolved_title: str,
         resolved_total_seasons: Optional[int],
-    ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[str], Optional[float], Optional[int], Optional[int]]:
+    ) -> Tuple[Optional[int], Optional[int], Optional[str], Optional[str], Optional[int], Optional[float], Optional[int], Optional[int]]:
         resolved_season = parsed.season
         resolved_episode = parsed.episode
         resolved_episode_title = self._derive_episode_title(parsed, resolved_title)
         resolved_episode_source_id: Optional[str] = None
+        resolved_episode_runtime_minutes: Optional[int] = None
         resolved_episode_rating: Optional[float] = None
         resolved_episode_votes: Optional[int] = None
         resolved_episode_year: Optional[int] = None
@@ -1017,7 +1021,7 @@ class NetflixWatchStatusAnalyzer:
             or metadata_provider is None
             or metadata_parent_id is None
         ):
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_runtime_minutes, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         lookup_season = resolved_season
         if lookup_season is None and resolved_episode is not None and resolved_total_seasons == 1:
@@ -1042,12 +1046,13 @@ class NetflixWatchStatusAnalyzer:
                 if episode_info.title and not resolved_episode_title:
                     resolved_episode_title = episode_info.title
                 resolved_episode_source_id = getattr(episode_info, "id", None)
+                resolved_episode_runtime_minutes = getattr(episode_info, "runtime_minutes", None)
                 resolved_episode_rating = getattr(episode_info, "rating", None)
                 resolved_episode_votes = getattr(episode_info, "votes", None)
                 resolved_episode_year = episode_info.year
 
         if resolved_episode is not None or not hasattr(metadata_provider, "find_episode_by_title"):
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_runtime_minutes, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         episode_title_candidates = self._derive_episode_title_lookup_candidates(
             parsed,
@@ -1056,7 +1061,7 @@ class NetflixWatchStatusAnalyzer:
             metadata_parent_id,
         )
         if not episode_title_candidates:
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_runtime_minutes, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         episode_info = None
         for lookup_title in episode_title_candidates:
@@ -1080,13 +1085,14 @@ class NetflixWatchStatusAnalyzer:
             )
 
         if episode_info is None:
-            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
+            return resolved_season, resolved_episode, resolved_episode_title, resolved_episode_source_id, resolved_episode_runtime_minutes, resolved_episode_rating, resolved_episode_votes, resolved_episode_year
 
         return (
             episode_info.season,
             episode_info.episode,
             episode_info.title or resolved_episode_title,
             getattr(episode_info, "id", None),
+            getattr(episode_info, "runtime_minutes", None),
             getattr(episode_info, "rating", None),
             getattr(episode_info, "votes", None),
             episode_info.year,
@@ -1625,10 +1631,13 @@ def _entry_metadata_row_fields(
     num_votes = num_votes_override if num_votes_override is not None else (
         entry.resolved_episode_votes if row_item_type == "episode" else entry.metadata_num_votes
     )
+    runtime_minutes = runtime_minutes_override if runtime_minutes_override is not None else _format_runtime_minutes(
+        entry.resolved_episode_runtime_minutes if row_item_type == "episode" else entry.metadata_runtime_minutes
+    )
     return {
         "source_id": "" if row_item_type == "season" else _format_source_id(source_id),
         "title_type": entry.metadata_title_type or entry.metadata_type or "",
-        "runtime_minutes": runtime_minutes_override if runtime_minutes_override is not None else _format_runtime_minutes(entry.metadata_runtime_minutes),
+        "runtime_minutes": runtime_minutes,
         "genres": "" if row_item_type in {"season", "episode"} else _format_genres(entry.metadata_genres),
         "average_rating": "" if row_item_type == "episode" and average_rating is None else _format_average_rating(average_rating),
         "num_votes": "" if row_item_type == "episode" and num_votes is None else _format_num_votes(num_votes),
@@ -2425,6 +2434,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 season_episode_infos = metadata_season_map[season_number]
                 watched_count = 0
                 season_rows: List[WatchTableRow] = []
+                season_row_index = len(rows)
                 for episode_info in sorted(season_episode_infos, key=lambda item: item.episode):
                     key = (season_number, episode_info.episode)
                     group_entries = watched_episode_groups.get(key)
@@ -2448,6 +2458,11 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                                     first_entry,
                                     row_item_type="episode",
                                     source_id_override=getattr(episode_info, "id", None) or first_entry.resolved_episode_source_id,
+                                    runtime_minutes_override=(
+                                        _format_runtime_minutes(getattr(episode_info, "runtime_minutes", None))
+                                        if getattr(episode_info, "runtime_minutes", None) is not None
+                                        else None
+                                    ),
                                     average_rating_override=getattr(episode_info, "rating", None),
                                     num_votes_override=getattr(episode_info, "votes", None),
                                 ),
@@ -2472,6 +2487,11 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                                 title_entries[0],
                                 row_item_type="episode",
                                 source_id_override=getattr(episode_info, "id", None),
+                                runtime_minutes_override=(
+                                    _format_runtime_minutes(getattr(episode_info, "runtime_minutes", None))
+                                    if getattr(episode_info, "runtime_minutes", None) is not None
+                                    else None
+                                ),
                                 average_rating_override=getattr(episode_info, "rating", None),
                                 num_votes_override=getattr(episode_info, "votes", None),
                             ),
@@ -2500,6 +2520,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     )
                 )
                 rows.extend(season_rows)
+                rows[season_row_index].runtime_minutes = _aggregate_direct_child_runtime(rows, season_row_index)
 
                 extra_key = (season_number, season_title_overrides.get(season_number, ""))
                 if extra_key in extra_season_groups:
@@ -2517,6 +2538,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 ),
             ):
                 display_season_title = season_title or (f"Season {season_number}" if season_number is not None else "")
+                season_row_index = len(rows)
                 rows.append(
                     WatchTableRow(
                         level=1,
@@ -2543,6 +2565,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                     season_title_override=display_season_title if display_season_title else None,
                 ):
                     rows.append(entry)
+                rows[season_row_index].runtime_minutes = _aggregate_direct_child_runtime(rows, season_row_index)
 
             rows[series_row_index].runtime_minutes = _aggregate_direct_child_runtime(
                 rows,
@@ -2583,6 +2606,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
         )
         for (season_number, season_title), season_entries in sorted_seasons:
             display_season_title = season_title or (f"Season {season_number}" if season_number is not None else "")
+            season_row_index = len(rows)
             rows.append(
                 WatchTableRow(
                     level=1,
@@ -2611,6 +2635,7 @@ def build_watch_table_rows(entries: List[NetflixHistoryEntry]) -> List[WatchTabl
                 season_title_override=season_title_override,
             ):
                 rows.append(entry)
+            rows[season_row_index].runtime_minutes = _aggregate_direct_child_runtime(rows, season_row_index)
 
         rows[series_row_index].runtime_minutes = _aggregate_direct_child_runtime(
             rows,
