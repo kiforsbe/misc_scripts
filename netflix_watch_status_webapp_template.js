@@ -195,6 +195,22 @@
         return row.display_episode_title || row.episode_title || "";
     }
 
+    function combinedDisplayText(preferredValue, fallbackValue) {
+        const preferred = String(preferredValue || "").trim();
+        const fallback = String(fallbackValue || "").trim();
+        const comparablePreferred = preferred.replace(/\s+\*$/, "");
+        const comparableFallback = fallback.replace(/\s+\*$/, "");
+        if (!preferred) {
+            return fallback;
+        }
+        if (!fallback) {
+            return preferred;
+        }
+        return comparablePreferred.localeCompare(comparableFallback, undefined, { sensitivity: "base" }) === 0
+            ? preferred
+            : `${preferred} ${fallback}`;
+    }
+
     function topLevelRow(row) {
         let current = row || null;
         while (current && current.parent_id) {
@@ -205,7 +221,7 @@
 
     function topLevelTitleText(row) {
         const topLevel = topLevelRow(row);
-        return topLevel ? `${displayTitle(topLevel)} ${topLevel.title || ""}`.trim() : "";
+        return topLevel ? combinedDisplayText(displayTitle(topLevel), topLevel.title) : "";
     }
 
     function uniqueSortedValues(values, limit) {
@@ -729,17 +745,31 @@
         return new RegExp(`^${source}$`, "i");
     }
 
+    function normalizeStringFilterValue(value) {
+        return String(value || "")
+            .trim()
+            .replace(/\s+/g, " ")
+            .toLowerCase();
+    }
+
     function createStringMatcher(rawValue) {
         const value = String(rawValue || "").trim();
         if (!value) {
             throw new Error("Filter value cannot be empty");
         }
+        if (value.startsWith("=")) {
+            const expected = normalizeStringFilterValue(value.slice(1));
+            if (!expected) {
+                throw new Error("Exact filter value cannot be empty");
+            }
+            return (candidate) => normalizeStringFilterValue(candidate) === expected;
+        }
         if (value.includes("*") || value.includes("?")) {
             const regex = globToRegExp(value);
             return (candidate) => regex.test(String(candidate || ""));
         }
-        const lowered = value.toLowerCase();
-        return (candidate) => String(candidate || "").toLowerCase().includes(lowered);
+        const lowered = normalizeStringFilterValue(value);
+        return (candidate) => normalizeStringFilterValue(candidate).includes(lowered);
     }
 
     function highlightSuggestionText(value, inputValue) {
@@ -1135,7 +1165,7 @@
 
         if (field === "title") {
             if (titleScope === "local") {
-                return buildStringFieldPredicate(rawValue, (row) => (row.level === 0 ? `${displayTitle(row)} ${row.title || ""}`.trim() : ""));
+                return buildStringFieldPredicate(rawValue, (row) => (row.level === 0 ? combinedDisplayText(displayTitle(row), row.title) : ""));
             }
             return buildStringFieldPredicate(rawValue, (row) => topLevelTitleText(row));
         }
@@ -1166,7 +1196,7 @@
             return buildNumericFieldPredicate(rawValue, (row) => parseLeadingInteger(row.episode));
         }
         if (field === "episode_title") {
-            return buildStringFieldPredicate(rawValue, (row) => `${displayEpisodeTitle(row)} ${row.episode_title || ""}`.trim());
+            return buildStringFieldPredicate(rawValue, (row) => combinedDisplayText(displayEpisodeTitle(row), row.episode_title));
         }
         if (field === "views") {
             return buildNumericFieldPredicate(rawValue, (row) => parseLeadingInteger(row.views));
