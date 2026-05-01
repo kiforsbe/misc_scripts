@@ -307,12 +307,35 @@
       box-shadow: 0 0 0 1px rgba(55, 210, 181, 0.14) inset;
     }
 
+    .status-toggle.action-custom {
+      border-color: rgba(255, 215, 130, 0.34);
+      box-shadow: 0 0 0 1px rgba(255, 215, 130, 0.14) inset;
+    }
+
     .status-chip.modified { background: rgba(255, 255, 255, 0.04); color: #cfd8ef; border-color: rgba(255, 255, 255, 0.08); }
     .status-chip.a-only { background: rgba(255, 108, 143, 0.12); color: #ff8cab; border-color: rgba(255, 108, 143, 0.24); }
     .status-chip.b-only { background: rgba(55, 210, 181, 0.14); color: var(--success); border-color: rgba(55, 210, 181, 0.26); }
     .status-chip.unchanged { background: rgba(255, 255, 255, 0.04); color: #a9b5d0; border-color: rgba(255, 255, 255, 0.08); }
     .status-chip.ambiguous { background: rgba(255, 255, 255, 0.04); color: #ffb567; border-color: rgba(255, 255, 255, 0.08); }
     .status-chip.positional { background: rgba(255, 255, 255, 0.04); color: #b8abff; border-color: rgba(255, 255, 255, 0.08); }
+    .status-chip.modified.action-a,
+    .status-chip.positional.action-a {
+      background: rgba(124, 176, 255, 0.16);
+      color: #b9dbff;
+      border-color: rgba(124, 176, 255, 0.34);
+    }
+    .status-chip.modified.action-b,
+    .status-chip.positional.action-b {
+      background: rgba(55, 210, 181, 0.16);
+      color: #8df2df;
+      border-color: rgba(55, 210, 181, 0.3);
+    }
+    .status-chip.modified.action-custom,
+    .status-chip.positional.action-custom {
+      background: rgba(255, 215, 130, 0.14);
+      color: #ffd782;
+      border-color: rgba(255, 215, 130, 0.32);
+    }
 
     .input-row label,
     .select-wrap label,
@@ -802,7 +825,7 @@
       flex: 1 1 auto;
       width: 100%;
       min-height: 100%;
-      padding: 5px 32px 5px 8px;
+      padding: 5px 6px;
       box-sizing: border-box;
       line-height: 1.25;
       overflow: hidden;
@@ -825,7 +848,7 @@
       gap: 4px;
       min-height: 100%;
       margin: 0;
-      padding: 4px 32px 4px 8px;
+      padding: 4px 6px;
       border: 0;
       border-radius: 0;
       box-sizing: border-box;
@@ -2056,6 +2079,18 @@
       col.style.width = `${width}px`;
     }
 
+    function horizontalBoxWidth(element) {
+      if (!element) {
+        return 24;
+      }
+      const style = window.getComputedStyle(element);
+      const toNumber = (value) => Number.parseFloat(value || "0") || 0;
+      return toNumber(style.paddingLeft)
+        + toNumber(style.paddingRight)
+        + toNumber(style.borderLeftWidth)
+        + toNumber(style.borderRightWidth);
+    }
+
     function measureAutoColumnWidth(column) {
       const escapedColumn = CSS.escape(column);
       const headerLabel = tableHead.querySelector(`th[data-column="${escapedColumn}"] .column-header-label`);
@@ -2063,14 +2098,18 @@
       const visibleCellContent = tableBody.querySelector(
         `td.data-cell[data-column="${escapedColumn}"] .cell-value, td.data-cell[data-column="${escapedColumn}"] .cell-primary`
       );
+      const visibleCellContainer = tableBody.querySelector(
+        `td.data-cell[data-column="${escapedColumn}"] .compact-cell, td.data-cell[data-column="${escapedColumn}"] .cell-value`
+      );
       const cellFont = textMeasurementFont(visibleCellContent || tableBody);
+      const contentChromeWidth = horizontalBoxWidth(visibleCellContainer);
       let maxWidth = Math.ceil(measureTextWidth(column, headerFont));
 
       for (const row of sampledRowsForAutoWidth()) {
         maxWidth = Math.max(maxWidth, Math.ceil(measureTextWidth(displayValueForAutoWidth(row, column), cellFont)));
       }
 
-      return Math.max(RESIZABLE_COLUMN_MIN_WIDTH, maxWidth + 24);
+      return Math.max(RESIZABLE_COLUMN_MIN_WIDTH, maxWidth + contentChromeWidth);
     }
 
     function applyAutoColumnWidths() {
@@ -2422,11 +2461,20 @@
     }
 
     function renderStatusCell(row) {
+      if (row.status === "unchanged") {
+        return `
+          <div class="cell-shell">
+            <span
+              class="status-chip unchanged"
+              title="Row is unchanged across both files."
+              aria-label="Row is unchanged across both files."
+            >=</span>
+          </div>
+        `;
+      }
+
       const { marker, toggleState, title, ariaLabel } = getRowToggleMeta(row);
 
-      if (row.status === "unchanged") {
-        return ``;
-      }
       return `
         <div class="cell-shell">
           <button
