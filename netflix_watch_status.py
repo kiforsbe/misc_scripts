@@ -393,6 +393,10 @@ def _normalize_lookup_text(text: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
 
 
+def _compact_lookup_text(text: Optional[str]) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (text or "").casefold())
+
+
 def _starts_with_casefold(text: str, prefix: str) -> bool:
     if not prefix:
         return False
@@ -410,16 +414,27 @@ def _metadata_match_is_compatible(
     normalized_query = _normalize_lookup_text(query)
     normalized_raw = _normalize_lookup_text(raw_title)
     normalized_inferred = _normalize_lookup_text(inferred_series_title)
+    compact_resolved = _compact_lookup_text(resolved_title)
+    compact_query = _compact_lookup_text(query)
+    compact_raw = _compact_lookup_text(raw_title)
+    compact_inferred = _compact_lookup_text(inferred_series_title)
 
     def _matches_lookup(candidate_source: str) -> bool:
-        lookup_candidates = adapt_lookup_titles(candidate_source, (resolved_title,))
+        known_titles = (resolved_title,) if isinstance(resolved_title, str) and resolved_title else ()
+        lookup_candidates = adapt_lookup_titles(candidate_source, known_titles)
         return any(_normalize_lookup_text(candidate) == normalized_resolved for candidate in lookup_candidates[1:])
+
+    def _compact_match(left: str, right: str) -> bool:
+        if not left or not right:
+            return False
+        return left == right or left in right or right in left
 
     if normalized_inferred:
         if resolved_kind == "series":
             return (
                 normalized_resolved == normalized_inferred
                 or normalized_inferred in normalized_resolved
+                or _compact_match(compact_resolved, compact_inferred)
                 or _matches_lookup(inferred_series_title or "")
             )
         return False
@@ -434,6 +449,8 @@ def _metadata_match_is_compatible(
         or normalized_query in normalized_resolved
         or normalized_resolved in normalized_raw
         or normalized_raw in normalized_resolved
+        or _compact_match(compact_resolved, compact_query)
+        or _compact_match(compact_resolved, compact_raw)
         or _matches_lookup(query)
         or _matches_lookup(raw_title)
     )
