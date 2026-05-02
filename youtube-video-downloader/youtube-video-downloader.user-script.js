@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.10
+// @version      1.7.11
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -39,17 +39,18 @@
   // --- Styles ---
   const STYLES = `
     /* Main watch-page controls */
-    .ytdl-custom-button-container { display: flex; align-items: center; margin-left: 8px; font-size: 1.4rem; color: var(--yt-spec-text-primary); background-color: var(--yt-spec-badge-chip-background); padding: 0; border: none; border-radius: 18px; cursor: pointer; height: 36px; width: fit-content; }
-    .ytdl-download-button { padding: 0 16px; height: 100%; display: flex; align-items: center; border: none; background-color: transparent; color: inherit; font-family: "Roboto", "Arial", sans-serif; font-size: 1.4rem; font-weight: 500; cursor: pointer; border-right: 1px solid var(--yt-spec-10-percent-layer); }
-    .ytdl-dropdown-arrow { padding: 0 8px; height: 100%; display: flex; align-items: center; border: none; background-color: transparent; color: inherit; font-size: 1.6rem; cursor: pointer; }
+    .ytdl-custom-button-container { display: inline-flex; align-items: stretch; justify-content: center; margin-left: 8px; font-size: 1.4rem; background: transparent; padding: 0; border: none; border-radius: 18px; cursor: pointer; height: 36px; width: auto; min-width: 0; overflow: hidden; flex: 0 0 auto; flex-shrink: 0; box-sizing: border-box; isolation: isolate; }
+    .ytdl-download-button { padding: 0 16px; height: 100%; display: inline-flex; align-items: center; justify-content: center; border: none; font-family: "Roboto", "Arial", sans-serif; font-size: 1.4rem; font-weight: 500; cursor: pointer; border-right: 1px solid rgba(0, 0, 0, 0.12); border-radius: 18px 0 0 18px; flex: 0 0 auto; min-width: 0; box-sizing: border-box; appearance: none; }
+    .ytdl-dropdown-arrow { padding: 0 8px; height: 100%; display: inline-flex; align-items: center; justify-content: center; border: none; font-size: 1.6rem; cursor: pointer; border-radius: 0 18px 18px 0; flex: 0 0 auto; min-width: 0; box-sizing: border-box; appearance: none; }
     .ytdl-download-button:hover, .ytdl-dropdown-arrow:hover { background-color: var(--yt-spec-badge-chip-background-hover); }
 
     /* Format dropdown */
-    .ytdl-dropdown-menu { display: none; position: fixed; background-color: var(--yt-spec-menu-background); border: 1px solid var(--yt-spec-10-percent-layer); border-radius: 4px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2); z-index: 10000; min-width: 200px; max-height: 300px; overflow-y: auto; color: var(--yt-spec-text-primary); }
+    .ytdl-dropdown-menu { display: none; position: fixed; background-color: var(--yt-spec-menu-background); border: 1px solid var(--yt-spec-10-percent-layer); border-radius: 12px; box-shadow: 0 4px 32px rgba(0, 0, 0, 0.12); z-index: 10000; min-width: 200px; max-height: 300px; overflow-y: auto; color: var(--yt-spec-text-primary); padding: 8px 0; }
     .ytdl-dropdown-menu.show { display: block; }
-    .ytdl-dropdown-item, .ytdl-dropdown-header { padding: 8px 12px; cursor: pointer; font-size: 1.3rem; white-space: nowrap; display: block; text-decoration: none; color: inherit; }
-    .ytdl-dropdown-header { font-weight: bold; cursor: default; border-bottom: 1px solid var(--yt-spec-10-percent-layer); margin-bottom: 4px; }
-    .ytdl-dropdown-item:hover { background-color: var(--yt-spec-hover-background, rgba(0, 0, 0, 0.1)); }
+    .ytdl-dropdown-item, .ytdl-dropdown-header { font-size: 1.3rem; white-space: nowrap; text-decoration: none; color: inherit; }
+    .ytdl-dropdown-item { display: flex; align-items: center; min-height: 36px; margin: 0 8px; padding: 0 12px 0 16px; border-radius: 8px; cursor: pointer; }
+    .ytdl-dropdown-header { display: block; padding: 0 16px 8px; font-weight: bold; cursor: default; border-bottom: 1px solid var(--yt-spec-10-percent-layer); margin: 0 0 4px; }
+    .ytdl-dropdown-item:hover, .ytdl-dropdown-item:focus-visible { background-color: var(--ytdl-dropdown-item-hover-color, rgba(0, 0, 0, 0.12)); outline: none; }
     .ytdl-loading-indicator { padding: 10px; text-align: center; font-style: italic; color: var(--yt-spec-text-secondary); }
     .ytdl-error-message { padding: 10px; color: var(--yt-spec-error-message-color, red); font-weight: bold; }
 
@@ -1253,6 +1254,70 @@
     }
   }
 
+  /**
+   * Copies the current native watch-page action button class stack.
+   * @returns {string}
+   */
+  function getNativeActionButtonClassName() {
+    const nativeButton = Array.from(document.querySelectorAll('#actions #actions-inner button'))
+      .find((button) => !button.closest('#ytdl-custom-button-container') && typeof button.className === 'string' && button.className.trim());
+    return nativeButton ? nativeButton.className.trim() : '';
+  }
+
+  /**
+   * Returns the current native watch-page action button foreground color.
+   * @returns {string}
+   */
+  function getNativeActionButtonTextColor() {
+    const nativeButton = Array.from(document.querySelectorAll('#actions #actions-inner button'))
+      .find((button) => !button.closest('#ytdl-custom-button-container'));
+
+    if (nativeButton) {
+      const color = getComputedStyle(nativeButton).color;
+      if (color) return color;
+    }
+
+    return 'rgb(15, 15, 15)';
+  }
+
+  /**
+   * Returns the current watch-page surface color for custom popup backgrounds.
+   * @returns {string}
+   */
+  function getPageSurfaceColor() {
+    const candidates = [
+      document.querySelector('ytd-app'),
+      document.documentElement,
+      document.body
+    ];
+
+    for (const node of candidates) {
+      if (!node) continue;
+      const color = getComputedStyle(node).backgroundColor;
+      if (color && color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent') {
+        return color;
+      }
+    }
+
+    return 'rgb(255, 255, 255)';
+  }
+
+  /**
+   * Returns a higher-contrast hover color for custom dropdown items.
+   * @returns {string}
+   */
+  function getDropdownItemHoverColor() {
+    const surfaceColor = getPageSurfaceColor();
+    const channels = surfaceColor.match(/\d+(?:\.\d+)?/g);
+    if (!channels || channels.length < 3) {
+      return 'rgba(0, 0, 0, 0.12)';
+    }
+
+    const [red, green, blue] = channels.slice(0, 3).map(Number);
+    const luminance = ((0.2126 * red) + (0.7152 * green) + (0.0722 * blue)) / 255;
+    return luminance < 0.5 ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.12)';
+  }
+
 
   /**
    * Creates the main watch-page download button group and dropdown behavior.
@@ -1263,9 +1328,11 @@
     container.className = 'ytdl-custom-button-container';
     container.id = 'ytdl-custom-button-container';
 
+    const nativeButtonClassName = getNativeActionButtonClassName();
+
     const downloadButton = document.createElement('button');
     downloadButton.textContent = 'Download';
-    downloadButton.className = 'ytdl-download-button';
+    downloadButton.className = nativeButtonClassName ? `${nativeButtonClassName} ytdl-download-button` : 'ytdl-download-button';
     downloadButton.id = 'ytdl-download-button';
     downloadButton.title = 'Download best quality (default)';
     downloadButton.addEventListener('click', () => {
@@ -1293,13 +1360,19 @@
 
     const dropdownArrow = document.createElement('button');
     dropdownArrow.textContent = '\u25BC'; // Down arrow ▼
-    dropdownArrow.className = 'ytdl-dropdown-arrow';
+    dropdownArrow.className = nativeButtonClassName ? `${nativeButtonClassName} ytdl-dropdown-arrow` : 'ytdl-dropdown-arrow';
     dropdownArrow.title = 'Show download options';
 
     // Create the dropdown menu but DON'T append it to the container yet
     const dropdownMenu = document.createElement('div');
     dropdownMenu.className = 'ytdl-dropdown-menu';
     dropdownMenu.id = 'ytdl-dropdown-menu';
+    const nativeTextColor = getNativeActionButtonTextColor();
+    const dropdownItemHoverColor = getDropdownItemHoverColor();
+    downloadButton.style.color = nativeTextColor;
+    dropdownArrow.style.color = nativeTextColor;
+    dropdownMenu.style.color = nativeTextColor;
+    dropdownMenu.style.setProperty('--ytdl-dropdown-item-hover-color', dropdownItemHoverColor);
 
     dropdownArrow.addEventListener('click', (e) => {
       e.stopPropagation(); // Prevent body click listener closing it immediately
@@ -1332,6 +1405,7 @@
         dropdownMenu.style.bottom = 'auto';
         dropdownMenu.style.left = 'auto'; // Reset left
         dropdownMenu.style.right = 'auto'; // Reset right
+        dropdownMenu.style.backgroundColor = getPageSurfaceColor();
 
         // --- Set Right Alignment ---
         // Align the menu's right edge with the container's right edge
