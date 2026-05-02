@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.11
+// @version      1.7.12
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -49,7 +49,7 @@
     .ytdl-dropdown-menu.show { display: block; }
     .ytdl-dropdown-item, .ytdl-dropdown-header { font-size: 1.3rem; white-space: nowrap; text-decoration: none; color: inherit; }
     .ytdl-dropdown-item { display: flex; align-items: center; min-height: 36px; margin: 0 8px; padding: 0 12px 0 16px; border-radius: 8px; cursor: pointer; }
-    .ytdl-dropdown-header { display: block; padding: 0 16px 8px; font-weight: bold; cursor: default; border-bottom: 1px solid var(--yt-spec-10-percent-layer); margin: 0 0 4px; }
+    .ytdl-dropdown-header { display: block; position: sticky; top: -8px; z-index: 1; padding: 8px 16px 8px; font-weight: bold; cursor: default; border-bottom: 1px solid var(--yt-spec-10-percent-layer); margin: 0 0 4px; background-color: inherit; }
     .ytdl-dropdown-item:hover, .ytdl-dropdown-item:focus-visible { background-color: var(--ytdl-dropdown-item-hover-color, rgba(0, 0, 0, 0.12)); outline: none; }
     .ytdl-loading-indicator { padding: 10px; text-align: center; font-style: italic; color: var(--yt-spec-text-secondary); }
     .ytdl-error-message { padding: 10px; color: var(--yt-spec-error-message-color, red); font-weight: bold; }
