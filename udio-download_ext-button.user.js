@@ -1,9 +1,10 @@
 // ==UserScript==
-// @name         Add Download Button to Udio Song Pages
+// @name         Add Download Button to Udio and Flow Music Song Pages
 // @namespace    http://tampermonkey.net/
-// @version      0.7
-// @description  Adds a download button next to the existing download button on Udio song pages, using POST with JSON payload including lyrics
+// @version      0.8
+// @description  Adds a download button on Udio and Flow Music song pages, using metadata from the current track page
 // @match        https://www.udio.com/*
+// @match        https://www.flowmusic.app/*
 // @icon         https://udio.com/favicon.ico
 // @run-at       document-idle
 // ==/UserScript==
@@ -11,110 +12,260 @@
 (function() {
   'use strict';
 
-  function getExistingButton() {
-      return document.querySelector('button[aria-label="open report track modal"]')
-  }
+  const CUSTOM_BUTTON_SELECTOR = '[data-download-ext-button="true"]';
 
-  // Function to extract metadata from the page
-  function getMetadata(property) {
-      const meta = document.querySelector(`meta[property="${property}"]`);
-      return meta ? meta.getAttribute('content') : null;
-  }
+  function getMetadata(key) {
+      const selectors = [
+          `meta[property="${key}"]`,
+          `meta[name="${key}"]`
+      ];
 
-  // Function to get the canonical URL
-  function getCanonicalUrl() {
-      const link = document.querySelector('link[rel="canonical"]');
-      return link ? link.getAttribute('href') : null;
-  }
-
-  // Function to get the creation year
-  function getCreationYear() {
-      const createdAtDiv = Array.from(document.querySelectorAll('div[title]'))
-          .find(div => div.getAttribute('title').startsWith('Created at'));
-      if (createdAtDiv) {
-          const dateMatch = createdAtDiv.textContent.match(/\d{4}/);
-          return dateMatch ? dateMatch[0] : null;
-      }
-      return null;
-  }
-
-  // Function to parse artist and title
-  function parseArtistAndTitle(ogTitle) {
-      if (!ogTitle) return { artist: null, title: null };
-      const parts = ogTitle.split(' - ');
-      if (parts.length < 2) return { artist: null, title: null };
-      const artist = parts[0].trim();
-      const title = parts[1].split(' | ')[0].trim();
-      return { artist, title };
-  }
-
-  // Function to get lyrics
-  function getLyrics() {
-      const lyricsHeader = Array.from(document.querySelectorAll('div')).find(div => div.textContent.trim() === 'Lyrics');
-      if (lyricsHeader) {
-          if (lyricsHeader.nextElementSibling) {
-            return lyricsHeader.nextElementSibling.textContent.trim();
-          } else {
-            // If the next sibling is not available, then the lyrics are empty, so return an empty string
-            return "";
+      for (const selector of selectors) {
+          const meta = document.querySelector(selector);
+          if (meta) {
+              return meta.getAttribute('content');
           }
       }
+
       return null;
   }
 
-  // Function to get description/tags
-  function getDescription() {
-      return getMetadata('og:description') || '';
+  function getCanonicalUrl() {
+      return document.querySelector('link[rel="canonical"]')?.getAttribute('href') || getMetadata('og:url') || window.location.href;
   }
 
-  // Function to create and add the download button
+  function getCreationYearFromText(prefix) {
+      const titledNode = Array.from(document.querySelectorAll('[title]'))
+          .find(node => node.getAttribute('title')?.startsWith(prefix));
+
+      if (!titledNode) {
+          return null;
+      }
+
+      const dateMatch = titledNode.textContent.match(/\d{4}/);
+      return dateMatch ? dateMatch[0] : null;
+  }
+
+  function getFlowSongData() {
+      const nextData = window.__NEXT_DATA__;
+      const queries = nextData?.props?.sdc?.queryClient?.queries;
+
+      if (!Array.isArray(queries)) {
+          return null;
+      }
+
+      const clipQuery = queries.find(query => Array.isArray(query?.queryKey) && query.queryKey[0] === 'clip');
+      return clipQuery?.state?.data || null;
+  }
+
+  function parseUdioArtistAndTitle(ogTitle) {
+      if (!ogTitle) {
+          return { artist: null, title: null };
+      }
+
+      const parts = ogTitle.split(' - ');
+      if (parts.length < 2) {
+          return { artist: null, title: null };
+      }
+
+      return {
+          artist: parts[0].trim(),
+          title: parts[1].split(' | ')[0].trim()
+      };
+  }
+
+  function parseFlowArtistAndTitle() {
+      const songData = getFlowSongData();
+      const ogTitle = getMetadata('og:title') || '';
+      const match = ogTitle.match(/^(.*) by ([^]+)$/);
+
+      return {
+          artist: songData?.author?.username || getMetadata('music:musician') || (match ? match[2].trim() : null),
+          title: songData?.title || (match ? match[1].trim() : ogTitle.trim()) || null
+      };
+  }
+
+  function getUdioLyrics() {
+      const lyricsHeader = Array.from(document.querySelectorAll('div')).find(div => div.textContent.trim() === 'Lyrics');
+      if (!lyricsHeader) {
+          return null;
+      }
+
+      return lyricsHeader.nextElementSibling ? lyricsHeader.nextElementSibling.textContent.trim() : '';
+  }
+
+  function getFlowLyrics() {
+      const songData = getFlowSongData();
+      if (songData?.lyrics?.value?.text) {
+          return songData.lyrics.value.text;
+      }
+
+      const lyricsSection = Array.from(document.querySelectorAll('div'))
+          .find(node => node.textContent.trim() === 'Lyrics')
+          ?.parentElement;
+
+      return lyricsSection ? lyricsSection.textContent.replace(/^Lyrics/, '').trim() : null;
+  }
+
+  function getFlowActionButton() {
+      return document.querySelector('button[aria-label="Share"]');
+  }
+
+  const SITE_CONFIGS = {
+      'www.udio.com': {
+          album: 'Udio',
+          getAnchorButton: () => document.querySelector('button[aria-label="open report track modal"]'),
+          getButtonContainer: anchorButton => anchorButton.parentElement,
+          insertButton: (container, button, anchorButton) => {
+              container.insertBefore(button, anchorButton.nextSibling);
+          },
+          getMetadata: () => {
+              const ogTitle = getMetadata('og:title');
+              const parsed = parseUdioArtistAndTitle(ogTitle);
+
+              return {
+                  mp3Url: getMetadata('og:audio'),
+                  imageUrl: getMetadata('og:image') || '',
+                  artist: parsed.artist || '',
+                  title: parsed.title || '',
+                  year: getCreationYearFromText('Created at') || '',
+                  canonical: getCanonicalUrl(),
+                  description: getMetadata('og:description') || '',
+                  lyrics: getUdioLyrics() || ''
+              };
+          },
+          isReady: () => {
+              const metadata = SITE_CONFIGS['www.udio.com'].getMetadata();
+              return Boolean(
+                  SITE_CONFIGS['www.udio.com'].getAnchorButton() &&
+                  metadata.mp3Url &&
+                  metadata.year &&
+                  metadata.lyrics !== null
+              );
+          }
+      },
+      'www.flowmusic.app': {
+          album: 'Flow Music',
+          getAnchorButton: getFlowActionButton,
+          getButtonContainer: anchorButton => anchorButton.parentElement?.parentElement || null,
+          insertButton: (container, button) => {
+              container.appendChild(button);
+          },
+          getMetadata: () => {
+              const songData = getFlowSongData();
+              const parsed = parseFlowArtistAndTitle();
+              const createdAt = songData?.created_at;
+
+              return {
+                  mp3Url: songData?.audio_url || getMetadata('og:audio') || '',
+                  imageUrl: songData?.image_url || getMetadata('og:image') || '',
+                  artist: parsed.artist || '',
+                  title: parsed.title || '',
+                  year: createdAt ? new Date(createdAt).getUTCFullYear().toString() : '',
+                  canonical: getCanonicalUrl(),
+                  description: songData?.operation?.sound_prompt || getMetadata('og:description') || '',
+                  lyrics: getFlowLyrics() || ''
+              };
+          },
+          isReady: () => {
+              const metadata = SITE_CONFIGS['www.flowmusic.app'].getMetadata();
+              return Boolean(
+                  getFlowActionButton() &&
+                  metadata.mp3Url &&
+                  metadata.artist &&
+                  metadata.title
+              );
+          }
+      }
+  };
+
+  function getSiteConfig() {
+      return SITE_CONFIGS[window.location.hostname] || null;
+  }
+
+  function getButtonContainer(anchorButton) {
+      const siteConfig = getSiteConfig();
+      return siteConfig?.getButtonContainer ? siteConfig.getButtonContainer(anchorButton) : anchorButton.parentElement;
+  }
+
+  function createDownloadButton(anchorButton, href) {
+      const button = document.createElement('button');
+      button.className = anchorButton.className;
+      button.setAttribute('data-download-ext-button', 'true');
+      button.type = 'button';
+      button.title = 'Download track';
+      button.style.width = 'auto';
+      button.style.minWidth = '3rem';
+      button.style.paddingInline = '0.9rem';
+
+      const label = document.createElement('span');
+      label.textContent = 'Download';
+      button.appendChild(label);
+
+      button.addEventListener('click', () => {
+          window.location.assign(href);
+      });
+
+      return button;
+  }
+
   function addDownloadButton() {
-      const existingButton = getExistingButton();
-      if (!existingButton) {
-          console.error('Existing download button not found');
+      const siteConfig = getSiteConfig();
+      if (!siteConfig) {
           return;
       }
 
-      const button = document.createElement('button');
-      button.className = existingButton.className
+      const existingButton = siteConfig.getAnchorButton();
+      if (!existingButton) {
+          return;
+      }
 
-      const link = document.createElement('a');
-      link.textContent = 'Download';
-      button.appendChild(link);
+      const buttonContainer = getButtonContainer(existingButton);
+      if (!buttonContainer || buttonContainer.querySelector(CUSTOM_BUTTON_SELECTOR)) {
+          return;
+      }
 
-      const mp3Url = getMetadata('og:audio');
-      const imageUrl = getMetadata('og:image');
-      const ogTitle = getMetadata('og:title');
-      const { artist, title } = parseArtistAndTitle(ogTitle);
-      const year = getCreationYear();
-      const canonical = getCanonicalUrl();
-      const description = getDescription();
-      const lyrics = getLyrics();
+      const metadata = siteConfig.getMetadata();
+      if (!metadata.mp3Url) {
+          return;
+      }
 
       const params = new URLSearchParams({
-          mp3_url: mp3Url,
-          image_url: imageUrl || '',
-          artist: artist || '',
-          title: title || '',
-          year: year || '',
-          album: 'Udio',
-          canonical: canonical || '',
-          description: description || '',
-          lyrics: lyrics || ''
+          mp3_url: metadata.mp3Url,
+          image_url: metadata.imageUrl || '',
+          artist: metadata.artist || '',
+          title: metadata.title || '',
+          year: metadata.year || '',
+          album: siteConfig.album,
+          canonical: metadata.canonical || '',
+          description: metadata.description || '',
+          lyrics: metadata.lyrics || ''
       });
 
-      link.href = `http://localhost:5000/api/download_ext?${params.toString()}`;
+      const downloadUrl = `http://localhost:5000/api/download_ext?${params.toString()}`;
+      const button = createDownloadButton(existingButton, downloadUrl);
 
-      existingButton.parentNode.insertBefore(button, existingButton.nextSibling);
+      if (siteConfig.insertButton) {
+          siteConfig.insertButton(buttonContainer, button, existingButton);
+          return;
+      }
+
+      buttonContainer.insertBefore(button, existingButton.nextSibling);
   }
 
-  // Function to wait for the existing button to appear
   function waitForExistingButton() {
+      const siteConfig = getSiteConfig();
+      if (!siteConfig) {
+          return;
+      }
+
+      if (siteConfig.isReady()) {
+          addDownloadButton();
+          return;
+      }
+
       const observer = new MutationObserver((mutations, obs) => {
-          const existingButton = getExistingButton();
-          const creationYear = getCreationYear();
-          const lyrics = getLyrics();
-          if (existingButton && creationYear && (lyrics !== null)) {
+          if (siteConfig.isReady()) {
               addDownloadButton();
               obs.disconnect();
           }
@@ -126,7 +277,6 @@
       });
   }
 
-  // Run the script
   waitForExistingButton();
   window.addEventListener('popstate', waitForExistingButton);
 })();
