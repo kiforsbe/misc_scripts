@@ -1305,7 +1305,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     socks_group.add_argument("--socks5-file", help="Text file with one SOCKS5 proxy per line; one live entry is selected at random at startup")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind locally (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8080, help="Local port to listen on (default: 8080)")
-    parser.add_argument("--timeout", type=float, default=30.0, help="Upstream request timeout in seconds (default: 30)")
+    parser.add_argument("--timeout", type=float, default=10.0, help="Upstream request timeout in seconds (default: 10)")
     parser.add_argument(
         "--rotation-interval",
         type=parse_rotation_interval,
