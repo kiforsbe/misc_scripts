@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Add Download Button to Udio and Flow Music Song Pages
 // @namespace    http://tampermonkey.net/
-// @version      0.8
+// @version      0.9
 // @description  Adds a download button on Udio and Flow Music song pages, using metadata from the current track page
 // @match        https://www.udio.com/*
 // @match        https://www.flowmusic.app/*
@@ -58,6 +58,29 @@
       return clipQuery?.state?.data || null;
   }
 
+  function getUdioSongData() {
+      for (const script of Array.from(document.scripts)) {
+          const text = script.textContent || '';
+          if (!text.includes('song_path')) {
+              continue;
+          }
+
+          const songPathMatch = text.match(/\\?"song_path\\?":\\?"([^"\\]+)\\?"/);
+          const imagePathMatch = text.match(/\\?"image_path\\?":\\?"([^"\\]+)\\?"/);
+          const promptMatch = text.match(/\\?"prompt\\?":\\?"([^]*?)\\?",\\?"likes\\?":/);
+
+          if (songPathMatch) {
+              return {
+                  songPath: songPathMatch[1],
+                  imagePath: imagePathMatch ? imagePathMatch[1] : null,
+                  prompt: promptMatch ? promptMatch[1] : null
+              };
+          }
+      }
+
+      return null;
+  }
+
   function parseUdioArtistAndTitle(ogTitle) {
       if (!ogTitle) {
           return { artist: null, title: null };
@@ -111,26 +134,35 @@
       return document.querySelector('button[aria-label="Share"]');
   }
 
+  function getUdioActionButton() {
+      const shareButton = Array.from(document.querySelectorAll('button'))
+          .find(button => button.textContent.trim() === 'Share');
+
+      return shareButton || document.querySelector('button[title^="Open track actions for"]');
+  }
+
   const SITE_CONFIGS = {
       'www.udio.com': {
           album: 'Udio',
-          getAnchorButton: () => document.querySelector('button[aria-label="open report track modal"]'),
+          requireMp3Url: false,
+          getAnchorButton: getUdioActionButton,
           getButtonContainer: anchorButton => anchorButton.parentElement,
           insertButton: (container, button, anchorButton) => {
               container.insertBefore(button, anchorButton.nextSibling);
           },
           getMetadata: () => {
+              const songData = getUdioSongData();
               const ogTitle = getMetadata('og:title');
               const parsed = parseUdioArtistAndTitle(ogTitle);
 
               return {
-                  mp3Url: getMetadata('og:audio'),
-                  imageUrl: getMetadata('og:image') || '',
+                  mp3Url: songData?.songPath || getMetadata('og:audio') || '',
+                  imageUrl: songData?.imagePath || getMetadata('og:image') || '',
                   artist: parsed.artist || '',
                   title: parsed.title || '',
                   year: getCreationYearFromText('Created at') || '',
                   canonical: getCanonicalUrl(),
-                  description: getMetadata('og:description') || '',
+                  description: songData?.prompt || getMetadata('og:description') || '',
                   lyrics: getUdioLyrics() || ''
               };
           },
@@ -138,7 +170,7 @@
               const metadata = SITE_CONFIGS['www.udio.com'].getMetadata();
               return Boolean(
                   SITE_CONFIGS['www.udio.com'].getAnchorButton() &&
-                  metadata.mp3Url &&
+                  metadata.title &&
                   metadata.year &&
                   metadata.lyrics !== null
               );
@@ -146,6 +178,7 @@
       },
       'www.flowmusic.app': {
           album: 'Flow Music',
+          requireMp3Url: false,
           getAnchorButton: getFlowActionButton,
           getButtonContainer: anchorButton => anchorButton.parentElement?.parentElement || null,
           insertButton: (container, button) => {
@@ -226,7 +259,7 @@
       }
 
       const metadata = siteConfig.getMetadata();
-      if (!metadata.mp3Url) {
+      if (siteConfig.requireMp3Url !== false && !metadata.mp3Url) {
           return;
       }
 
