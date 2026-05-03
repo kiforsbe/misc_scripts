@@ -13,6 +13,22 @@
   'use strict';
 
   const CUSTOM_BUTTON_SELECTOR = '[data-download-ext-button="true"]';
+    const DEBUG = true;
+    let activeObserver = null;
+    let lastUrl = window.location.href;
+
+    function debugLog(event, details) {
+            if (!DEBUG) {
+                    return;
+            }
+
+            console.debug('[download-ext]', event, details || '');
+    }
+
+    function getCurrentSongIdFromPath() {
+            const match = window.location.pathname.match(/\/song[s]?\/([^/?#]+)/);
+            return match ? match[1] : null;
+    }
 
   function getMetadata(key) {
       const selectors = [
@@ -32,6 +48,18 @@
 
   function getCanonicalUrl() {
       return document.querySelector('link[rel="canonical"]')?.getAttribute('href') || getMetadata('og:url') || window.location.href;
+  }
+
+  function flowMetadataMatchesCurrentSong() {
+      const currentSongId = getCurrentSongIdFromPath();
+      if (!currentSongId) {
+          return true;
+      }
+
+      const canonical = getCanonicalUrl();
+      const audioUrl = getMetadata('og:audio') || '';
+
+      return canonical.includes(currentSongId) || audioUrl.includes(currentSongId);
   }
 
   function getCreationYearFromText(prefix) {
@@ -158,6 +186,7 @@
               return {
                   mp3Url: songData?.songPath || getMetadata('og:audio') || '',
                   imageUrl: songData?.imagePath || getMetadata('og:image') || '',
+                  videoUrl: '',
                   artist: parsed.artist || '',
                   title: parsed.title || '',
                   year: getCreationYearFromText('Created at') || '',
@@ -192,6 +221,7 @@
               return {
                   mp3Url: songData?.audio_url || getMetadata('og:audio') || '',
                   imageUrl: songData?.image_url || getMetadata('og:image') || '',
+                  videoUrl: songData?.video_url || getMetadata('og:video') || '',
                   artist: parsed.artist || '',
                   title: parsed.title || '',
                   year: createdAt ? new Date(createdAt).getUTCFullYear().toString() : '',
@@ -204,6 +234,7 @@
               const metadata = SITE_CONFIGS['www.flowmusic.app'].getMetadata();
               return Boolean(
                   getFlowActionButton() &&
+                  flowMetadataMatchesCurrentSong() &&
                   metadata.mp3Url &&
                   metadata.artist &&
                   metadata.title
@@ -221,10 +252,61 @@
       return siteConfig?.getButtonContainer ? siteConfig.getButtonContainer(anchorButton) : anchorButton.parentElement;
   }
 
-  function createDownloadButton(anchorButton, href) {
+  function buildDownloadRequestState(siteConfig) {
+      if (!siteConfig) {
+          debugLog('build-state:no-site-config');
+          return null;
+      }
+
+      const metadata = siteConfig.getMetadata();
+      if (siteConfig.requireMp3Url !== false && !metadata.mp3Url) {
+          debugLog('build-state:missing-mp3', {
+              host: window.location.hostname,
+              metadata
+          });
+          return null;
+      }
+
+      const params = new URLSearchParams({
+          mp3_url: metadata.mp3Url,
+          image_url: metadata.imageUrl || '',
+          video_url: metadata.videoUrl || '',
+          artist: metadata.artist || '',
+          title: metadata.title || '',
+          year: metadata.year || '',
+          album: siteConfig.album,
+          canonical: metadata.canonical || '',
+          description: metadata.description || '',
+          lyrics: metadata.lyrics || ''
+      });
+
+      return {
+          metadata,
+          params,
+          url: `http://localhost:5000/api/download_ext?${params.toString()}`
+      };
+  }
+
+  function buildDownloadUrl(siteConfig) {
+      const requestState = buildDownloadRequestState(siteConfig);
+      if (!requestState) {
+          return null;
+      }
+
+      debugLog('build-url:success', {
+          host: window.location.hostname,
+          songId: getCurrentSongIdFromPath(),
+          metadata: requestState.metadata,
+          url: requestState.url
+      });
+      return requestState.url;
+  }
+
+  function createDownloadButton(anchorButton) {
       const button = document.createElement('button');
       button.className = anchorButton.className;
       button.setAttribute('data-download-ext-button', 'true');
+      button.setAttribute('data-download-ext-url', window.location.href);
       button.type = 'button';
       button.title = 'Download track';
       button.style.width = 'auto';
@@ -236,47 +318,89 @@
       button.appendChild(label);
 
       button.addEventListener('click', () => {
-          window.location.assign(href);
+          const siteConfig = getSiteConfig();
+          const requestState = buildDownloadRequestState(siteConfig);
+          const href = requestState?.url || null;
+          debugLog('button:click', {
+              currentUrl: window.location.href,
+              buttonUrl: button.getAttribute('data-download-ext-url') || '',
+              host: window.location.hostname,
+              songId: getCurrentSongIdFromPath(),
+              href,
+              mp3_url: requestState?.params.get('mp3_url') || '',
+              image_url: requestState?.params.get('image_url') || '',
+              video_url: requestState?.params.get('video_url') || '',
+              artist: requestState?.params.get('artist') || '',
+              title: requestState?.params.get('title') || '',
+              year: requestState?.params.get('year') || '',
+              album: requestState?.params.get('album') || '',
+              canonical: requestState?.params.get('canonical') || '',
+              description: requestState?.params.get('description') || '',
+              lyrics: requestState?.params.get('lyrics') || ''
+          });
+          if (href) {
+              window.location.assign(href);
+          }
       });
 
       return button;
   }
 
+  function removeDownloadButtons() {
+      const buttons = Array.from(document.querySelectorAll(CUSTOM_BUTTON_SELECTOR));
+      debugLog('button:remove-all', {
+          count: buttons.length,
+          currentUrl: window.location.href
+      });
+      for (const button of buttons) {
+          button.remove();
+      }
+  }
+
   function addDownloadButton() {
       const siteConfig = getSiteConfig();
       if (!siteConfig) {
+          debugLog('button:add:no-site-config');
           return;
       }
 
       const existingButton = siteConfig.getAnchorButton();
       if (!existingButton) {
+          debugLog('button:add:no-anchor', {
+              host: window.location.hostname,
+              currentUrl: window.location.href
+          });
           return;
       }
 
       const buttonContainer = getButtonContainer(existingButton);
       if (!buttonContainer || buttonContainer.querySelector(CUSTOM_BUTTON_SELECTOR)) {
+          debugLog('button:add:skip-existing-or-missing-container', {
+              hasContainer: Boolean(buttonContainer),
+              hasExistingButton: Boolean(buttonContainer?.querySelector(CUSTOM_BUTTON_SELECTOR)),
+              currentUrl: window.location.href
+          });
           return;
       }
 
-      const metadata = siteConfig.getMetadata();
-      if (siteConfig.requireMp3Url !== false && !metadata.mp3Url) {
+      const downloadUrl = buildDownloadUrl(siteConfig);
+      if (!downloadUrl) {
+          debugLog('button:add:no-download-url', {
+              host: window.location.hostname,
+              currentUrl: window.location.href
+          });
           return;
       }
 
-      const params = new URLSearchParams({
-          mp3_url: metadata.mp3Url,
-          image_url: metadata.imageUrl || '',
-          artist: metadata.artist || '',
-          title: metadata.title || '',
-          year: metadata.year || '',
-          album: siteConfig.album,
-          canonical: metadata.canonical || '',
-          description: metadata.description || '',
-          lyrics: metadata.lyrics || ''
+      const button = createDownloadButton(existingButton);
+      debugLog('button:add:insert', {
+          host: window.location.hostname,
+          currentUrl: window.location.href,
+          anchorAria: existingButton.getAttribute('aria-label'),
+          anchorText: existingButton.textContent.trim(),
+          containerTag: buttonContainer.tagName,
+          containerClass: buttonContainer.className
       });
-
-      const downloadUrl = `http://localhost:5000/api/download_ext?${params.toString()}`;
-      const button = createDownloadButton(existingButton, downloadUrl);
 
       if (siteConfig.insertButton) {
           siteConfig.insertButton(buttonContainer, button, existingButton);
@@ -287,29 +411,100 @@
   }
 
   function waitForExistingButton() {
-      const siteConfig = getSiteConfig();
-      if (!siteConfig) {
+      if (!getSiteConfig()) {
+          debugLog('wait:no-site-config', {
+              currentUrl: window.location.href
+          });
           return;
       }
 
-      if (siteConfig.isReady()) {
-          addDownloadButton();
-          return;
+      if (activeObserver) {
+          activeObserver.disconnect();
+          activeObserver = null;
       }
 
-      const observer = new MutationObserver((mutations, obs) => {
+      const ensureDownloadButton = () => {
+          const siteConfig = getSiteConfig();
+          if (!siteConfig) {
+              debugLog('ensure:no-site-config', {
+                  currentUrl: window.location.href
+              });
+              return;
+          }
+
+          const metadata = siteConfig.getMetadata();
+          const ready = siteConfig.isReady();
+          debugLog('ensure:state', {
+              host: window.location.hostname,
+              currentUrl: window.location.href,
+              currentSongId: getCurrentSongIdFromPath(),
+              ready,
+              metadata,
+              hasAnchor: Boolean(siteConfig.getAnchorButton()),
+              hasExistingButton: Boolean(document.querySelector(CUSTOM_BUTTON_SELECTOR))
+          });
+
           if (siteConfig.isReady()) {
               addDownloadButton();
-              obs.disconnect();
           }
+      };
+
+      ensureDownloadButton();
+
+      activeObserver = new MutationObserver((mutations, obs) => {
+          ensureDownloadButton();
       });
 
-      observer.observe(document.body, {
+      activeObserver.observe(document.body, {
           childList: true,
           subtree: true
       });
   }
 
+  function syncForCurrentUrl() {
+      if (window.location.href === lastUrl) {
+          return;
+      }
+
+      debugLog('url:changed', {
+          previousUrl: lastUrl,
+          nextUrl: window.location.href
+      });
+      lastUrl = window.location.href;
+      removeDownloadButtons();
+      waitForExistingButton();
+  }
+
+  function installLocationChangeListener() {
+      const dispatchLocationChange = () => {
+          debugLog('url:dispatch-locationchange', {
+              currentUrl: window.location.href
+          });
+          window.dispatchEvent(new Event('locationchange'));
+      };
+
+      const originalPushState = history.pushState;
+      history.pushState = function(...args) {
+          const result = originalPushState.apply(this, args);
+          dispatchLocationChange();
+          return result;
+      };
+
+      const originalReplaceState = history.replaceState;
+      history.replaceState = function(...args) {
+          const result = originalReplaceState.apply(this, args);
+          dispatchLocationChange();
+          return result;
+      };
+
+      window.addEventListener('popstate', dispatchLocationChange);
+      window.addEventListener('locationchange', syncForCurrentUrl);
+  }
+
+    debugLog('init', {
+            currentUrl: window.location.href,
+            host: window.location.hostname
+    });
   waitForExistingButton();
-  window.addEventListener('popstate', waitForExistingButton);
+  installLocationChangeListener();
 })();

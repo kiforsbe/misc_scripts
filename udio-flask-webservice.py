@@ -3,6 +3,8 @@ import uuid
 import logging
 import threading
 import time
+import json
+import subprocess
 from flask import Flask, request, send_file, render_template_string, jsonify
 import requests
 import eyed3
@@ -114,6 +116,88 @@ def convert_to_jpeg(image_data: bytes) -> bytes:
         logging.error(f"Error converting image to JPEG: {e}", exc_info=True)
         return image_data  # Return original data if conversion fails
 
+def crop_cover_to_square_jpeg(image_data: bytes) -> bytes:
+    try:
+        img = Image.open(BytesIO(image_data))
+        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.convert('RGBA').split()[-1])
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+
+        edge = min(img.width, img.height)
+        left = (img.width - edge) // 2
+        top = (img.height - edge) // 2
+        cropped = img.crop((left, top, left + edge, top + edge))
+
+        output = BytesIO()
+        cropped.save(output, format='JPEG', quality=95)
+        return output.getvalue()
+    except Exception as error:
+        logging.error(f"Error cropping cover image to square JPEG: {error}", exc_info=True)
+        return convert_to_jpeg(image_data)
+
+def build_cover_art_variants(image_data: bytes | None) -> tuple[bytes | None, bytes | None]:
+    if not image_data:
+        return None, None
+
+    original_cover = convert_to_jpeg(image_data)
+    cropped_cover = crop_cover_to_square_jpeg(original_cover)
+    return cropped_cover, original_cover
+
+def get_video_duration_seconds(video_url: str) -> float | None:
+    try:
+        command = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'json',
+            video_url
+        ]
+        result = subprocess.run(command, capture_output=True, check=True, text=True)
+        payload = json.loads(result.stdout)
+        duration_value = payload.get('format', {}).get('duration')
+        if duration_value is None:
+            return None
+        duration = float(duration_value)
+        return duration if duration > 0 else None
+    except Exception as error:
+        logging.warning(f"Error probing video duration for cover extraction: {error}")
+        return None
+
+def extract_video_frame_to_jpeg(video_url: str) -> bytes | None:
+    """Extract a JPEG frame from a video URL using ffmpeg."""
+    if not video_url:
+        return None
+
+    try:
+        duration = get_video_duration_seconds(video_url)
+        if duration is None:
+            seek_seconds = 0.5
+        else:
+            seek_seconds = min(max(duration / 2, 0.5), max(duration - 0.25, 0.5))
+
+        command = [
+            'ffmpeg',
+            '-y',
+            '-ss', f'{seek_seconds:.3f}',
+            '-i', video_url,
+            '-frames:v', '1',
+            '-f', 'image2pipe',
+            '-vcodec', 'mjpeg',
+            'pipe:1'
+        ]
+        result = subprocess.run(command, capture_output=True, check=True)
+        if not result.stdout:
+            logging.warning("ffmpeg returned no frame data for video cover extraction.")
+            return None
+        logging.info(f"Successfully extracted JPEG frame from video URL at {seek_seconds:.3f}s.")
+        return result.stdout
+    except Exception as error:
+        logging.warning(f"Error extracting cover art from video URL: {error}")
+        return None
+
 @app.route('/api/download_ext', methods=['POST', 'GET'])
 def download_ext():
     if request.is_json:
@@ -125,10 +209,11 @@ def download_ext():
 
     audio_url = data.get('audio_url', data.get('mp3_url'))  # Support both new and old parameter
     image_url = data.get('image_url')
+    video_url = data.get('video_url')
 
-    if not audio_url or not image_url:
-        logging.warning("Missing audio_url or image_url in request.")
-        return jsonify({"error": "Both 'audio_url' and 'image_url' parameters are required"}), 400
+    if not audio_url:
+        logging.warning("Missing audio_url in request.")
+        return jsonify({"error": "The 'audio_url' parameter is required"}), 400
 
     # Determine audio_mime_type from URL
     is_m4a = audio_url.lower().endswith('.m4a')
@@ -154,29 +239,38 @@ def download_ext():
             logging.warning(f"Downloaded file from audio_url might not be an audio file (MIME: {audio_mime_type}). Proceeding anyway.")
             # You could choose to return an error here if strict audio type is required
 
-        # --- Download image file ---
-        logging.info(f"Downloading cover image from: {image_url}")
-        img_response = requests.get(image_url, timeout=30) # Add timeout
-        img_response.raise_for_status()
-        img_data = img_response.content
-        logging.info("Cover image downloaded successfully.")
+        img_data = None
+        if image_url:
+            try:
+                # --- Download image file ---
+                logging.info(f"Downloading cover image from: {image_url}")
+                img_response = requests.get(image_url, timeout=30)
+                img_response.raise_for_status()
+                img_data = img_response.content
+                logging.info("Cover image downloaded successfully.")
 
-        # --- Detect image mime-type ---
-        img_mime_type = mime_detector.from_buffer(img_data)
-        logging.info(f"Detected image MIME type: {img_mime_type}")
-        if not img_mime_type.startswith('image/'):
-            logging.warning(f"Downloaded file from image_url might not be an image (MIME: {img_mime_type}). Proceeding anyway.")
-            # You could choose to return an error here if strict image type is required
+                # --- Detect image mime-type ---
+                img_mime_type = mime_detector.from_buffer(img_data)
+                logging.info(f"Detected image MIME type: {img_mime_type}")
+                if not img_mime_type.startswith('image/'):
+                    logging.warning(f"Downloaded file from image_url might not be an image (MIME: {img_mime_type}). Proceeding without cover art.")
+                    img_data = None
 
-        # Convert image to JPEG if it's not already JPEG
-        if not img_mime_type.lower() in ['image/jpeg', 'image/jpg']:
-            logging.info(f"Converting {img_mime_type} image to JPEG")
-            img_data = convert_to_jpeg(img_data)
-            # Recheck mime type from the converted data
-            img_mime_type = mime_detector.from_buffer(img_data)
-            logging.info(f"Image converted and new mime type detected: {img_mime_type}")
-            if not img_mime_type.lower() in ['image/jpeg', 'image/jpg']:
-                logging.warning(f"Conversion may have failed, got {img_mime_type} instead of JPEG")
+                # Convert image to JPEG if it's not already JPEG
+                if img_data and img_mime_type.lower() not in ['image/jpeg', 'image/jpg']:
+                    logging.info(f"Converting {img_mime_type} image to JPEG")
+                    img_data = convert_to_jpeg(img_data)
+                    img_mime_type = mime_detector.from_buffer(img_data)
+                    logging.info(f"Image converted and new mime type detected: {img_mime_type}")
+                    if img_mime_type.lower() not in ['image/jpeg', 'image/jpg']:
+                        logging.warning(f"Conversion may have failed, got {img_mime_type} instead of JPEG")
+            except requests.exceptions.RequestException as image_error:
+                logging.warning(f"Error downloading cover image, proceeding without cover art: {image_error}")
+                img_data = None
+
+        if img_data is None and video_url:
+            logging.info(f"Attempting to extract cover art from video URL: {video_url}")
+            img_data = extract_video_frame_to_jpeg(video_url)
 
         # --- Create a temporary file for the audio ---
         temp_filename = f"temp_{generate_uuid(audio_url)}_{uuid.uuid4().hex[:8]}{extension}"
@@ -205,6 +299,8 @@ def download_ext():
             logging.warning(f"Invalid year value: {data.get('year')}")
             year_value = None
 
+        primary_cover_art, secondary_cover_art = build_cover_art_variants(img_data)
+
         metadata = AudioMetadata(
             title=data.get('title'),
             artist=data.get('artist'),
@@ -213,7 +309,8 @@ def download_ext():
             year=year_value,
             lyrics=data.get('lyrics'),
             canonical_url=data.get('canonical'),
-            cover_art=img_data
+            cover_art=primary_cover_art,
+            secondary_cover_art=secondary_cover_art
         )
 
         # Get appropriate writer and apply metadata
@@ -258,12 +355,20 @@ def download_ext():
 
         # --- Send the modified file back to the user ---
         logging.info("Sending modified audio file to client...")
-        return send_file(
+        response = send_file(
             temp_audio_path,
             as_attachment=True,
             download_name=filename,
-            mimetype=audio_mime_type
+            mimetype=audio_mime_type,
+            conditional=False,
+            etag=False,
+            max_age=0
             )
+
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0, private'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
 
     except requests.exceptions.RequestException as e:
         logging.error(f"Network error downloading files: {e}", exc_info=True)

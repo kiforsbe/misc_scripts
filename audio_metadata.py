@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import logging
 import eyed3
 from mutagen.mp4 import MP4, MP4Cover
-from typing import Optional, Union, Required
+from typing import Optional
 
 @dataclass
 class AudioMetadata:
@@ -16,6 +16,7 @@ class AudioMetadata:
     lyrics: Optional[str] = None
     canonical_url: Optional[str] = None
     cover_art: Optional[bytes] = None
+    secondary_cover_art: Optional[bytes] = None
 
 class AudioMetadataWriter(ABC):
     """Abstract base class for audio metadata writers"""
@@ -61,18 +62,24 @@ class MP3MetadataWriter(AudioMetadataWriter):
             except Exception as e:
                 logging.error(f"Error setting lyrics: {e}")
 
-        # Set cover art
+        if metadata.cover_art or metadata.secondary_cover_art:
+            for image in list(audio.tag.images):
+                audio.tag.images.remove(image.description)
+
         if metadata.cover_art:
-            # Remove existing covers
-            existing_covers = [img for img in audio.tag.images if img.picture_type == eyed3.id3.frames.ImageFrame.FRONT_COVER]
-            for cover in existing_covers:
-                audio.tag.images.remove(cover.description)
-            
             audio.tag.images.set(
                 eyed3.id3.frames.ImageFrame.FRONT_COVER,
                 metadata.cover_art,
                 'image/jpeg',
                 u'Cover'
+            )
+
+        if metadata.secondary_cover_art:
+            audio.tag.images.set(
+                eyed3.id3.frames.ImageFrame.OTHER,
+                metadata.secondary_cover_art,
+                'image/jpeg',
+                u'Original Cover'
             )
 
         # Save changes
@@ -105,11 +112,18 @@ class M4AMetadataWriter(AudioMetadataWriter):
             audio['\xa9url'] = [metadata.canonical_url]  # Standard URL tag
             audio['\xa9cmt'] = [metadata.canonical_url]  # Comments field
 
-        # Set cover art
+        # Replace existing cover art deterministically so downloaded files do not
+        # retain stale artwork when cover extraction fails or changes.
+        if 'covr' in audio:
+            del audio['covr']
+
+        covers = []
         if metadata.cover_art:
-            # Always use JPEG for M4A
-            cover = MP4Cover(metadata.cover_art, imageformat=MP4Cover.FORMAT_JPEG)
-            audio['covr'] = [cover]
+            covers.append(MP4Cover(metadata.cover_art, imageformat=MP4Cover.FORMAT_JPEG))
+        if metadata.secondary_cover_art:
+            covers.append(MP4Cover(metadata.secondary_cover_art, imageformat=MP4Cover.FORMAT_JPEG))
+        if covers:
+            audio['covr'] = covers
 
         audio.save()
 
