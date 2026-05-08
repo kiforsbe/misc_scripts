@@ -24,6 +24,7 @@ from network_utils import NetworkUtils
 from ssdpserver import SSDPServer
 from resourcemonitor import ResourceMonitor
 from contentdirectoryhandler import (
+    ALL_EXTENSIONS,
     AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -1119,6 +1120,76 @@ def load_config():
         print(f"Error parsing configuration file: {e}")
         sys.exit(1)
 
+
+def normalize_playlists(raw_playlists, media_folders, logger):
+    def playlist_specs():
+        if raw_playlists is None:
+            return []
+        if isinstance(raw_playlists, dict):
+            return [
+                {'name': str(name), 'files': files}
+                for name, files in raw_playlists.items()
+            ]
+        if isinstance(raw_playlists, list):
+            specs = []
+            for index, entry in enumerate(raw_playlists, start=1):
+                if isinstance(entry, dict):
+                    specs.append(
+                        {
+                            'name': str(entry.get('name') or f'Playlist {index}'),
+                            'files': entry.get('files', []),
+                        }
+                    )
+                else:
+                    specs.append({'name': f'Playlist {index}', 'files': entry})
+            return specs
+        logger.warning('Ignoring invalid playlists config because it is neither a list nor an object')
+        return []
+
+    def resolve_shared_file(file_path, playlist_name):
+        if not isinstance(file_path, str):
+            logger.warning('Skipping non-string playlist entry in %s: %r', playlist_name, file_path)
+            return None
+
+        abs_path = os.path.abspath(file_path)
+        if not os.path.exists(abs_path):
+            logger.warning('Skipping missing playlist file in %s: %s', playlist_name, abs_path)
+            return None
+        if not os.path.isfile(abs_path):
+            logger.warning('Skipping non-file playlist entry in %s: %s', playlist_name, abs_path)
+            return None
+        if os.path.splitext(abs_path)[1].lower() not in ALL_EXTENSIONS:
+            logger.warning('Skipping unsupported playlist file in %s: %s', playlist_name, abs_path)
+            return None
+
+        for folder_index, shared_folder in enumerate(media_folders):
+            shared_root = os.path.abspath(shared_folder)
+            try:
+                if os.path.commonpath([shared_root, abs_path]) == shared_root:
+                    return {'folder_index': folder_index, 'abs_path': abs_path}
+            except ValueError:
+                continue
+
+        logger.warning('Playlist file is outside shared folders in %s: %s', playlist_name, abs_path)
+        return None
+
+    playlists = []
+    for spec in playlist_specs():
+        files = spec.get('files', [])
+        if not isinstance(files, list):
+            logger.warning('Ignoring playlist %s because files is not a list', spec['name'])
+            continue
+
+        items = []
+        for file_path in files:
+            resolved = resolve_shared_file(file_path, spec['name'])
+            if resolved is not None:
+                items.append(resolved)
+
+        playlists.append({'name': spec['name'], 'items': items})
+
+    return playlists
+
 def start_server(config):
     """Start the DLNA media server with Windows compatibility"""
     logger = setup_logging()
@@ -1134,6 +1205,8 @@ def start_server(config):
         if not os.path.exists(folder):
             logger.error(f"Media folder does not exist: {folder}")
             sys.exit(1)
+
+    playlists = normalize_playlists(config.get('playlists', []), media_folders, logger)
 
     local_ip = NetworkUtils.get_local_ip()
     
@@ -1157,6 +1230,7 @@ def start_server(config):
         sys.exit(1)
 
     server.media_folders = media_folders
+    server.playlists = playlists
     server.local_ip = local_ip
     server.device_name = device_name
     server.resource_monitor = ResourceMonitor()  # Initialize resource monitor

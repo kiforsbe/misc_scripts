@@ -36,12 +36,6 @@ IMAGE_EXTENSIONS = {
 
 ALL_EXTENSIONS = {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}
 
-SORT_OPTIONS = (
-    ('default', 'Default'),
-    ('title', 'Title (A-Z)'),
-    ('date-desc', 'Date Modified (Newest)'),
-)
-
 
 class ContentDirectoryHandler:
     """Handles ContentDirectory browse requests and DIDL-Lite generation."""
@@ -177,41 +171,31 @@ class ContentDirectoryHandler:
 
     def _browse_metadata(self, root, resolved):
         kind = resolved['kind']
-        if kind == 'share':
-            self._add_virtual_container(
-                root,
-                resolved['object_id'],
-                '0',
-                resolved['title'],
-                len(SORT_OPTIONS),
-            )
-            return self.encode_didl(root), 1, 1
-        if kind == 'merged':
-            self._add_virtual_container(
-                root,
-                resolved['object_id'],
-                '0',
-                resolved['title'],
-                len(SORT_OPTIONS),
-            )
-            return self.encode_didl(root), 1, 1
-        if kind == 'sort':
+        if kind in {'share', 'merged', 'playlists-root', 'playlist'}:
             self._add_virtual_container(
                 root,
                 resolved['object_id'],
                 resolved['parent_id'],
                 resolved['title'],
-                self._count_context_children(resolved),
+                resolved['child_count'],
             )
             return self.encode_didl(root), 1, 1
         if kind == 'entry':
             self._add_context_entry(
                 root,
                 resolved['source'],
-                resolved['sort_key'],
                 resolved['folder_index'],
                 resolved['abs_path'],
-                self._parent_id_for_resolved_entry(resolved),
+                self._parent_id_for_entry(resolved),
+            )
+            return self.encode_didl(root), 1, 1
+        if kind == 'playlist-item':
+            self._add_item(
+                root,
+                resolved['folder_index'],
+                resolved['abs_path'],
+                resolved['parent_id'],
+                object_id=resolved['object_id'],
             )
             return self.encode_didl(root), 1, 1
         return self.encode_didl(root), 0, 0
@@ -219,15 +203,16 @@ class ContentDirectoryHandler:
     def _browse_resolved_children(self, root, object_id, resolved, starting_index, requested_count):
         kind = resolved['kind']
         if kind in {'share', 'merged'}:
-            return self._browse_sort_children(root, resolved, starting_index, requested_count)
-        if kind == 'sort':
-            return self._browse_sort_entries(root, resolved, starting_index, requested_count)
+            return self._browse_context_children(root, resolved, starting_index, requested_count)
+        if kind == 'playlists-root':
+            return self._browse_playlist_containers(root, resolved, starting_index, requested_count)
+        if kind == 'playlist':
+            return self._browse_playlist_items(root, resolved, starting_index, requested_count)
         if kind != 'entry' or not os.path.isdir(resolved['abs_path']):
             return self.encode_didl(root), 0, 0
         return self._browse_directory_children(
             root,
             resolved['source'],
-            resolved['sort_key'],
             resolved['folder_index'],
             resolved['abs_path'],
             object_id,
@@ -248,7 +233,7 @@ class ContentDirectoryHandler:
         )
 
     def _add_root_metadata(self, root):
-        total_children = len(self.http_server.media_folders) + 1
+        total_children = len(self._collect_root_entries())
 
         self.logger.info('Root metadata reports %s virtual children', total_children)
 
@@ -279,18 +264,30 @@ class ContentDirectoryHandler:
                 {
                     'kind': 'share',
                     'object_id': self._share_container_id(index),
+                    'parent_id': '0',
                     'title': self._share_title(shared_folder, index),
-                    'child_count': len(SORT_OPTIONS),
+                    'child_count': self._count_visible_children(shared_folder),
                 }
             )
         entries.append(
             {
                 'kind': 'merged',
                 'object_id': self._merged_container_id(),
+                'parent_id': '0',
                 'title': 'All Shared Paths',
-                'child_count': len(SORT_OPTIONS),
+                'child_count': len(self._collect_context_entries({'source': 'merged'})),
             }
         )
+        if self._playlist_definitions():
+            entries.append(
+                {
+                    'kind': 'playlists-root',
+                    'object_id': self._playlists_root_id(),
+                    'parent_id': '0',
+                    'title': 'Playlists',
+                    'child_count': len(self._playlist_definitions()),
+                }
+            )
         return entries
 
     def _append_root_children(self, root, starting_index, requested_count):
@@ -319,27 +316,12 @@ class ContentDirectoryHandler:
             self._add_virtual_container(root, entry['object_id'], '0', entry['title'], entry['child_count'])
         return self.encode_didl(root), len(selected), total
 
-    def _browse_sort_children(self, root, resolved, starting_index, requested_count):
-        entries = self._collect_sort_entries(resolved)
-        total = len(entries)
-        selected = self._slice_entries(entries, starting_index, requested_count)
-        self.logger.info(
-            'Sort containers parent=%s total=%s selected=%s preview=%s',
-            resolved['object_id'],
-            total,
-            len(selected),
-            [entry['title'] for entry in selected[:5]],
-        )
-        for entry in selected:
-            self._add_virtual_container(root, entry['object_id'], resolved['object_id'], entry['title'], entry['child_count'])
-        return self.encode_didl(root), len(selected), total
-
-    def _browse_sort_entries(self, root, resolved, starting_index, requested_count):
+    def _browse_context_children(self, root, resolved, starting_index, requested_count):
         entries = self._collect_context_entries(resolved)
         total = len(entries)
         selected = self._slice_entries(entries, starting_index, requested_count)
         self.logger.info(
-            'Sort entries parent=%s total=%s selected=%s preview=%s',
+            'Virtual children parent=%s total=%s selected=%s preview=%s',
             resolved['object_id'],
             total,
             len(selected),
@@ -349,14 +331,55 @@ class ContentDirectoryHandler:
             self._add_context_entry(
                 root,
                 resolved['source'],
-                resolved['sort_key'],
                 entry['folder_index'],
                 entry['abs_path'],
                 resolved['object_id'],
             )
         return self.encode_didl(root), len(selected), total
 
-    def _browse_directory_children(self, root, source, sort_key, folder_index, abs_path, parent_id, starting_index, requested_count):
+    def _browse_playlist_containers(self, root, resolved, starting_index, requested_count):
+        entries = self._playlist_definitions()
+        total = len(entries)
+        selected = self._slice_entries(entries, starting_index, requested_count)
+        self.logger.info(
+            'Playlist containers parent=%s total=%s selected=%s preview=%s',
+            resolved['object_id'],
+            total,
+            len(selected),
+            [entry['name'] for entry in selected[:5]],
+        )
+        for playlist_index, playlist in enumerate(selected, start=starting_index):
+            self._add_virtual_container(
+                root,
+                self._playlist_container_id(playlist_index),
+                resolved['object_id'],
+                playlist['name'],
+                len(playlist['items']),
+            )
+        return self.encode_didl(root), len(selected), total
+
+    def _browse_playlist_items(self, root, resolved, starting_index, requested_count):
+        entries = resolved['items']
+        total = len(entries)
+        selected = self._slice_entries(entries, starting_index, requested_count)
+        self.logger.info(
+            'Playlist items parent=%s total=%s selected=%s preview=%s',
+            resolved['object_id'],
+            total,
+            len(selected),
+            [os.path.basename(entry['abs_path']) for entry in selected[:5]],
+        )
+        for offset, entry in enumerate(selected, start=starting_index):
+            self._add_item(
+                root,
+                entry['folder_index'],
+                entry['abs_path'],
+                resolved['object_id'],
+                object_id=self._playlist_item_id(resolved['playlist_index'], offset),
+            )
+        return self.encode_didl(root), len(selected), total
+
+    def _browse_directory_children(self, root, source, folder_index, abs_path, parent_id, starting_index, requested_count):
         entries = []
         try:
             for entry in os.scandir(abs_path):
@@ -366,7 +389,7 @@ class ContentDirectoryHandler:
             self.logger.error(f'Error scanning directory {abs_path}: {exc}')
             return self.encode_didl(root), 0, 0
 
-        entries = self._sort_context_entries(entries, sort_key)
+        entries = self._sort_default_entries(entries)
         selected = self._slice_entries(entries, starting_index, requested_count)
         self.logger.info(
             'Directory children path=%s total=%s selected=%s preview=%s',
@@ -376,7 +399,7 @@ class ContentDirectoryHandler:
             [os.path.basename(entry['abs_path']) for entry in selected[:5]],
         )
         for entry in selected:
-            self._add_context_entry(root, source, sort_key, entry['folder_index'], entry['abs_path'], parent_id)
+            self._add_context_entry(root, source, entry['folder_index'], entry['abs_path'], parent_id)
         return self.encode_didl(root), len(selected), len(entries)
 
     def _add_entry(self, root, folder_index, abs_path, parent_id, object_id=None):
@@ -385,13 +408,13 @@ class ContentDirectoryHandler:
         else:
             self._add_item(root, folder_index, abs_path, parent_id, object_id=object_id)
 
-    def _add_context_entry(self, root, source, sort_key, folder_index, abs_path, parent_id):
+    def _add_context_entry(self, root, source, folder_index, abs_path, parent_id):
         self._add_entry(
             root,
             folder_index,
             abs_path,
             parent_id,
-            object_id=self._context_object_id(source, sort_key, folder_index, abs_path),
+            object_id=self._context_object_id(source, folder_index, abs_path),
         )
 
     def _add_virtual_container(self, root, object_id, parent_id, title, child_count):
@@ -541,25 +564,26 @@ class ContentDirectoryHandler:
     def _merged_container_id(self):
         return 'merged'
 
-    def _sort_container_id(self, source, sort_key, folder_index=None):
-        if source == 'merged':
-            return f'{self._merged_container_id()}/sort/{sort_key}'
-        return f'{self._share_container_id(folder_index)}/sort/{sort_key}'
+    def _playlists_root_id(self):
+        return 'playlists'
+
+    def _playlist_container_id(self, playlist_index):
+        return f'playlist-{playlist_index}'
+
+    def _playlist_item_id(self, playlist_index, item_index):
+        return f'{self._playlist_container_id(playlist_index)}/item/{item_index}'
 
     def _share_title(self, shared_folder, folder_index):
         normalized = os.path.normpath(shared_folder)
         name = os.path.basename(normalized)
         return name or f'Shared Path {folder_index + 1}'
 
-    def _context_object_id(self, source, sort_key, folder_index, abs_path):
+    def _context_object_id(self, source, folder_index, abs_path):
         shared_root = self.http_server.media_folders[folder_index]
         relative_path = os.path.relpath(abs_path, shared_root).replace(os.sep, '/')
         if source == 'merged':
-            return (
-                f'{self._sort_container_id(source, sort_key)}/path/'
-                f'{folder_index}/{quote(relative_path, safe="/")}'
-            )
-        return f'{self._sort_container_id(source, sort_key, folder_index)}/path/{quote(relative_path, safe="/")}'
+            return f'{self._merged_container_id()}/path/{folder_index}/{quote(relative_path, safe="/")}'
+        return f'{self._share_container_id(folder_index)}/path/{quote(relative_path, safe="/")}'
 
     def _object_id_for_path(self, folder_index, abs_path):
         shared_root = self.http_server.media_folders[folder_index]
@@ -574,10 +598,21 @@ class ContentDirectoryHandler:
                 'kind': 'merged',
                 'source': 'merged',
                 'object_id': object_id,
+                'parent_id': '0',
                 'title': 'All Shared Paths',
+                'child_count': len(self._collect_context_entries({'source': 'merged'})),
             }
 
-        if object_id.startswith('share-') and '/sort/' not in object_id:
+        if object_id == self._playlists_root_id():
+            return {
+                'kind': 'playlists-root',
+                'object_id': object_id,
+                'parent_id': '0',
+                'title': 'Playlists',
+                'child_count': len(self._playlist_definitions()),
+            }
+
+        if object_id.startswith('share-') and '/path/' not in object_id:
             try:
                 folder_index = int(object_id.split('-', 1)[1])
             except ValueError:
@@ -588,33 +623,81 @@ class ContentDirectoryHandler:
                 'kind': 'share',
                 'source': 'share',
                 'object_id': object_id,
+                'parent_id': '0',
                 'folder_index': folder_index,
                 'title': self._share_title(self.http_server.media_folders[folder_index], folder_index),
+                'child_count': self._count_visible_children(self.http_server.media_folders[folder_index]),
             }
 
-        sort_context = self._resolve_sort_context(object_id)
-        if sort_context is not None:
-            return sort_context
+        playlist = self._resolve_playlist_object_id(object_id)
+        if playlist is not None:
+            return playlist
+
+        context = self._resolve_context_object_id(object_id)
+        if context is not None:
+            return context
 
         legacy = self._resolve_legacy_object_id(object_id)
         if legacy is not None:
             return legacy
         return None
 
-    def _resolve_sort_context(self, object_id):
+    def _resolve_playlist_object_id(self, object_id):
+        if not object_id.startswith('playlist-'):
+            return None
         parts = object_id.split('/')
-        if len(parts) < 3 or parts[1] != 'sort':
+        try:
+            playlist_index = int(parts[0].split('-', 1)[1])
+        except ValueError:
+            return None
+        playlists = self._playlist_definitions()
+        if playlist_index < 0 or playlist_index >= len(playlists):
+            return None
+        playlist = playlists[playlist_index]
+        if len(parts) == 1:
+            return {
+                'kind': 'playlist',
+                'object_id': object_id,
+                'parent_id': self._playlists_root_id(),
+                'playlist_index': playlist_index,
+                'title': playlist['name'],
+                'child_count': len(playlist['items']),
+                'items': playlist['items'],
+            }
+        if len(parts) == 3 and parts[1] == 'item':
+            try:
+                item_index = int(parts[2])
+            except ValueError:
+                return None
+            if item_index < 0 or item_index >= len(playlist['items']):
+                return None
+            entry = playlist['items'][item_index]
+            return {
+                'kind': 'playlist-item',
+                'object_id': object_id,
+                'parent_id': self._playlist_container_id(playlist_index),
+                'folder_index': entry['folder_index'],
+                'abs_path': entry['abs_path'],
+            }
+        return None
+
+    def _resolve_context_object_id(self, object_id):
+        parts = object_id.split('/')
+        if len(parts) < 3 or parts[1] != 'path':
             return None
 
         source_token = parts[0]
-        sort_key = parts[2]
-        if sort_key not in {key for key, _ in SORT_OPTIONS}:
-            return None
-
         if source_token == self._merged_container_id():
             source = 'merged'
-            folder_index = None
-            parent_id = self._merged_container_id()
+            if len(parts) < 4:
+                return None
+            try:
+                folder_index = int(parts[2])
+            except ValueError:
+                return None
+            if not self._is_valid_folder_index(folder_index):
+                return None
+            encoded_relative = '/'.join(parts[3:])
         elif source_token.startswith('share-'):
             source = 'share'
             try:
@@ -623,35 +706,9 @@ class ContentDirectoryHandler:
                 return None
             if not self._is_valid_folder_index(folder_index):
                 return None
-            parent_id = self._share_container_id(folder_index)
+            encoded_relative = '/'.join(parts[2:])
         else:
             return None
-
-        if len(parts) == 3:
-            return {
-                'kind': 'sort',
-                'object_id': object_id,
-                'source': source,
-                'sort_key': sort_key,
-                'folder_index': folder_index,
-                'parent_id': parent_id,
-                'title': self._sort_title(sort_key),
-            }
-
-        if len(parts) < 5 or parts[3] != 'path':
-            return None
-
-        if source == 'merged':
-            try:
-                entry_folder_index = int(parts[4])
-            except ValueError:
-                return None
-            if not self._is_valid_folder_index(entry_folder_index):
-                return None
-            encoded_relative = '/'.join(parts[5:])
-            folder_index = entry_folder_index
-        else:
-            encoded_relative = '/'.join(parts[4:])
 
         if not encoded_relative:
             return None
@@ -663,7 +720,6 @@ class ContentDirectoryHandler:
             'kind': 'entry',
             'object_id': object_id,
             'source': source,
-            'sort_key': sort_key,
             'folder_index': folder_index,
             'abs_path': abs_path,
         }
@@ -680,22 +736,21 @@ class ContentDirectoryHandler:
             return None
         if not encoded_relative:
             return {
-                'kind': 'sort',
-                'object_id': self._sort_container_id('share', 'default', folder_index),
+                'kind': 'share',
+                'object_id': self._share_container_id(folder_index),
                 'source': 'share',
-                'sort_key': 'default',
+                'parent_id': '0',
                 'folder_index': folder_index,
-                'parent_id': self._share_container_id(folder_index),
-                'title': self._sort_title('default'),
+                'title': self._share_title(self.http_server.media_folders[folder_index], folder_index),
+                'child_count': self._count_visible_children(self.http_server.media_folders[folder_index]),
             }
         abs_path = self._resolve_relative_path(folder_index, encoded_relative, object_id)
         if abs_path is None:
             return None
         return {
             'kind': 'entry',
-            'object_id': self._context_object_id('share', 'default', folder_index, abs_path),
+            'object_id': self._context_object_id('share', folder_index, abs_path),
             'source': 'share',
-            'sort_key': 'default',
             'folder_index': folder_index,
             'abs_path': abs_path,
         }
@@ -716,21 +771,8 @@ class ContentDirectoryHandler:
     def _is_valid_folder_index(self, folder_index):
         return 0 <= folder_index < len(self.http_server.media_folders)
 
-    def _collect_sort_entries(self, resolved):
-        entries = []
-        for sort_key, title in SORT_OPTIONS:
-            sort_resolved = dict(resolved)
-            sort_resolved['kind'] = 'sort'
-            sort_resolved['sort_key'] = sort_key
-            sort_resolved['object_id'] = self._sort_container_id(resolved['kind'], sort_key, resolved.get('folder_index'))
-            entries.append(
-                {
-                    'object_id': sort_resolved['object_id'],
-                    'title': title,
-                    'child_count': self._count_context_children(sort_resolved),
-                }
-            )
-        return entries
+    def _playlist_definitions(self):
+        return getattr(self.http_server, 'playlists', [])
 
     def _collect_context_entries(self, resolved):
         entries = []
@@ -750,16 +792,9 @@ class ContentDirectoryHandler:
                         entries.append({'folder_index': resolved['folder_index'], 'abs_path': entry.path})
             except OSError as exc:
                 self.logger.error(f'Error scanning root folder {shared_folder}: {exc}')
-        return self._sort_context_entries(entries, resolved['sort_key'])
+        return self._sort_default_entries(entries)
 
-    def _sort_context_entries(self, entries, sort_key):
-        if sort_key == 'date-desc':
-            return sorted(
-                entries,
-                key=lambda entry: (-self._safe_mtime(entry['abs_path']), os.path.basename(entry['abs_path']).lower()),
-            )
-        if sort_key == 'title':
-            return sorted(entries, key=lambda entry: os.path.basename(entry['abs_path']).lower())
+    def _sort_default_entries(self, entries):
         return sorted(
             entries,
             key=lambda entry: (
@@ -768,31 +803,14 @@ class ContentDirectoryHandler:
             ),
         )
 
-    def _safe_mtime(self, abs_path):
-        try:
-            return os.path.getmtime(abs_path)
-        except OSError:
-            return 0
-
-    def _sort_title(self, sort_key):
-        for key, title in SORT_OPTIONS:
-            if key == sort_key:
-                return title
-        return sort_key
-
-    def _count_context_children(self, resolved):
-        if resolved['source'] == 'merged':
-            return sum(self._count_visible_children(shared_folder) for shared_folder in self.http_server.media_folders)
-        return self._count_visible_children(self.http_server.media_folders[resolved['folder_index']])
-
-    def _parent_id_for_resolved_entry(self, resolved):
+    def _parent_id_for_entry(self, resolved):
         shared_root = os.path.abspath(self.http_server.media_folders[resolved['folder_index']])
         abs_path = os.path.abspath(resolved['abs_path'])
-        sort_parent_id = self._sort_container_id(resolved['source'], resolved['sort_key'], resolved['folder_index'])
+        root_parent_id = self._merged_container_id() if resolved['source'] == 'merged' else self._share_container_id(resolved['folder_index'])
         parent_path = os.path.dirname(abs_path)
         if parent_path == shared_root:
-            return sort_parent_id
-        return self._context_object_id(resolved['source'], resolved['sort_key'], resolved['folder_index'], parent_path)
+            return root_parent_id
+        return self._context_object_id(resolved['source'], resolved['folder_index'], parent_path)
 
     def _count_visible_children(self, directory):
         count = 0
