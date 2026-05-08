@@ -49,6 +49,15 @@ class ContentDirectoryHandler:
         self.soap_handler = request_handler.soap_handler
         self.error_handler = request_handler.error_handler
 
+    def _client_profile(self):
+        getter = getattr(self.request_handler, 'get_client_profile', None)
+        if getter is None:
+            return {'is_likely_samsung': False}
+        return getter()
+
+    def _is_likely_samsung_client(self):
+        return bool(self._client_profile().get('is_likely_samsung'))
+
     def handle_control(self, post_data):
         try:
             action = self._get_soap_action()
@@ -291,6 +300,9 @@ class ContentDirectoryHandler:
         if not mime_type:
             return
 
+        is_samsung = self._is_likely_samsung_client()
+        is_video = ext in VIDEO_EXTENSIONS
+
         item = SubElement(
             root,
             'item',
@@ -298,6 +310,7 @@ class ContentDirectoryHandler:
                 'id': self._object_id_for_path(folder_index, abs_path),
                 'parentID': parent_id,
                 'restricted': '1',
+                **({'dlna:dlnaManaged': '00000004'} if is_samsung else {}),
             },
         )
         SubElement(item, 'dc:title').text = os.path.basename(abs_path)
@@ -319,22 +332,40 @@ class ContentDirectoryHandler:
         if ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS:
             thumbnail_info = self._thumbnail_info(folder_index, abs_path)
             thumbnail_url = thumbnail_info['url']
+            if is_samsung and is_video:
+                thumbnail_res = SubElement(item, 'res')
+                thumbnail_res.text = thumbnail_url
+                thumbnail_res.set('protocolInfo', 'http-get:*:image/jpeg:*')
+                if thumbnail_info['size'] is not None:
+                    thumbnail_res.set('size', str(thumbnail_info['size']))
+                if thumbnail_info['resolution'] is not None:
+                    thumbnail_res.set('resolution', thumbnail_info['resolution'])
 
-            thumbnail_res = SubElement(item, 'res')
-            thumbnail_res.text = thumbnail_url
-            thumbnail_res.set('protocolInfo', self._thumbnail_protocol_info())
-            thumbnail_res.set('dlna:profileID', 'JPEG_TN')
-            if thumbnail_info['size'] is not None:
-                thumbnail_res.set('size', str(thumbnail_info['size']))
-            if thumbnail_info['resolution'] is not None:
-                thumbnail_res.set('resolution', thumbnail_info['resolution'])
+                album_art = SubElement(item, 'upnp:albumArtURI')
+                album_art.text = thumbnail_url
 
-            album_art = SubElement(item, 'upnp:albumArtURI')
-            album_art.set('dlna:profileID', 'JPEG_TN')
-            album_art.text = thumbnail_url
+                sec_dcm_info = SubElement(item, 'sec:dcmInfo')
+                sec_dcm_info.text = 'thumbnail'
+            else:
+                thumbnail_res = SubElement(item, 'res')
+                thumbnail_res.text = thumbnail_url
+                thumbnail_res.set('protocolInfo', self._thumbnail_protocol_info())
+                thumbnail_res.set('dlna:profileID', 'JPEG_TN')
+                if thumbnail_info['size'] is not None:
+                    thumbnail_res.set('size', str(thumbnail_info['size']))
+                if thumbnail_info['resolution'] is not None:
+                    thumbnail_res.set('resolution', thumbnail_info['resolution'])
 
-            icon = SubElement(item, 'upnp:icon')
-            icon.text = thumbnail_url
+                album_art = SubElement(item, 'upnp:albumArtURI')
+                album_art.set('dlna:profileID', 'JPEG_TN')
+                album_art.text = thumbnail_url
+
+                icon = SubElement(item, 'upnp:icon')
+                icon.text = thumbnail_url
+
+                if is_samsung:
+                    sec_dcm_info = SubElement(item, 'sec:dcmInfo')
+                    sec_dcm_info.text = 'thumbnail'
 
         self._add_audio_metadata(abs_path, item)
 
@@ -478,6 +509,8 @@ class ContentDirectoryHandler:
 
     def _upnp_class_for_extension(self, ext):
         if ext in VIDEO_EXTENSIONS:
+            if self._is_likely_samsung_client():
+                return 'object.item.videoItem'
             return 'object.item.videoItem.movie'
         if ext in AUDIO_EXTENSIONS:
             return 'object.item.audioItem.musicTrack'

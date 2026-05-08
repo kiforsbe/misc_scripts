@@ -137,6 +137,15 @@ class DLNAErrorHandler:
                 time.sleep(1)
 
 class DLNAServer(BaseHTTPRequestHandler):
+    SAMSUNG_HEADER_PATTERNS = (
+        'samsung',
+        'tizen',
+        'sec_hhp',
+        'sec-tv',
+        'smart-tv',
+        'allshare',
+    )
+
     def __init__(self, request, client_address, server):
         # Initialize logger first
         self.logger = logging.getLogger('DLNAServer')
@@ -164,6 +173,8 @@ class DLNAServer(BaseHTTPRequestHandler):
                 min_duration=300.0,
             )
         self.thumbnail_generator = server.thumbnail_generator
+        if not hasattr(server, 'client_profiles'):
+            server.client_profiles = {}
 
         # Call parent constructor last
         super().__init__(request, client_address, server)
@@ -178,6 +189,48 @@ class DLNAServer(BaseHTTPRequestHandler):
     def log_error(self, format, *args):
         """Override error logging to use our logger"""
         self.logger.error("%s - - %s" % (self.address_string(), format % args))
+
+    def _request_header_fingerprint(self):
+        parts = []
+        for header_name in ('User-Agent', 'X-AV-Client-Info', 'FriendlyName', 'Server'):
+            header_value = self.headers.get(header_name)
+            if header_value:
+                parts.append(f'{header_name}={header_value}')
+        return ' | '.join(parts) if parts else 'no identifying headers'
+
+    def _detect_client_profile(self):
+        client_ip = self.client_address[0]
+        existing_profile = self.server.client_profiles.get(client_ip)
+        fingerprint = self._request_header_fingerprint()
+        fingerprint_lc = fingerprint.lower()
+        is_likely_samsung = any(pattern in fingerprint_lc for pattern in self.SAMSUNG_HEADER_PATTERNS)
+        if existing_profile and existing_profile.get('is_likely_samsung') and not is_likely_samsung:
+            # Keep the stronger prior classification when later requests omit identifying headers.
+            is_likely_samsung = True
+            if fingerprint == 'no identifying headers':
+                fingerprint = existing_profile.get('fingerprint', fingerprint)
+        profile = {
+            'client_ip': client_ip,
+            'is_likely_samsung': is_likely_samsung,
+            'fingerprint': fingerprint,
+        }
+        if existing_profile != profile:
+            self.server.client_profiles[client_ip] = profile
+            if is_likely_samsung:
+                self.logger.info('Detected likely Samsung client ip=%s headers=%s', client_ip, fingerprint)
+            else:
+                self.logger.debug('Detected non-Samsung client ip=%s headers=%s', client_ip, fingerprint)
+        return self.server.client_profiles[client_ip]
+
+    def get_client_profile(self):
+        return self.server.client_profiles.get(
+            self.client_address[0],
+            {
+                'client_ip': self.client_address[0],
+                'is_likely_samsung': False,
+                'fingerprint': 'unknown',
+            },
+        )
 
     def send_response(self, *args, **kwargs):
         """Override to track headers sent state"""
@@ -326,6 +379,7 @@ class DLNAServer(BaseHTTPRequestHandler):
     def do_GET(self):
         """Handle GET requests with proper logging"""
         try:
+            self._detect_client_profile()
             parsed_path = urlparse(self.path)
             clean_path = parsed_path.path
             query = parse_qs(parsed_path.query)
@@ -384,6 +438,7 @@ class DLNAServer(BaseHTTPRequestHandler):
     def do_HEAD(self):
         """Handle HEAD requests by performing the same logic as GET but without sending the body"""
         try:
+            self._detect_client_profile()
             parsed_path = urlparse(self.path)
             clean_path = parsed_path.path
             query = parse_qs(parsed_path.query)
@@ -444,6 +499,7 @@ class DLNAServer(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests, particularly for ContentDirectory control"""
+        self._detect_client_profile()
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
         
