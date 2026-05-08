@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 from urllib.parse import quote, unquote
+from xml.sax.saxutils import escape
 from xml.etree import ElementTree
 from xml.etree.ElementTree import Element, SubElement, tostring
 
@@ -89,7 +90,7 @@ class ContentDirectoryHandler:
             params['requested_count'],
         )
         body = (
-            f'<Result><![CDATA[{didl}]]></Result>'
+            f'<Result>{escape(didl)}</Result>'
             f'<NumberReturned>{number_returned}</NumberReturned>'
             f'<TotalMatches>{total_matches}</TotalMatches>'
             '<UpdateID>1</UpdateID>'
@@ -140,8 +141,11 @@ class ContentDirectoryHandler:
         root = self._create_didl_root()
         if object_id == '0':
             if browse_flag == 'BrowseMetadata':
-                self._add_root_metadata(root)
-                return self.encode_didl(root), 1, 1
+                total_children = self._add_root_metadata(root)
+                self._append_root_children(root, starting_index, requested_count)
+                number_returned = 1 + min(total_children, requested_count or total_children)
+                total_matches = 1 + total_children
+                return self.encode_didl(root), number_returned, total_matches
             return self._browse_root_children(root, starting_index, requested_count)
 
         resolved = self._resolve_object_id(object_id)
@@ -167,6 +171,7 @@ class ContentDirectoryHandler:
                 'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
                 'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
                 'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0/',
+                'xmlns:sec': 'http://www.sec.co.kr/dlna',
             },
         )
 
@@ -183,16 +188,21 @@ class ContentDirectoryHandler:
             {
                 'id': '0',
                 'parentID': '-1',
-                'restricted': '1',
-                'searchable': '1',
+                'restricted': 'false',
+                'searchable': 'true',
                 'childCount': str(total_children),
+                'dlna:dlnaManaged': '00000004',
             },
         )
         SubElement(container, 'dc:title').text = 'Root'
         SubElement(container, 'upnp:class').text = 'object.container'
         SubElement(container, 'upnp:storageUsed').text = '-1'
+        SubElement(container, 'sec:containerType').text = 'DLNA'
 
-    def _browse_root_children(self, root, starting_index, requested_count):
+        self.logger.info('Root metadata DIDL: %s', self.encode_didl(root))
+        return total_children
+
+    def _collect_root_entries(self):
         entries = []
         for index, shared_folder in enumerate(self.http_server.media_folders):
             try:
@@ -201,8 +211,23 @@ class ContentDirectoryHandler:
                         entries.append((index, entry.path))
             except OSError as exc:
                 self.logger.error(f'Error scanning root folder {shared_folder}: {exc}')
-
         entries.sort(key=lambda item: os.path.basename(item[1]).lower())
+        return entries
+
+    def _append_root_children(self, root, starting_index, requested_count):
+        entries = self._collect_root_entries()
+        selected = self._slice_entries(entries, starting_index, requested_count)
+        self.logger.info(
+            'Root metadata compatibility append total=%s selected=%s preview=%s',
+            len(entries),
+            len(selected),
+            [os.path.basename(path) for _, path in selected[:5]],
+        )
+        for folder_index, entry_path in selected:
+            self._add_entry(root, folder_index, entry_path, '0')
+
+    def _browse_root_children(self, root, starting_index, requested_count):
+        entries = self._collect_root_entries()
         total = len(entries)
         selected = self._slice_entries(entries, starting_index, requested_count)
         self.logger.info(
