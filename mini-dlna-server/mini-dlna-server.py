@@ -1331,30 +1331,6 @@ def load_config():
 
 
 def normalize_playlists(raw_playlists, media_folders, logger):
-    def playlist_specs():
-        if raw_playlists is None:
-            return []
-        if isinstance(raw_playlists, dict):
-            return [
-                {'name': str(name), 'files': files}
-                for name, files in raw_playlists.items()
-            ]
-        if isinstance(raw_playlists, list):
-            specs = []
-            for index, entry in enumerate(raw_playlists, start=1):
-                if isinstance(entry, dict):
-                    specs.append(
-                        {
-                            'name': str(entry.get('name') or f'Playlist {index}'),
-                            'files': entry.get('files', []),
-                        }
-                    )
-                else:
-                    specs.append({'name': f'Playlist {index}', 'files': entry})
-            return specs
-        logger.warning('Ignoring invalid playlists config because it is neither a list nor an object')
-        return []
-
     def resolve_shared_file(file_path, playlist_name):
         if not isinstance(file_path, str):
             logger.warning('Skipping non-string playlist entry in %s: %r', playlist_name, file_path)
@@ -1382,22 +1358,91 @@ def normalize_playlists(raw_playlists, media_folders, logger):
         logger.warning('Playlist file is outside shared folders in %s: %s', playlist_name, abs_path)
         return None
 
-    playlists = []
-    for spec in playlist_specs():
-        files = spec.get('files', [])
+    def build_playlist_leaf(name, files, playlist_path):
         if not isinstance(files, list):
-            logger.warning('Ignoring playlist %s because files is not a list', spec['name'])
-            continue
+            logger.warning('Ignoring playlist %s because files is not a list', playlist_path)
+            return None
 
         items = []
         for file_path in files:
-            resolved = resolve_shared_file(file_path, spec['name'])
+            resolved = resolve_shared_file(file_path, playlist_path)
             if resolved is not None:
                 items.append(resolved)
 
-        playlists.append({'name': spec['name'], 'items': items})
+        return {
+            'kind': 'playlist',
+            'name': name,
+            'path': playlist_path.split('/') if playlist_path else [name],
+            'items': items,
+        }
 
-    return playlists
+    def build_playlist_node(name, raw_node, parent_path=None):
+        current_path = list(parent_path or []) + [str(name)]
+        current_label = '/'.join(current_path)
+
+        if isinstance(raw_node, list):
+            return build_playlist_leaf(str(name), raw_node, current_label)
+
+        if isinstance(raw_node, dict):
+            if 'files' in raw_node:
+                node_name = str(raw_node.get('name') or name)
+                node_path = list(parent_path or []) + [node_name]
+                return build_playlist_leaf(node_name, raw_node.get('files', []), '/'.join(node_path))
+
+            if 'children' in raw_node:
+                raw_children = raw_node.get('children', {})
+            else:
+                raw_children = raw_node
+
+            if not isinstance(raw_children, dict):
+                logger.warning('Ignoring playlist folder %s because children is not an object', current_label)
+                return None
+
+            children = []
+            for child_name, child_node in raw_children.items():
+                built_child = build_playlist_node(str(child_name), child_node, current_path)
+                if built_child is not None:
+                    children.append(built_child)
+
+            return {
+                'kind': 'folder',
+                'name': str(name),
+                'path': current_path,
+                'children': children,
+            }
+
+        logger.warning('Ignoring invalid playlist node %s: %r', current_label, raw_node)
+        return None
+
+    if raw_playlists is None:
+        return []
+
+    if isinstance(raw_playlists, dict):
+        playlists = []
+        for name, node in raw_playlists.items():
+            built = build_playlist_node(str(name), node)
+            if built is not None:
+                playlists.append(built)
+        return playlists
+
+    if isinstance(raw_playlists, list):
+        playlists = []
+        for index, entry in enumerate(raw_playlists, start=1):
+            if isinstance(entry, dict):
+                if 'name' in entry and 'files' in entry:
+                    built = build_playlist_leaf(str(entry.get('name') or f'Playlist {index}'), entry.get('files', []), str(entry.get('name') or f'Playlist {index}'))
+                elif 'name' in entry and 'children' in entry:
+                    built = build_playlist_node(str(entry.get('name') or f'Playlist {index}'), {'children': entry.get('children', {})})
+                else:
+                    built = build_playlist_node(f'Playlist {index}', entry)
+            else:
+                built = build_playlist_leaf(f'Playlist {index}', entry, f'Playlist {index}')
+            if built is not None:
+                playlists.append(built)
+        return playlists
+
+    logger.warning('Ignoring invalid playlists config because it is neither a list nor an object')
+    return []
 
 
 def build_runtime_state(config, logger):

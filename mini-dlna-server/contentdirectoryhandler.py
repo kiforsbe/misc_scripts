@@ -174,7 +174,7 @@ class ContentDirectoryHandler:
 
     def _browse_metadata(self, root, resolved):
         kind = resolved['kind']
-        if kind in {'share', 'merged', 'playlists-root', 'playlist'}:
+        if kind in {'share', 'merged', 'playlists-root', 'playlist-folder', 'playlist'}:
             self._add_virtual_container(
                 root,
                 resolved['object_id'],
@@ -207,7 +207,7 @@ class ContentDirectoryHandler:
         kind = resolved['kind']
         if kind in {'share', 'merged'}:
             return self._browse_context_children(root, resolved, starting_index, requested_count)
-        if kind == 'playlists-root':
+        if kind in {'playlists-root', 'playlist-folder'}:
             return self._browse_playlist_containers(root, resolved, starting_index, requested_count)
         if kind == 'playlist':
             return self._browse_playlist_items(root, resolved, starting_index, requested_count)
@@ -288,7 +288,7 @@ class ContentDirectoryHandler:
                     'object_id': self._playlists_root_id(),
                     'parent_id': '0',
                     'title': 'Playlists',
-                    'child_count': len(self._playlist_definitions()),
+                    'child_count': len(self._playlist_root_entries()),
                 }
             )
         return entries
@@ -341,7 +341,7 @@ class ContentDirectoryHandler:
         return self.encode_didl(root), len(selected), total
 
     def _browse_playlist_containers(self, root, resolved, starting_index, requested_count):
-        entries = self._playlist_definitions()
+        entries = self._playlist_children_for_resolved(resolved)
         total = len(entries)
         selected = self._slice_entries(entries, starting_index, requested_count)
         self.logger.info(
@@ -351,13 +351,13 @@ class ContentDirectoryHandler:
             len(selected),
             [entry['name'] for entry in selected[:5]],
         )
-        for playlist_index, playlist in enumerate(selected, start=starting_index):
+        for entry in selected:
             self._add_virtual_container(
                 root,
-                self._playlist_container_id(playlist_index),
+                self._playlist_node_id(entry['path']),
                 resolved['object_id'],
-                playlist['name'],
-                len(playlist['items']),
+                entry['name'],
+                self._playlist_child_count(entry),
             )
         return self.encode_didl(root), len(selected), total
 
@@ -378,7 +378,7 @@ class ContentDirectoryHandler:
                 entry['folder_index'],
                 entry['abs_path'],
                 resolved['object_id'],
-                object_id=self._playlist_item_id(resolved['playlist_index'], offset),
+                object_id=self._playlist_item_id(resolved['path'], offset),
             )
         return self.encode_didl(root), len(selected), total
 
@@ -570,11 +570,12 @@ class ContentDirectoryHandler:
     def _playlists_root_id(self):
         return 'playlists'
 
-    def _playlist_container_id(self, playlist_index):
-        return f'playlist-{playlist_index}'
+    def _playlist_node_id(self, playlist_path):
+        encoded_path = '/'.join(quote(segment, safe='') for segment in playlist_path)
+        return f'{self._playlists_root_id()}/node/{encoded_path}' if encoded_path else self._playlists_root_id()
 
-    def _playlist_item_id(self, playlist_index, item_index):
-        return f'{self._playlist_container_id(playlist_index)}/item/{item_index}'
+    def _playlist_item_id(self, playlist_path, item_index):
+        return f'{self._playlist_node_id(playlist_path)}/item/{item_index}'
 
     def _share_title(self, shared_folder, folder_index):
         normalized = os.path.normpath(shared_folder)
@@ -612,7 +613,7 @@ class ContentDirectoryHandler:
                 'object_id': object_id,
                 'parent_id': '0',
                 'title': 'Playlists',
-                'child_count': len(self._playlist_definitions()),
+                'child_count': len(self._playlist_root_entries()),
             }
 
         if object_id.startswith('share-') and '/path/' not in object_id:
@@ -646,43 +647,49 @@ class ContentDirectoryHandler:
         return None
 
     def _resolve_playlist_object_id(self, object_id):
-        if not object_id.startswith('playlist-'):
+        if not object_id.startswith(f'{self._playlists_root_id()}/node/'):
             return None
-        parts = object_id.split('/')
+
+        suffix = object_id[len(f'{self._playlists_root_id()}/node/'):]
+        node_suffix, item_sep, item_token = suffix.partition('/item/')
+        if not node_suffix:
+            return None
+
+        path_segments = [unquote(segment) for segment in node_suffix.split('/') if segment]
+        if not path_segments:
+            return None
+
+        node = self._playlist_node_by_path(path_segments)
+        if node is None:
+            return None
+
+        if not item_sep:
+            return {
+                'kind': 'playlist' if node['kind'] == 'playlist' else 'playlist-folder',
+                'object_id': object_id,
+                'parent_id': self._playlist_parent_id(path_segments),
+                'path': list(node['path']),
+                'title': node['name'],
+                'child_count': self._playlist_child_count(node),
+                **({'items': node['items']} if node['kind'] == 'playlist' else {'children': node['children']}),
+            }
+
+        if node['kind'] != 'playlist':
+            return None
         try:
-            playlist_index = int(parts[0].split('-', 1)[1])
+            item_index = int(item_token)
         except ValueError:
             return None
-        playlists = self._playlist_definitions()
-        if playlist_index < 0 or playlist_index >= len(playlists):
+        if item_index < 0 or item_index >= len(node['items']):
             return None
-        playlist = playlists[playlist_index]
-        if len(parts) == 1:
-            return {
-                'kind': 'playlist',
-                'object_id': object_id,
-                'parent_id': self._playlists_root_id(),
-                'playlist_index': playlist_index,
-                'title': playlist['name'],
-                'child_count': len(playlist['items']),
-                'items': playlist['items'],
-            }
-        if len(parts) == 3 and parts[1] == 'item':
-            try:
-                item_index = int(parts[2])
-            except ValueError:
-                return None
-            if item_index < 0 or item_index >= len(playlist['items']):
-                return None
-            entry = playlist['items'][item_index]
-            return {
-                'kind': 'playlist-item',
-                'object_id': object_id,
-                'parent_id': self._playlist_container_id(playlist_index),
-                'folder_index': entry['folder_index'],
-                'abs_path': entry['abs_path'],
-            }
-        return None
+        entry = node['items'][item_index]
+        return {
+            'kind': 'playlist-item',
+            'object_id': object_id,
+            'parent_id': self._playlist_node_id(node['path']),
+            'folder_index': entry['folder_index'],
+            'abs_path': entry['abs_path'],
+        }
 
     def _resolve_context_object_id(self, object_id):
         parts = object_id.split('/')
@@ -776,6 +783,39 @@ class ContentDirectoryHandler:
 
     def _playlist_definitions(self):
         return getattr(self.http_server, 'playlists', [])
+
+    def _playlist_root_entries(self):
+        return self._playlist_definitions()
+
+    def _playlist_children_for_resolved(self, resolved):
+        if resolved['kind'] == 'playlists-root':
+            return self._playlist_root_entries()
+        return resolved.get('children', [])
+
+    def _playlist_child_count(self, node):
+        if node['kind'] == 'playlist':
+            return len(node['items'])
+        return len(node.get('children', []))
+
+    def _playlist_parent_id(self, playlist_path):
+        if len(playlist_path) <= 1:
+            return self._playlists_root_id()
+        return self._playlist_node_id(playlist_path[:-1])
+
+    def _playlist_node_by_path(self, playlist_path):
+        entries = self._playlist_root_entries()
+        current = None
+        for depth, segment in enumerate(playlist_path):
+            matches = [entry for entry in entries if entry['name'] == segment]
+            if not matches:
+                return None
+            current = matches[0]
+            if depth == len(playlist_path) - 1:
+                return current
+            if current['kind'] != 'folder':
+                return None
+            entries = current.get('children', [])
+        return current
 
     def _collect_context_entries(self, resolved):
         entries = []
