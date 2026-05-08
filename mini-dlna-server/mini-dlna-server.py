@@ -3,20 +3,28 @@ import sys
 import socket
 import logging
 import time
+import signal
 import uuid
 import threading
 from urllib.parse import unquote, quote, urlparse, parse_qs
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from logging.handlers import RotatingFileHandler
 from xml.etree import ElementTree
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 import json
 import argparse
 import re
+from mutagen import File
 from network_utils import NetworkUtils
 from ssdpserver import SSDPServer
-from contentdirectoryhandler import ContentDirectoryHandler
+from resourcemonitor import ResourceMonitor
+from contentdirectoryhandler import (
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    ContentDirectoryHandler,
+)
 
 # DLNA/UPnP Constants
 DEVICE_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())
@@ -129,6 +137,7 @@ class DLNAServer(BaseHTTPRequestHandler):
     def __init__(self, request, client_address, server):
         # Initialize logger first
         self.logger = logging.getLogger('DLNAServer')
+        self.server = server
         self.protocol_version = 'HTTP/1.1'
         self.timeout = 60  # Set timeout to 60 seconds
         self.headers_sent = False  # Track if headers have been sent
@@ -142,8 +151,6 @@ class DLNAServer(BaseHTTPRequestHandler):
 
         # Initialize the new components
         self.soap_handler = SOAPResponseHandler(self)
-        self.xml_generator = DLNAXMLGenerator()
-        self.request_parser = DLNARequestParser()
         self.error_handler = DLNAErrorHandler(self.logger)
         self.content_handler = ContentDirectoryHandler(self)
 
@@ -276,21 +283,60 @@ class DLNAServer(BaseHTTPRequestHandler):
         except Exception:
             return 0, file_size - 1
 
+    def get_file_path(self, media_path):
+        """Resolve a /media/<folder_index>/<relative_path> request to a shared file."""
+        normalized = media_path.lstrip('/')
+        folder_token, _, relative_path = normalized.partition('/')
+        if not relative_path:
+            return None
+
+        try:
+            folder_index = int(folder_token)
+        except ValueError:
+            return None
+
+        if folder_index < 0 or folder_index >= len(self.server.media_folders):
+            return None
+
+        shared_root = os.path.abspath(self.server.media_folders[folder_index])
+        candidate = os.path.abspath(os.path.join(shared_root, relative_path))
+        if os.path.commonpath([shared_root, candidate]) != shared_root:
+            return None
+        if not os.path.isfile(candidate):
+            return None
+        return candidate
+
     def do_GET(self):
         """Handle GET requests with proper logging"""
         try:
-            if self.path == '/description.xml':
+            parsed_path = urlparse(self.path)
+            clean_path = parsed_path.path
+            query = parse_qs(parsed_path.query)
+
+            if clean_path == '/description.xml':
                 self.send_device_description()
-            elif self.path == '/ContentDirectory.xml':
+            elif clean_path == '/ContentDirectory.xml':
                 self.send_content_directory()
-            elif self.path == '/ConnectionManager.xml':
+            elif clean_path == '/ConnectionManager.xml':
                 self.send_connection_manager()
-            elif self.path == '/AVTransport.xml':
-                self.send_av_transport()
-            elif self.path.startswith('/media/'):
-                # Strip /media/ from path and serve the file
-                file_path = unquote(self.path[7:])
-                self.serve_media_file(file_path)
+            elif clean_path.startswith('/media/'):
+                media_path = unquote(clean_path[len('/media/'):])
+                absolute_path = self.get_file_path(media_path)
+                if absolute_path is None:
+                    self.send_error(404, 'File not found')
+                    return
+
+                if query.get('thumbnail', ['false'])[0].lower() == 'true':
+                    extension = os.path.splitext(absolute_path)[1].lower()
+                    self.handle_thumbnail_request(absolute_path, is_video=extension in VIDEO_EXTENSIONS)
+                    return
+
+                ext = os.path.splitext(absolute_path)[1].lower()
+                content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
+                if not content_type:
+                    self.send_error(415, 'Unsupported media type')
+                    return
+                self.send_media_file(absolute_path, content_type)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -303,14 +349,12 @@ class DLNAServer(BaseHTTPRequestHandler):
     def do_HEAD(self):
         """Handle HEAD requests by performing the same logic as GET but without sending the body"""
         try:
-            # Parse the path properly
             parsed_path = urlparse(self.path)
-            clean_path = parsed_path.path  # This removes any http:// prefixes
+            clean_path = parsed_path.path
 
-            # Content type and size check for media files
-            if not clean_path.endswith('.xml'):
-                file_path = unquote(clean_path)
-                abs_path = self.get_file_path(file_path)
+            if clean_path.startswith('/media/'):
+                media_path = unquote(clean_path[len('/media/'):])
+                abs_path = self.get_file_path(media_path)
                 
                 if abs_path:
                     ext = os.path.splitext(abs_path)[1].lower()
@@ -325,12 +369,11 @@ class DLNAServer(BaseHTTPRequestHandler):
                         self.end_headers()
                         return
 
-            # Handle descriptor files
             if clean_path == '/description.xml':
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/xml; charset="utf-8"')
                 self.end_headers()
-            elif clean_path in ['/ContentDirectory.xml', '/ConnectionManager.xml', '/AVTransport.xml']:
+            elif clean_path in ['/ContentDirectory.xml', '/ConnectionManager.xml']:
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/xml; charset="utf-8"')
                 self.end_headers()
@@ -351,8 +394,61 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.content_handler.handle_control(post_data)
             except Exception as e:
                 self.error_handler.handle_request_error(self, e)
+        elif self.path == '/ConnectionManager/control':
+            try:
+                self.handle_connection_manager_control()
+            except Exception as e:
+                self.error_handler.handle_request_error(self, e)
         else:
             self.send_error(404)
+
+    def handle_connection_manager_control(self):
+        action = self.headers.get('SOAPACTION', '').strip('"')
+        if '#' in action:
+            action = action.rsplit('#', 1)[1]
+
+        if action == 'GetProtocolInfo':
+            source = ','.join([
+                'http-get:*:audio/mpeg:DLNA.ORG_PN=MP3',
+                'http-get:*:audio/flac:*',
+                'http-get:*:audio/wav:*',
+                'http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_BL_CIF15_AAC',
+                'http-get:*:video/x-matroska:*',
+                'http-get:*:video/x-msvideo:*',
+                'http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_LRG',
+                'http-get:*:image/png:DLNA.ORG_PN=PNG_LRG',
+                'http-get:*:image/gif:*',
+            ])
+            body = f'<Source>{source}</Source><Sink></Sink>'
+            self.soap_handler.send_soap_response(body, 'GetProtocolInfo', 'urn:schemas-upnp-org:service:ConnectionManager:1')
+            return
+
+        if action == 'GetCurrentConnectionIDs':
+            self.soap_handler.send_soap_response(
+                '<ConnectionIDs>0</ConnectionIDs>',
+                'GetCurrentConnectionIDs',
+                'urn:schemas-upnp-org:service:ConnectionManager:1',
+            )
+            return
+
+        if action == 'GetCurrentConnectionInfo':
+            body = (
+                '<RcsID>-1</RcsID>'
+                '<AVTransportID>-1</AVTransportID>'
+                '<ProtocolInfo></ProtocolInfo>'
+                '<PeerConnectionManager></PeerConnectionManager>'
+                '<PeerConnectionID>-1</PeerConnectionID>'
+                '<Direction>Output</Direction>'
+                '<Status>OK</Status>'
+            )
+            self.soap_handler.send_soap_response(
+                body,
+                'GetCurrentConnectionInfo',
+                'urn:schemas-upnp-org:service:ConnectionManager:1',
+            )
+            return
+
+        raise ValueError(f'Unsupported ConnectionManager action: {action or "unknown"}')
 
     def send_media_file(self, file_path, content_type):
         """Stream media file with proper DLNA support and range handling"""
@@ -510,14 +606,6 @@ class DLNAServer(BaseHTTPRequestHandler):
             SubElement(service2, 'controlURL').text = '/ConnectionManager/control'
             SubElement(service2, 'eventSubURL').text = '/ConnectionManager/event'
             
-            # AVTransport service
-            service3 = SubElement(service_list, 'service')
-            SubElement(service3, 'serviceType').text = 'urn:schemas-upnp-org:service:AVTransport:1'
-            SubElement(service3, 'serviceId').text = 'urn:upnp-org:serviceId:AVTransport'
-            SubElement(service3, 'SCPDURL').text = '/AVTransport.xml'
-            SubElement(service3, 'controlURL').text = '/AVTransport/control'
-            SubElement(service3, 'eventSubURL').text = '/AVTransport/event'
-            
             # Convert to string
             xml_string = '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(root, encoding='unicode')
             
@@ -534,7 +622,7 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.send_error(500, "Internal server error")
 
     def send_content_directory(self):
-        """Send DLNA Content Directory XML with Samsung compatibility"""
+        """Send the ContentDirectory SCPD document."""
         try:
             content_directory_xml = '''<?xml version="1.0" encoding="utf-8"?>
 <scpd xmlns="urn:schemas-upnp-org:service-1-0">
@@ -543,20 +631,51 @@ class DLNAServer(BaseHTTPRequestHandler):
         <minor>0</minor>
     </specVersion>
     <actionList>
-        <!-- ...existing actions... -->
+        <action>
+            <name>Browse</name>
+            <argumentList>
+                <argument><name>ObjectID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable></argument>
+                <argument><name>BrowseFlag</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable></argument>
+                <argument><name>Filter</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable></argument>
+                <argument><name>StartingIndex</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable></argument>
+                <argument><name>RequestedCount</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+                <argument><name>SortCriteria</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable></argument>
+                <argument><name>Result</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable></argument>
+                <argument><name>NumberReturned</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+                <argument><name>TotalMatches</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+                <argument><name>UpdateID</name><direction>out</direction><relatedStateVariable>SystemUpdateID</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSearchCapabilities</name>
+            <argumentList>
+                <argument><name>SearchCaps</name><direction>out</direction><relatedStateVariable>SearchCapabilities</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSortCapabilities</name>
+            <argumentList>
+                <argument><name>SortCaps</name><direction>out</direction><relatedStateVariable>SortCapabilities</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSystemUpdateID</name>
+            <argumentList>
+                <argument><name>Id</name><direction>out</direction><relatedStateVariable>SystemUpdateID</relatedStateVariable></argument>
+            </argumentList>
+        </action>
     </actionList>
     <serviceStateTable>
-        <!-- ...existing state variables... -->
-        <stateVariable sendEvents="no">
-            <name>SortCapabilities</name>
-            <dataType>string</dataType>
-            <defaultValue>dc:title,dc:date,upnp:class</defaultValue>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>SearchCapabilities</name>
-            <dataType>string</dataType>
-            <defaultValue>dc:title,dc:creator,upnp:class</defaultValue>
-        </stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ObjectID</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_BrowseFlag</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Filter</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Index</name><dataType>ui4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Count</name><dataType>ui4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_SortCriteria</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Result</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>SystemUpdateID</name><dataType>ui4</dataType><defaultValue>1</defaultValue></stateVariable>
+        <stateVariable sendEvents="no"><name>SortCapabilities</name><dataType>string</dataType><defaultValue>dc:title,dc:date</defaultValue></stateVariable>
+        <stateVariable sendEvents="no"><name>SearchCapabilities</name><dataType>string</dataType><defaultValue>dc:title,upnp:class</defaultValue></stateVariable>
     </serviceStateTable>
 </scpd>'''
 
@@ -574,24 +693,58 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.send_error(500, "Internal server error")
 
     def send_connection_manager(self):
-        """Send DLNA Connection Manager XML"""
+        """Send the ConnectionManager SCPD document."""
         try:
-            # Create SOAP envelope with connection manager info
-            connection_manager_xml = '''<?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-  <s:Body>
-    <u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
-      <Source>http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_LRG,http-get:*:audio/mpeg:DLNA.ORG_PN=MP3,http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_HP_HD_AAC</Source>
-      <Sink></Sink>
-      <CurrentConnectionIDs>0</CurrentConnectionIDs>
-    </u:GetProtocolInfoResponse>
-  </s:Body>
-</s:Envelope>'''
+            connection_manager_xml = '''<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+    <specVersion>
+        <major>1</major>
+        <minor>0</minor>
+    </specVersion>
+    <actionList>
+        <action>
+            <name>GetProtocolInfo</name>
+            <argumentList>
+                <argument><name>Source</name><direction>out</direction><relatedStateVariable>SourceProtocolInfo</relatedStateVariable></argument>
+                <argument><name>Sink</name><direction>out</direction><relatedStateVariable>SinkProtocolInfo</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetCurrentConnectionIDs</name>
+            <argumentList>
+                <argument><name>ConnectionIDs</name><direction>out</direction><relatedStateVariable>CurrentConnectionIDs</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetCurrentConnectionInfo</name>
+            <argumentList>
+                <argument><name>ConnectionID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_ConnectionID</relatedStateVariable></argument>
+                <argument><name>RcsID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_RcsID</relatedStateVariable></argument>
+                <argument><name>AVTransportID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_AVTransportID</relatedStateVariable></argument>
+                <argument><name>ProtocolInfo</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ProtocolInfo</relatedStateVariable></argument>
+                <argument><name>PeerConnectionManager</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ConnectionManager</relatedStateVariable></argument>
+                <argument><name>PeerConnectionID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ConnectionID</relatedStateVariable></argument>
+                <argument><name>Direction</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Direction</relatedStateVariable></argument>
+                <argument><name>Status</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ConnectionStatus</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+    </actionList>
+    <serviceStateTable>
+        <stateVariable sendEvents="no"><name>SourceProtocolInfo</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>SinkProtocolInfo</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>CurrentConnectionIDs</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionID</name><dataType>i4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_RcsID</name><dataType>i4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_AVTransportID</name><dataType>i4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ProtocolInfo</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionManager</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Direction</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionStatus</name><dataType>string</dataType></stateVariable>
+    </serviceStateTable>
+</scpd>'''
 
             self.send_response(200)
             self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-            self.send_header('Ext', '') # Required by UPnP spec
-            self.send_header('Server', 'Windows/10.0 UPnP/1.0 Python-DLNA/1.0')
             response_bytes = connection_manager_xml.encode('utf-8')
             self.send_header('Content-Length', str(len(response_bytes)))
             self.end_headers()
@@ -890,9 +1043,6 @@ def start_server(config):
             logger.error(f"Media folder does not exist: {folder}")
             sys.exit(1)
 
-    indexed_files = index_files(media_folders)
-    logger.info(f"Indexed files: {indexed_files}")
-
     local_ip = NetworkUtils.get_local_ip()
     
     # Try ports until we find an available one
@@ -904,7 +1054,7 @@ def start_server(config):
     
     while port <= max_port:
         try:
-            server = HTTPServer((local_ip, port), DLNAServer)
+            server = ThreadingHTTPServer((local_ip, port), DLNAServer)
             break
         except socket.error:
             logger.debug(f"Port {port} in use, trying next port")
@@ -915,15 +1065,38 @@ def start_server(config):
         sys.exit(1)
 
     server.media_folders = media_folders
-    server.indexed_files = indexed_files
-    server.av_transport = AVTransportService()  # Initialize AVTransport service
+    server.local_ip = local_ip
     server.resource_monitor = ResourceMonitor()  # Initialize resource monitor
     
     # Start SSDP server in a separate thread
-    ssdp_server = SSDPServer((local_ip, port, DEVICE_UUID, DEVICE_NAME)) # Pass logger if needed
+    ssdp_server = SSDPServer((local_ip, port), DEVICE_UUID, DEVICE_NAME)
     ssdp_thread = threading.Thread(target=ssdp_server.start, name="SSDPServerThread")
     ssdp_thread.daemon = True
     ssdp_thread.start()
+
+    shutdown_requested = False
+
+    def cleanup_and_exit(exit_code=0):
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
+        logger.info("Shutting down server...")
+        ssdp_server.stop()
+        ssdp_thread.join(timeout=3.0)
+        server.shutdown()
+        server.server_close()
+        logger.info("HTTP server closed.")
+        raise SystemExit(exit_code)
+
+    def handle_signal(signum, _frame):
+        logger.info(f"Received signal {signum}, stopping services")
+        cleanup_and_exit(0)
+
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
 
     try:
         logger.info(f"DLNA server started at http://{local_ip}:{port}")
@@ -931,22 +1104,13 @@ def start_server(config):
         logger.info("Press Ctrl+C to stop the server")
         server.serve_forever()
     except KeyboardInterrupt:
-        logger.info("\nShutting down server...")
-        # Signal SSDP server to stop and send byebye
-        ssdp_server.running = False
-        # Wait briefly for SSDP thread to potentially send byebye and clean up
-        ssdp_thread.join(timeout=2.0) # Increased timeout slightly
-        # Close HTTP server
-        server.server_close()
-        logger.info("HTTP server closed.")
-        sys.exit(0)
+        cleanup_and_exit(0)
     except Exception as e:
         logger.critical(f"Critical error in main server loop: {e}", exc_info=True)
-        # Attempt graceful shutdown even on critical error
-        ssdp_server.running = False
-        ssdp_thread.join(timeout=2.0)
-        server.server_close()
-        sys.exit(1)
+        cleanup_and_exit(1)
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 if __name__ == "__main__":
     config = load_config()

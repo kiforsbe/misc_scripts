@@ -1,726 +1,438 @@
 import datetime
 import logging
 import os
-from mutagen import File
-from urllib.parse import unquote, quote, urlparse, parse_qs
+from urllib.parse import quote, unquote
 from xml.etree import ElementTree
-from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
+from xml.etree.ElementTree import Element, SubElement, tostring
 
-# Supported extensions
-VIDEO_EXTENSIONS = {'.mp4': 'video/mp4', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo'}
-AUDIO_EXTENSIONS = {'.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.wav': 'audio/wav'}
-IMAGE_EXTENSIONS = {'.jpg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif'}
+from mutagen import File
 
-class DLNAXMLGenerator:
-    @staticmethod
-    def create_didl_container(id, parent_id, title, child_count):
-        """Create a DIDL-Lite container element"""
-        container = Element('container', {
-            'id': id,
-            'parentID': parent_id,
-            'restricted': '1',
-            'searchable': '1',
-            'childCount': str(child_count)
-        })
-        SubElement(container, 'dc:title').text = title
-        SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
-        return container
 
-    @staticmethod
-    def create_didl_item(id, parent_id, title, resource_url, mime_type, size):
-        """Create a DIDL-Lite item element"""
-        item = Element('item', {
-            'id': id,
-            'parentID': parent_id,
-            'restricted': '1'
-        })
-        SubElement(item, 'dc:title').text = title
-        res = SubElement(item, 'res')
-        res.text = resource_url
-        res.set('protocolInfo', f'http-get:*:{mime_type}:*')
-        res.set('size', str(size))
-        return item
+VIDEO_EXTENSIONS = {
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.mkv': 'video/x-matroska',
+    '.avi': 'video/x-msvideo',
+    '.mov': 'video/quicktime',
+}
 
-class DLNARequestParser:
-    @staticmethod
-    def parse_browse_request(soap_body):
-        """Parse Browse action request parameters with improved error handling"""
+AUDIO_EXTENSIONS = {
+    '.mp3': 'audio/mpeg',
+    '.flac': 'audio/flac',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac',
+    '.ogg': 'audio/ogg',
+}
+
+IMAGE_EXTENSIONS = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+}
+
+ALL_EXTENSIONS = {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}
+
+
+class ContentDirectoryHandler:
+    """Handles ContentDirectory browse requests and DIDL-Lite generation."""
+
+    CONTENT_DIRECTORY_NS = 'urn:schemas-upnp-org:service:ContentDirectory:1'
+
+    def __init__(self, request_handler):
+        self.request_handler = request_handler
+        self.http_server = request_handler.server
+        self.logger = logging.getLogger('DLNAServer')
+        self.soap_handler = request_handler.soap_handler
+        self.error_handler = request_handler.error_handler
+
+    def handle_control(self, post_data):
+        try:
+            action = self._get_soap_action()
+            if action == 'Browse':
+                self._handle_browse(post_data)
+                return
+            if action == 'GetSearchCapabilities':
+                self._send_simple_response('GetSearchCapabilities', '<SearchCaps>dc:title,upnp:class</SearchCaps>')
+                return
+            if action == 'GetSortCapabilities':
+                self._send_simple_response('GetSortCapabilities', '<SortCaps>dc:title,dc:date</SortCaps>')
+                return
+            if action == 'GetSystemUpdateID':
+                self._send_simple_response('GetSystemUpdateID', '<Id>1</Id>')
+                return
+            raise ValueError(f'Unsupported ContentDirectory action: {action or "unknown"}')
+        except Exception as exc:
+            self.error_handler.handle_request_error(self.request_handler, exc, 400)
+
+    def _get_soap_action(self):
+        soap_action = self.request_handler.headers.get('SOAPACTION', '').strip('"')
+        if '#' in soap_action:
+            return soap_action.rsplit('#', 1)[1]
+        return soap_action
+
+    def _handle_browse(self, post_data):
+        params = self._parse_browse_request(post_data)
+        didl, number_returned, total_matches = self.generate_browse_didl(
+            params['object_id'],
+            params['browse_flag'],
+            params['starting_index'],
+            params['requested_count'],
+        )
+        body = (
+            f'<Result><![CDATA[{didl}]]></Result>'
+            f'<NumberReturned>{number_returned}</NumberReturned>'
+            f'<TotalMatches>{total_matches}</TotalMatches>'
+            '<UpdateID>1</UpdateID>'
+        )
+        self.soap_handler.send_soap_response(body, 'Browse', self.CONTENT_DIRECTORY_NS)
+
+    def _send_simple_response(self, action_name, body):
+        self.soap_handler.send_soap_response(body, action_name, self.CONTENT_DIRECTORY_NS)
+
+    def _parse_browse_request(self, soap_body):
         try:
             root = ElementTree.fromstring(soap_body)
             namespaces = {
                 's': 'http://schemas.xmlsoap.org/soap/envelope/',
-                'u': 'urn:schemas-upnp-org:service:ContentDirectory:1'
+                'u': self.CONTENT_DIRECTORY_NS,
             }
-            
-            # Try both with and without namespace
-            browse = (root.find('.//u:Browse', namespaces) or 
-                    root.find('.//Browse') or 
-                    root.find(".//{urn:schemas-upnp-org:service:ContentDirectory:1}Browse"))
-            
+            browse = (
+                root.find('.//u:Browse', namespaces)
+                or root.find('.//Browse')
+                or root.find(f'.//{{{self.CONTENT_DIRECTORY_NS}}}Browse')
+            )
             if browse is None:
-                raise ValueError("Browse action not found in SOAP request")
-
-            # Safe extraction of parameters with defaults
+                raise ValueError('Browse action not found in SOAP request')
             return {
-                'object_id': (browse.find('ObjectID') or browse.find('./ObjectID')).text or '0',
-                'browse_flag': (browse.find('BrowseFlag') or browse.find('./BrowseFlag')).text or 'BrowseDirectChildren',
-                'filter': (browse.find('Filter') or browse.find('./Filter')).text or '*',
-                'starting_index': int((browse.find('StartingIndex') or browse.find('./StartingIndex')).text or '0'),
-                'requested_count': int((browse.find('RequestedCount') or browse.find('./RequestedCount')).text or '0'),
-                'sort_criteria': (browse.find('SortCriteria') or browse.find('./SortCriteria')).text or ''
+                'object_id': self._get_child_text(browse, 'ObjectID', '0'),
+                'browse_flag': self._get_child_text(browse, 'BrowseFlag', 'BrowseDirectChildren'),
+                'starting_index': int(self._get_child_text(browse, 'StartingIndex', '0')),
+                'requested_count': int(self._get_child_text(browse, 'RequestedCount', '0')),
             }
-        except (AttributeError, ValueError) as e:
-            raise ValueError(f"Invalid Browse request: {str(e)}")
-        except Exception as e:
-            raise ValueError(f"Error parsing Browse request: {str(e)}")
+        except Exception as exc:
+            raise ValueError(f'Invalid Browse request: {exc}') from exc
 
-class ContentDirectoryHandler:
-    """Handles all Content Directory service requests"""
-    def __init__(self, dlna_server):
-        self.server = dlna_server
-        self.logger = logging.getLogger(__name__)
-        self.soap_handler = dlna_server.soap_handler
-        self.error_handler = dlna_server.error_handler
-        self.request_parser = dlna_server.request_parser
-        self.xml_generator = dlna_server.xml_generator
+    def _get_child_text(self, parent, child_name, default=''):
+        child = parent.find(child_name)
+        if child is None:
+            child = parent.find(f'./{child_name}')
+        if child is None or child.text is None:
+            return default
+        return child.text
 
-    def handle_control(self, post_data):
-        """Handle POST requests to /ContentDirectory/control"""
-        try:
-            self.logger.info(f"Received ContentDirectory control request (length: {len(post_data)})")
-            self.logger.debug(f"SOAP Request Body: {post_data.decode('utf-8', errors='ignore')}")
+    def generate_browse_didl(self, object_id, browse_flag, starting_index, requested_count):
+        root = self._create_didl_root()
+        if object_id == '0':
+            if browse_flag == 'BrowseMetadata':
+                self._add_root_metadata(root)
+                return self.encode_didl(root), 1, 1
+            return self._browse_root_children(root, starting_index, requested_count)
 
-            # Parse the SOAP request robustly
-            try:
-                # Extract browse parameters
-                params = self.request_parser.parse_browse_request(post_data)
-                
-                self.logger.info(f"Browse Request: ObjectID='{params['object_id']}', BrowseFlag='{params['browse_flag']}', "
-                                f"StartIndex={params['starting_index']}, Count={params['requested_count']}, "
-                                f"Filter='{params['filter']}', Sort='{params['sort_criteria']}'")
-
-                # Generate browse response
-                result_didl, number_returned, total_matches = self.generate_browse_didl(
-                    params['object_id'], 
-                    params['browse_flag'],
-                    params['starting_index'], 
-                    params['requested_count'],
-                    params['filter'],
-                    params['sort_criteria']
-                )
-                
-                # Send SOAP response using handler
-                response_content = f'''
-                    <Result><![CDATA[{result_didl}]]></Result>
-                    <NumberReturned>{number_returned}</NumberReturned>
-                    <TotalMatches>{total_matches}</TotalMatches>
-                    <UpdateID>1</UpdateID>'''
-                
-                self.soap_handler.send_soap_response(
-                    response_content,
-                    'Browse',
-                    'urn:schemas-upnp-org:service:ContentDirectory:1'
-                )
-                
-                self.logger.info(f"Sent BrowseResponse for ObjectID '{params['object_id']}' ({number_returned}/{total_matches} items)")
-
-            except ValueError as ve:
-                self.error_handler.handle_request_error(self.server, ve, 400)
-
-        except Exception as e:
-            self.error_handler.handle_request_error(self.server, e)
-
-    def generate_browse_didl(self, object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria):
-        """Generates the DIDL-Lite XML string for Samsung TV compatibility"""
-        self.logger.debug(f"Generating DIDL - ObjectID: {object_id}, BrowseFlag: {browse_flag}, StartIndex: {starting_index}, Count: {requested_count}")
-        
-        root = Element('DIDL-Lite', {
-            'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
-            'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
-            'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
-            'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0/',
-            'xmlns:sec': 'http://www.sec.co.kr/dlna'
-        })
-
-        try:
-            if object_id == '0':  # Root container
-                if browse_flag == 'BrowseMetadata':
-                    return self._handle_root_metadata(root)
-                elif browse_flag == 'BrowseDirectChildren':
-                    return self._handle_root_children(root, starting_index, requested_count)
-            else:  # Non-root items
-                if browse_flag == 'BrowseMetadata':
-                    return self._handle_item_metadata(root, object_id)
-                elif browse_flag == 'BrowseDirectChildren':
-                    return self._handle_item_children(root, object_id, starting_index, requested_count)
-
+        resolved = self._resolve_object_id(object_id)
+        if resolved is None:
             return self.encode_didl(root), 0, 0
 
-        except Exception as e:
-            self.logger.error(f"Error in generate_browse_didl: {e}", exc_info=True)
+        folder_index, abs_path = resolved
+        if browse_flag == 'BrowseMetadata':
+            self._add_entry(root, folder_index, abs_path, self._parent_id_for_path(folder_index, abs_path))
+            return self.encode_didl(root), 1, 1
+
+        if not os.path.isdir(abs_path):
             return self.encode_didl(root), 0, 0
 
-    def _handle_root_metadata(self, root):
-        """Handle BrowseMetadata for root container"""
-        # Count valid media files and folders
-        total_children = 0
-        for shared_folder in self.server.media_folders:
-            with os.scandir(shared_folder) as entries:
-                for entry in entries:
-                    if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
-                        {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                        total_children += 1
-        
-        container = SubElement(root, 'container', {
-            'id': '0',
-            'parentID': '-1',
-            'restricted': 'false',
-            'searchable': 'true',
-            'childCount': str(total_children),
-            'dlna:dlnaManaged': '00000004'
-        })
-        
-        SubElement(container, 'dc:title').text = "Root"
+        return self._browse_directory_children(root, folder_index, abs_path, object_id, starting_index, requested_count)
+
+    def _create_didl_root(self):
+        return Element(
+            'DIDL-Lite',
+            {
+                'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
+                'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
+                'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
+                'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0/',
+            },
+        )
+
+    def _add_root_metadata(self, root):
+        container = SubElement(
+            root,
+            'container',
+            {
+                'id': '0',
+                'parentID': '-1',
+                'restricted': '1',
+                'searchable': '1',
+                'childCount': str(len(self.http_server.media_folders)),
+            },
+        )
+        SubElement(container, 'dc:title').text = 'Root'
         SubElement(container, 'upnp:class').text = 'object.container'
         SubElement(container, 'upnp:storageUsed').text = '-1'
-        SubElement(container, 'sec:deviceID').text = str(DEVICE_UUID)
-        SubElement(container, 'sec:containerType').text = 'DLNA'
-        
-        result = self.encode_didl(root)
-        self.logger.debug(f"Root BrowseMetadata response - Children: {total_children}, DIDL: {result}")
-        return result, total_children, total_children
 
-    def _handle_root_children(self, root, starting_index, requested_count):
-        """Handle BrowseDirectChildren for root container"""
-        total_matched = 0
-        items_added = 0
+    def _browse_root_children(self, root, starting_index, requested_count):
+        folders = []
+        for index, shared_folder in enumerate(self.http_server.media_folders):
+            folder_name = os.path.basename(os.path.normpath(shared_folder)) or shared_folder
+            child_count = self._count_visible_children(shared_folder)
+            folders.append((index, folder_name, child_count))
 
-        for shared_folder in self.server.media_folders:
-            try:
-                entries = list(os.scandir(shared_folder))
-                entries.sort(key=lambda x: x.name.lower())
-                
-                for entry in entries:
-                    if total_matched >= starting_index:
-                        if requested_count > 0 and items_added >= requested_count:
-                            break
+        total = len(folders)
+        selected = self._slice_entries(folders, starting_index, requested_count)
+        for index, folder_name, child_count in selected:
+            container = SubElement(
+                root,
+                'container',
+                {
+                    'id': self._folder_object_id(index),
+                    'parentID': '0',
+                    'restricted': '1',
+                    'searchable': '1',
+                    'childCount': str(child_count),
+                },
+            )
+            SubElement(container, 'dc:title').text = folder_name
+            SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
+        return self.encode_didl(root), len(selected), total
 
-                        if entry.is_dir():
-                            self.add_container_to_didl(root, entry.path, entry.name, '0')
-                            items_added += 1
-                        elif entry.is_file():
-                            ext = os.path.splitext(entry.name)[1].lower()
-                            if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
-                                self.add_item_to_didl(root, entry.path, entry.name, '0')
-                                items_added += 1
-                    
-                    if entry.is_dir() or (entry.is_file() and 
-                        os.path.splitext(entry.name)[1].lower() in 
-                        {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                        total_matched += 1
-
-            except OSError as e:
-                self.logger.error(f"Error scanning directory {shared_folder}: {e}")
-                continue
-
-        result = self.encode_didl(root)
-        self.logger.debug(f"Root BrowseDirectChildren response - Added: {items_added}, Total: {total_matched}")
-        return result, items_added, total_matched
-
-    def _handle_item_metadata(self, root, object_id):
-        """Handle BrowseMetadata for non-root items"""
-        actual_path = self._find_actual_path(object_id)
-        if actual_path and os.path.exists(actual_path):
-            if os.path.isdir(actual_path):
-                return self._handle_directory_metadata(root, actual_path, object_id)
-            else:
-                return self._handle_file_metadata(root, actual_path, object_id)
-        return self.encode_didl(root), 0, 0
-
-    def _handle_item_children(self, root, object_id, starting_index, requested_count):
-        """Handle BrowseDirectChildren for non-root items"""
-        dir_path = self._find_directory_path(object_id)
-        if dir_path:
-            try:
-                entries = list(os.scandir(dir_path))
-                entries.sort(key=lambda x: x.name.lower())
-                total_matched = 0
-                items_added = 0
-
-                for entry in entries:
-                    if total_matched >= starting_index:
-                        if requested_count > 0 and items_added >= requested_count:
-                            break
-
-                        if entry.is_dir():
-                            self.add_container_to_didl(root, entry.path, entry.name, object_id)
-                            items_added += 1
-                        elif entry.is_file():
-                            ext = os.path.splitext(entry.name)[1].lower()
-                            if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
-                                self.add_item_to_didl(root, entry.path, entry.name, object_id)
-                                items_added += 1
-
-                    if entry.is_dir() or (entry.is_file() and 
-                        os.path.splitext(entry.name)[1].lower() in 
-                        {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                        total_matched += 1
-
-                result = self.encode_didl(root)
-                self.logger.debug(f"Directory BrowseDirectChildren response - Added: {items_added}, Total: {total_matched}")
-                return result, items_added, total_matched
-
-            except OSError as e:
-                self.logger.error(f"Error scanning directory {dir_path}: {e}")
-
-        return self.encode_didl(root), 0, 0
-
-    def generate_browse_didl(self, object_id, browse_flag, starting_index, requested_count, filter_str, sort_criteria):
-        """Generates the DIDL-Lite XML string for Samsung TV compatibility"""
-        self.logger.debug(f"Generating DIDL - ObjectID: {object_id}, BrowseFlag: {browse_flag}, StartIndex: {starting_index}, Count: {requested_count}")
-        
-        root = Element('DIDL-Lite', {
-            'xmlns': 'urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/',
-            'xmlns:dc': 'http://purl.org/dc/elements/1.1/',
-            'xmlns:upnp': 'urn:schemas-upnp-org:metadata-1-0/upnp/',
-            'xmlns:dlna': 'urn:schemas-dlna-org:metadata-1-0/',  # Fixed namespace
-            'xmlns:sec': 'http://www.sec.co.kr/dlna'
-        })
-
+    def _browse_directory_children(self, root, folder_index, abs_path, parent_id, starting_index, requested_count):
+        entries = []
         try:
-            if object_id == '0':  # Root container
-                if browse_flag == 'BrowseMetadata':
-                    self.logger.debug("Processing BrowseMetadata for root container")
-                    # Count valid media files and folders
-                    total_children = 0
-                    for shared_folder in self.server.media_folders:
-                        with os.scandir(shared_folder) as entries:
-                            for entry in entries:
-                                if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
-                                    {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                                    total_children += 1
-                    
-                    # Updated root container attributes
-                    container = SubElement(root, 'container', {
-                        'id': '0',
-                        'parentID': '-1',  # Changed from -1 to 0
-                        'restricted': 'false',
-                        'searchable': 'true',
-                        'childCount': str(total_children),
-                        'dlna:dlnaManaged': '00000004'  # Add DLNA managed flag
-                    })
-                    
-                    # Add required elements for root container
-                    SubElement(container, 'dc:title').text = "Root"
-                    SubElement(container, 'upnp:class').text = 'object.container'
-                    SubElement(container, 'upnp:storageUsed').text = '-1'
-                    SubElement(container, 'sec:deviceID').text = str(DEVICE_UUID)  # Add Samsung device ID
-                    SubElement(container, 'sec:containerType').text = 'DLNA'  # Add Samsung container type
-                    
-                    result = self.encode_didl(root)
-                    self.logger.debug(f"Root BrowseMetadata response - Children: {total_children}, DIDL: {result}")
-                    return result, total_children, total_children
-
-                elif browse_flag == 'BrowseDirectChildren':
-                    self.logger.debug("Processing BrowseDirectChildren for root container")
-                    total_matched = 0
-                    items_added = 0
-
-                    for shared_folder in self.server.media_folders:
-                        try:
-                            entries = list(os.scandir(shared_folder))
-                            entries.sort(key=lambda x: x.name.lower())  # Sort entries alphabetically
-                            
-                            for entry in entries:
-                                if total_matched >= starting_index:
-                                    if requested_count > 0 and items_added >= requested_count:
-                                        break
-
-                                    if entry.is_dir():
-                                        self.add_container_to_didl(root, entry.path, entry.name, '0')
-                                        items_added += 1
-                                    elif entry.is_file():
-                                        ext = os.path.splitext(entry.name)[1].lower()
-                                        if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
-                                            self.add_item_to_didl(root, entry.path, entry.name, '0')
-                                            items_added += 1
-                                
-                                if entry.is_dir() or (entry.is_file() and 
-                                    os.path.splitext(entry.name)[1].lower() in 
-                                    {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                                    total_matched += 1
-
-                        except OSError as e:
-                            self.logger.error(f"Error scanning directory {shared_folder}: {e}")
-                            continue
-
-                    result = self.encode_didl(root)
-                    self.logger.debug(f"Root BrowseDirectChildren response - Added: {items_added}, Total: {total_matched}")
-                    return result, items_added, total_matched
-
-            else:  # Non-root items
-                if browse_flag == 'BrowseMetadata':
-                    self.logger.debug(f"Processing BrowseMetadata for object: {object_id}")
-                    # Find the actual path from object_id
-                    actual_path = None
-                    for shared_folder in self.server.media_folders:
-                        potential_path = os.path.join(shared_folder, unquote(object_id))
-                        if os.path.exists(potential_path):
-                            actual_path = potential_path
-                            self.logger.debug(f"Found matching path: {actual_path}")
-                            break
-
-                    if actual_path and os.path.exists(actual_path):
-                        if os.path.isdir(actual_path):
-                            self.logger.debug(f"Processing directory metadata: {actual_path}")
-                            child_count = 0
-                            try:
-                                with os.scandir(actual_path) as entries:
-                                    for entry in entries:
-                                        if entry.is_dir() or (entry.is_file() and os.path.splitext(entry.name)[1].lower() in 
-                                            {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                                            child_count += 1
-                                            self.logger.debug(f"Found valid child: {entry.name} ({child_count})")
-                            except OSError as e:
-                                self.logger.error(f"Error counting children in {actual_path}: {e}")
-
-                            container = SubElement(root, 'container', {
-                                'id': object_id,
-                                'parentID': os.path.dirname(object_id) or '0',
-                                'restricted': '1',
-                                'searchable': '1',
-                                'childCount': str(child_count)
-                            })
-                            SubElement(container, 'dc:title').text = os.path.basename(actual_path)
-                            SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
-                            
-                            result = self.encode_didl(root)
-                            self.logger.debug(f"Directory BrowseMetadata response - Path: {actual_path}, Children: {child_count}")
-                            return result, 1, 1
-
-                        else:  # File metadata
-                            self.logger.debug(f"Processing file metadata: {actual_path}")
-                            self.add_item_to_didl(root, actual_path, os.path.basename(actual_path), 
-                                                os.path.dirname(object_id) or '0')
-                            result = self.encode_didl(root)
-                            self.logger.debug(f"File BrowseMetadata response - Path: {actual_path}")
-                            return result, 1, 1
-
-                    else:
-                        self.logger.error(f"Path not found for object_id: {object_id}")
-                        return self.encode_didl(root), 0, 0
-
-                elif browse_flag == 'BrowseDirectChildren':
-                    self.logger.debug(f"Processing BrowseDirectChildren for object: {object_id}")
-                    # Find directory path
-                    dir_path = None
-                    for shared_folder in self.server.media_folders:
-                        potential_path = os.path.join(shared_folder, unquote(object_id))
-                        if os.path.exists(potential_path) and os.path.isdir(potential_path):
-                            dir_path = potential_path
-                            break
-
-                    if dir_path:
-                        try:
-                            entries = list(os.scandir(dir_path))
-                            entries.sort(key=lambda x: x.name.lower())  # Sort entries alphabetically
-                            total_matched = 0
-                            items_added = 0
-
-                            for entry in entries:
-                                if total_matched >= starting_index:
-                                    if requested_count > 0 and items_added >= requested_count:
-                                        break
-
-                                    if entry.is_dir():
-                                        self.add_container_to_didl(root, entry.path, entry.name, object_id)
-                                        items_added += 1
-                                    elif entry.is_file():
-                                        ext = os.path.splitext(entry.name)[1].lower()
-                                        if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
-                                            self.add_item_to_didl(root, entry.path, entry.name, object_id)
-                                            items_added += 1
-
-                                if entry.is_dir() or (entry.is_file() and 
-                                    os.path.splitext(entry.name)[1].lower() in 
-                                    {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}):
-                                    total_matched += 1
-
-                            result = self.encode_didl(root)
-                            self.logger.debug(f"Directory BrowseDirectChildren response - Added: {items_added}, Total: {total_matched}")
-                            return result, items_added, total_matched
-
-                        except OSError as e:
-                            self.logger.error(f"Error scanning directory {dir_path}: {e}")
-                            return self.encode_didl(root), 0, 0
-
-                    else:
-                        self.logger.error(f"Directory not found for object_id: {object_id}")
-                        return self.encode_didl(root), 0, 0
-
+            for entry in sorted(os.scandir(abs_path), key=lambda item: item.name.lower()):
+                if self._is_visible_entry(entry.path, entry.is_dir()):
+                    entries.append(entry.path)
+        except OSError as exc:
+            self.logger.error(f'Error scanning directory {abs_path}: {exc}')
             return self.encode_didl(root), 0, 0
 
-        except Exception as e:
-            self.logger.error(f"Error in generate_browse_didl: {e}", exc_info=True)
-            return self.encode_didl(root), 0, 0
+        selected = self._slice_entries(entries, starting_index, requested_count)
+        for entry_path in selected:
+            self._add_entry(root, folder_index, entry_path, parent_id)
+        return self.encode_didl(root), len(selected), len(entries)
 
-    def encode_didl(self, root_element):
-        """Encodes the ElementTree DIDL-Lite to a string suitable for SOAP response."""
-        # Convert to string and escape XML special characters for embedding in SOAP
-        xml_string = tostring(root_element, encoding='unicode')
-        # Basic escaping for embedding in XML. More robust escaping might be needed.
-        return f"{xml_string}" #.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    def _add_entry(self, root, folder_index, abs_path, parent_id):
+        if os.path.isdir(abs_path):
+            self._add_container(root, folder_index, abs_path, parent_id)
+        else:
+            self._add_item(root, folder_index, abs_path, parent_id)
 
-    def find_shared_folder_root(self, abs_path):
-        """Finds which shared folder an absolute path belongs to."""
-        abs_path = os.path.abspath(abs_path)
-        for shared_folder in self.server.media_folders:
-            shared_folder_abs = os.path.abspath(shared_folder)
-            if os.path.commonpath([shared_folder_abs, abs_path]) == shared_folder_abs:
-                return shared_folder_abs
-        return None # Path not found within any shared folder
-
-    def add_container_to_didl(self, root, path, title, parent_id):
-        """Add a container (directory) to the DIDL-Lite XML"""
-        try:
-            # For root-level container (shared folder)
-            if parent_id == '0':
-                container_id = quote(os.path.basename(path))
-            else:
-                shared_root = self.find_shared_folder_root(path)
-                if not shared_root:
-                    self.logger.warning(f"Cannot determine relative path for container: {path}")
-                    return
-
-                relative_path = os.path.relpath(path, shared_root)
-                if relative_path == '.':
-                    container_id = quote(os.path.basename(path))
-                else:
-                    container_id = quote(relative_path.replace('\\', '/'))
-
-            # Calculate child count
-            child_count = 0
-            try:
-                with os.scandir(path) as entries:
-                    for entry in entries:
-                        if entry.is_dir():
-                            child_count += 1
-                        elif entry.is_file():
-                            ext = os.path.splitext(entry.name)[1].lower()
-                            if ext in VIDEO_EXTENSIONS or ext in AUDIO_EXTENSIONS or ext in IMAGE_EXTENSIONS:
-                                child_count += 1
-            except OSError as e:
-                self.logger.error(f"Error counting children for {path}: {e}")
-                child_count = 0
-
-            container = SubElement(root, 'container', {
-                'id': container_id,
+    def _add_container(self, root, folder_index, abs_path, parent_id):
+        container = SubElement(
+            root,
+            'container',
+            {
+                'id': self._object_id_for_path(folder_index, abs_path),
                 'parentID': parent_id,
                 'restricted': '1',
                 'searchable': '1',
-                'childCount': str(child_count)
-            })
+                'childCount': str(self._count_visible_children(abs_path)),
+            },
+        )
+        SubElement(container, 'dc:title').text = os.path.basename(abs_path)
+        SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
 
-            SubElement(container, 'dc:title').text = title
-            SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
+    def _add_item(self, root, folder_index, abs_path, parent_id):
+        ext = os.path.splitext(abs_path)[1].lower()
+        mime_type = ALL_EXTENSIONS.get(ext)
+        if not mime_type:
+            return
 
-            try:
-                mod_time = datetime.fromtimestamp(os.path.getmtime(path))
-                SubElement(container, 'dc:date').text = mod_time.isoformat()
-            except OSError:
-                pass
-
-            self.logger.debug(f"Added container: id='{container_id}', parentID='{parent_id}', title='{title}', childCount={child_count}")
-
-        except Exception as e:
-            self.logger.error(f"Error adding container to DIDL for path {path}: {e}", exc_info=True)
-
-    def add_item_to_didl(self, root, path, title, parent_id, next_id=None):
-        """Add an item to the DIDL-Lite XML with Samsung TV compatibility"""
-        try:
-            shared_root = self.find_shared_folder_root(path)
-            if not shared_root:
-                self.logger.warning(f"Cannot determine relative path for item: {path}")
-                return
-
-            relative_path = os.path.relpath(path, shared_root)
-            item_id = quote(relative_path.replace('\\', '/'))
-            ext = os.path.splitext(path)[1].lower()
-
-            mime_type = (VIDEO_EXTENSIONS.get(ext) or 
-                        AUDIO_EXTENSIONS.get(ext) or 
-                        IMAGE_EXTENSIONS.get(ext))
-            if not mime_type:
-                self.logger.debug(f"Skipping item with unknown type: {path}")
-                return
-
-            # Determine DLNA profile and class
-            dlna_profile, protocol_info = self.get_dlna_profile(ext, mime_type)
-            upnp_class = ('object.item.videoItem.movie' if ext in VIDEO_EXTENSIONS else
-                        'object.item.audioItem.musicTrack' if ext in AUDIO_EXTENSIONS else
-                        'object.item.imageItem.photo' if ext in IMAGE_EXTENSIONS else
-                        'object.item')
-
-            # Create item element with required attributes
-            item = SubElement(root, 'item', {
-                'id': item_id,
+        item = SubElement(
+            root,
+            'item',
+            {
+                'id': self._object_id_for_path(folder_index, abs_path),
                 'parentID': parent_id,
                 'restricted': '1',
-                'dlna:dlnaManaged': '00000001'  # Samsung TV compatibility
-            })
+            },
+        )
+        SubElement(item, 'dc:title').text = os.path.basename(abs_path)
+        SubElement(item, 'upnp:class').text = self._upnp_class_for_extension(ext)
 
-            # Add basic metadata
-            SubElement(item, 'dc:title').text = title
-            SubElement(item, 'upnp:class').text = upnp_class
+        res = SubElement(item, 'res')
+        res.text = self._media_url(folder_index, abs_path)
+        res.set('size', str(os.path.getsize(abs_path)))
+        res.set('protocolInfo', self._protocol_info(ext, mime_type))
 
-            # Add resource element with full metadata
-            res = SubElement(item, 'res')
-            try:
-                file_size = os.path.getsize(path)
-                url = f'http://{self.server.server_address[0]}:{self.server.server_address[1]}/{quote(relative_path)}'
-                res.text = url
-                res.set('size', str(file_size))
-                res.set('protocolInfo', protocol_info)
+        duration = self.get_media_duration(abs_path)
+        if duration:
+            res.set('duration', duration)
 
-                # Add media-specific metadata
-                if ext in VIDEO_EXTENSIONS:
-                    duration = self.get_media_duration_seconds(path)
-                    if duration:
-                        res.set('duration', str(datetime.timedelta(seconds=int(duration))))
-                        res.set('sampleRate', '48000')  # Common video sample rate
-                        res.set('nrAudioChannels', '2')  # Stereo audio
-                    # Add video thumbnail
-                    thumb = SubElement(item, 'upnp:albumArtURI')
-                    thumb.set('dlna:profileID', 'JPEG_TN')
-                    thumb.set('xmlns:dlna', 'urn:schemas-dlna-org:metadata-1-0')
-                    thumb.text = f'{url}?thumbnail=true'
-                    # Add Samsung-specific video metadata
-                    SubElement(item, 'sec:CaptionInfo').text = 'No'
-                    SubElement(item, 'sec:CaptionInfoEx').text = 'No'
-                    SubElement(item, 'sec:dcmInfo').text = 'No'
+        resolution = self.get_image_resolution(abs_path)
+        if resolution:
+            res.set('resolution', resolution)
 
-                elif ext in AUDIO_EXTENSIONS:
-                    duration = self.get_media_duration_seconds(path)
-                    if duration:
-                        res.set('duration', str(datetime.timedelta(seconds=int(duration))))
-                    # Add audio metadata from file
-                    try:
-                        audio = File(path)
-                        if audio and hasattr(audio, 'tags'):
-                            tags = audio.tags
-                            if hasattr(tags, 'get'):  # Handle both dict-like and object interfaces
-                                artist = str(tags.get('artist', [''])[0]) if isinstance(tags.get('artist', ['']), (list, tuple)) else str(tags.get('artist', ''))
-                                album = str(tags.get('album', [''])[0]) if isinstance(tags.get('album', ['']), (list, tuple)) else str(tags.get('album', ''))
-                                genre = str(tags.get('genre', [''])[0]) if isinstance(tags.get('genre', ['']), (list, tuple)) else str(tags.get('genre', ''))
-                                if artist:
-                                    SubElement(item, 'upnp:artist').text = artist
-                                if album:
-                                    SubElement(item, 'upnp:album').text = album
-                                if genre:
-                                    SubElement(item, 'upnp:genre').text = genre
-                    except Exception as e:
-                        self.logger.debug(f"Error reading audio metadata: {e}")
+        if ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS:
+            album_art = SubElement(item, 'upnp:albumArtURI')
+            album_art.set('dlna:profileID', 'JPEG_TN')
+            album_art.text = f'{self._media_url(folder_index, abs_path)}?thumbnail=true'
 
-                elif ext in IMAGE_EXTENSIONS:
-                    # Add image resolution if available
-                    resolution = self.get_image_resolution(path)
-                    if resolution:
-                        res.set('resolution', resolution)
-                    # Add thumbnail for images
-                    thumb = SubElement(item, 'upnp:albumArtURI')
-                    thumb.set('dlna:profileID', 'JPEG_TN')
-                    thumb.set('xmlns:dlna', 'urn:schemas-dlna-org:metadata-1-0')
-                    thumb.text = f'{url}?thumbnail=true'
+        self._add_audio_metadata(abs_path, item)
 
-                # Add modification date
-                try:
-                    mod_time = datetime.fromtimestamp(os.path.getmtime(path))
-                    SubElement(item, 'dc:date').text = mod_time.isoformat()
-                except OSError:
-                    pass
+        try:
+            modified = datetime.datetime.fromtimestamp(os.path.getmtime(abs_path))
+            SubElement(item, 'dc:date').text = modified.isoformat()
+        except OSError:
+            pass
 
-            except Exception as e:
-                self.logger.error(f"Error adding resource element for {path}: {e}")
+    def _add_audio_metadata(self, abs_path, item):
+        ext = os.path.splitext(abs_path)[1].lower()
+        if ext not in AUDIO_EXTENSIONS:
+            return
+        try:
+            audio = File(abs_path)
+            tags = getattr(audio, 'tags', None)
+            if not tags:
+                return
+            artist = self._tag_value(tags, 'artist')
+            album = self._tag_value(tags, 'album')
+            genre = self._tag_value(tags, 'genre')
+            if artist:
+                SubElement(item, 'upnp:artist').text = artist
+            if album:
+                SubElement(item, 'upnp:album').text = album
+            if genre:
+                SubElement(item, 'upnp:genre').text = genre
+        except Exception as exc:
+            self.logger.debug(f'Error reading metadata for {abs_path}: {exc}')
 
-        except Exception as e:
-            self.logger.error(f"Error adding item to DIDL-Lite for {path}: {e}", exc_info=True)
+    def _tag_value(self, tags, key):
+        value = tags.get(key)
+        if isinstance(value, (list, tuple)):
+            return str(value[0]) if value else ''
+        return str(value or '')
+
+    def _folder_object_id(self, folder_index):
+        return f'folder::{folder_index}'
+
+    def _object_id_for_path(self, folder_index, abs_path):
+        shared_root = self.http_server.media_folders[folder_index]
+        relative_path = os.path.relpath(abs_path, shared_root).replace(os.sep, '/')
+        if relative_path == '.':
+            return self._folder_object_id(folder_index)
+        return f'{self._folder_object_id(folder_index)}/{quote(relative_path, safe="/")}'
+
+    def _resolve_object_id(self, object_id):
+        if not object_id.startswith('folder::'):
+            return None
+        folder_token, _, encoded_relative = object_id.partition('/')
+        try:
+            folder_index = int(folder_token.split('::', 1)[1])
+        except (IndexError, ValueError):
+            return None
+        if folder_index < 0 or folder_index >= len(self.http_server.media_folders):
+            return None
+        shared_root = self.http_server.media_folders[folder_index]
+        if not encoded_relative:
+            return folder_index, shared_root
+        relative_path = os.path.normpath(unquote(encoded_relative))
+        abs_path = os.path.abspath(os.path.join(shared_root, relative_path))
+        shared_root_abs = os.path.abspath(shared_root)
+        if os.path.commonpath([shared_root_abs, abs_path]) != shared_root_abs:
+            return None
+        if not os.path.exists(abs_path):
+            return None
+        return folder_index, abs_path
+
+    def _parent_id_for_path(self, folder_index, abs_path):
+        shared_root = os.path.abspath(self.http_server.media_folders[folder_index])
+        abs_path = os.path.abspath(abs_path)
+        if abs_path == shared_root:
+            return '0'
+        parent_path = os.path.dirname(abs_path)
+        if parent_path == shared_root:
+            return self._folder_object_id(folder_index)
+        return self._object_id_for_path(folder_index, parent_path)
+
+    def _count_visible_children(self, directory):
+        count = 0
+        try:
+            for entry in os.scandir(directory):
+                if self._is_visible_entry(entry.path, entry.is_dir()):
+                    count += 1
+        except OSError as exc:
+            self.logger.error(f'Error counting children in {directory}: {exc}')
+        return count
+
+    def _is_visible_entry(self, path, is_dir=None):
+        if is_dir is None:
+            is_dir = os.path.isdir(path)
+        if is_dir:
+            return True
+        return os.path.splitext(path)[1].lower() in ALL_EXTENSIONS
+
+    def _slice_entries(self, entries, starting_index, requested_count):
+        if starting_index < 0:
+            starting_index = 0
+        if requested_count <= 0:
+            return entries[starting_index:]
+        return entries[starting_index:starting_index + requested_count]
+
+    def _media_url(self, folder_index, abs_path):
+        shared_root = self.http_server.media_folders[folder_index]
+        relative_path = os.path.relpath(abs_path, shared_root).replace(os.sep, '/')
+        quoted_path = quote(relative_path, safe='/')
+        return f'http://{self.http_server.local_ip}:{self.http_server.server_port}/media/{quoted_path}'
+
+    def _upnp_class_for_extension(self, ext):
+        if ext in VIDEO_EXTENSIONS:
+            return 'object.item.videoItem.movie'
+        if ext in AUDIO_EXTENSIONS:
+            return 'object.item.audioItem.musicTrack'
+        if ext in IMAGE_EXTENSIONS:
+            return 'object.item.imageItem.photo'
+        return 'object.item'
+
+    def _protocol_info(self, ext, mime_type):
+        profiles = {
+            '.mp4': 'AVC_MP4_BL_CIF15_AAC',
+            '.m4v': 'AVC_MP4_BL_CIF15_AAC',
+            '.mp3': 'MP3',
+            '.flac': 'FLAC',
+            '.jpg': 'JPEG_LRG',
+            '.jpeg': 'JPEG_LRG',
+            '.png': 'PNG_LRG',
+        }
+        profile = profiles.get(ext)
+        if not profile:
+            return f'http-get:*:{mime_type}:*'
+        return (
+            f'http-get:*:{mime_type}:'
+            f'DLNA.ORG_PN={profile};DLNA.ORG_OP=01;DLNA.ORG_CI=0;'
+            'DLNA.ORG_FLAGS=01700000000000000000000000000000'
+        )
 
     def get_media_duration(self, file_path):
-        """Get media duration using mutagen (works for audio/some video)"""
         try:
             media = File(file_path)
-            if media and media.info and hasattr(media.info, 'length') and media.info.length > 0:
-                duration_sec = int(media.info.length)
-                hours = duration_sec // 3600
-                minutes = (duration_sec % 3600) // 60
-                seconds = duration_sec % 60
-                # Format as H:MM:SS.ms (UPnP standard) - add .000 for milliseconds
-                return f"{hours}:{minutes:02}:{seconds:02}.000"
-        except Exception as e:
-            self.logger.debug(f"Could not get duration for {file_path}: {e}")
+            if media and getattr(media, 'info', None) and hasattr(media.info, 'length'):
+                duration_seconds = int(media.info.length)
+                hours = duration_seconds // 3600
+                minutes = (duration_seconds % 3600) // 60
+                seconds = duration_seconds % 60
+                return f'{hours}:{minutes:02}:{seconds:02}.000'
+        except Exception as exc:
+            self.logger.debug(f'Could not get duration for {file_path}: {exc}')
         return None
 
     def get_image_resolution(self, file_path):
-        """Get image resolution using Pillow"""
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in IMAGE_EXTENSIONS:
+            return None
         try:
             from PIL import Image
-            # Suppress DecompressionBomb warning if images are large
+
             Image.MAX_IMAGE_PIXELS = None
-            with Image.open(file_path) as img:
-                width, height = img.size
-                return f"{width}x{height}"
+            with Image.open(file_path) as image:
+                width, height = image.size
+                return f'{width}x{height}'
         except ImportError:
-            self.logger.debug("Pillow not installed, cannot get image resolution.")
-        except Exception as e:
-            self.logger.warning(f"Could not get resolution for image {file_path}: {e}")
-        return None
+            return None
+        except Exception as exc:
+            self.logger.debug(f'Could not get resolution for {file_path}: {exc}')
+            return None
 
-    def get_mime_and_upnp_class(self, filename):
-        """Determine MIME type and UPnP class based on file extension"""
-        ext = os.path.splitext(filename)[1].lower()
-        # Use single dictionary for mapping
-        EXTENSION_MAP = {
-            **{ext: (mime, 'object.item.videoItem.Movie') 
-                for ext, mime in VIDEO_EXTENSIONS.items()},
-            **{ext: (mime, 'object.item.audioItem.musicTrack') 
-                for ext, mime in AUDIO_EXTENSIONS.items()},
-            **{ext: (mime, 'object.item.imageItem.photo') 
-                for ext, mime in IMAGE_EXTENSIONS.items()}
-        }
-        
-        return EXTENSION_MAP.get(ext, ('application/octet-stream', 'object.item'))
-
-    def add_audio_metadata(self, file_path, item_element):
-        """Add audio-specific metadata"""
-        try:
-            audio = File(file_path)
-            if audio:
-                if hasattr(audio, 'tags'):
-                    tags = audio.tags
-                    if 'artist' in tags:
-                        SubElement(item_element, 'upnp:artist').text = str(tags['artist'][0])
-                    if 'album' in tags:
-                        SubElement(item_element, 'upnp:album').text = str(tags['album'][0])
-                    if 'genre' in tags:
-                        SubElement(item_element, 'upnp:genre').text = str(tags['genre'][0])
-        except Exception as e:
-            self.logger.warning(f"Error reading audio metadata: {str(e)}")
-
-    def add_video_metadata(self, file_path, item_element):
-        """Add video-specific metadata"""
-        # Add basic video metadata
-        SubElement(item_element, 'upnp:genre').text = "Unknown"
-        SubElement(item_element, 'dc:publisher').text = "Unknown"
-        
-        # You could expand this using a video metadata library like ffmpeg-python
-        # to extract resolution, duration, etc.
-
-    def add_image_metadata(self, file_path, item_element):
-        """Add image-specific metadata"""
-        try:
-            from PIL import Image
-            with Image.open(file_path) as img:
-                width, height = img.size
-                SubElement(item_element, 'upnp:resolution').text = f"{width}x{height}"
-        except Exception as e:
-            self.logger.warning(f"Error reading image metadata: {e}")
+    def encode_didl(self, root_element):
+        return tostring(root_element, encoding='unicode')
