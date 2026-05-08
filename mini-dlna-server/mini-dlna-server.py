@@ -51,20 +51,20 @@ def setup_logging():
         logging.Formatter('%(asctime)s - %(levelname)s - [%(threadName)s] %(message)s')
     )
 
-    # Regular log file with INFO and above
+    # Regular log file with warnings and above
     file_handler = RotatingFileHandler(
         log_dir / 'dlna_server.log',
         maxBytes=5*1024*1024,
         backupCount=5
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.WARNING)
     file_handler.setFormatter(
         logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     )
 
     # Console with warnings and errors only
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(
         logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     )
