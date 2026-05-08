@@ -448,14 +448,19 @@ class DLNAServer(BaseHTTPRequestHandler):
         finally:
             self.headers_sent = True
 
+    def _is_expected_disconnect_error(self, error):
+        if isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return True
+        return getattr(error, 'errno', None) in {32, 54, 104}
+
     def handle_one_request(self):
         """Override to add better error handling for socket operations"""
         try:
             return super().handle_one_request()
         except (socket.error, ConnectionError) as e:
-            # Don't log common client disconnection errors at error level
-            if isinstance(e, ConnectionAbortedError) or \
-                getattr(e, 'winerror', None) in (10053, 10054):  # Connection aborted/reset
+            if self._is_expected_disconnect_error(e) or getattr(self, '_disconnect_logged', False):
+                self.logger.debug(f"Client connection closed: {str(e)}")
+            elif getattr(e, 'winerror', None) in (10053, 10054):
                 self.logger.debug(f"Client connection closed: {str(e)}")
             else:
                 self.logger.error(f"Socket error during request: {str(e)}")
@@ -471,6 +476,7 @@ class DLNAServer(BaseHTTPRequestHandler):
                 pass
     
     def send_media_file(self, file_path, content_type):
+        self._disconnect_logged = False
         try:
             file_size = os.path.getsize(file_path)
             
@@ -524,7 +530,11 @@ class DLNAServer(BaseHTTPRequestHandler):
                         self.logger.debug(f"Sent {len(chunk)} bytes for {os.path.basename(file_path)}")
                         remaining -= len(chunk)
                     except (socket.error, ConnectionError) as e:
-                        self.logger.warning(f"Connection error while streaming: {e}")
+                        if self._is_expected_disconnect_error(e):
+                            self._disconnect_logged = True
+                            self.logger.debug(f"Client stopped streaming {os.path.basename(file_path)}: {e}")
+                        else:
+                            self.logger.warning(f"Connection error while streaming: {e}")
                         break
 
                 if remaining == 0:
@@ -784,6 +794,7 @@ class DLNAServer(BaseHTTPRequestHandler):
 
     def send_media_file(self, file_path, content_type):
         """Stream media file with proper DLNA support and range handling"""
+        self._disconnect_logged = False
         file_size = os.path.getsize(file_path)
         duration = self.get_media_duration_seconds(file_path)
 
@@ -847,7 +858,11 @@ class DLNAServer(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
                 except (ConnectionError, socket.error) as e:
-                    self.logger.warning(f"Connection error while streaming: {e}")
+                    if self._is_expected_disconnect_error(e):
+                        self._disconnect_logged = True
+                        self.logger.debug(f"Client stopped streaming {os.path.basename(file_path)}: {e}")
+                    else:
+                        self.logger.warning(f"Connection error while streaming: {e}")
                     break
 
     def _generate_search_didl(self, results):
@@ -1121,6 +1136,7 @@ class DLNAServer(BaseHTTPRequestHandler):
     def send_file_with_error_handling(self, file_path):
         """Send file with improved buffering, timeouts and connection handling"""
         try:
+            self._disconnect_logged = False
             # Set socket timeout for streaming operations
             self.connection.settimeout(30.0)  # 30 second timeout for network operations
             
@@ -1152,6 +1168,10 @@ class DLNAServer(BaseHTTPRequestHandler):
                             self.logger.warning("Connection timed out due to inactivity")
                             return False
                     except (socket.error, ConnectionError) as e:
+                        if self._is_expected_disconnect_error(e):
+                            self._disconnect_logged = True
+                            self.logger.debug(f"Client stopped streaming {os.path.basename(file_path)}: {e}")
+                            return False
                         self.logger.warning(f"Connection error while streaming: {e}")
                         return False
                         
