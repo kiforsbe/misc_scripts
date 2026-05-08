@@ -290,22 +290,28 @@ class DLNAServer(BaseHTTPRequestHandler):
         normalized = media_path.lstrip('/')
         folder_token, _, relative_path = normalized.partition('/')
         if not relative_path:
+            self.logger.info("Media path missing relative component: %s", media_path)
             return None
 
         try:
             folder_index = int(folder_token)
         except ValueError:
+            self.logger.info("Media path missing valid folder index: %s", media_path)
             return None
 
         if folder_index < 0 or folder_index >= len(self.server.media_folders):
+            self.logger.info("Media path folder index out of range: %s", media_path)
             return None
 
         shared_root = os.path.abspath(self.server.media_folders[folder_index])
         candidate = os.path.abspath(os.path.join(shared_root, relative_path))
         if os.path.commonpath([shared_root, candidate]) != shared_root:
+            self.logger.warning("Rejected media path outside share root: %s -> %s", media_path, candidate)
             return None
         if not os.path.isfile(candidate):
+            self.logger.info("Media path resolved to missing file: %s -> %s", media_path, candidate)
             return None
+        self.logger.info("Resolved media path %s -> %s", media_path, candidate)
         return candidate
 
     def do_GET(self):

@@ -426,7 +426,7 @@ class ContentDirectoryHandler:
         shared_root = self.http_server.media_folders[folder_index]
         relative_path = os.path.relpath(abs_path, shared_root).replace(os.sep, '/')
         quoted_path = quote(relative_path, safe='/')
-        return f'http://{self.http_server.local_ip}:{self.http_server.server_port}/media/{quoted_path}'
+        return f'http://{self.http_server.local_ip}:{self.http_server.server_port}/media/{folder_index}/{quoted_path}'
 
     def _upnp_class_for_extension(self, ext):
         if ext in VIDEO_EXTENSIONS:
