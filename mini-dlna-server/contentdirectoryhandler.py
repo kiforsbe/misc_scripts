@@ -58,6 +58,9 @@ class ContentDirectoryHandler:
     def _is_likely_samsung_client(self):
         return bool(self._client_profile().get('is_likely_samsung'))
 
+    def _system_update_id(self):
+        return str(getattr(self.http_server, 'system_update_id', 1))
+
     def handle_control(self, post_data):
         try:
             action = self._get_soap_action()
@@ -71,7 +74,7 @@ class ContentDirectoryHandler:
                 self._send_simple_response('GetSortCapabilities', '<SortCaps>dc:title,dc:date</SortCaps>')
                 return
             if action == 'GetSystemUpdateID':
-                self._send_simple_response('GetSystemUpdateID', '<Id>1</Id>')
+                self._send_simple_response('GetSystemUpdateID', f'<Id>{self._system_update_id()}</Id>')
                 return
             raise ValueError(f'Unsupported ContentDirectory action: {action or "unknown"}')
         except Exception as exc:
@@ -102,7 +105,7 @@ class ContentDirectoryHandler:
             f'<Result>{escape(didl)}</Result>'
             f'<NumberReturned>{number_returned}</NumberReturned>'
             f'<TotalMatches>{total_matches}</TotalMatches>'
-            '<UpdateID>1</UpdateID>'
+            f'<UpdateID>{self._system_update_id()}</UpdateID>'
         )
         self.logger.info(
             "Browse response object_id=%s returned=%s total=%s",

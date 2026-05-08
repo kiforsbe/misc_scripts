@@ -38,6 +38,18 @@ DEVICE_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())
 def build_device_name(instance_id):
     return f"Python Media Server [{instance_id}] ({socket.gethostname()})"
 
+
+def load_config_file(config_path):
+    try:
+        with open(config_path, 'r') as config_file:
+            return json.load(config_file)
+    except FileNotFoundError:
+        print(f"Configuration file not found: {config_path}")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing configuration file: {e}")
+        sys.exit(1)
+
 def setup_logging():
     """Set up logging configuration with both file and console handlers"""
     logger = logging.getLogger('DLNAServer')
@@ -233,6 +245,12 @@ class DLNAServer(BaseHTTPRequestHandler):
             },
         )
 
+    def ensure_current_config(self):
+        try:
+            refresh_server_config(self.server)
+        except Exception as exc:
+            self.logger.warning('Config refresh check failed: %s', exc)
+
     def send_response(self, *args, **kwargs):
         """Override to track headers sent state"""
         super().send_response(*args, **kwargs)
@@ -381,6 +399,7 @@ class DLNAServer(BaseHTTPRequestHandler):
         """Handle GET requests with proper logging"""
         try:
             self._detect_client_profile()
+            self.ensure_current_config()
             parsed_path = urlparse(self.path)
             clean_path = parsed_path.path
             query = parse_qs(parsed_path.query)
@@ -440,6 +459,7 @@ class DLNAServer(BaseHTTPRequestHandler):
         """Handle HEAD requests by performing the same logic as GET but without sending the body"""
         try:
             self._detect_client_profile()
+            self.ensure_current_config()
             parsed_path = urlparse(self.path)
             clean_path = parsed_path.path
             query = parse_qs(parsed_path.query)
@@ -501,6 +521,7 @@ class DLNAServer(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST requests, particularly for ContentDirectory control"""
         self._detect_client_profile()
+        self.ensure_current_config()
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
         
@@ -1109,16 +1130,7 @@ def load_config():
     args = parser.parse_args()
 
     config_path = args.config
-    try:
-        with open(config_path, 'r') as config_file:
-            config = json.load(config_file)
-            return config
-    except FileNotFoundError:
-        print(f"Configuration file not found: {config_path}")
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        print(f"Error parsing configuration file: {e}")
-        sys.exit(1)
+    return load_config_file(config_path), config_path
 
 
 def normalize_playlists(raw_playlists, media_folders, logger):
@@ -1190,23 +1202,82 @@ def normalize_playlists(raw_playlists, media_folders, logger):
 
     return playlists
 
+
+def build_runtime_state(config, logger):
+    media_folders = config.get('shared_paths', [])
+    if not media_folders:
+        raise ValueError('No shared paths specified in configuration.')
+
+    for folder in media_folders:
+        if not os.path.exists(folder):
+            raise ValueError(f'Media folder does not exist: {folder}')
+
+    playlists = normalize_playlists(config.get('playlists', []), media_folders, logger)
+    return media_folders, playlists
+
+
+def apply_runtime_state(server, media_folders, playlists):
+    server.media_folders = media_folders
+    server.playlists = playlists
+
+
+def refresh_server_config(server, force=False):
+    config_path = getattr(server, 'config_path', None)
+    if not config_path:
+        return False
+
+    config_lock = getattr(server, 'config_lock', None)
+    if config_lock is None:
+        return False
+
+    logger = logging.getLogger('DLNAServer')
+    with config_lock:
+        try:
+            stat_result = os.stat(config_path)
+        except OSError as exc:
+            logger.warning('Config reload skipped because config path is unreadable: %s (%s)', config_path, exc)
+            return False
+
+        current_signature = (stat_result.st_mtime_ns, stat_result.st_size)
+        previous_signature = getattr(server, 'config_signature', None)
+        if not force and current_signature == previous_signature:
+            return False
+
+        try:
+            config = load_config_file(config_path)
+            media_folders, playlists = build_runtime_state(config, logger)
+        except Exception as exc:
+            logger.warning('Config reload failed, keeping previous configuration: %s', exc)
+            return False
+
+        apply_runtime_state(server, media_folders, playlists)
+        server.config_signature = current_signature
+        server.system_update_id = getattr(server, 'system_update_id', 1) + (0 if previous_signature is None else 1)
+        logger.info(
+            'Configuration %s from %s: shared_paths=%s playlists=%s system_update_id=%s',
+            'loaded' if previous_signature is None else 'reloaded',
+            config_path,
+            len(media_folders),
+            len(playlists),
+            server.system_update_id,
+        )
+        if previous_signature is not None:
+            logger.info(
+                'Config changed but no ContentDirectory event subscribers are implemented; clients must detect updates via browsing or GetSystemUpdateID.'
+            )
+        return True
+
 def start_server(config):
     """Start the DLNA media server with Windows compatibility"""
     logger = setup_logging()
     instance_id = time.strftime('%H%M%S')
     device_name = build_device_name(instance_id)
 
-    media_folders = config.get('shared_paths', [])
-    if not media_folders:
-        logger.error("No shared paths specified in configuration.")
+    try:
+        media_folders, playlists = build_runtime_state(config, logger)
+    except ValueError as exc:
+        logger.error(str(exc))
         sys.exit(1)
-
-    for folder in media_folders:
-        if not os.path.exists(folder):
-            logger.error(f"Media folder does not exist: {folder}")
-            sys.exit(1)
-
-    playlists = normalize_playlists(config.get('playlists', []), media_folders, logger)
 
     local_ip = NetworkUtils.get_local_ip()
     
@@ -1229,11 +1300,15 @@ def start_server(config):
         logger.error(f"Could not find available port between {base_port} and {max_port}")
         sys.exit(1)
 
-    server.media_folders = media_folders
-    server.playlists = playlists
+    server.config_lock = threading.Lock()
+    server.config_path = os.path.abspath(config.get('_config_path', 'config.json'))
+    server.config_signature = None
+    server.system_update_id = 1
+    apply_runtime_state(server, media_folders, playlists)
     server.local_ip = local_ip
     server.device_name = device_name
     server.resource_monitor = ResourceMonitor()  # Initialize resource monitor
+    refresh_server_config(server, force=True)
     
     # Start SSDP server in a separate thread
     ssdp_server = SSDPServer((local_ip, port), DEVICE_UUID, device_name)
@@ -1270,5 +1345,6 @@ def start_server(config):
         sys.exit(1)
 
 if __name__ == "__main__":
-    config = load_config()
+    config, config_path = load_config()
+    config['_config_path'] = config_path
     start_server(config)
