@@ -36,6 +36,12 @@ IMAGE_EXTENSIONS = {
 
 ALL_EXTENSIONS = {**VIDEO_EXTENSIONS, **AUDIO_EXTENSIONS, **IMAGE_EXTENSIONS}
 
+SORT_OPTIONS = (
+    ('default', 'Default'),
+    ('title', 'Title (A-Z)'),
+    ('date-desc', 'Date Modified (Newest)'),
+)
+
 
 class ContentDirectoryHandler:
     """Handles ContentDirectory browse requests and DIDL-Lite generation."""
@@ -164,15 +170,70 @@ class ContentDirectoryHandler:
             self.logger.warning('Browse requested unresolved object_id=%s', object_id)
             return self.encode_didl(root), 0, 0
 
-        folder_index, abs_path = resolved
         if browse_flag == 'BrowseMetadata':
-            self._add_entry(root, folder_index, abs_path, self._parent_id_for_path(folder_index, abs_path))
+            return self._browse_metadata(root, resolved)
+
+        return self._browse_resolved_children(root, object_id, resolved, starting_index, requested_count)
+
+    def _browse_metadata(self, root, resolved):
+        kind = resolved['kind']
+        if kind == 'share':
+            self._add_virtual_container(
+                root,
+                resolved['object_id'],
+                '0',
+                resolved['title'],
+                len(SORT_OPTIONS),
+            )
             return self.encode_didl(root), 1, 1
+        if kind == 'merged':
+            self._add_virtual_container(
+                root,
+                resolved['object_id'],
+                '0',
+                resolved['title'],
+                len(SORT_OPTIONS),
+            )
+            return self.encode_didl(root), 1, 1
+        if kind == 'sort':
+            self._add_virtual_container(
+                root,
+                resolved['object_id'],
+                resolved['parent_id'],
+                resolved['title'],
+                self._count_context_children(resolved),
+            )
+            return self.encode_didl(root), 1, 1
+        if kind == 'entry':
+            self._add_context_entry(
+                root,
+                resolved['source'],
+                resolved['sort_key'],
+                resolved['folder_index'],
+                resolved['abs_path'],
+                self._parent_id_for_resolved_entry(resolved),
+            )
+            return self.encode_didl(root), 1, 1
+        return self.encode_didl(root), 0, 0
 
-        if not os.path.isdir(abs_path):
+    def _browse_resolved_children(self, root, object_id, resolved, starting_index, requested_count):
+        kind = resolved['kind']
+        if kind in {'share', 'merged'}:
+            return self._browse_sort_children(root, resolved, starting_index, requested_count)
+        if kind == 'sort':
+            return self._browse_sort_entries(root, resolved, starting_index, requested_count)
+        if kind != 'entry' or not os.path.isdir(resolved['abs_path']):
             return self.encode_didl(root), 0, 0
-
-        return self._browse_directory_children(root, folder_index, abs_path, object_id, starting_index, requested_count)
+        return self._browse_directory_children(
+            root,
+            resolved['source'],
+            resolved['sort_key'],
+            resolved['folder_index'],
+            resolved['abs_path'],
+            object_id,
+            starting_index,
+            requested_count,
+        )
 
     def _create_didl_root(self):
         return Element(
@@ -187,11 +248,9 @@ class ContentDirectoryHandler:
         )
 
     def _add_root_metadata(self, root):
-        total_children = 0
-        for shared_folder in self.http_server.media_folders:
-            total_children += self._count_visible_children(shared_folder)
+        total_children = len(self.http_server.media_folders) + 1
 
-        self.logger.info('Root metadata reports %s visible children', total_children)
+        self.logger.info('Root metadata reports %s virtual children', total_children)
 
         container = SubElement(
             root,
@@ -216,13 +275,22 @@ class ContentDirectoryHandler:
     def _collect_root_entries(self):
         entries = []
         for index, shared_folder in enumerate(self.http_server.media_folders):
-            try:
-                for entry in os.scandir(shared_folder):
-                    if self._is_visible_entry(entry.path, entry.is_dir()):
-                        entries.append((index, entry.path))
-            except OSError as exc:
-                self.logger.error(f'Error scanning root folder {shared_folder}: {exc}')
-        entries.sort(key=lambda item: os.path.basename(item[1]).lower())
+            entries.append(
+                {
+                    'kind': 'share',
+                    'object_id': self._share_container_id(index),
+                    'title': self._share_title(shared_folder, index),
+                    'child_count': len(SORT_OPTIONS),
+                }
+            )
+        entries.append(
+            {
+                'kind': 'merged',
+                'object_id': self._merged_container_id(),
+                'title': 'All Shared Paths',
+                'child_count': len(SORT_OPTIONS),
+            }
+        )
         return entries
 
     def _append_root_children(self, root, starting_index, requested_count):
@@ -232,10 +300,10 @@ class ContentDirectoryHandler:
             'Root metadata compatibility append total=%s selected=%s preview=%s',
             len(entries),
             len(selected),
-            [os.path.basename(path) for _, path in selected[:5]],
+            [entry['title'] for entry in selected[:5]],
         )
-        for folder_index, entry_path in selected:
-            self._add_entry(root, folder_index, entry_path, '0')
+        for entry in selected:
+            self._add_virtual_container(root, entry['object_id'], '0', entry['title'], entry['child_count'])
 
     def _browse_root_children(self, root, starting_index, requested_count):
         entries = self._collect_root_entries()
@@ -245,46 +313,108 @@ class ContentDirectoryHandler:
             'Root children total=%s selected=%s preview=%s',
             total,
             len(selected),
-            [os.path.basename(path) for _, path in selected[:5]],
+            [entry['title'] for entry in selected[:5]],
         )
-        for folder_index, entry_path in selected:
-            self._add_entry(root, folder_index, entry_path, '0')
+        for entry in selected:
+            self._add_virtual_container(root, entry['object_id'], '0', entry['title'], entry['child_count'])
         return self.encode_didl(root), len(selected), total
 
-    def _browse_directory_children(self, root, folder_index, abs_path, parent_id, starting_index, requested_count):
+    def _browse_sort_children(self, root, resolved, starting_index, requested_count):
+        entries = self._collect_sort_entries(resolved)
+        total = len(entries)
+        selected = self._slice_entries(entries, starting_index, requested_count)
+        self.logger.info(
+            'Sort containers parent=%s total=%s selected=%s preview=%s',
+            resolved['object_id'],
+            total,
+            len(selected),
+            [entry['title'] for entry in selected[:5]],
+        )
+        for entry in selected:
+            self._add_virtual_container(root, entry['object_id'], resolved['object_id'], entry['title'], entry['child_count'])
+        return self.encode_didl(root), len(selected), total
+
+    def _browse_sort_entries(self, root, resolved, starting_index, requested_count):
+        entries = self._collect_context_entries(resolved)
+        total = len(entries)
+        selected = self._slice_entries(entries, starting_index, requested_count)
+        self.logger.info(
+            'Sort entries parent=%s total=%s selected=%s preview=%s',
+            resolved['object_id'],
+            total,
+            len(selected),
+            [os.path.basename(entry['abs_path']) for entry in selected[:5]],
+        )
+        for entry in selected:
+            self._add_context_entry(
+                root,
+                resolved['source'],
+                resolved['sort_key'],
+                entry['folder_index'],
+                entry['abs_path'],
+                resolved['object_id'],
+            )
+        return self.encode_didl(root), len(selected), total
+
+    def _browse_directory_children(self, root, source, sort_key, folder_index, abs_path, parent_id, starting_index, requested_count):
         entries = []
         try:
-            for entry in sorted(os.scandir(abs_path), key=lambda item: item.name.lower()):
+            for entry in os.scandir(abs_path):
                 if self._is_visible_entry(entry.path, entry.is_dir()):
-                    entries.append(entry.path)
+                    entries.append({'folder_index': folder_index, 'abs_path': entry.path})
         except OSError as exc:
             self.logger.error(f'Error scanning directory {abs_path}: {exc}')
             return self.encode_didl(root), 0, 0
 
+        entries = self._sort_context_entries(entries, sort_key)
         selected = self._slice_entries(entries, starting_index, requested_count)
         self.logger.info(
             'Directory children path=%s total=%s selected=%s preview=%s',
             abs_path,
             len(entries),
             len(selected),
-            [os.path.basename(path) for path in selected[:5]],
+            [os.path.basename(entry['abs_path']) for entry in selected[:5]],
         )
-        for entry_path in selected:
-            self._add_entry(root, folder_index, entry_path, parent_id)
+        for entry in selected:
+            self._add_context_entry(root, source, sort_key, entry['folder_index'], entry['abs_path'], parent_id)
         return self.encode_didl(root), len(selected), len(entries)
 
-    def _add_entry(self, root, folder_index, abs_path, parent_id):
+    def _add_entry(self, root, folder_index, abs_path, parent_id, object_id=None):
         if os.path.isdir(abs_path):
-            self._add_container(root, folder_index, abs_path, parent_id)
+            self._add_container(root, folder_index, abs_path, parent_id, object_id=object_id)
         else:
-            self._add_item(root, folder_index, abs_path, parent_id)
+            self._add_item(root, folder_index, abs_path, parent_id, object_id=object_id)
 
-    def _add_container(self, root, folder_index, abs_path, parent_id):
+    def _add_context_entry(self, root, source, sort_key, folder_index, abs_path, parent_id):
+        self._add_entry(
+            root,
+            folder_index,
+            abs_path,
+            parent_id,
+            object_id=self._context_object_id(source, sort_key, folder_index, abs_path),
+        )
+
+    def _add_virtual_container(self, root, object_id, parent_id, title, child_count):
         container = SubElement(
             root,
             'container',
             {
-                'id': self._object_id_for_path(folder_index, abs_path),
+                'id': object_id,
+                'parentID': parent_id,
+                'restricted': '1',
+                'searchable': '1',
+                'childCount': str(child_count),
+            },
+        )
+        SubElement(container, 'dc:title').text = title
+        SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
+
+    def _add_container(self, root, folder_index, abs_path, parent_id, object_id=None):
+        container = SubElement(
+            root,
+            'container',
+            {
+                'id': object_id or self._object_id_for_path(folder_index, abs_path),
                 'parentID': parent_id,
                 'restricted': '1',
                 'searchable': '1',
@@ -294,7 +424,7 @@ class ContentDirectoryHandler:
         SubElement(container, 'dc:title').text = os.path.basename(abs_path)
         SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
 
-    def _add_item(self, root, folder_index, abs_path, parent_id):
+    def _add_item(self, root, folder_index, abs_path, parent_id, object_id=None):
         ext = os.path.splitext(abs_path)[1].lower()
         mime_type = ALL_EXTENSIONS.get(ext)
         if not mime_type:
@@ -307,7 +437,7 @@ class ContentDirectoryHandler:
             root,
             'item',
             {
-                'id': self._object_id_for_path(folder_index, abs_path),
+                'id': object_id or self._object_id_for_path(folder_index, abs_path),
                 'parentID': parent_id,
                 'restricted': '1',
                 **({'dlna:dlnaManaged': '00000004'} if is_samsung else {}),
@@ -405,6 +535,32 @@ class ContentDirectoryHandler:
     def _folder_object_id(self, folder_index):
         return f'folder-{folder_index}'
 
+    def _share_container_id(self, folder_index):
+        return f'share-{folder_index}'
+
+    def _merged_container_id(self):
+        return 'merged'
+
+    def _sort_container_id(self, source, sort_key, folder_index=None):
+        if source == 'merged':
+            return f'{self._merged_container_id()}/sort/{sort_key}'
+        return f'{self._share_container_id(folder_index)}/sort/{sort_key}'
+
+    def _share_title(self, shared_folder, folder_index):
+        normalized = os.path.normpath(shared_folder)
+        name = os.path.basename(normalized)
+        return name or f'Shared Path {folder_index + 1}'
+
+    def _context_object_id(self, source, sort_key, folder_index, abs_path):
+        shared_root = self.http_server.media_folders[folder_index]
+        relative_path = os.path.relpath(abs_path, shared_root).replace(os.sep, '/')
+        if source == 'merged':
+            return (
+                f'{self._sort_container_id(source, sort_key)}/path/'
+                f'{folder_index}/{quote(relative_path, safe="/")}'
+            )
+        return f'{self._sort_container_id(source, sort_key, folder_index)}/path/{quote(relative_path, safe="/")}'
+
     def _object_id_for_path(self, folder_index, abs_path):
         shared_root = self.http_server.media_folders[folder_index]
         relative_path = os.path.relpath(abs_path, shared_root).replace(os.sep, '/')
@@ -413,6 +569,106 @@ class ContentDirectoryHandler:
         return f'{self._folder_object_id(folder_index)}/{quote(relative_path, safe="/")}'
 
     def _resolve_object_id(self, object_id):
+        if object_id == self._merged_container_id():
+            return {
+                'kind': 'merged',
+                'source': 'merged',
+                'object_id': object_id,
+                'title': 'All Shared Paths',
+            }
+
+        if object_id.startswith('share-') and '/sort/' not in object_id:
+            try:
+                folder_index = int(object_id.split('-', 1)[1])
+            except ValueError:
+                return None
+            if not self._is_valid_folder_index(folder_index):
+                return None
+            return {
+                'kind': 'share',
+                'source': 'share',
+                'object_id': object_id,
+                'folder_index': folder_index,
+                'title': self._share_title(self.http_server.media_folders[folder_index], folder_index),
+            }
+
+        sort_context = self._resolve_sort_context(object_id)
+        if sort_context is not None:
+            return sort_context
+
+        legacy = self._resolve_legacy_object_id(object_id)
+        if legacy is not None:
+            return legacy
+        return None
+
+    def _resolve_sort_context(self, object_id):
+        parts = object_id.split('/')
+        if len(parts) < 3 or parts[1] != 'sort':
+            return None
+
+        source_token = parts[0]
+        sort_key = parts[2]
+        if sort_key not in {key for key, _ in SORT_OPTIONS}:
+            return None
+
+        if source_token == self._merged_container_id():
+            source = 'merged'
+            folder_index = None
+            parent_id = self._merged_container_id()
+        elif source_token.startswith('share-'):
+            source = 'share'
+            try:
+                folder_index = int(source_token.split('-', 1)[1])
+            except ValueError:
+                return None
+            if not self._is_valid_folder_index(folder_index):
+                return None
+            parent_id = self._share_container_id(folder_index)
+        else:
+            return None
+
+        if len(parts) == 3:
+            return {
+                'kind': 'sort',
+                'object_id': object_id,
+                'source': source,
+                'sort_key': sort_key,
+                'folder_index': folder_index,
+                'parent_id': parent_id,
+                'title': self._sort_title(sort_key),
+            }
+
+        if len(parts) < 5 or parts[3] != 'path':
+            return None
+
+        if source == 'merged':
+            try:
+                entry_folder_index = int(parts[4])
+            except ValueError:
+                return None
+            if not self._is_valid_folder_index(entry_folder_index):
+                return None
+            encoded_relative = '/'.join(parts[5:])
+            folder_index = entry_folder_index
+        else:
+            encoded_relative = '/'.join(parts[4:])
+
+        if not encoded_relative:
+            return None
+
+        abs_path = self._resolve_relative_path(folder_index, encoded_relative, object_id)
+        if abs_path is None:
+            return None
+        return {
+            'kind': 'entry',
+            'object_id': object_id,
+            'source': source,
+            'sort_key': sort_key,
+            'folder_index': folder_index,
+            'abs_path': abs_path,
+        }
+
+    def _resolve_legacy_object_id(self, object_id):
         if not object_id.startswith('folder-'):
             return None
         folder_token, _, encoded_relative = object_id.partition('/')
@@ -420,11 +676,32 @@ class ContentDirectoryHandler:
             folder_index = int(folder_token.split('-', 1)[1])
         except (IndexError, ValueError):
             return None
-        if folder_index < 0 or folder_index >= len(self.http_server.media_folders):
+        if not self._is_valid_folder_index(folder_index):
             return None
-        shared_root = self.http_server.media_folders[folder_index]
         if not encoded_relative:
-            return folder_index, shared_root
+            return {
+                'kind': 'sort',
+                'object_id': self._sort_container_id('share', 'default', folder_index),
+                'source': 'share',
+                'sort_key': 'default',
+                'folder_index': folder_index,
+                'parent_id': self._share_container_id(folder_index),
+                'title': self._sort_title('default'),
+            }
+        abs_path = self._resolve_relative_path(folder_index, encoded_relative, object_id)
+        if abs_path is None:
+            return None
+        return {
+            'kind': 'entry',
+            'object_id': self._context_object_id('share', 'default', folder_index, abs_path),
+            'source': 'share',
+            'sort_key': 'default',
+            'folder_index': folder_index,
+            'abs_path': abs_path,
+        }
+
+    def _resolve_relative_path(self, folder_index, encoded_relative, object_id):
+        shared_root = self.http_server.media_folders[folder_index]
         relative_path = os.path.normpath(unquote(encoded_relative))
         abs_path = os.path.abspath(os.path.join(shared_root, relative_path))
         shared_root_abs = os.path.abspath(shared_root)
@@ -434,17 +711,88 @@ class ContentDirectoryHandler:
         if not os.path.exists(abs_path):
             self.logger.warning('Rejected object_id=%s because path does not exist: %s', object_id, abs_path)
             return None
-        return folder_index, abs_path
+        return abs_path
 
-    def _parent_id_for_path(self, folder_index, abs_path):
-        shared_root = os.path.abspath(self.http_server.media_folders[folder_index])
-        abs_path = os.path.abspath(abs_path)
-        if abs_path == shared_root:
-            return '0'
+    def _is_valid_folder_index(self, folder_index):
+        return 0 <= folder_index < len(self.http_server.media_folders)
+
+    def _collect_sort_entries(self, resolved):
+        entries = []
+        for sort_key, title in SORT_OPTIONS:
+            sort_resolved = dict(resolved)
+            sort_resolved['kind'] = 'sort'
+            sort_resolved['sort_key'] = sort_key
+            sort_resolved['object_id'] = self._sort_container_id(resolved['kind'], sort_key, resolved.get('folder_index'))
+            entries.append(
+                {
+                    'object_id': sort_resolved['object_id'],
+                    'title': title,
+                    'child_count': self._count_context_children(sort_resolved),
+                }
+            )
+        return entries
+
+    def _collect_context_entries(self, resolved):
+        entries = []
+        if resolved['source'] == 'merged':
+            for folder_index, shared_folder in enumerate(self.http_server.media_folders):
+                try:
+                    for entry in os.scandir(shared_folder):
+                        if self._is_visible_entry(entry.path, entry.is_dir()):
+                            entries.append({'folder_index': folder_index, 'abs_path': entry.path})
+                except OSError as exc:
+                    self.logger.error(f'Error scanning root folder {shared_folder}: {exc}')
+        else:
+            shared_folder = self.http_server.media_folders[resolved['folder_index']]
+            try:
+                for entry in os.scandir(shared_folder):
+                    if self._is_visible_entry(entry.path, entry.is_dir()):
+                        entries.append({'folder_index': resolved['folder_index'], 'abs_path': entry.path})
+            except OSError as exc:
+                self.logger.error(f'Error scanning root folder {shared_folder}: {exc}')
+        return self._sort_context_entries(entries, resolved['sort_key'])
+
+    def _sort_context_entries(self, entries, sort_key):
+        if sort_key == 'date-desc':
+            return sorted(
+                entries,
+                key=lambda entry: (-self._safe_mtime(entry['abs_path']), os.path.basename(entry['abs_path']).lower()),
+            )
+        if sort_key == 'title':
+            return sorted(entries, key=lambda entry: os.path.basename(entry['abs_path']).lower())
+        return sorted(
+            entries,
+            key=lambda entry: (
+                not os.path.isdir(entry['abs_path']),
+                os.path.basename(entry['abs_path']).lower(),
+            ),
+        )
+
+    def _safe_mtime(self, abs_path):
+        try:
+            return os.path.getmtime(abs_path)
+        except OSError:
+            return 0
+
+    def _sort_title(self, sort_key):
+        for key, title in SORT_OPTIONS:
+            if key == sort_key:
+                return title
+        return sort_key
+
+    def _count_context_children(self, resolved):
+        if resolved['source'] == 'merged':
+            return sum(self._count_visible_children(shared_folder) for shared_folder in self.http_server.media_folders)
+        return self._count_visible_children(self.http_server.media_folders[resolved['folder_index']])
+
+    def _parent_id_for_resolved_entry(self, resolved):
+        shared_root = os.path.abspath(self.http_server.media_folders[resolved['folder_index']])
+        abs_path = os.path.abspath(resolved['abs_path'])
+        sort_parent_id = self._sort_container_id(resolved['source'], resolved['sort_key'], resolved['folder_index'])
         parent_path = os.path.dirname(abs_path)
         if parent_path == shared_root:
-            return '0'
-        return self._object_id_for_path(folder_index, parent_path)
+            return sort_parent_id
+        return self._context_object_id(resolved['source'], resolved['sort_key'], resolved['folder_index'], parent_path)
 
     def _count_visible_children(self, directory):
         count = 0
