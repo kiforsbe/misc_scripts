@@ -1,6 +1,7 @@
 import os
 import sys
 import socket
+import http.client
 import logging
 import time
 import uuid
@@ -96,6 +97,112 @@ def setup_logging():
     logger.last_request_time = time.time()
     
     return logger
+
+
+def parse_subscription_timeout(timeout_header, default_timeout=1800, max_timeout=86400):
+    if not timeout_header:
+        return default_timeout
+    value = timeout_header.strip().lower()
+    if value == 'second-infinite':
+        return max_timeout
+    if value.startswith('second-'):
+        try:
+            return max(1, min(int(value.split('-', 1)[1]), max_timeout))
+        except ValueError:
+            return default_timeout
+    return default_timeout
+
+
+def build_content_directory_event_xml(system_update_id):
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
+        f'<e:property><SystemUpdateID>{system_update_id}</SystemUpdateID></e:property>'
+        f'<e:property><ContainerUpdateIDs>0,{system_update_id}</ContainerUpdateIDs></e:property>'
+        '</e:propertyset>'
+    )
+
+
+def prune_expired_content_directory_subscribers(server):
+    lock = getattr(server, 'content_directory_subscription_lock', None)
+    subscribers = getattr(server, 'content_directory_subscribers', None)
+    if lock is None or subscribers is None:
+        return
+    now = time.time()
+    with lock:
+        expired_sids = [sid for sid, subscriber in subscribers.items() if subscriber['expires_at'] <= now]
+        for sid in expired_sids:
+            subscribers.pop(sid, None)
+
+
+def send_content_directory_notify(subscriber, event_xml):
+    parsed = urlparse(subscriber['callback_url'])
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        raise ValueError(f'Unsupported callback URL: {subscriber["callback_url"]}')
+
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    request_path = parsed.path or '/'
+    if parsed.query:
+        request_path = f'{request_path}?{parsed.query}'
+
+    body = event_xml.encode('utf-8')
+    headers = {
+        'HOST': parsed.netloc,
+        'CONTENT-TYPE': 'text/xml; charset="utf-8"',
+        'NT': 'upnp:event',
+        'NTS': 'upnp:propchange',
+        'SID': subscriber['sid'],
+        'SEQ': str(subscriber['seq']),
+        'CONTENT-LENGTH': str(len(body)),
+    }
+
+    connection = connection_cls(parsed.hostname, port, timeout=10)
+    try:
+        connection.request('NOTIFY', request_path, body=body, headers=headers)
+        response = connection.getresponse()
+        response.read()
+        if response.status < 200 or response.status >= 300:
+            raise RuntimeError(f'NOTIFY failed with status {response.status}')
+    finally:
+        connection.close()
+
+
+def notify_content_directory_subscribers(server):
+    prune_expired_content_directory_subscribers(server)
+    lock = getattr(server, 'content_directory_subscription_lock', None)
+    subscribers = getattr(server, 'content_directory_subscribers', None)
+    if lock is None or subscribers is None:
+        return 0
+
+    with lock:
+        snapshot = [dict(subscriber) for subscriber in subscribers.values()]
+
+    if not snapshot:
+        return 0
+
+    logger = logging.getLogger('DLNAServer')
+    event_xml = build_content_directory_event_xml(getattr(server, 'system_update_id', 1))
+    delivered = 0
+    failed_sids = []
+
+    for subscriber in snapshot:
+        try:
+            send_content_directory_notify(subscriber, event_xml)
+            delivered += 1
+            with lock:
+                current = subscribers.get(subscriber['sid'])
+                if current is not None:
+                    current['seq'] = (current['seq'] + 1) % (1 << 32)
+        except Exception as exc:
+            failed_sids.append(subscriber['sid'])
+            logger.warning('Failed ContentDirectory NOTIFY for %s: %s', subscriber['callback_url'], exc)
+
+    if failed_sids:
+        with lock:
+            for sid in failed_sids:
+                subscribers.pop(sid, None)
+    return delivered
 
 # Update DLNAServer to use resource monitoring
 class SOAPResponseHandler:
@@ -250,6 +357,80 @@ class DLNAServer(BaseHTTPRequestHandler):
             refresh_server_config(self.server)
         except Exception as exc:
             self.logger.warning('Config refresh check failed: %s', exc)
+
+    def _send_subscribe_response(self, sid, timeout_seconds):
+        self.send_response(200)
+        self.send_header('SID', sid)
+        self.send_header('TIMEOUT', f'Second-{timeout_seconds}')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def _handle_content_directory_subscribe(self):
+        prune_expired_content_directory_subscribers(self.server)
+        timeout_seconds = parse_subscription_timeout(self.headers.get('TIMEOUT'))
+        sid_header = self.headers.get('SID')
+        callback_header = self.headers.get('CALLBACK')
+        nt_header = self.headers.get('NT')
+        now = time.time()
+        lock = self.server.content_directory_subscription_lock
+        subscribers = self.server.content_directory_subscribers
+
+        if sid_header:
+            with lock:
+                subscriber = subscribers.get(sid_header)
+                if subscriber is None:
+                    self.send_error(412, 'Unknown SID')
+                    return
+                subscriber['expires_at'] = now + timeout_seconds
+            self._send_subscribe_response(sid_header, timeout_seconds)
+            return
+
+        if not callback_header or nt_header != 'upnp:event':
+            self.send_error(412, 'Missing CALLBACK or NT header')
+            return
+
+        callback_url = callback_header.strip()
+        if callback_url.startswith('<') and callback_url.endswith('>'):
+            callback_url = callback_url[1:-1]
+        parsed = urlparse(callback_url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            self.send_error(412, 'Invalid CALLBACK URL')
+            return
+
+        sid = f'uuid:{uuid.uuid4()}'
+        subscriber = {
+            'sid': sid,
+            'callback_url': callback_url,
+            'expires_at': now + timeout_seconds,
+            'seq': 0,
+        }
+        with lock:
+            subscribers[sid] = subscriber
+
+        self._send_subscribe_response(sid, timeout_seconds)
+        delivered = notify_content_directory_subscribers(self.server)
+        self.logger.info(
+            'Registered ContentDirectory subscriber sid=%s callback=%s delivered_initial=%s',
+            sid,
+            callback_url,
+            delivered,
+        )
+
+    def _handle_content_directory_unsubscribe(self):
+        sid_header = self.headers.get('SID')
+        if not sid_header:
+            self.send_error(412, 'Missing SID header')
+            return
+
+        with self.server.content_directory_subscription_lock:
+            removed = self.server.content_directory_subscribers.pop(sid_header, None)
+        if removed is None:
+            self.send_error(412, 'Unknown SID')
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def send_response(self, *args, **kwargs):
         """Override to track headers sent state"""
@@ -538,6 +719,21 @@ class DLNAServer(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_SUBSCRIBE(self):
+        self._detect_client_profile()
+        self.ensure_current_config()
+        if self.path == '/ContentDirectory/event':
+            self._handle_content_directory_subscribe()
+            return
+        self.send_error(501, 'Event subscription not implemented for this path')
+
+    def do_UNSUBSCRIBE(self):
+        self._detect_client_profile()
+        if self.path == '/ContentDirectory/event':
+            self._handle_content_directory_unsubscribe()
+            return
+        self.send_error(501, 'Event unsubscription not implemented for this path')
+
     def handle_connection_manager_control(self):
         action = self.headers.get('SOAPACTION', '').strip('"')
         if '#' in action:
@@ -810,7 +1006,8 @@ class DLNAServer(BaseHTTPRequestHandler):
         <stateVariable sendEvents="no"><name>A_ARG_TYPE_Count</name><dataType>ui4</dataType></stateVariable>
         <stateVariable sendEvents="no"><name>A_ARG_TYPE_SortCriteria</name><dataType>string</dataType></stateVariable>
         <stateVariable sendEvents="no"><name>A_ARG_TYPE_Result</name><dataType>string</dataType></stateVariable>
-        <stateVariable sendEvents="no"><name>SystemUpdateID</name><dataType>ui4</dataType><defaultValue>1</defaultValue></stateVariable>
+        <stateVariable sendEvents="yes"><name>SystemUpdateID</name><dataType>ui4</dataType><defaultValue>1</defaultValue></stateVariable>
+        <stateVariable sendEvents="yes"><name>ContainerUpdateIDs</name><dataType>string</dataType><defaultValue>0,1</defaultValue></stateVariable>
         <stateVariable sendEvents="no"><name>SortCapabilities</name><dataType>string</dataType><defaultValue>dc:title,dc:date</defaultValue></stateVariable>
         <stateVariable sendEvents="no"><name>SearchCapabilities</name><dataType>string</dataType><defaultValue>dc:title,upnp:class</defaultValue></stateVariable>
     </serviceStateTable>
@@ -1231,6 +1428,7 @@ def refresh_server_config(server, force=False):
         return False
 
     logger = logging.getLogger('DLNAServer')
+    should_notify = False
     with config_lock:
         try:
             stat_result = os.stat(config_path)
@@ -1261,11 +1459,16 @@ def refresh_server_config(server, force=False):
             len(playlists),
             server.system_update_id,
         )
-        if previous_signature is not None:
-            logger.info(
-                'Config changed but no ContentDirectory event subscribers are implemented; clients must detect updates via browsing or GetSystemUpdateID.'
-            )
-        return True
+        should_notify = previous_signature is not None
+
+    if should_notify:
+        delivered = notify_content_directory_subscribers(server)
+        logger.info(
+            'ContentDirectory update notifications delivered=%s for system_update_id=%s',
+            delivered,
+            getattr(server, 'system_update_id', 1),
+        )
+    return True
 
 def start_server(config):
     """Start the DLNA media server with Windows compatibility"""
@@ -1304,6 +1507,8 @@ def start_server(config):
     server.config_path = os.path.abspath(config.get('_config_path', 'config.json'))
     server.config_signature = None
     server.system_update_id = 1
+    server.content_directory_subscribers = {}
+    server.content_directory_subscription_lock = threading.Lock()
     apply_runtime_state(server, media_folders, playlists)
     server.local_ip = local_ip
     server.device_name = device_name
