@@ -75,6 +75,13 @@ class ContentDirectoryHandler:
 
     def _handle_browse(self, post_data):
         params = self._parse_browse_request(post_data)
+        self.logger.info(
+            "Browse request object_id=%s flag=%s start=%s count=%s",
+            params['object_id'],
+            params['browse_flag'],
+            params['starting_index'],
+            params['requested_count'],
+        )
         didl, number_returned, total_matches = self.generate_browse_didl(
             params['object_id'],
             params['browse_flag'],
@@ -86,6 +93,12 @@ class ContentDirectoryHandler:
             f'<NumberReturned>{number_returned}</NumberReturned>'
             f'<TotalMatches>{total_matches}</TotalMatches>'
             '<UpdateID>1</UpdateID>'
+        )
+        self.logger.info(
+            "Browse response object_id=%s returned=%s total=%s",
+            params['object_id'],
+            number_returned,
+            total_matches,
         )
         self.soap_handler.send_soap_response(body, 'Browse', self.CONTENT_DIRECTORY_NS)
 
@@ -133,6 +146,7 @@ class ContentDirectoryHandler:
 
         resolved = self._resolve_object_id(object_id)
         if resolved is None:
+            self.logger.warning('Browse requested unresolved object_id=%s', object_id)
             return self.encode_didl(root), 0, 0
 
         folder_index, abs_path = resolved
@@ -157,6 +171,12 @@ class ContentDirectoryHandler:
         )
 
     def _add_root_metadata(self, root):
+        total_children = 0
+        for shared_folder in self.http_server.media_folders:
+            total_children += self._count_visible_children(shared_folder)
+
+        self.logger.info('Root metadata reports %s visible children', total_children)
+
         container = SubElement(
             root,
             'container',
@@ -165,7 +185,7 @@ class ContentDirectoryHandler:
                 'parentID': '-1',
                 'restricted': '1',
                 'searchable': '1',
-                'childCount': str(len(self.http_server.media_folders)),
+                'childCount': str(total_children),
             },
         )
         SubElement(container, 'dc:title').text = 'Root'
@@ -173,28 +193,26 @@ class ContentDirectoryHandler:
         SubElement(container, 'upnp:storageUsed').text = '-1'
 
     def _browse_root_children(self, root, starting_index, requested_count):
-        folders = []
+        entries = []
         for index, shared_folder in enumerate(self.http_server.media_folders):
-            folder_name = os.path.basename(os.path.normpath(shared_folder)) or shared_folder
-            child_count = self._count_visible_children(shared_folder)
-            folders.append((index, folder_name, child_count))
+            try:
+                for entry in os.scandir(shared_folder):
+                    if self._is_visible_entry(entry.path, entry.is_dir()):
+                        entries.append((index, entry.path))
+            except OSError as exc:
+                self.logger.error(f'Error scanning root folder {shared_folder}: {exc}')
 
-        total = len(folders)
-        selected = self._slice_entries(folders, starting_index, requested_count)
-        for index, folder_name, child_count in selected:
-            container = SubElement(
-                root,
-                'container',
-                {
-                    'id': self._folder_object_id(index),
-                    'parentID': '0',
-                    'restricted': '1',
-                    'searchable': '1',
-                    'childCount': str(child_count),
-                },
-            )
-            SubElement(container, 'dc:title').text = folder_name
-            SubElement(container, 'upnp:class').text = 'object.container.storageFolder'
+        entries.sort(key=lambda item: os.path.basename(item[1]).lower())
+        total = len(entries)
+        selected = self._slice_entries(entries, starting_index, requested_count)
+        self.logger.info(
+            'Root children total=%s selected=%s preview=%s',
+            total,
+            len(selected),
+            [os.path.basename(path) for _, path in selected[:5]],
+        )
+        for folder_index, entry_path in selected:
+            self._add_entry(root, folder_index, entry_path, '0')
         return self.encode_didl(root), len(selected), total
 
     def _browse_directory_children(self, root, folder_index, abs_path, parent_id, starting_index, requested_count):
@@ -208,6 +226,13 @@ class ContentDirectoryHandler:
             return self.encode_didl(root), 0, 0
 
         selected = self._slice_entries(entries, starting_index, requested_count)
+        self.logger.info(
+            'Directory children path=%s total=%s selected=%s preview=%s',
+            abs_path,
+            len(entries),
+            len(selected),
+            [os.path.basename(path) for path in selected[:5]],
+        )
         for entry_path in selected:
             self._add_entry(root, folder_index, entry_path, parent_id)
         return self.encode_didl(root), len(selected), len(entries)
@@ -305,7 +330,7 @@ class ContentDirectoryHandler:
         return str(value or '')
 
     def _folder_object_id(self, folder_index):
-        return f'folder::{folder_index}'
+        return f'folder-{folder_index}'
 
     def _object_id_for_path(self, folder_index, abs_path):
         shared_root = self.http_server.media_folders[folder_index]
@@ -315,11 +340,11 @@ class ContentDirectoryHandler:
         return f'{self._folder_object_id(folder_index)}/{quote(relative_path, safe="/")}'
 
     def _resolve_object_id(self, object_id):
-        if not object_id.startswith('folder::'):
+        if not object_id.startswith('folder-'):
             return None
         folder_token, _, encoded_relative = object_id.partition('/')
         try:
-            folder_index = int(folder_token.split('::', 1)[1])
+            folder_index = int(folder_token.split('-', 1)[1])
         except (IndexError, ValueError):
             return None
         if folder_index < 0 or folder_index >= len(self.http_server.media_folders):
@@ -331,8 +356,10 @@ class ContentDirectoryHandler:
         abs_path = os.path.abspath(os.path.join(shared_root, relative_path))
         shared_root_abs = os.path.abspath(shared_root)
         if os.path.commonpath([shared_root_abs, abs_path]) != shared_root_abs:
+            self.logger.warning('Rejected object_id=%s because path escaped share root', object_id)
             return None
         if not os.path.exists(abs_path):
+            self.logger.warning('Rejected object_id=%s because path does not exist: %s', object_id, abs_path)
             return None
         return folder_index, abs_path
 
@@ -343,7 +370,7 @@ class ContentDirectoryHandler:
             return '0'
         parent_path = os.path.dirname(abs_path)
         if parent_path == shared_root:
-            return self._folder_object_id(folder_index)
+            return '0'
         return self._object_id_for_path(folder_index, parent_path)
 
     def _count_visible_children(self, directory):

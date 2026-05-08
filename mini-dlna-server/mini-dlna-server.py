@@ -3,7 +3,6 @@ import sys
 import socket
 import logging
 import time
-import signal
 import uuid
 import threading
 from urllib.parse import unquote, quote, urlparse, parse_qs
@@ -28,7 +27,10 @@ from contentdirectoryhandler import (
 
 # DLNA/UPnP Constants
 DEVICE_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())
-DEVICE_NAME = f"Python Media Server ({socket.gethostname()})"
+
+
+def build_device_name(instance_id):
+    return f"Python Media Server [{instance_id}] ({socket.gethostname()})"
 
 def setup_logging():
     """Set up logging configuration with both file and console handlers"""
@@ -62,7 +64,7 @@ def setup_logging():
 
     # Console with warnings and errors only
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.WARNING)
+    console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(
         logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     )
@@ -570,7 +572,8 @@ class DLNAServer(BaseHTTPRequestHandler):
             # Add device information
             device = SubElement(root, 'device')
             SubElement(device, 'deviceType').text = 'urn:schemas-upnp-org:device:MediaServer:1'
-            SubElement(device, 'friendlyName').text = DEVICE_NAME
+            friendly_name = getattr(self.server, 'device_name', build_device_name('unknown'))
+            SubElement(device, 'friendlyName').text = friendly_name
             SubElement(device, 'manufacturer').text = 'Python DLNA'
             SubElement(device, 'manufacturerURL').text = 'http://example.com'
             SubElement(device, 'modelDescription').text = 'Python DLNA Media Server'
@@ -1032,6 +1035,8 @@ def load_config():
 def start_server(config):
     """Start the DLNA media server with Windows compatibility"""
     logger = setup_logging()
+    instance_id = time.strftime('%H%M%S')
+    device_name = build_device_name(instance_id)
 
     media_folders = config.get('shared_paths', [])
     if not media_folders:
@@ -1066,17 +1071,18 @@ def start_server(config):
 
     server.media_folders = media_folders
     server.local_ip = local_ip
+    server.device_name = device_name
     server.resource_monitor = ResourceMonitor()  # Initialize resource monitor
     
     # Start SSDP server in a separate thread
-    ssdp_server = SSDPServer((local_ip, port), DEVICE_UUID, DEVICE_NAME)
+    ssdp_server = SSDPServer((local_ip, port), DEVICE_UUID, device_name)
     ssdp_thread = threading.Thread(target=ssdp_server.start, name="SSDPServerThread")
     ssdp_thread.daemon = True
     ssdp_thread.start()
 
     shutdown_requested = False
 
-    def cleanup_and_exit(exit_code=0):
+    def cleanup_server():
         nonlocal shutdown_requested
         if shutdown_requested:
             return
@@ -1084,33 +1090,22 @@ def start_server(config):
         logger.info("Shutting down server...")
         ssdp_server.stop()
         ssdp_thread.join(timeout=3.0)
-        server.shutdown()
         server.server_close()
         logger.info("HTTP server closed.")
-        raise SystemExit(exit_code)
-
-    def handle_signal(signum, _frame):
-        logger.info(f"Received signal {signum}, stopping services")
-        cleanup_and_exit(0)
-
-    previous_sigint = signal.getsignal(signal.SIGINT)
-    previous_sigterm = signal.getsignal(signal.SIGTERM)
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
 
     try:
         logger.info(f"DLNA server started at http://{local_ip}:{port}")
+        logger.info(f"Device name: {device_name}")
         logger.info(f"Serving media from: {', '.join(server.media_folders)}") # Access via server instance
         logger.info("Press Ctrl+C to stop the server")
         server.serve_forever()
     except KeyboardInterrupt:
-        cleanup_and_exit(0)
+        cleanup_server()
+        sys.exit(0)
     except Exception as e:
         logger.critical(f"Critical error in main server loop: {e}", exc_info=True)
-        cleanup_and_exit(1)
-    finally:
-        signal.signal(signal.SIGINT, previous_sigint)
-        signal.signal(signal.SIGTERM, previous_sigterm)
+        cleanup_server()
+        sys.exit(1)
 
 if __name__ == "__main__":
     config = load_config()
