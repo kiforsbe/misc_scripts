@@ -101,6 +101,8 @@ class ContentDirectoryHandler:
             number_returned,
             total_matches,
         )
+        if params['browse_flag'] == 'BrowseMetadata' and params['object_id'] != '0':
+            self.logger.info('Browse metadata DIDL for %s: %s', params['object_id'], didl)
         self.soap_handler.send_soap_response(body, 'Browse', self.CONTENT_DIRECTORY_NS)
 
     def _send_simple_response(self, action_name, body):
@@ -315,9 +317,24 @@ class ContentDirectoryHandler:
             res.set('resolution', resolution)
 
         if ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS:
+            thumbnail_info = self._thumbnail_info(folder_index, abs_path)
+            thumbnail_url = thumbnail_info['url']
+
+            thumbnail_res = SubElement(item, 'res')
+            thumbnail_res.text = thumbnail_url
+            thumbnail_res.set('protocolInfo', self._thumbnail_protocol_info())
+            thumbnail_res.set('dlna:profileID', 'JPEG_TN')
+            if thumbnail_info['size'] is not None:
+                thumbnail_res.set('size', str(thumbnail_info['size']))
+            if thumbnail_info['resolution'] is not None:
+                thumbnail_res.set('resolution', thumbnail_info['resolution'])
+
             album_art = SubElement(item, 'upnp:albumArtURI')
             album_art.set('dlna:profileID', 'JPEG_TN')
-            album_art.text = f'{self._media_url(folder_index, abs_path)}?thumbnail=true'
+            album_art.text = thumbnail_url
+
+            icon = SubElement(item, 'upnp:icon')
+            icon.text = thumbnail_url
 
         self._add_audio_metadata(abs_path, item)
 
@@ -428,6 +445,37 @@ class ContentDirectoryHandler:
         quoted_path = quote(relative_path, safe='/')
         return f'http://{self.http_server.local_ip}:{self.http_server.server_port}/media/{folder_index}/{quoted_path}'
 
+    def _thumbnail_url(self, folder_index, abs_path):
+        shared_root = self.http_server.media_folders[folder_index]
+        relative_path = os.path.relpath(abs_path, shared_root).replace(os.sep, '/')
+        quoted_path = quote(relative_path, safe='/')
+        return f'http://{self.http_server.local_ip}:{self.http_server.server_port}/thumbnails/{folder_index}/{quoted_path}.jpg'
+
+    def _thumbnail_info(self, folder_index, abs_path):
+        info = {
+            'url': self._thumbnail_url(folder_index, abs_path),
+            'size': None,
+            'resolution': None,
+        }
+        generator = getattr(self.http_server, 'thumbnail_generator', None)
+        if generator is None:
+            return info
+        try:
+            thumbnail_path, _ = generator.ensure_static_thumbnail(abs_path, output_extension='jpg', verbose=0)
+            if not thumbnail_path or not os.path.exists(thumbnail_path):
+                return info
+            info['size'] = os.path.getsize(thumbnail_path)
+            try:
+                from PIL import Image
+
+                with Image.open(thumbnail_path) as image:
+                    info['resolution'] = f'{image.width}x{image.height}'
+            except Exception as exc:
+                self.logger.debug('Could not inspect thumbnail dimensions for %s: %s', abs_path, exc)
+        except Exception as exc:
+            self.logger.debug('Could not prepare thumbnail metadata for %s: %s', abs_path, exc)
+        return info
+
     def _upnp_class_for_extension(self, ext):
         if ext in VIDEO_EXTENSIONS:
             return 'object.item.videoItem.movie'
@@ -454,6 +502,13 @@ class ContentDirectoryHandler:
             f'http-get:*:{mime_type}:'
             f'DLNA.ORG_PN={profile};DLNA.ORG_OP=01;DLNA.ORG_CI=0;'
             'DLNA.ORG_FLAGS=01700000000000000000000000000000'
+        )
+
+    def _thumbnail_protocol_info(self):
+        return (
+            'http-get:*:image/jpeg:'
+            'DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=0;'
+            'DLNA.ORG_FLAGS=00f00000000000000000000000000000'
         )
 
     def get_media_duration(self, file_path):

@@ -15,6 +15,11 @@ import json
 import argparse
 import re
 from mutagen import File
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from video_thumbnail_generator import VideoThumbnailGenerator
 from network_utils import NetworkUtils
 from ssdpserver import SSDPServer
 from resourcemonitor import ResourceMonitor
@@ -132,10 +137,6 @@ class DLNAErrorHandler:
                 time.sleep(1)
 
 class DLNAServer(BaseHTTPRequestHandler):
-    # Add thumbnail cache as class variable
-    thumbnail_cache = {}
-    thumbnail_cache_size = 100  # Maximum number of cached thumbnails
-
     def __init__(self, request, client_address, server):
         # Initialize logger first
         self.logger = logging.getLogger('DLNAServer')
@@ -155,6 +156,14 @@ class DLNAServer(BaseHTTPRequestHandler):
         self.soap_handler = SOAPResponseHandler(self)
         self.error_handler = DLNAErrorHandler(self.logger)
         self.content_handler = ContentDirectoryHandler(self)
+        if not hasattr(server, 'thumbnail_generator'):
+            server.thumbnail_generator = VideoThumbnailGenerator(
+                thumbnail_dir=str(Path(__file__).resolve().parent / 'cache' / 'thumbnails'),
+                max_height=320,
+                max_width=320,
+                min_duration=300.0,
+            )
+        self.thumbnail_generator = server.thumbnail_generator
 
         # Call parent constructor last
         super().__init__(request, client_address, server)
@@ -327,6 +336,21 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.send_content_directory()
             elif clean_path == '/ConnectionManager.xml':
                 self.send_connection_manager()
+            elif clean_path.startswith('/thumbnails/'):
+                thumbnail_path = unquote(clean_path[len('/thumbnails/'):])
+                if thumbnail_path.lower().endswith('.jpg'):
+                    thumbnail_path = thumbnail_path[:-4]
+                absolute_path = self.get_file_path(thumbnail_path)
+                if absolute_path is None:
+                    self.send_error(404, 'File not found')
+                    return
+
+                extension = os.path.splitext(absolute_path)[1].lower()
+                if extension not in VIDEO_EXTENSIONS and extension not in IMAGE_EXTENSIONS:
+                    self.send_error(415, 'Unsupported thumbnail media type')
+                    return
+                self.handle_thumbnail_request(absolute_path, is_video=extension in VIDEO_EXTENSIONS)
+                return
             elif clean_path.startswith('/media/'):
                 media_path = unquote(clean_path[len('/media/'):])
                 absolute_path = self.get_file_path(media_path)
@@ -336,6 +360,9 @@ class DLNAServer(BaseHTTPRequestHandler):
 
                 if query.get('thumbnail', ['false'])[0].lower() == 'true':
                     extension = os.path.splitext(absolute_path)[1].lower()
+                    if extension not in VIDEO_EXTENSIONS and extension not in IMAGE_EXTENSIONS:
+                        self.send_error(415, 'Unsupported thumbnail media type')
+                        return
                     self.handle_thumbnail_request(absolute_path, is_video=extension in VIDEO_EXTENSIONS)
                     return
 
@@ -359,6 +386,23 @@ class DLNAServer(BaseHTTPRequestHandler):
         try:
             parsed_path = urlparse(self.path)
             clean_path = parsed_path.path
+            query = parse_qs(parsed_path.query)
+
+            if clean_path.startswith('/thumbnails/'):
+                thumbnail_path = unquote(clean_path[len('/thumbnails/'):])
+                if thumbnail_path.lower().endswith('.jpg'):
+                    thumbnail_path = thumbnail_path[:-4]
+                abs_path = self.get_file_path(thumbnail_path)
+                if abs_path is None:
+                    self.send_error(404, 'File not found')
+                    return
+
+                ext = os.path.splitext(abs_path)[1].lower()
+                if ext not in VIDEO_EXTENSIONS and ext not in IMAGE_EXTENSIONS:
+                    self.send_error(415, 'Unsupported thumbnail media type')
+                    return
+                self.send_thumbnail_headers(abs_path, is_video=ext in VIDEO_EXTENSIONS)
+                return
 
             if clean_path.startswith('/media/'):
                 media_path = unquote(clean_path[len('/media/'):])
@@ -366,6 +410,12 @@ class DLNAServer(BaseHTTPRequestHandler):
                 
                 if abs_path:
                     ext = os.path.splitext(abs_path)[1].lower()
+                    if query.get('thumbnail', ['false'])[0].lower() == 'true':
+                        if ext not in VIDEO_EXTENSIONS and ext not in IMAGE_EXTENSIONS:
+                            self.send_error(415, 'Unsupported thumbnail media type')
+                            return
+                        self.send_thumbnail_headers(abs_path, is_video=ext in VIDEO_EXTENSIONS)
+                        return
                     content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
                     
                     if content_type:
@@ -869,66 +919,41 @@ class DLNAServer(BaseHTTPRequestHandler):
             if not self.headers_sent:
                 self.send_error(500, "Error serving media file")
 
-    def handle_thumbnail_request(self, file_path, is_video=False):
-        """Generate and serve thumbnails for videos and images with caching"""
-        try:
-            # Check cache first
-            cache_key = f"{file_path}_{is_video}"
-            cached_thumb = self.thumbnail_cache.get(cache_key)
-            
-            if cached_thumb:
-                self.send_response(200)
-                self.send_header('Content-Type', 'image/jpeg')
-                self.send_header('Content-Length', str(len(cached_thumb)))
-                self.send_header('Cache-Control', 'max-age=3600')  # Cache for 1 hour
-                self.end_headers()
-                self.wfile.write(cached_thumb)
-                return
+    def send_thumbnail_headers(self, file_path, is_video=False):
+        thumbnail_path, cache_hit = self.thumbnail_generator.ensure_static_thumbnail(
+            file_path,
+            output_extension='jpg',
+            verbose=0,
+        )
+        if not thumbnail_path:
+            raise FileNotFoundError(f'No thumbnail generated for {file_path}')
+        if self.resource_monitor:
+            self.resource_monitor.track_cache('thumbnail', hit=cache_hit)
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/jpeg')
+        self.send_header('Content-Length', str(os.path.getsize(thumbnail_path)))
+        self.send_header('Cache-Control', 'max-age=86400')
+        self.send_header('Last-Modified', self.date_time_string(os.path.getmtime(thumbnail_path)))
+        self.end_headers()
 
-            from PIL import Image
-            import io
-            
-            if is_video:
-                try:
-                    import ffmpeg
-                    out, _ = (
-                        ffmpeg
-                        .input(file_path, ss="00:00:01")
-                        .filter('scale', 320, -1)
-                        .output('pipe:', vframes=1, format='image2', vcodec='mjpeg')
-                        .run(capture_stdout=True, capture_stderr=True)
-                    )
-                    image = Image.open(io.BytesIO(out))
-                except Exception as e:
-                    self.logger.error(f"Error generating video thumbnail: {e}")
-                    self.send_error(500, "Could not generate thumbnail")
-                    return
-            else:
-                image = Image.open(file_path)
-            
-            image.thumbnail((320, 320), Image.Resampling.LANCZOS)
-            
-            if image.mode in ('RGBA', 'LA'):
-                background = Image.new('RGB', image.size, (255, 255, 255))
-                background.paste(image, mask=image.split()[-1])
-                image = background
-            elif image.mode != 'RGB':
-                image = image.convert('RGB')
-                
-            thumb_io = io.BytesIO()
-            image.save(thumb_io, 'JPEG', quality=85)
-            thumb_data = thumb_io.getvalue()
-            
-            # Cache the thumbnail
-            if len(self.thumbnail_cache) >= self.thumbnail_cache_size:
-                # Remove oldest item if cache is full
-                self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
-            self.thumbnail_cache[cache_key] = thumb_data
-            
+    def handle_thumbnail_request(self, file_path, is_video=False):
+        """Generate and serve thumbnails for videos and images with disk caching"""
+        try:
+            thumbnail_path, cache_hit = self.thumbnail_generator.ensure_static_thumbnail(
+                file_path,
+                output_extension='jpg',
+                verbose=0,
+            )
+            if not thumbnail_path:
+                raise FileNotFoundError(f'No thumbnail generated for {file_path}')
+            thumb_data = Path(thumbnail_path).read_bytes()
+            if self.resource_monitor:
+                self.resource_monitor.track_cache('thumbnail', hit=cache_hit)
             self.send_response(200)
             self.send_header('Content-Type', 'image/jpeg')
             self.send_header('Content-Length', str(len(thumb_data)))
-            self.send_header('Cache-Control', 'max-age=3600')
+            self.send_header('Cache-Control', 'max-age=86400')
+            self.send_header('Last-Modified', self.date_time_string(os.path.getmtime(thumbnail_path)))
             self.end_headers()
             self.wfile.write(thumb_data)
             
@@ -1100,6 +1125,7 @@ def start_server(config):
         logger.info("HTTP server closed.")
 
     try:
+        print(f"Server identity: {device_name} at http://{local_ip}:{port}", flush=True)
         logger.info(f"DLNA server started at http://{local_ip}:{port}")
         logger.info(f"Device name: {device_name}")
         logger.info(f"Serving media from: {', '.join(server.media_folders)}") # Access via server instance

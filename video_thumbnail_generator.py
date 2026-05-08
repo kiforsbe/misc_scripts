@@ -20,7 +20,10 @@ import subprocess
 import tempfile
 import logging
 import time
+from io import BytesIO
 from typing import List, Dict, Any, Optional
+
+from PIL import Image
 
 try:
     from tqdm import tqdm
@@ -45,9 +48,12 @@ except ImportError:
 
 class VideoThumbnailGenerator:
     """Generates and manages video thumbnails with caching support."""
+
+    IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
     
-    def __init__(self, thumbnail_dir: Optional[str] = None, max_height: int = 480, 
-                 min_duration: float = 300.0, skip_cbr: bool = False):
+    def __init__(self, thumbnail_dir: Optional[str] = None, max_height: int = 480,
+                 min_duration: float = 300.0, skip_cbr: bool = False,
+                 max_width: Optional[int] = None):
         """
         Initialize the thumbnail generator.
         
@@ -56,6 +62,7 @@ class VideoThumbnailGenerator:
             max_height: Maximum height for thumbnails in pixels
             min_duration: Minimum video duration in seconds to generate thumbnails (default: 300 = 5 minutes)
             skip_cbr: Whether to skip CBR (RAR) comic archive processing
+            max_width: Optional maximum thumbnail width in pixels
         """
         self.logger = logging.getLogger(__name__)
         if thumbnail_dir is None:
@@ -64,17 +71,72 @@ class VideoThumbnailGenerator:
             self.thumbnail_dir = os.path.expanduser(thumbnail_dir)
             
         self.max_height = max_height
+        self.max_width = max_width
         self.min_duration = min_duration
         self.skip_cbr = skip_cbr
         os.makedirs(self.thumbnail_dir, exist_ok=True)
     
-    def _get_thumbnail_paths(self, video_path: str) -> tuple[str, str]:
+    def _thumbnail_cache_key(self, video_path: str) -> str:
+        """Build a cache key from the full source path and file state."""
+        absolute_path = os.path.abspath(video_path)
+        stat = os.stat(absolute_path)
+        source = f"{absolute_path}|{stat.st_mtime_ns}|{stat.st_size}"
+        return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    def _is_image_file(self, file_path: str) -> bool:
+        return os.path.splitext(str(file_path))[1].lower() in self.IMAGE_EXTENSIONS
+
+    def _get_thumbnail_paths(self, video_path: str, static_extension: str = 'webp',
+                             animated_extension: str = 'webp') -> tuple[str, str]:
         """Get the static and animated thumbnail paths for a video file."""
-        filename = os.path.basename(video_path)
-        h = hashlib.sha256(filename.encode("utf-8")).hexdigest()
-        static_thumb = os.path.join(self.thumbnail_dir, f"{h}_static.webp")
-        animated_thumb = os.path.join(self.thumbnail_dir, f"{h}_video.webp")
+        h = self._thumbnail_cache_key(video_path)
+        static_thumb = os.path.join(self.thumbnail_dir, f"{h}_static.{static_extension.lstrip('.')}")
+        animated_thumb = os.path.join(self.thumbnail_dir, f"{h}_video.{animated_extension.lstrip('.')}")
         return static_thumb, animated_thumb
+
+    def _scale_filter(self) -> str:
+        if self.max_width is not None:
+            return f"scale={self.max_width}:{self.max_height}:force_original_aspect_ratio=decrease"
+        return f"scale=-2:{self.max_height}"
+
+    def _resize_image(self, image: Image.Image) -> Image.Image:
+        working_image = image.copy()
+
+        if self.max_width is not None:
+            working_image.thumbnail((self.max_width, self.max_height), Image.Resampling.LANCZOS)
+        else:
+            width, height = working_image.size
+            if height > self.max_height:
+                new_height = self.max_height
+                new_width = int(width * (new_height / height))
+                working_image = working_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        if working_image.mode in ('RGBA', 'LA'):
+            background = Image.new('RGB', working_image.size, (255, 255, 255))
+            background.paste(working_image, mask=working_image.split()[-1])
+            return background
+        if working_image.mode != 'RGB':
+            return working_image.convert('RGB')
+        return working_image
+
+    def _save_static_image(self, image: Image.Image, output_path: str) -> None:
+        output_ext = os.path.splitext(output_path)[1].lower()
+        resized = self._resize_image(image)
+        if output_ext in ('.jpg', '.jpeg'):
+            resized.save(output_path, 'JPEG', quality=85)
+        else:
+            resized.save(output_path, 'WEBP', quality=75)
+
+    def _generate_image_thumbnail(self, image_path: str, static_thumb_path: str,
+                                  verbose: int = 1) -> bool:
+        try:
+            with Image.open(image_path) as image:
+                self._save_static_image(image, static_thumb_path)
+            return True
+        except Exception as e:
+            if verbose >= 2:
+                print(f"Failed to generate image thumbnail for {image_path}: {e}")
+            return False
     
     def _get_video_duration(self, video_path: str, verbose: int = 1) -> Optional[float]:
         """Get video duration in seconds using ffprobe."""
@@ -95,11 +157,15 @@ class VideoThumbnailGenerator:
                                     duration: float, verbose: int = 1) -> bool:
         """Generate a static thumbnail at 20% into the video."""
         static_time = duration * 0.2
+        static_ext = os.path.splitext(static_thumb_path)[1].lower()
         static_cmd = [
             "ffmpeg", "-y", "-ss", str(static_time), "-i", video_path,
-            "-vframes", "1", "-vf", f"scale=-2:{self.max_height}", 
-            "-f", "webp", "-quality", "75", static_thumb_path
+            "-vframes", "1", "-vf", self._scale_filter(),
         ]
+        if static_ext in ('.jpg', '.jpeg'):
+            static_cmd.extend(["-f", "image2", "-q:v", "3", static_thumb_path])
+        else:
+            static_cmd.extend(["-f", "webp", "-quality", "75", static_thumb_path])
         try:
             subprocess.run(static_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             return True
@@ -128,7 +194,7 @@ class VideoThumbnailGenerator:
                     "-ss", str(t),
                     "-i", video_path,
                     "-vframes", "1",
-                    "-vf", f"scale=-2:{self.max_height}", 
+                    "-vf", self._scale_filter(),
                     "-f", "webp",
                     "-quality", "75",
                     frame_file
@@ -151,7 +217,7 @@ class VideoThumbnailGenerator:
                     #"-hwaccel", "auto", # Hardware acceleration does not seem to improve time here
                     "-framerate", "2",
                     "-i", os.path.join(tmpdir, "frame_%02d.webp"),
-                    "-vf", f"scale=-2:{self.max_height}",
+                    "-vf", self._scale_filter(),
                     "-loop", "0", 
                     "-quality", "75",
                     "-f", "webp",
@@ -177,7 +243,6 @@ class VideoThumbnailGenerator:
                                   force_regenerate: bool = False) -> Dict[str, Any]:
         """Generate thumbnail for comic book archive (CBR/CBZ)."""
         import zipfile
-        from io import BytesIO
         
         static_thumb, animated_thumb = self._get_thumbnail_paths(comic_path)
         static_exists = os.path.exists(static_thumb)
@@ -309,22 +374,8 @@ class VideoThumbnailGenerator:
                         }
             
             if image_data:
-                # Open image and resize
-                img = Image.open(BytesIO(image_data))
-                
-                # Calculate new dimensions maintaining aspect ratio
-                width, height = img.size
-                if height > self.max_height:
-                    new_height = self.max_height
-                    new_width = int(width * (new_height / height))
-                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                
-                # Convert to RGB if necessary (for WebP compatibility)
-                if img.mode not in ('RGB', 'RGBA'):
-                    img = img.convert('RGB')
-                
-                # Save as WebP
-                img.save(static_thumb, 'WEBP', quality=75)
+                with Image.open(BytesIO(image_data)) as img:
+                    self._save_static_image(img, static_thumb)
                 
                 if verbose >= 2:
                     print(f"Generated comic thumbnail: {static_thumb}")
@@ -422,6 +473,37 @@ class VideoThumbnailGenerator:
             "static_thumbnail": static_thumb if static_success else None,
             "animated_thumbnail": animated_thumb if animated_success else None
         }
+
+    def ensure_static_thumbnail(self, video_path: str, output_extension: str = 'webp',
+                                verbose: int = 1, force_regenerate: bool = False) -> tuple[Optional[str], bool]:
+        """Ensure a cached static thumbnail exists in the requested format."""
+        video_path_str = str(video_path)
+        static_thumb, _ = self._get_thumbnail_paths(
+            video_path_str,
+            static_extension=output_extension,
+            animated_extension='webp',
+        )
+
+        if not force_regenerate and os.path.exists(static_thumb):
+            return static_thumb, True
+
+        if self._is_image_file(video_path_str):
+            success = self._generate_image_thumbnail(video_path_str, static_thumb, verbose)
+            return (static_thumb if success else None), False
+
+        if video_path_str.lower().endswith(('.cbr', '.cbz')) and output_extension.lower() == 'webp':
+            result = self._generate_comic_thumbnail(video_path_str, verbose, force_regenerate)
+            static_result = result.get('static_thumbnail')
+            return (static_result if static_result else None), False
+
+        duration = self._get_video_duration(video_path_str, verbose)
+        if duration is None:
+            if verbose >= 1:
+                print(f"Invalid or missing duration for {video_path_str}")
+            return None, False
+
+        success = self._generate_static_thumbnail(video_path_str, static_thumb, duration, verbose)
+        return (static_thumb if success else None), False
     
     def generate_thumbnails_for_videos(self, video_paths, 
                                      verbose: int = 1, force_regenerate: bool = False,
