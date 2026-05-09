@@ -178,6 +178,38 @@ python imdb_title_query.py --show-schema title.episode
 #### Requires
 - No external dependencies required (uses only Python standard libraries)
 
+### plex_watch_status_transfer.py
+A CLI for transferring Plex watch history from one Plex library database to another, matching items by exact filename basename only. The user provides a source and target location, and the script discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then transfers watch history without relying on media paths.
+
+#### Features
+- Dry-run by default with JSON or CSV reporting of matched, unmatched, and planned mutations
+- Accepts source and target locations instead of requiring the full DB filename path
+- Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
+- Exact basename matching only; no partial filename matching
+- Optional source and target library section filters by library name
+- Conservative merge behavior for existing target history with optional overwrite or skip policies
+- Guarded write path that inspects the target `metadata_item_views` schema before inserting history rows
+- Apply mode blocks until Plex Media Server is no longer running
+
+#### Usage Examples
+```bash
+# Preview transfer results without writing changes
+python plex_watch_status_transfer.py --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --report transfer-report.json
+
+# Restrict transfer to named libraries and apply changes
+python plex_watch_status_transfer.py --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --apply
+
+# Export a CSV review report for exact-basename matches only
+python plex_watch_status_transfer.py --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --report transfer-report.csv
+```
+
+#### Notes
+- In apply mode the script waits until Plex Media Server has fully stopped before it starts writing.
+- Dry-run mode can be used while Plex is still running, but copied DBs are still safer.
+- If the provided location contains multiple matching DB files, the script refuses to guess and asks for a narrower path.
+- If multiple target records share the same basename, the tool uses secondary metadata to decide whether the match is safe enough to apply.
+- Depending on the Plex schema version, `--account-id` may be required for writes.
+
 ### media-to-mp3.py
 Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.
 
