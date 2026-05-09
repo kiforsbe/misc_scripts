@@ -1,26 +1,55 @@
 import os
 import sys
 import socket
+import http.client
 import logging
 import time
 import uuid
 import threading
 from urllib.parse import unquote, quote, urlparse, parse_qs
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from logging.handlers import RotatingFileHandler
 from xml.etree import ElementTree
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 import json
 import argparse
 import re
+from mutagen import File
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from video_thumbnail_generator import VideoThumbnailGenerator
 from network_utils import NetworkUtils
 from ssdpserver import SSDPServer
-from contentdirectoryhandler import ContentDirectoryHandler
+from resourcemonitor import ResourceMonitor
+from contentdirectoryhandler import (
+    ALL_EXTENSIONS,
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    ContentDirectoryHandler,
+)
 
 # DLNA/UPnP Constants
 DEVICE_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())
-DEVICE_NAME = f"Python Media Server ({socket.gethostname()})"
+
+
+def build_device_name(instance_id):
+    return f"Python Media Server [{instance_id}] ({socket.gethostname()})"
+
+
+def load_config_file(config_path):
+    try:
+        with open(config_path, 'r') as config_file:
+            return json.load(config_file)
+    except FileNotFoundError:
+        print(f"Configuration file not found: {config_path}")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing configuration file: {e}")
+        sys.exit(1)
 
 def setup_logging():
     """Set up logging configuration with both file and console handlers"""
@@ -41,13 +70,13 @@ def setup_logging():
         logging.Formatter('%(asctime)s - %(levelname)s - [%(threadName)s] %(message)s')
     )
 
-    # Regular log file with INFO and above
+    # Regular log file with warnings and above
     file_handler = RotatingFileHandler(
         log_dir / 'dlna_server.log',
         maxBytes=5*1024*1024,
         backupCount=5
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(logging.WARNING)
     file_handler.setFormatter(
         logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     )
@@ -68,6 +97,112 @@ def setup_logging():
     logger.last_request_time = time.time()
     
     return logger
+
+
+def parse_subscription_timeout(timeout_header, default_timeout=1800, max_timeout=86400):
+    if not timeout_header:
+        return default_timeout
+    value = timeout_header.strip().lower()
+    if value == 'second-infinite':
+        return max_timeout
+    if value.startswith('second-'):
+        try:
+            return max(1, min(int(value.split('-', 1)[1]), max_timeout))
+        except ValueError:
+            return default_timeout
+    return default_timeout
+
+
+def build_content_directory_event_xml(system_update_id):
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
+        f'<e:property><SystemUpdateID>{system_update_id}</SystemUpdateID></e:property>'
+        f'<e:property><ContainerUpdateIDs>0,{system_update_id}</ContainerUpdateIDs></e:property>'
+        '</e:propertyset>'
+    )
+
+
+def prune_expired_content_directory_subscribers(server):
+    lock = getattr(server, 'content_directory_subscription_lock', None)
+    subscribers = getattr(server, 'content_directory_subscribers', None)
+    if lock is None or subscribers is None:
+        return
+    now = time.time()
+    with lock:
+        expired_sids = [sid for sid, subscriber in subscribers.items() if subscriber['expires_at'] <= now]
+        for sid in expired_sids:
+            subscribers.pop(sid, None)
+
+
+def send_content_directory_notify(subscriber, event_xml):
+    parsed = urlparse(subscriber['callback_url'])
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        raise ValueError(f'Unsupported callback URL: {subscriber["callback_url"]}')
+
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    request_path = parsed.path or '/'
+    if parsed.query:
+        request_path = f'{request_path}?{parsed.query}'
+
+    body = event_xml.encode('utf-8')
+    headers = {
+        'HOST': parsed.netloc,
+        'CONTENT-TYPE': 'text/xml; charset="utf-8"',
+        'NT': 'upnp:event',
+        'NTS': 'upnp:propchange',
+        'SID': subscriber['sid'],
+        'SEQ': str(subscriber['seq']),
+        'CONTENT-LENGTH': str(len(body)),
+    }
+
+    connection = connection_cls(parsed.hostname, port, timeout=10)
+    try:
+        connection.request('NOTIFY', request_path, body=body, headers=headers)
+        response = connection.getresponse()
+        response.read()
+        if response.status < 200 or response.status >= 300:
+            raise RuntimeError(f'NOTIFY failed with status {response.status}')
+    finally:
+        connection.close()
+
+
+def notify_content_directory_subscribers(server):
+    prune_expired_content_directory_subscribers(server)
+    lock = getattr(server, 'content_directory_subscription_lock', None)
+    subscribers = getattr(server, 'content_directory_subscribers', None)
+    if lock is None or subscribers is None:
+        return 0
+
+    with lock:
+        snapshot = [dict(subscriber) for subscriber in subscribers.values()]
+
+    if not snapshot:
+        return 0
+
+    logger = logging.getLogger('DLNAServer')
+    event_xml = build_content_directory_event_xml(getattr(server, 'system_update_id', 1))
+    delivered = 0
+    failed_sids = []
+
+    for subscriber in snapshot:
+        try:
+            send_content_directory_notify(subscriber, event_xml)
+            delivered += 1
+            with lock:
+                current = subscribers.get(subscriber['sid'])
+                if current is not None:
+                    current['seq'] = (current['seq'] + 1) % (1 << 32)
+        except Exception as exc:
+            failed_sids.append(subscriber['sid'])
+            logger.warning('Failed ContentDirectory NOTIFY for %s: %s', subscriber['callback_url'], exc)
+
+    if failed_sids:
+        with lock:
+            for sid in failed_sids:
+                subscribers.pop(sid, None)
+    return delivered
 
 # Update DLNAServer to use resource monitoring
 class SOAPResponseHandler:
@@ -122,13 +257,19 @@ class DLNAErrorHandler:
                 time.sleep(1)
 
 class DLNAServer(BaseHTTPRequestHandler):
-    # Add thumbnail cache as class variable
-    thumbnail_cache = {}
-    thumbnail_cache_size = 100  # Maximum number of cached thumbnails
+    SAMSUNG_HEADER_PATTERNS = (
+        'samsung',
+        'tizen',
+        'sec_hhp',
+        'sec-tv',
+        'smart-tv',
+        'allshare',
+    )
 
     def __init__(self, request, client_address, server):
         # Initialize logger first
         self.logger = logging.getLogger('DLNAServer')
+        self.server = server
         self.protocol_version = 'HTTP/1.1'
         self.timeout = 60  # Set timeout to 60 seconds
         self.headers_sent = False  # Track if headers have been sent
@@ -142,10 +283,18 @@ class DLNAServer(BaseHTTPRequestHandler):
 
         # Initialize the new components
         self.soap_handler = SOAPResponseHandler(self)
-        self.xml_generator = DLNAXMLGenerator()
-        self.request_parser = DLNARequestParser()
         self.error_handler = DLNAErrorHandler(self.logger)
         self.content_handler = ContentDirectoryHandler(self)
+        if not hasattr(server, 'thumbnail_generator'):
+            server.thumbnail_generator = VideoThumbnailGenerator(
+                thumbnail_dir=str(Path(__file__).resolve().parent / 'cache' / 'thumbnails'),
+                max_height=320,
+                max_width=320,
+                min_duration=300.0,
+            )
+        self.thumbnail_generator = server.thumbnail_generator
+        if not hasattr(server, 'client_profiles'):
+            server.client_profiles = {}
 
         # Call parent constructor last
         super().__init__(request, client_address, server)
@@ -160,6 +309,128 @@ class DLNAServer(BaseHTTPRequestHandler):
     def log_error(self, format, *args):
         """Override error logging to use our logger"""
         self.logger.error("%s - - %s" % (self.address_string(), format % args))
+
+    def _request_header_fingerprint(self):
+        parts = []
+        for header_name in ('User-Agent', 'X-AV-Client-Info', 'FriendlyName', 'Server'):
+            header_value = self.headers.get(header_name)
+            if header_value:
+                parts.append(f'{header_name}={header_value}')
+        return ' | '.join(parts) if parts else 'no identifying headers'
+
+    def _detect_client_profile(self):
+        client_ip = self.client_address[0]
+        existing_profile = self.server.client_profiles.get(client_ip)
+        fingerprint = self._request_header_fingerprint()
+        fingerprint_lc = fingerprint.lower()
+        is_likely_samsung = any(pattern in fingerprint_lc for pattern in self.SAMSUNG_HEADER_PATTERNS)
+        if existing_profile and existing_profile.get('is_likely_samsung') and not is_likely_samsung:
+            # Keep the stronger prior classification when later requests omit identifying headers.
+            is_likely_samsung = True
+            if fingerprint == 'no identifying headers':
+                fingerprint = existing_profile.get('fingerprint', fingerprint)
+        profile = {
+            'client_ip': client_ip,
+            'is_likely_samsung': is_likely_samsung,
+            'fingerprint': fingerprint,
+        }
+        if existing_profile != profile:
+            self.server.client_profiles[client_ip] = profile
+            if is_likely_samsung:
+                self.logger.info('Detected likely Samsung client ip=%s headers=%s', client_ip, fingerprint)
+            else:
+                self.logger.debug('Detected non-Samsung client ip=%s headers=%s', client_ip, fingerprint)
+        return self.server.client_profiles[client_ip]
+
+    def get_client_profile(self):
+        return self.server.client_profiles.get(
+            self.client_address[0],
+            {
+                'client_ip': self.client_address[0],
+                'is_likely_samsung': False,
+                'fingerprint': 'unknown',
+            },
+        )
+
+    def ensure_current_config(self):
+        try:
+            refresh_server_config(self.server)
+        except Exception as exc:
+            self.logger.warning('Config refresh check failed: %s', exc)
+
+    def _send_subscribe_response(self, sid, timeout_seconds):
+        self.send_response(200)
+        self.send_header('SID', sid)
+        self.send_header('TIMEOUT', f'Second-{timeout_seconds}')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def _handle_content_directory_subscribe(self):
+        prune_expired_content_directory_subscribers(self.server)
+        timeout_seconds = parse_subscription_timeout(self.headers.get('TIMEOUT'))
+        sid_header = self.headers.get('SID')
+        callback_header = self.headers.get('CALLBACK')
+        nt_header = self.headers.get('NT')
+        now = time.time()
+        lock = self.server.content_directory_subscription_lock
+        subscribers = self.server.content_directory_subscribers
+
+        if sid_header:
+            with lock:
+                subscriber = subscribers.get(sid_header)
+                if subscriber is None:
+                    self.send_error(412, 'Unknown SID')
+                    return
+                subscriber['expires_at'] = now + timeout_seconds
+            self._send_subscribe_response(sid_header, timeout_seconds)
+            return
+
+        if not callback_header or nt_header != 'upnp:event':
+            self.send_error(412, 'Missing CALLBACK or NT header')
+            return
+
+        callback_url = callback_header.strip()
+        if callback_url.startswith('<') and callback_url.endswith('>'):
+            callback_url = callback_url[1:-1]
+        parsed = urlparse(callback_url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            self.send_error(412, 'Invalid CALLBACK URL')
+            return
+
+        sid = f'uuid:{uuid.uuid4()}'
+        subscriber = {
+            'sid': sid,
+            'callback_url': callback_url,
+            'expires_at': now + timeout_seconds,
+            'seq': 0,
+        }
+        with lock:
+            subscribers[sid] = subscriber
+
+        self._send_subscribe_response(sid, timeout_seconds)
+        delivered = notify_content_directory_subscribers(self.server)
+        self.logger.info(
+            'Registered ContentDirectory subscriber sid=%s callback=%s delivered_initial=%s',
+            sid,
+            callback_url,
+            delivered,
+        )
+
+    def _handle_content_directory_unsubscribe(self):
+        sid_header = self.headers.get('SID')
+        if not sid_header:
+            self.send_error(412, 'Missing SID header')
+            return
+
+        with self.server.content_directory_subscription_lock:
+            removed = self.server.content_directory_subscribers.pop(sid_header, None)
+        if removed is None:
+            self.send_error(412, 'Unknown SID')
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def send_response(self, *args, **kwargs):
         """Override to track headers sent state"""
@@ -177,14 +448,19 @@ class DLNAServer(BaseHTTPRequestHandler):
         finally:
             self.headers_sent = True
 
+    def _is_expected_disconnect_error(self, error):
+        if isinstance(error, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return True
+        return getattr(error, 'errno', None) in {32, 54, 104}
+
     def handle_one_request(self):
         """Override to add better error handling for socket operations"""
         try:
             return super().handle_one_request()
         except (socket.error, ConnectionError) as e:
-            # Don't log common client disconnection errors at error level
-            if isinstance(e, ConnectionAbortedError) or \
-                getattr(e, 'winerror', None) in (10053, 10054):  # Connection aborted/reset
+            if self._is_expected_disconnect_error(e) or getattr(self, '_disconnect_logged', False):
+                self.logger.debug(f"Client connection closed: {str(e)}")
+            elif getattr(e, 'winerror', None) in (10053, 10054):
                 self.logger.debug(f"Client connection closed: {str(e)}")
             else:
                 self.logger.error(f"Socket error during request: {str(e)}")
@@ -200,6 +476,7 @@ class DLNAServer(BaseHTTPRequestHandler):
                 pass
     
     def send_media_file(self, file_path, content_type):
+        self._disconnect_logged = False
         try:
             file_size = os.path.getsize(file_path)
             
@@ -253,7 +530,11 @@ class DLNAServer(BaseHTTPRequestHandler):
                         self.logger.debug(f"Sent {len(chunk)} bytes for {os.path.basename(file_path)}")
                         remaining -= len(chunk)
                     except (socket.error, ConnectionError) as e:
-                        self.logger.warning(f"Connection error while streaming: {e}")
+                        if self._is_expected_disconnect_error(e):
+                            self._disconnect_logged = True
+                            self.logger.debug(f"Client stopped streaming {os.path.basename(file_path)}: {e}")
+                        else:
+                            self.logger.warning(f"Connection error while streaming: {e}")
                         break
 
                 if remaining == 0:
@@ -276,21 +557,86 @@ class DLNAServer(BaseHTTPRequestHandler):
         except Exception:
             return 0, file_size - 1
 
+    def get_file_path(self, media_path):
+        """Resolve a /media/<folder_index>/<relative_path> request to a shared file."""
+        normalized = media_path.lstrip('/')
+        folder_token, _, relative_path = normalized.partition('/')
+        if not relative_path:
+            self.logger.info("Media path missing relative component: %s", media_path)
+            return None
+
+        try:
+            folder_index = int(folder_token)
+        except ValueError:
+            self.logger.info("Media path missing valid folder index: %s", media_path)
+            return None
+
+        if folder_index < 0 or folder_index >= len(self.server.media_folders):
+            self.logger.info("Media path folder index out of range: %s", media_path)
+            return None
+
+        shared_root = os.path.abspath(self.server.media_folders[folder_index])
+        candidate = os.path.abspath(os.path.join(shared_root, relative_path))
+        if os.path.commonpath([shared_root, candidate]) != shared_root:
+            self.logger.warning("Rejected media path outside share root: %s -> %s", media_path, candidate)
+            return None
+        if not os.path.isfile(candidate):
+            self.logger.info("Media path resolved to missing file: %s -> %s", media_path, candidate)
+            return None
+        self.logger.info("Resolved media path %s -> %s", media_path, candidate)
+        return candidate
+
     def do_GET(self):
         """Handle GET requests with proper logging"""
         try:
-            if self.path == '/description.xml':
+            self._detect_client_profile()
+            self.ensure_current_config()
+            parsed_path = urlparse(self.path)
+            clean_path = parsed_path.path
+            query = parse_qs(parsed_path.query)
+
+            if clean_path == '/description.xml':
                 self.send_device_description()
-            elif self.path == '/ContentDirectory.xml':
+            elif clean_path == '/ContentDirectory.xml':
                 self.send_content_directory()
-            elif self.path == '/ConnectionManager.xml':
+            elif clean_path == '/ConnectionManager.xml':
                 self.send_connection_manager()
-            elif self.path == '/AVTransport.xml':
-                self.send_av_transport()
-            elif self.path.startswith('/media/'):
-                # Strip /media/ from path and serve the file
-                file_path = unquote(self.path[7:])
-                self.serve_media_file(file_path)
+            elif clean_path.startswith('/thumbnails/'):
+                thumbnail_path = unquote(clean_path[len('/thumbnails/'):])
+                if thumbnail_path.lower().endswith('.jpg'):
+                    thumbnail_path = thumbnail_path[:-4]
+                absolute_path = self.get_file_path(thumbnail_path)
+                if absolute_path is None:
+                    self.send_error(404, 'File not found')
+                    return
+
+                extension = os.path.splitext(absolute_path)[1].lower()
+                if extension not in VIDEO_EXTENSIONS and extension not in IMAGE_EXTENSIONS:
+                    self.send_error(415, 'Unsupported thumbnail media type')
+                    return
+                self.handle_thumbnail_request(absolute_path, is_video=extension in VIDEO_EXTENSIONS)
+                return
+            elif clean_path.startswith('/media/'):
+                media_path = unquote(clean_path[len('/media/'):])
+                absolute_path = self.get_file_path(media_path)
+                if absolute_path is None:
+                    self.send_error(404, 'File not found')
+                    return
+
+                if query.get('thumbnail', ['false'])[0].lower() == 'true':
+                    extension = os.path.splitext(absolute_path)[1].lower()
+                    if extension not in VIDEO_EXTENSIONS and extension not in IMAGE_EXTENSIONS:
+                        self.send_error(415, 'Unsupported thumbnail media type')
+                        return
+                    self.handle_thumbnail_request(absolute_path, is_video=extension in VIDEO_EXTENSIONS)
+                    return
+
+                ext = os.path.splitext(absolute_path)[1].lower()
+                content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
+                if not content_type:
+                    self.send_error(415, 'Unsupported media type')
+                    return
+                self.send_media_file(absolute_path, content_type)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -303,17 +649,40 @@ class DLNAServer(BaseHTTPRequestHandler):
     def do_HEAD(self):
         """Handle HEAD requests by performing the same logic as GET but without sending the body"""
         try:
-            # Parse the path properly
+            self._detect_client_profile()
+            self.ensure_current_config()
             parsed_path = urlparse(self.path)
-            clean_path = parsed_path.path  # This removes any http:// prefixes
+            clean_path = parsed_path.path
+            query = parse_qs(parsed_path.query)
 
-            # Content type and size check for media files
-            if not clean_path.endswith('.xml'):
-                file_path = unquote(clean_path)
-                abs_path = self.get_file_path(file_path)
+            if clean_path.startswith('/thumbnails/'):
+                thumbnail_path = unquote(clean_path[len('/thumbnails/'):])
+                if thumbnail_path.lower().endswith('.jpg'):
+                    thumbnail_path = thumbnail_path[:-4]
+                abs_path = self.get_file_path(thumbnail_path)
+                if abs_path is None:
+                    self.send_error(404, 'File not found')
+                    return
+
+                ext = os.path.splitext(abs_path)[1].lower()
+                if ext not in VIDEO_EXTENSIONS and ext not in IMAGE_EXTENSIONS:
+                    self.send_error(415, 'Unsupported thumbnail media type')
+                    return
+                self.send_thumbnail_headers(abs_path, is_video=ext in VIDEO_EXTENSIONS)
+                return
+
+            if clean_path.startswith('/media/'):
+                media_path = unquote(clean_path[len('/media/'):])
+                abs_path = self.get_file_path(media_path)
                 
                 if abs_path:
                     ext = os.path.splitext(abs_path)[1].lower()
+                    if query.get('thumbnail', ['false'])[0].lower() == 'true':
+                        if ext not in VIDEO_EXTENSIONS and ext not in IMAGE_EXTENSIONS:
+                            self.send_error(415, 'Unsupported thumbnail media type')
+                            return
+                        self.send_thumbnail_headers(abs_path, is_video=ext in VIDEO_EXTENSIONS)
+                        return
                     content_type = VIDEO_EXTENSIONS.get(ext) or AUDIO_EXTENSIONS.get(ext) or IMAGE_EXTENSIONS.get(ext)
                     
                     if content_type:
@@ -325,12 +694,11 @@ class DLNAServer(BaseHTTPRequestHandler):
                         self.end_headers()
                         return
 
-            # Handle descriptor files
             if clean_path == '/description.xml':
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/xml; charset="utf-8"')
                 self.end_headers()
-            elif clean_path in ['/ContentDirectory.xml', '/ConnectionManager.xml', '/AVTransport.xml']:
+            elif clean_path in ['/ContentDirectory.xml', '/ConnectionManager.xml']:
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/xml; charset="utf-8"')
                 self.end_headers()
@@ -343,6 +711,8 @@ class DLNAServer(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests, particularly for ContentDirectory control"""
+        self._detect_client_profile()
+        self.ensure_current_config()
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
         
@@ -351,11 +721,80 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.content_handler.handle_control(post_data)
             except Exception as e:
                 self.error_handler.handle_request_error(self, e)
+        elif self.path == '/ConnectionManager/control':
+            try:
+                self.handle_connection_manager_control()
+            except Exception as e:
+                self.error_handler.handle_request_error(self, e)
         else:
             self.send_error(404)
 
+    def do_SUBSCRIBE(self):
+        self._detect_client_profile()
+        self.ensure_current_config()
+        if self.path == '/ContentDirectory/event':
+            self._handle_content_directory_subscribe()
+            return
+        self.send_error(501, 'Event subscription not implemented for this path')
+
+    def do_UNSUBSCRIBE(self):
+        self._detect_client_profile()
+        if self.path == '/ContentDirectory/event':
+            self._handle_content_directory_unsubscribe()
+            return
+        self.send_error(501, 'Event unsubscription not implemented for this path')
+
+    def handle_connection_manager_control(self):
+        action = self.headers.get('SOAPACTION', '').strip('"')
+        if '#' in action:
+            action = action.rsplit('#', 1)[1]
+
+        if action == 'GetProtocolInfo':
+            source = ','.join([
+                'http-get:*:audio/mpeg:DLNA.ORG_PN=MP3',
+                'http-get:*:audio/flac:*',
+                'http-get:*:audio/wav:*',
+                'http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_BL_CIF15_AAC',
+                'http-get:*:video/x-matroska:*',
+                'http-get:*:video/x-msvideo:*',
+                'http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_LRG',
+                'http-get:*:image/png:DLNA.ORG_PN=PNG_LRG',
+                'http-get:*:image/gif:*',
+            ])
+            body = f'<Source>{source}</Source><Sink></Sink>'
+            self.soap_handler.send_soap_response(body, 'GetProtocolInfo', 'urn:schemas-upnp-org:service:ConnectionManager:1')
+            return
+
+        if action == 'GetCurrentConnectionIDs':
+            self.soap_handler.send_soap_response(
+                '<ConnectionIDs>0</ConnectionIDs>',
+                'GetCurrentConnectionIDs',
+                'urn:schemas-upnp-org:service:ConnectionManager:1',
+            )
+            return
+
+        if action == 'GetCurrentConnectionInfo':
+            body = (
+                '<RcsID>-1</RcsID>'
+                '<AVTransportID>-1</AVTransportID>'
+                '<ProtocolInfo></ProtocolInfo>'
+                '<PeerConnectionManager></PeerConnectionManager>'
+                '<PeerConnectionID>-1</PeerConnectionID>'
+                '<Direction>Output</Direction>'
+                '<Status>OK</Status>'
+            )
+            self.soap_handler.send_soap_response(
+                body,
+                'GetCurrentConnectionInfo',
+                'urn:schemas-upnp-org:service:ConnectionManager:1',
+            )
+            return
+
+        raise ValueError(f'Unsupported ConnectionManager action: {action or "unknown"}')
+
     def send_media_file(self, file_path, content_type):
         """Stream media file with proper DLNA support and range handling"""
+        self._disconnect_logged = False
         file_size = os.path.getsize(file_path)
         duration = self.get_media_duration_seconds(file_path)
 
@@ -419,7 +858,11 @@ class DLNAServer(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
                 except (ConnectionError, socket.error) as e:
-                    self.logger.warning(f"Connection error while streaming: {e}")
+                    if self._is_expected_disconnect_error(e):
+                        self._disconnect_logged = True
+                        self.logger.debug(f"Client stopped streaming {os.path.basename(file_path)}: {e}")
+                    else:
+                        self.logger.warning(f"Connection error while streaming: {e}")
                     break
 
     def _generate_search_didl(self, results):
@@ -474,7 +917,8 @@ class DLNAServer(BaseHTTPRequestHandler):
             # Add device information
             device = SubElement(root, 'device')
             SubElement(device, 'deviceType').text = 'urn:schemas-upnp-org:device:MediaServer:1'
-            SubElement(device, 'friendlyName').text = DEVICE_NAME
+            friendly_name = getattr(self.server, 'device_name', build_device_name('unknown'))
+            SubElement(device, 'friendlyName').text = friendly_name
             SubElement(device, 'manufacturer').text = 'Python DLNA'
             SubElement(device, 'manufacturerURL').text = 'http://example.com'
             SubElement(device, 'modelDescription').text = 'Python DLNA Media Server'
@@ -510,14 +954,6 @@ class DLNAServer(BaseHTTPRequestHandler):
             SubElement(service2, 'controlURL').text = '/ConnectionManager/control'
             SubElement(service2, 'eventSubURL').text = '/ConnectionManager/event'
             
-            # AVTransport service
-            service3 = SubElement(service_list, 'service')
-            SubElement(service3, 'serviceType').text = 'urn:schemas-upnp-org:service:AVTransport:1'
-            SubElement(service3, 'serviceId').text = 'urn:upnp-org:serviceId:AVTransport'
-            SubElement(service3, 'SCPDURL').text = '/AVTransport.xml'
-            SubElement(service3, 'controlURL').text = '/AVTransport/control'
-            SubElement(service3, 'eventSubURL').text = '/AVTransport/event'
-            
             # Convert to string
             xml_string = '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(root, encoding='unicode')
             
@@ -534,7 +970,7 @@ class DLNAServer(BaseHTTPRequestHandler):
             self.send_error(500, "Internal server error")
 
     def send_content_directory(self):
-        """Send DLNA Content Directory XML with Samsung compatibility"""
+        """Send the ContentDirectory SCPD document."""
         try:
             content_directory_xml = '''<?xml version="1.0" encoding="utf-8"?>
 <scpd xmlns="urn:schemas-upnp-org:service-1-0">
@@ -543,20 +979,52 @@ class DLNAServer(BaseHTTPRequestHandler):
         <minor>0</minor>
     </specVersion>
     <actionList>
-        <!-- ...existing actions... -->
+        <action>
+            <name>Browse</name>
+            <argumentList>
+                <argument><name>ObjectID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable></argument>
+                <argument><name>BrowseFlag</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable></argument>
+                <argument><name>Filter</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable></argument>
+                <argument><name>StartingIndex</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable></argument>
+                <argument><name>RequestedCount</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+                <argument><name>SortCriteria</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable></argument>
+                <argument><name>Result</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable></argument>
+                <argument><name>NumberReturned</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+                <argument><name>TotalMatches</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+                <argument><name>UpdateID</name><direction>out</direction><relatedStateVariable>SystemUpdateID</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSearchCapabilities</name>
+            <argumentList>
+                <argument><name>SearchCaps</name><direction>out</direction><relatedStateVariable>SearchCapabilities</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSortCapabilities</name>
+            <argumentList>
+                <argument><name>SortCaps</name><direction>out</direction><relatedStateVariable>SortCapabilities</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetSystemUpdateID</name>
+            <argumentList>
+                <argument><name>Id</name><direction>out</direction><relatedStateVariable>SystemUpdateID</relatedStateVariable></argument>
+            </argumentList>
+        </action>
     </actionList>
     <serviceStateTable>
-        <!-- ...existing state variables... -->
-        <stateVariable sendEvents="no">
-            <name>SortCapabilities</name>
-            <dataType>string</dataType>
-            <defaultValue>dc:title,dc:date,upnp:class</defaultValue>
-        </stateVariable>
-        <stateVariable sendEvents="no">
-            <name>SearchCapabilities</name>
-            <dataType>string</dataType>
-            <defaultValue>dc:title,dc:creator,upnp:class</defaultValue>
-        </stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ObjectID</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_BrowseFlag</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Filter</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Index</name><dataType>ui4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Count</name><dataType>ui4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_SortCriteria</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Result</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="yes"><name>SystemUpdateID</name><dataType>ui4</dataType><defaultValue>1</defaultValue></stateVariable>
+        <stateVariable sendEvents="yes"><name>ContainerUpdateIDs</name><dataType>string</dataType><defaultValue>0,1</defaultValue></stateVariable>
+        <stateVariable sendEvents="no"><name>SortCapabilities</name><dataType>string</dataType><defaultValue>dc:title,dc:date</defaultValue></stateVariable>
+        <stateVariable sendEvents="no"><name>SearchCapabilities</name><dataType>string</dataType><defaultValue>dc:title,upnp:class</defaultValue></stateVariable>
     </serviceStateTable>
 </scpd>'''
 
@@ -574,24 +1042,58 @@ class DLNAServer(BaseHTTPRequestHandler):
                 self.send_error(500, "Internal server error")
 
     def send_connection_manager(self):
-        """Send DLNA Connection Manager XML"""
+        """Send the ConnectionManager SCPD document."""
         try:
-            # Create SOAP envelope with connection manager info
-            connection_manager_xml = '''<?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-  <s:Body>
-    <u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
-      <Source>http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_LRG,http-get:*:audio/mpeg:DLNA.ORG_PN=MP3,http-get:*:video/mp4:DLNA.ORG_PN=AVC_MP4_HP_HD_AAC</Source>
-      <Sink></Sink>
-      <CurrentConnectionIDs>0</CurrentConnectionIDs>
-    </u:GetProtocolInfoResponse>
-  </s:Body>
-</s:Envelope>'''
+            connection_manager_xml = '''<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+    <specVersion>
+        <major>1</major>
+        <minor>0</minor>
+    </specVersion>
+    <actionList>
+        <action>
+            <name>GetProtocolInfo</name>
+            <argumentList>
+                <argument><name>Source</name><direction>out</direction><relatedStateVariable>SourceProtocolInfo</relatedStateVariable></argument>
+                <argument><name>Sink</name><direction>out</direction><relatedStateVariable>SinkProtocolInfo</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetCurrentConnectionIDs</name>
+            <argumentList>
+                <argument><name>ConnectionIDs</name><direction>out</direction><relatedStateVariable>CurrentConnectionIDs</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+        <action>
+            <name>GetCurrentConnectionInfo</name>
+            <argumentList>
+                <argument><name>ConnectionID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_ConnectionID</relatedStateVariable></argument>
+                <argument><name>RcsID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_RcsID</relatedStateVariable></argument>
+                <argument><name>AVTransportID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_AVTransportID</relatedStateVariable></argument>
+                <argument><name>ProtocolInfo</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ProtocolInfo</relatedStateVariable></argument>
+                <argument><name>PeerConnectionManager</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ConnectionManager</relatedStateVariable></argument>
+                <argument><name>PeerConnectionID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ConnectionID</relatedStateVariable></argument>
+                <argument><name>Direction</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Direction</relatedStateVariable></argument>
+                <argument><name>Status</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_ConnectionStatus</relatedStateVariable></argument>
+            </argumentList>
+        </action>
+    </actionList>
+    <serviceStateTable>
+        <stateVariable sendEvents="no"><name>SourceProtocolInfo</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>SinkProtocolInfo</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>CurrentConnectionIDs</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionID</name><dataType>i4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_RcsID</name><dataType>i4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_AVTransportID</name><dataType>i4</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ProtocolInfo</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionManager</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_Direction</name><dataType>string</dataType></stateVariable>
+        <stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionStatus</name><dataType>string</dataType></stateVariable>
+    </serviceStateTable>
+</scpd>'''
 
             self.send_response(200)
             self.send_header('Content-Type', 'text/xml; charset="utf-8"')
-            self.send_header('Ext', '') # Required by UPnP spec
-            self.send_header('Server', 'Windows/10.0 UPnP/1.0 Python-DLNA/1.0')
             response_bytes = connection_manager_xml.encode('utf-8')
             self.send_header('Content-Length', str(len(response_bytes)))
             self.end_headers()
@@ -634,6 +1136,7 @@ class DLNAServer(BaseHTTPRequestHandler):
     def send_file_with_error_handling(self, file_path):
         """Send file with improved buffering, timeouts and connection handling"""
         try:
+            self._disconnect_logged = False
             # Set socket timeout for streaming operations
             self.connection.settimeout(30.0)  # 30 second timeout for network operations
             
@@ -665,6 +1168,10 @@ class DLNAServer(BaseHTTPRequestHandler):
                             self.logger.warning("Connection timed out due to inactivity")
                             return False
                     except (socket.error, ConnectionError) as e:
+                        if self._is_expected_disconnect_error(e):
+                            self._disconnect_logged = True
+                            self.logger.debug(f"Client stopped streaming {os.path.basename(file_path)}: {e}")
+                            return False
                         self.logger.warning(f"Connection error while streaming: {e}")
                         return False
                         
@@ -707,66 +1214,41 @@ class DLNAServer(BaseHTTPRequestHandler):
             if not self.headers_sent:
                 self.send_error(500, "Error serving media file")
 
-    def handle_thumbnail_request(self, file_path, is_video=False):
-        """Generate and serve thumbnails for videos and images with caching"""
-        try:
-            # Check cache first
-            cache_key = f"{file_path}_{is_video}"
-            cached_thumb = self.thumbnail_cache.get(cache_key)
-            
-            if cached_thumb:
-                self.send_response(200)
-                self.send_header('Content-Type', 'image/jpeg')
-                self.send_header('Content-Length', str(len(cached_thumb)))
-                self.send_header('Cache-Control', 'max-age=3600')  # Cache for 1 hour
-                self.end_headers()
-                self.wfile.write(cached_thumb)
-                return
+    def send_thumbnail_headers(self, file_path, is_video=False):
+        thumbnail_path, cache_hit = self.thumbnail_generator.ensure_static_thumbnail(
+            file_path,
+            output_extension='jpg',
+            verbose=0,
+        )
+        if not thumbnail_path:
+            raise FileNotFoundError(f'No thumbnail generated for {file_path}')
+        if self.resource_monitor:
+            self.resource_monitor.track_cache('thumbnail', hit=cache_hit)
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/jpeg')
+        self.send_header('Content-Length', str(os.path.getsize(thumbnail_path)))
+        self.send_header('Cache-Control', 'max-age=86400')
+        self.send_header('Last-Modified', self.date_time_string(os.path.getmtime(thumbnail_path)))
+        self.end_headers()
 
-            from PIL import Image
-            import io
-            
-            if is_video:
-                try:
-                    import ffmpeg
-                    out, _ = (
-                        ffmpeg
-                        .input(file_path, ss="00:00:01")
-                        .filter('scale', 320, -1)
-                        .output('pipe:', vframes=1, format='image2', vcodec='mjpeg')
-                        .run(capture_stdout=True, capture_stderr=True)
-                    )
-                    image = Image.open(io.BytesIO(out))
-                except Exception as e:
-                    self.logger.error(f"Error generating video thumbnail: {e}")
-                    self.send_error(500, "Could not generate thumbnail")
-                    return
-            else:
-                image = Image.open(file_path)
-            
-            image.thumbnail((320, 320), Image.Resampling.LANCZOS)
-            
-            if image.mode in ('RGBA', 'LA'):
-                background = Image.new('RGB', image.size, (255, 255, 255))
-                background.paste(image, mask=image.split()[-1])
-                image = background
-            elif image.mode != 'RGB':
-                image = image.convert('RGB')
-                
-            thumb_io = io.BytesIO()
-            image.save(thumb_io, 'JPEG', quality=85)
-            thumb_data = thumb_io.getvalue()
-            
-            # Cache the thumbnail
-            if len(self.thumbnail_cache) >= self.thumbnail_cache_size:
-                # Remove oldest item if cache is full
-                self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
-            self.thumbnail_cache[cache_key] = thumb_data
-            
+    def handle_thumbnail_request(self, file_path, is_video=False):
+        """Generate and serve thumbnails for videos and images with disk caching"""
+        try:
+            thumbnail_path, cache_hit = self.thumbnail_generator.ensure_static_thumbnail(
+                file_path,
+                output_extension='jpg',
+                verbose=0,
+            )
+            if not thumbnail_path:
+                raise FileNotFoundError(f'No thumbnail generated for {file_path}')
+            thumb_data = Path(thumbnail_path).read_bytes()
+            if self.resource_monitor:
+                self.resource_monitor.track_cache('thumbnail', hit=cache_hit)
             self.send_response(200)
             self.send_header('Content-Type', 'image/jpeg')
             self.send_header('Content-Length', str(len(thumb_data)))
-            self.send_header('Cache-Control', 'max-age=3600')
+            self.send_header('Cache-Control', 'max-age=86400')
+            self.send_header('Last-Modified', self.date_time_string(os.path.getmtime(thumbnail_path)))
             self.end_headers()
             self.wfile.write(thumb_data)
             
@@ -865,33 +1347,205 @@ def load_config():
     args = parser.parse_args()
 
     config_path = args.config
-    try:
-        with open(config_path, 'r') as config_file:
-            config = json.load(config_file)
-            return config
-    except FileNotFoundError:
-        print(f"Configuration file not found: {config_path}")
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        print(f"Error parsing configuration file: {e}")
-        sys.exit(1)
+    return load_config_file(config_path), config_path
+
+
+def normalize_playlists(raw_playlists, media_folders, logger):
+    def resolve_shared_file(file_path, playlist_name):
+        if not isinstance(file_path, str):
+            logger.warning('Skipping non-string playlist entry in %s: %r', playlist_name, file_path)
+            return None
+
+        abs_path = os.path.abspath(file_path)
+        if not os.path.exists(abs_path):
+            logger.warning('Skipping missing playlist file in %s: %s', playlist_name, abs_path)
+            return None
+        if not os.path.isfile(abs_path):
+            logger.warning('Skipping non-file playlist entry in %s: %s', playlist_name, abs_path)
+            return None
+        if os.path.splitext(abs_path)[1].lower() not in ALL_EXTENSIONS:
+            logger.warning('Skipping unsupported playlist file in %s: %s', playlist_name, abs_path)
+            return None
+
+        for folder_index, shared_folder in enumerate(media_folders):
+            shared_root = os.path.abspath(shared_folder)
+            try:
+                if os.path.commonpath([shared_root, abs_path]) == shared_root:
+                    return {'folder_index': folder_index, 'abs_path': abs_path}
+            except ValueError:
+                continue
+
+        logger.warning('Playlist file is outside shared folders in %s: %s', playlist_name, abs_path)
+        return None
+
+    def build_playlist_leaf(name, files, playlist_path):
+        if not isinstance(files, list):
+            logger.warning('Ignoring playlist %s because files is not a list', playlist_path)
+            return None
+
+        items = []
+        for file_path in files:
+            resolved = resolve_shared_file(file_path, playlist_path)
+            if resolved is not None:
+                items.append(resolved)
+
+        return {
+            'kind': 'playlist',
+            'name': name,
+            'path': playlist_path.split('/') if playlist_path else [name],
+            'items': items,
+        }
+
+    def build_playlist_node(name, raw_node, parent_path=None):
+        current_path = list(parent_path or []) + [str(name)]
+        current_label = '/'.join(current_path)
+
+        if isinstance(raw_node, list):
+            return build_playlist_leaf(str(name), raw_node, current_label)
+
+        if isinstance(raw_node, dict):
+            if 'files' in raw_node:
+                node_name = str(raw_node.get('name') or name)
+                node_path = list(parent_path or []) + [node_name]
+                return build_playlist_leaf(node_name, raw_node.get('files', []), '/'.join(node_path))
+
+            if 'children' in raw_node:
+                raw_children = raw_node.get('children', {})
+            else:
+                raw_children = raw_node
+
+            if not isinstance(raw_children, dict):
+                logger.warning('Ignoring playlist folder %s because children is not an object', current_label)
+                return None
+
+            children = []
+            for child_name, child_node in raw_children.items():
+                built_child = build_playlist_node(str(child_name), child_node, current_path)
+                if built_child is not None:
+                    children.append(built_child)
+
+            return {
+                'kind': 'folder',
+                'name': str(name),
+                'path': current_path,
+                'children': children,
+            }
+
+        logger.warning('Ignoring invalid playlist node %s: %r', current_label, raw_node)
+        return None
+
+    if raw_playlists is None:
+        return []
+
+    if isinstance(raw_playlists, dict):
+        playlists = []
+        for name, node in raw_playlists.items():
+            built = build_playlist_node(str(name), node)
+            if built is not None:
+                playlists.append(built)
+        return playlists
+
+    if isinstance(raw_playlists, list):
+        playlists = []
+        for index, entry in enumerate(raw_playlists, start=1):
+            if isinstance(entry, dict):
+                if 'name' in entry and 'files' in entry:
+                    built = build_playlist_leaf(str(entry.get('name') or f'Playlist {index}'), entry.get('files', []), str(entry.get('name') or f'Playlist {index}'))
+                elif 'name' in entry and 'children' in entry:
+                    built = build_playlist_node(str(entry.get('name') or f'Playlist {index}'), {'children': entry.get('children', {})})
+                else:
+                    built = build_playlist_node(f'Playlist {index}', entry)
+            else:
+                built = build_playlist_leaf(f'Playlist {index}', entry, f'Playlist {index}')
+            if built is not None:
+                playlists.append(built)
+        return playlists
+
+    logger.warning('Ignoring invalid playlists config because it is neither a list nor an object')
+    return []
+
+
+def build_runtime_state(config, logger):
+    media_folders = config.get('shared_paths', [])
+    if not media_folders:
+        raise ValueError('No shared paths specified in configuration.')
+
+    for folder in media_folders:
+        if not os.path.exists(folder):
+            raise ValueError(f'Media folder does not exist: {folder}')
+
+    playlists = normalize_playlists(config.get('playlists', []), media_folders, logger)
+    return media_folders, playlists
+
+
+def apply_runtime_state(server, media_folders, playlists):
+    server.media_folders = media_folders
+    server.playlists = playlists
+
+
+def refresh_server_config(server, force=False):
+    config_path = getattr(server, 'config_path', None)
+    if not config_path:
+        return False
+
+    config_lock = getattr(server, 'config_lock', None)
+    if config_lock is None:
+        return False
+
+    logger = logging.getLogger('DLNAServer')
+    should_notify = False
+    with config_lock:
+        try:
+            stat_result = os.stat(config_path)
+        except OSError as exc:
+            logger.warning('Config reload skipped because config path is unreadable: %s (%s)', config_path, exc)
+            return False
+
+        current_signature = (stat_result.st_mtime_ns, stat_result.st_size)
+        previous_signature = getattr(server, 'config_signature', None)
+        if not force and current_signature == previous_signature:
+            return False
+
+        try:
+            config = load_config_file(config_path)
+            media_folders, playlists = build_runtime_state(config, logger)
+        except Exception as exc:
+            logger.warning('Config reload failed, keeping previous configuration: %s', exc)
+            return False
+
+        apply_runtime_state(server, media_folders, playlists)
+        server.config_signature = current_signature
+        server.system_update_id = getattr(server, 'system_update_id', 1) + (0 if previous_signature is None else 1)
+        logger.info(
+            'Configuration %s from %s: shared_paths=%s playlists=%s system_update_id=%s',
+            'loaded' if previous_signature is None else 'reloaded',
+            config_path,
+            len(media_folders),
+            len(playlists),
+            server.system_update_id,
+        )
+        should_notify = previous_signature is not None
+
+    if should_notify:
+        delivered = notify_content_directory_subscribers(server)
+        logger.info(
+            'ContentDirectory update notifications delivered=%s for system_update_id=%s',
+            delivered,
+            getattr(server, 'system_update_id', 1),
+        )
+    return True
 
 def start_server(config):
     """Start the DLNA media server with Windows compatibility"""
     logger = setup_logging()
+    instance_id = time.strftime('%H%M%S')
+    device_name = build_device_name(instance_id)
 
-    media_folders = config.get('shared_paths', [])
-    if not media_folders:
-        logger.error("No shared paths specified in configuration.")
+    try:
+        media_folders, playlists = build_runtime_state(config, logger)
+    except ValueError as exc:
+        logger.error(str(exc))
         sys.exit(1)
-
-    for folder in media_folders:
-        if not os.path.exists(folder):
-            logger.error(f"Media folder does not exist: {folder}")
-            sys.exit(1)
-
-    indexed_files = index_files(media_folders)
-    logger.info(f"Indexed files: {indexed_files}")
 
     local_ip = NetworkUtils.get_local_ip()
     
@@ -904,7 +1558,7 @@ def start_server(config):
     
     while port <= max_port:
         try:
-            server = HTTPServer((local_ip, port), DLNAServer)
+            server = ThreadingHTTPServer((local_ip, port), DLNAServer)
             break
         except socket.error:
             logger.debug(f"Port {port} in use, trying next port")
@@ -914,40 +1568,53 @@ def start_server(config):
         logger.error(f"Could not find available port between {base_port} and {max_port}")
         sys.exit(1)
 
-    server.media_folders = media_folders
-    server.indexed_files = indexed_files
-    server.av_transport = AVTransportService()  # Initialize AVTransport service
+    server.config_lock = threading.Lock()
+    server.config_path = os.path.abspath(config.get('_config_path', 'config.json'))
+    server.config_signature = None
+    server.system_update_id = 1
+    server.content_directory_subscribers = {}
+    server.content_directory_subscription_lock = threading.Lock()
+    apply_runtime_state(server, media_folders, playlists)
+    server.local_ip = local_ip
+    server.device_name = device_name
     server.resource_monitor = ResourceMonitor()  # Initialize resource monitor
+    refresh_server_config(server, force=True)
     
     # Start SSDP server in a separate thread
-    ssdp_server = SSDPServer((local_ip, port, DEVICE_UUID, DEVICE_NAME)) # Pass logger if needed
+    ssdp_server = SSDPServer((local_ip, port), DEVICE_UUID, device_name)
     ssdp_thread = threading.Thread(target=ssdp_server.start, name="SSDPServerThread")
     ssdp_thread.daemon = True
     ssdp_thread.start()
 
+    shutdown_requested = False
+
+    def cleanup_server():
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
+        logger.info("Shutting down server...")
+        ssdp_server.stop()
+        ssdp_thread.join(timeout=3.0)
+        server.server_close()
+        logger.info("HTTP server closed.")
+
     try:
+        print(f"Server identity: {device_name} at http://{local_ip}:{port}", flush=True)
         logger.info(f"DLNA server started at http://{local_ip}:{port}")
+        logger.info(f"Device name: {device_name}")
         logger.info(f"Serving media from: {', '.join(server.media_folders)}") # Access via server instance
         logger.info("Press Ctrl+C to stop the server")
         server.serve_forever()
     except KeyboardInterrupt:
-        logger.info("\nShutting down server...")
-        # Signal SSDP server to stop and send byebye
-        ssdp_server.running = False
-        # Wait briefly for SSDP thread to potentially send byebye and clean up
-        ssdp_thread.join(timeout=2.0) # Increased timeout slightly
-        # Close HTTP server
-        server.server_close()
-        logger.info("HTTP server closed.")
+        cleanup_server()
         sys.exit(0)
     except Exception as e:
         logger.critical(f"Critical error in main server loop: {e}", exc_info=True)
-        # Attempt graceful shutdown even on critical error
-        ssdp_server.running = False
-        ssdp_thread.join(timeout=2.0)
-        server.server_close()
+        cleanup_server()
         sys.exit(1)
 
 if __name__ == "__main__":
-    config = load_config()
+    config, config_path = load_config()
+    config['_config_path'] = config_path
     start_server(config)

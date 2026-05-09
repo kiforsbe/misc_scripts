@@ -1195,6 +1195,20 @@ python serve_local.py "C:\path\to\file_or_folder" [-p PORT] [--live]
 - `choose_path_interactive()` — Windows file/folder chooser (uses Tkinter) when no path argument is provided.
 - `main()` — CLI entrypoint that configures logging, determines web root, optionally starts the watcher, and runs a threaded HTTP server.
 
+## Bash Scripts
+
+### macos-uninstall-python3.10.sh
+Safe uninstall script for Python 3.10 installed via the official python.org macOS package installer. It performs sanity checks, lists matching framework/app/symlink targets, asks for confirmation, removes matching files, and forgets matching pkgutil receipts.
+
+#### Usage
+```bash
+# Make executable
+chmod +x macos-uninstall-python3.10.sh
+
+# Run
+./macos-uninstall-python3.10.sh
+```
+
 ## Experimental
 
 ### lyrics-timing-generator.py

@@ -8,6 +8,8 @@ from network_utils import NetworkUtils
 
 SSDP_ADDR = '239.255.255.250'
 SSDP_PORT = 1900
+ADDR_IN_USE_ERRNOS = {getattr(errno, 'EADDRINUSE', 48), getattr(errno, 'WSAEADDRINUSE', 10048)}
+CONN_RESET_ERRNOS = {getattr(errno, 'ECONNRESET', 54), getattr(errno, 'WSAECONNRESET', 10054)}
 
 class NetworkErrorHandler:
     """Handles network-related errors and implements retry logic"""
@@ -36,6 +38,9 @@ class SSDPServer:
         self.http_server_address = http_server_address
         self.DEVICE_UUID = DEVICE_UUID
         self.DEVICE_NAME = DEVICE_NAME
+        self.boot_id = int(time.time())
+        self.config_id = 1
+        self.cache_max_age = 90
         self.running = False
         self.discovery_count = 0
         self.announcement_interval = 5
@@ -121,7 +126,6 @@ class SSDPServer:
             'urn:schemas-upnp-org:device:MediaServer:1',
             'urn:schemas-upnp-org:service:ContentDirectory:1',
             'urn:schemas-upnp-org:service:ConnectionManager:1',
-            'urn:schemas-upnp-org:service:AVTransport:1'
         ]
 
         location = f'http://{self.http_server_address[0]}:{self.http_server_address[1]}/description.xml'
@@ -135,14 +139,14 @@ class SSDPServer:
                 notify_msg = '\r\n'.join([
                     'NOTIFY * HTTP/1.1',
                     f'HOST: {SSDP_ADDR}:{SSDP_PORT}',
-                    'CACHE-CONTROL: max-age=1800',
+                    f'CACHE-CONTROL: max-age={self.cache_max_age}',
                     f'LOCATION: {location}',
                     f'NT: {service}',
                     f'NTS: {nts_type}',
                     'SERVER: Windows/10.0 UPnP/1.0 Python-DLNA/1.0',
                     f'USN: {usn}',
-                    'BOOTID.UPNP.ORG: 1',
-                    'CONFIGID.UPNP.ORG: 1',
+                    f'BOOTID.UPNP.ORG: {self.boot_id}',
+                    f'CONFIGID.UPNP.ORG: {self.config_id}',
                     'DEVICEID.SES.COM: 1',  # Samsung specific
                     'X-DLNADOC: DMS-1.50',  # DLNA version for Samsung
                     'X-DLNACAP: av-upload,image-upload,audio-upload',
@@ -173,6 +177,12 @@ class SSDPServer:
 
     def send_byebye_notification(self):
         self.send_notification('ssdp:byebye')
+
+    def send_startup_reset_notifications(self):
+        """Actively evict stale cached entries before announcing the current instance."""
+        for _ in range(2):
+            self.send_byebye_notification()
+            time.sleep(0.2)
 
     def periodic_announce(self):
         """Periodically send presence announcements with optimized timing"""
@@ -264,7 +274,7 @@ class SSDPServer:
                 self.socket.bind(('', SSDP_PORT))
                 self.logger.info(f"Successfully bound listening socket to ('', {SSDP_PORT})")
             except socket.error as e:
-                if e.errno == errno.WSAEADDRINUSE:
+                if e.errno in ADDR_IN_USE_ERRNOS:
                     self.logger.warning(f"SSDP port {SSDP_PORT} is already in use (Windows Discovery Service). Attempting shared mode.")
                 else:
                     self.logger.error(f"Failed to bind listening socket: {e}")
@@ -382,7 +392,6 @@ class SSDPServer:
                     'urn:schemas-upnp-org:device:MediaServer:1',
                     'urn:schemas-upnp-org:service:ContentDirectory:1',
                     'urn:schemas-upnp-org:service:ConnectionManager:1',
-                    'urn:schemas-upnp-org:service:AVTransport:1'
                 ]
 
                 respond = False
@@ -424,15 +433,15 @@ class SSDPServer:
             # Enhanced response with more detailed headers
             response = '\r\n'.join([
                 'HTTP/1.1 200 OK',
-                'CACHE-CONTROL: max-age=1800',
+                f'CACHE-CONTROL: max-age={self.cache_max_age}',
                 'DATE: ' + time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime()),
                 'EXT:', # Required header
                 f'LOCATION: {location}',
                 'SERVER: Windows/10 UPnP/1.0 Python-DLNA/1.0',
                 f'ST: {st}',
                 f'USN: {usn}',
-                'BOOTID.UPNP.ORG: 1',
-                'CONFIGID.UPNP.ORG: 1',
+                f'BOOTID.UPNP.ORG: {self.boot_id}',
+                f'CONFIGID.UPNP.ORG: {self.config_id}',
                 'X-DLNADOC: DMS-1.50',
                 'X-DLNACAP: av-upload,image-upload,audio-upload',
                 '', # Empty line required by HTTP
@@ -476,6 +485,11 @@ class SSDPServer:
         self.running = True
         self.logger.info(f"SSDP server started, listening on port {SSDP_PORT}")
 
+        try:
+            self.send_startup_reset_notifications()
+        except Exception as e:
+            self.logger.warning(f"Failed to send startup byebye notifications: {e}")
+
         # Start announcement thread
         self.announcement_thread = threading.Thread(target=self.periodic_announce, name="SSDPeriodicAnnounce")
         self.announcement_thread.daemon = True
@@ -504,7 +518,7 @@ class SSDPServer:
                 # Handle specific socket errors if needed
                 if self.running: # Avoid logging errors during shutdown
                     # WSAECONNRESET might occur if client disconnects abruptly
-                    if e.errno == errno.WSAECONNRESET:
+                    if e.errno in CONN_RESET_ERRNOS:
                         self.logger.warning(f"Socket connection reset by peer: {e}")
                     else:
                         self.logger.error(f"Socket error during receive: {e}")
@@ -525,3 +539,7 @@ class SSDPServer:
         finally:
             self.cleanup_sockets()
             self.logger.info("SSDP server stopped.")
+
+    def stop(self):
+        """Request a clean SSDP shutdown and wait briefly for byebye propagation."""
+        self.running = False

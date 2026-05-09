@@ -2,3 +2,5 @@ whoosh>=2.7.4
 mutagen>=1.45.1
 psutil>=5.9.0
 netifaces>=0.11.0
+Pillow>=10.0.0
+ffmpeg-python>=0.2.0

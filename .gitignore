@@ -12,6 +12,7 @@ __pycache__/
 # Temp files
 .temp
 out
+cache
 
 # Distribution / packaging
 .Python

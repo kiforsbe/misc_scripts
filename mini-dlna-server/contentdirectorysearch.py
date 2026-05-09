@@ -4,6 +4,8 @@ from whoosh.fields import Schema, TEXT, ID, STORED
 from whoosh.analysis import StandardAnalyzer
 from whoosh.index import create_in, exists_in, open_dir
 
+from contentdirectoryhandler import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
+
 class ContentDirectorySearch:
     """Handles indexed search functionality for the Content Directory Service"""
     def __init__(self, media_folders):
