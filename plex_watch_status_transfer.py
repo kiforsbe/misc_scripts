@@ -181,6 +181,7 @@ class PlexPlaylist:
     id: int
     name: str
     description: Optional[str]
+    added_at: Optional[int]
     play_queue_id: Optional[int]
     account_id: Optional[int]
     items: List[PlexPlaylistItem]
@@ -554,6 +555,7 @@ class PlexDatabase:
                         id=int(current_header["playlist_id"]),
                         name=str(current_header["playlist_name"] or ""),
                         description=current_header["playlist_description"],
+                        added_at=PlexFilenameParser.safe_int(current_header.get("playlist_added_at")),
                         play_queue_id=PlexFilenameParser.safe_int(current_header["play_queue_id"]),
                         account_id=PlexFilenameParser.safe_int(current_header["account_id"]),
                         items=list(current_items),
@@ -598,7 +600,7 @@ class PlexDatabase:
             flush_current()
             return playlists
 
-        playlists_by_name: Dict[str, PlexPlaylist] = {}
+        playlists: List[PlexPlaylist] = []
 
         if schema.custom_channels_columns and schema.play_queue_items_columns:
             custom_query = """
@@ -606,6 +608,7 @@ class PlexDatabase:
                 cc.id AS playlist_id,
                 cc.name AS playlist_name,
                 cc.description AS playlist_description,
+                COALESCE(pq.created_at, pq.updated_at) AS playlist_added_at,
                 pq.id AS play_queue_id,
                 COALESCE(pq.account_id, mia.account_id) AS account_id,
                 pqi.id AS play_queue_item_id,
@@ -627,8 +630,7 @@ class PlexDatabase:
             LEFT JOIN library_sections ls ON ls.id = md.library_section_id
             ORDER BY cc.name COLLATE NOCASE, cc.id, pqi."order", pqi.id
             """
-            for playlist in collect_playlists(custom_query, "custom"):
-                playlists_by_name[playlist.name.casefold()] = playlist
+            playlists.extend(collect_playlists(custom_query, "custom"))
 
         if schema.play_queue_generators_columns:
             metadata_query = """
@@ -636,6 +638,7 @@ class PlexDatabase:
                 playlist.id AS playlist_id,
                 playlist.title AS playlist_name,
                 NULL AS playlist_description,
+                playlist.added_at AS playlist_added_at,
                 latest_queue.play_queue_id AS play_queue_id,
                 COALESCE(latest_queue.account_id, mia.account_id) AS account_id,
                 generator.id AS play_queue_item_id,
@@ -661,10 +664,9 @@ class PlexDatabase:
             WHERE playlist.metadata_type = 15
             ORDER BY playlist.title COLLATE NOCASE, playlist.id, generator."order", generator.id
             """
-            for playlist in collect_playlists(metadata_query, "metadata"):
-                playlists_by_name[playlist.name.casefold()] = playlist
+            playlists.extend(collect_playlists(metadata_query, "metadata"))
 
-        return sorted(playlists_by_name.values(), key=lambda playlist: (playlist.name.casefold(), playlist.id))
+        return sorted(playlists, key=lambda playlist: (playlist.name.casefold(), playlist.id))
 
     def find_existing_playlist_by_name(
         self,
@@ -837,6 +839,7 @@ class PlexDatabase:
                     self.create_metadata_playlist(details)
                 else:
                     now = int(datetime.now().timestamp())
+                    playlist_added_at = PlexFilenameParser.safe_int(details.get("added_at")) or now
                     cursor = self.connection.execute(
                         """
                         INSERT INTO custom_channels (
@@ -879,8 +882,8 @@ class PlexDatabase:
                             playlist_id,
                             None,
                             1,
-                            now,
-                            now,
+                            playlist_added_at,
+                            playlist_added_at,
                             details.get("metadata_type"),
                             len(details.get("metadata_item_ids", [])),
                             details.get("extra_data"),
@@ -919,6 +922,10 @@ class PlexDatabase:
                         details.get("metadata_item_ids", []),
                     )
                     self.refresh_metadata_playlist_totals(playlist_id)
+                    self.update_metadata_playlist_added_at(
+                        playlist_id,
+                        PlexFilenameParser.safe_int(details.get("added_at")),
+                    )
                 else:
                     play_queue_id = int(details["play_queue_id"])
                     self.connection.execute(
@@ -930,6 +937,57 @@ class PlexDatabase:
                         details.get("metadata_item_ids", []),
                     )
                     self.refresh_playlist_queue_totals(play_queue_id)
+                    self.update_custom_playlist_added_at(
+                        play_queue_id,
+                        PlexFilenameParser.safe_int(details.get("added_at")),
+                    )
+            elif mutation.action == "delete_playlist":
+                details = mutation.details
+                if details.get("storage_model") == "metadata":
+                    playlist_id = int(details["playlist_id"])
+                    self.connection.execute(
+                        "DELETE FROM play_queue_generators WHERE playlist_id = ?",
+                        (playlist_id,),
+                    )
+                    self.connection.execute(
+                        "DELETE FROM play_queues WHERE playlist_id = ?",
+                        (playlist_id,),
+                    )
+                    self.connection.execute(
+                        "DELETE FROM metadata_item_accounts WHERE metadata_item_id = ?",
+                        (playlist_id,),
+                    )
+                    self.connection.execute(
+                        "DELETE FROM metadata_items WHERE id = ?",
+                        (playlist_id,),
+                    )
+                else:
+                    playlist_id = int(details["playlist_id"])
+                    play_queue_ids = [
+                        int(row["id"])
+                        for row in self.connection.execute(
+                            "SELECT id FROM play_queues WHERE playlist_id = ?",
+                            (playlist_id,),
+                        ).fetchall()
+                    ]
+                    if play_queue_ids:
+                        placeholders = ", ".join("?" for _ in play_queue_ids)
+                        self.connection.execute(
+                            f"DELETE FROM play_queue_items WHERE play_queue_id IN ({placeholders})",
+                            play_queue_ids,
+                        )
+                    self.connection.execute(
+                        "DELETE FROM play_queues WHERE playlist_id = ?",
+                        (playlist_id,),
+                    )
+                    self.connection.execute(
+                        "DELETE FROM metadata_item_accounts WHERE metadata_item_id = ?",
+                        (playlist_id,),
+                    )
+                    self.connection.execute(
+                        "DELETE FROM custom_channels WHERE id = ?",
+                        (playlist_id,),
+                    )
             else:
                 raise RuntimeError(f"Unsupported mutation action: {mutation.action}")
 
@@ -1014,6 +1072,7 @@ class PlexDatabase:
         metadata_item_ids = [int(item_id) for item_id in details.get("metadata_item_ids", [])]
         account_id = PlexFilenameParser.safe_int(details.get("account_id"))
         now = int(datetime.now().timestamp())
+        playlist_added_at = PlexFilenameParser.safe_int(details.get("added_at")) or now
         title = str(details["name"])
         total_duration_seconds = 0
         if metadata_item_ids:
@@ -1092,9 +1151,9 @@ class PlexDatabase:
                     "",
                     "",
                     "",
-                    now,
-                    now,
-                    now,
+                    playlist_added_at,
+                    playlist_added_at,
+                    playlist_added_at,
                     "",
                     extra_data,
                     hash_value,
@@ -1167,6 +1226,15 @@ class PlexDatabase:
                 (item_count, total_duration_seconds, now, now, now, playlist_id),
             )
 
+    def update_metadata_playlist_added_at(self, playlist_id: int, added_at: Optional[int]) -> None:
+        if added_at is None:
+            return
+        with self.temporarily_disable_metadata_fts_triggers():
+            self.connection.execute(
+                "UPDATE metadata_items SET added_at = ? WHERE id = ?",
+                (added_at, playlist_id),
+            )
+
     def next_playlist_order(self, play_queue_id: int) -> float:
         row = self.connection.execute(
             'SELECT MAX("order") AS max_order FROM play_queue_items WHERE play_queue_id = ?',
@@ -1214,6 +1282,14 @@ class PlexDatabase:
             WHERE id = ?
             """,
             (item_count, now, play_queue_id, play_queue_id),
+        )
+
+    def update_custom_playlist_added_at(self, play_queue_id: int, added_at: Optional[int]) -> None:
+        if added_at is None:
+            return
+        self.connection.execute(
+            "UPDATE play_queues SET created_at = ? WHERE id = ?",
+            (added_at, play_queue_id),
         )
 
     def begin_immediate(self) -> None:
@@ -1741,6 +1817,41 @@ class PlexPlaylistPlanner:
                 return candidate
             suffix += 1
 
+    @staticmethod
+    def choose_existing_playlist(
+        playlists: Sequence[PlexPlaylist],
+        name: str,
+        target_account_id: Optional[int],
+    ) -> Tuple[Optional[PlexPlaylist], List[PlexPlaylist]]:
+        candidates = [playlist for playlist in playlists if playlist.name.casefold() == name.casefold()]
+        if not candidates:
+            return None, []
+
+        if target_account_id is not None:
+            exact_account_matches = [
+                playlist
+                for playlist in candidates
+                if playlist.account_id == target_account_id
+            ]
+            if exact_account_matches:
+                preferred_pool = exact_account_matches
+            else:
+                stale_candidates = [playlist for playlist in candidates if playlist.account_id is None]
+                return None, stale_candidates
+        else:
+            preferred_pool = candidates
+
+        selected = max(
+            preferred_pool,
+            key=lambda playlist: (
+                playlist.added_at or 0,
+                playlist.play_queue_id or 0,
+                playlist.id,
+            ),
+        )
+        stale_candidates = [playlist for playlist in candidates if playlist.id != selected.id and playlist.account_id is None]
+        return selected, stale_candidates
+
     def build_item_match(
         self,
         source_item: PlexPlaylistItem,
@@ -1799,10 +1910,6 @@ class PlexPlaylistPlanner:
     ) -> Tuple[List[PlaylistTransferPlan], List[PlannedMutation]]:
         target_indexes = self.matcher.index_target_inventory(target_inventory)
         full_indexes = self.matcher.index_target_inventory(target_inventory_all)
-        target_by_name = {
-            playlist.name.casefold(): playlist
-            for playlist in target_playlists
-        }
         reserved_names = [playlist.name for playlist in target_playlists]
 
         plans: List[PlaylistTransferPlan] = []
@@ -1843,7 +1950,11 @@ class PlexPlaylistPlanner:
                 else:
                     unmatched_items.append(match_result)
 
-            existing_target_playlist = target_by_name.get(source_playlist.name.casefold())
+            existing_target_playlist, stale_target_playlists = self.choose_existing_playlist(
+                target_playlists,
+                source_playlist.name,
+                target_account_id,
+            )
             transfer_items = [
                 item.target
                 for item in matched_items
@@ -1871,6 +1982,23 @@ class PlexPlaylistPlanner:
                 )
                 continue
 
+            if stale_target_playlists:
+                notes.append(
+                    f"will remove {len(stale_target_playlists)} stale null-account target playlist(s)"
+                )
+                for stale_playlist in stale_target_playlists:
+                    mutations.append(
+                        PlannedMutation(
+                            action="delete_playlist",
+                            target_guid=f"playlist:{stale_playlist.name}:{stale_playlist.id}",
+                            details={
+                                "playlist_id": stale_playlist.id,
+                                "play_queue_id": stale_playlist.play_queue_id,
+                                "storage_model": stale_playlist.storage_model,
+                            },
+                        )
+                    )
+
             if existing_target_playlist is None:
                 mutations.append(
                     PlannedMutation(
@@ -1879,6 +2007,7 @@ class PlexPlaylistPlanner:
                         details={
                             "name": target_playlist_name,
                             "description": source_playlist.description,
+                            "added_at": source_playlist.added_at,
                             "account_id": target_account_id,
                             "metadata_type": transfer_items[0].metadata_type if transfer_items else None,
                             "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
@@ -1902,6 +2031,7 @@ class PlexPlaylistPlanner:
                         details={
                             "name": target_playlist_name,
                             "description": source_playlist.description,
+                            "added_at": source_playlist.added_at,
                             "account_id": target_account_id,
                             "metadata_type": transfer_items[0].metadata_type if transfer_items else None,
                             "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
@@ -1925,6 +2055,7 @@ class PlexPlaylistPlanner:
                                 "play_queue_id": existing_target_playlist.play_queue_id,
                                 "playlist_id": existing_target_playlist.id,
                                 "storage_model": existing_target_playlist.storage_model,
+                                "added_at": source_playlist.added_at,
                                 "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
                             },
                         )
@@ -2465,6 +2596,8 @@ class PlexWatchStatusTransferApp:
         "playlist_id",
         "source_playlist",
         "target_playlist",
+        "source_added_at",
+        "target_added_at",
         "status",
         "action",
         "source_item_count",
@@ -2479,6 +2612,8 @@ class PlexWatchStatusTransferApp:
         TableColumnSpec("playlist_id"),
         TableColumnSpec("source_playlist"),
         TableColumnSpec("target_playlist"),
+        TableColumnSpec("source_added_at"),
+        TableColumnSpec("target_added_at"),
         TableColumnSpec("status"),
         TableColumnSpec("action"),
         TableColumnSpec("matched_item_count"),
@@ -2889,6 +3024,20 @@ class PlexWatchStatusTransferApp:
             return f"{account.id}: {account.name}"
         return f"{account.id}: (unnamed account)"
 
+    @staticmethod
+    def resolve_account_prompt_default(
+        accounts: Sequence[PlexAccount],
+        default: Optional[int] = None,
+    ) -> Optional[int]:
+        valid_ids = {account.id for account in accounts}
+        if default is not None and default in valid_ids:
+            return default
+
+        named_accounts = [account for account in accounts if account.name]
+        if len(named_accounts) == 1:
+            return named_accounts[0].id
+        return None
+
     @classmethod
     def prompt_account_id(
         cls,
@@ -2900,22 +3049,42 @@ class PlexWatchStatusTransferApp:
         if not valid_ids:
             raise RuntimeError("No Plex accounts were found in the selected database.")
 
+        resolved_default = cls.resolve_account_prompt_default(accounts, default)
+
+        questionary = cls.load_questionary_module()
+        if questionary is not None:
+            choices = [
+                questionary.Choice(
+                    title=cls.describe_account(account),
+                    value=account.id,
+                )
+                for account in accounts
+            ]
+            selected = cls.prompt_questionary_select(
+                prompt,
+                choices,
+                default=resolved_default,
+                selection_prompt="Account",
+            )
+            if selected is not None:
+                return int(selected)
+
         print(prompt)
         for account in accounts:
             print(f"  {cls.describe_account(account)}")
 
-        if default is not None and default not in valid_ids:
+        if default is not None and resolved_default is None:
             print(f"Default account id {default} is not present in this database.")
-            default = None
 
         while True:
-            selected_id = cls.prompt_int_with_default("Choose account id", default)
+            selected_id = cls.prompt_int_with_default("Choose account id", resolved_default)
             if selected_id in valid_ids:
                 return selected_id
             print("Choose one of the listed account ids.")
 
-    @staticmethod
+    @classmethod
     def infer_interactive_account_defaults(
+        cls,
         source_accounts: Sequence[PlexAccount],
         target_accounts: Sequence[PlexAccount],
         source_default: Optional[int],
@@ -2945,6 +3114,9 @@ class PlexWatchStatusTransferApp:
             resolved_source_default = next(iter(source_named.values())).id
         if resolved_target_default is None and len(target_named) == 1:
             resolved_target_default = next(iter(target_named.values())).id
+
+        resolved_source_default = cls.resolve_account_prompt_default(source_accounts, resolved_source_default)
+        resolved_target_default = cls.resolve_account_prompt_default(target_accounts, resolved_target_default)
 
         return resolved_source_default, resolved_target_default
 
@@ -3176,6 +3348,12 @@ class PlexWatchStatusTransferApp:
             return selected
         return [playlist for playlist in selected if not playlist.is_empty_in_scope]
 
+    @staticmethod
+    def format_unix_timestamp(timestamp: Optional[int]) -> str:
+        if timestamp is None:
+            return ""
+        return datetime.fromtimestamp(timestamp).isoformat(sep=" ", timespec="seconds")
+
     @classmethod
     def build_playlist_rows(cls, plans: Sequence[PlaylistTransferPlan]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
@@ -3188,6 +3366,10 @@ class PlexWatchStatusTransferApp:
                     "playlist_id": plan.source_playlist.id,
                     "source_playlist": plan.source_playlist.name,
                     "target_playlist": plan.target_playlist_name,
+                    "source_added_at": cls.format_unix_timestamp(plan.source_playlist.added_at),
+                    "target_added_at": cls.format_unix_timestamp(
+                        plan.existing_target_playlist.added_at if plan.existing_target_playlist else None
+                    ),
                     "status": plan.status,
                     "action": plan.action,
                     "source_item_count": plan.source_item_count,
@@ -3221,6 +3403,12 @@ class PlexWatchStatusTransferApp:
                     "id": plan.source_playlist.id,
                     "source_name": plan.source_playlist.name,
                     "target_name": plan.target_playlist_name,
+                    "source_added_at": plan.source_playlist.added_at,
+                    "source_added_at_display": self.format_unix_timestamp(plan.source_playlist.added_at),
+                    "target_added_at": plan.existing_target_playlist.added_at if plan.existing_target_playlist else None,
+                    "target_added_at_display": self.format_unix_timestamp(
+                        plan.existing_target_playlist.added_at if plan.existing_target_playlist else None
+                    ),
                     "status": plan.status,
                     "action": plan.action,
                     "source_item_count": plan.source_item_count,
