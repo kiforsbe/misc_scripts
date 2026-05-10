@@ -102,6 +102,27 @@ class TableColumnSpec:
     width: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class PlexLibrarySection:
+    id: int
+    name: str
+    section_type: Optional[int]
+    agent: Optional[str]
+    scanner: Optional[str]
+    language: Optional[str]
+    public: Optional[int]
+
+
+@dataclass(frozen=True)
+class PlexAccount:
+    id: int
+    name: str
+    default_audio_language: Optional[str]
+    default_subtitle_language: Optional[str]
+    auto_select_audio: Optional[int]
+    auto_select_subtitle: Optional[int]
+
+
 class PlexFilenameParser:
     _guessit_wrapper = None
     _guessit_loaded = False
@@ -281,6 +302,56 @@ class PlexDatabase:
                 row_ids=row_ids,
             )
         return history
+
+    def list_library_sections(self) -> List[PlexLibrarySection]:
+        query = """
+        SELECT
+            id,
+            name,
+            section_type,
+            agent,
+            scanner,
+            language,
+            public
+        FROM library_sections
+        ORDER BY name COLLATE NOCASE, id
+        """
+        return [
+            PlexLibrarySection(
+                id=int(row["id"]),
+                name=str(row["name"] or ""),
+                section_type=PlexFilenameParser.safe_int(row["section_type"]),
+                agent=row["agent"],
+                scanner=row["scanner"],
+                language=row["language"],
+                public=PlexFilenameParser.safe_int(row["public"]),
+            )
+            for row in self.connection.execute(query)
+        ]
+
+    def list_accounts(self) -> List[PlexAccount]:
+        query = """
+        SELECT
+            id,
+            name,
+            default_audio_language,
+            default_subtitle_language,
+            auto_select_audio,
+            auto_select_subtitle
+        FROM accounts
+        ORDER BY name COLLATE NOCASE, id
+        """
+        return [
+            PlexAccount(
+                id=int(row["id"]),
+                name=str(row["name"] or ""),
+                default_audio_language=row["default_audio_language"],
+                default_subtitle_language=row["default_subtitle_language"],
+                auto_select_audio=PlexFilenameParser.safe_int(row["auto_select_audio"]),
+                auto_select_subtitle=PlexFilenameParser.safe_int(row["auto_select_subtitle"]),
+            )
+            for row in self.connection.execute(query)
+        ]
 
     def apply_mutations(self, mutations: Sequence[PlannedMutation]) -> None:
         for mutation in mutations:
@@ -684,12 +755,23 @@ class PlexReportWriter:
         "status": "status",
         "confidence": "conf",
         "reason": "reason",
+        "id": "id",
         "source_guid": "src_guid",
         "source_title": "src_title",
         "source_filename": "src_file",
         "source_path": "src_path",
         "source_watch_count": "src_cnt",
         "source_last_viewed_at": "src_seen",
+        "name": "name",
+        "section_type": "type",
+        "agent": "agent",
+        "scanner": "scanner",
+        "language": "lang",
+        "public": "public",
+        "default_audio_language": "audio_lang",
+        "default_subtitle_language": "sub_lang",
+        "auto_select_audio": "auto_audio",
+        "auto_select_subtitle": "auto_sub",
         "target_guid": "tgt_guid",
         "target_title": "tgt_title",
         "target_filename": "tgt_file",
@@ -700,6 +782,11 @@ class PlexReportWriter:
     }
     TABLE_NUMERIC_COLUMNS = {
         "confidence",
+        "id",
+        "section_type",
+        "public",
+        "auto_select_audio",
+        "auto_select_subtitle",
         "source_watch_count",
         "source_last_viewed_at",
         "target_watch_count",
@@ -709,12 +796,23 @@ class PlexReportWriter:
         "status": 10,
         "confidence": 10,
         "reason": 28,
+        "id": 6,
         "source_guid": 40,
         "source_title": 36,
         "source_filename": 44,
         "source_path": 56,
         "source_watch_count": 6,
         "source_last_viewed_at": 18,
+        "name": 28,
+        "section_type": 6,
+        "agent": 28,
+        "scanner": 24,
+        "language": 10,
+        "public": 6,
+        "default_audio_language": 12,
+        "default_subtitle_language": 12,
+        "auto_select_audio": 10,
+        "auto_select_subtitle": 9,
         "target_guid": 40,
         "target_title": 36,
         "target_filename": 44,
@@ -916,6 +1014,10 @@ class PlexReportWriter:
             writer.writerow({field: row.get(field) for field in fieldnames})
 
     @classmethod
+    def write_table_rows(cls, handle: TextIO, rows: Sequence[Dict[str, Any]], columns: Sequence[TableColumnSpec]) -> None:
+        cls._write_table(handle, rows, columns)
+
+    @classmethod
     def _write_table(cls, handle: TextIO, rows: Sequence[Dict[str, Any]], columns: Sequence[TableColumnSpec]) -> None:
         if not columns:
             raise RuntimeError("Table output requires at least one column.")
@@ -1023,73 +1125,81 @@ class PlexWatchStatusTransferApp:
     @classmethod
     def build_parser(cls) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
-            description="Transfer Plex watch history between two Plex SQLite library databases using exact basename matching without path dependence."
+            description="Manage Plex watch history and inspect Plex SQLite library databases."
         )
-        parser.add_argument(
+        subparsers = parser.add_subparsers(dest="command")
+
+        transfer_parser = subparsers.add_parser(
+            "transfer",
+            help="Transfer Plex watch history between two Plex library databases.",
+            description="Transfer Plex watch history between two Plex SQLite library databases using exact basename matching without path dependence.",
+        )
+        transfer_parser.set_defaults(command="transfer")
+        transfer_parser.add_argument(
             "--source-path",
             required=True,
             help="Path to the source Plex location. Can be the DB file itself or a folder containing com.plexapp.plugins.library.db.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--target-path",
             required=True,
             help="Path to the target Plex location. Can be the DB file itself or a folder containing com.plexapp.plugins.library.db.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--source-library",
             action="append",
             default=[],
             help="Source library section name to include. Repeat to include multiple sections.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--target-library",
             action="append",
             default=[],
             help="Target library section name to include. Repeat to include multiple sections.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--match-mode",
             choices=["strict", "balanced", "loose"],
             default="balanced",
             help="Controls how strict duplicate resolution is when multiple target rows share the exact same basename.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--min-confidence",
             type=float,
             default=0.65,
             help="Minimum confidence required to resolve duplicate exact-basename candidates.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--conflict-policy",
             choices=["merge", "overwrite", "skip"],
             default="merge",
             help="How to handle target items that already have watch history.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--account-id",
             type=int,
             default=None,
             help="Account id to use when the target metadata_item_views schema requires it.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--report",
             type=Path,
             default=None,
             help="Optional path for a JSON, CSV, or plain-text table report.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--report-format",
             choices=["auto", "json", "csv", "table"],
             default="auto",
             help="Explicit report format. Defaults to auto-detecting from the report file extension.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--console-format",
             choices=["json", "csv", "table"],
             default="table",
             help="Console output format for match results.",
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--columns",
             default=None,
             help=(
@@ -1097,16 +1207,45 @@ class PlexWatchStatusTransferApp:
                 f"Mandatory columns are: {', '.join(PlexReportWriter.TABLE_MANDATORY_COLUMNS)}"
             ),
         )
-        parser.add_argument(
+        transfer_parser.add_argument(
             "--apply",
             action="store_true",
             help="Write the planned mutations into the target DB. Without this flag the tool is dry-run only.",
         )
+
+        list_libraries_parser = subparsers.add_parser(
+            "list-libraries",
+            help="List Plex library sections in a Plex library database.",
+        )
+        list_libraries_parser.set_defaults(command="list-libraries")
+        list_libraries_parser.add_argument(
+            "--path",
+            required=True,
+            help="Path to the Plex location or DB file to inspect.",
+        )
+
+        list_accounts_parser = subparsers.add_parser(
+            "list-accounts",
+            help="List Plex accounts in a Plex library database.",
+        )
+        list_accounts_parser.set_defaults(command="list-accounts")
+        list_accounts_parser.add_argument(
+            "--path",
+            required=True,
+            help="Path to the Plex location or DB file to inspect.",
+        )
+
         return parser
 
     @classmethod
     def parse_args(cls, argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-        return cls.build_parser().parse_args(argv)
+        raw_argv = list(argv) if argv is not None else sys.argv[1:]
+        subcommands = {"transfer", "list-libraries", "list-accounts"}
+        if raw_argv and not raw_argv[0].startswith("-") and raw_argv[0] not in subcommands:
+            raw_argv = ["transfer", *raw_argv]
+        if raw_argv and raw_argv[0].startswith("-") and raw_argv[0] not in {"-h", "--help"}:
+            raw_argv = ["transfer", *raw_argv]
+        return cls.build_parser().parse_args(raw_argv)
 
     @classmethod
     def main(cls, argv: Optional[Sequence[str]] = None) -> int:
@@ -1114,6 +1253,13 @@ class PlexWatchStatusTransferApp:
         return app.run()
 
     def run(self) -> int:
+        if self.args.command == "list-libraries":
+            return self.run_list_libraries()
+        if self.args.command == "list-accounts":
+            return self.run_list_accounts()
+        return self.run_transfer()
+
+    def run_transfer(self) -> int:
         source_db_path = PlexDatabaseLocator.resolve_db_path(self.args.source_path, "source")
         target_db_path = PlexDatabaseLocator.resolve_db_path(self.args.target_path, "target")
 
@@ -1157,6 +1303,68 @@ class PlexWatchStatusTransferApp:
         finally:
             source_database.close()
             target_database.close()
+
+    def run_list_libraries(self) -> int:
+        database = PlexDatabase(PlexDatabaseLocator.resolve_db_path(self.args.path, "path"), readonly=True)
+        try:
+            rows = [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "section_type": item.section_type,
+                    "agent": item.agent,
+                    "scanner": item.scanner,
+                    "language": item.language,
+                    "public": item.public,
+                }
+                for item in database.list_library_sections()
+            ]
+            self.report_writer.write_table_rows(
+                sys.stdout,
+                rows,
+                [
+                    TableColumnSpec("id"),
+                    TableColumnSpec("name"),
+                    TableColumnSpec("section_type"),
+                    TableColumnSpec("agent"),
+                    TableColumnSpec("scanner"),
+                    TableColumnSpec("language"),
+                    TableColumnSpec("public"),
+                ],
+            )
+            return 0
+        finally:
+            database.close()
+
+    def run_list_accounts(self) -> int:
+        database = PlexDatabase(PlexDatabaseLocator.resolve_db_path(self.args.path, "path"), readonly=True)
+        try:
+            rows = [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "default_audio_language": item.default_audio_language,
+                    "default_subtitle_language": item.default_subtitle_language,
+                    "auto_select_audio": item.auto_select_audio,
+                    "auto_select_subtitle": item.auto_select_subtitle,
+                }
+                for item in database.list_accounts()
+            ]
+            self.report_writer.write_table_rows(
+                sys.stdout,
+                rows,
+                [
+                    TableColumnSpec("id"),
+                    TableColumnSpec("name"),
+                    TableColumnSpec("default_audio_language"),
+                    TableColumnSpec("default_subtitle_language"),
+                    TableColumnSpec("auto_select_audio"),
+                    TableColumnSpec("auto_select_subtitle"),
+                ],
+            )
+            return 0
+        finally:
+            database.close()
 
 
 if __name__ == "__main__":
