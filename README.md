@@ -179,16 +179,16 @@ python imdb_title_query.py --show-schema title.episode
 - No external dependencies required (uses only Python standard libraries)
 
 ### plex_watch_status_transfer.py
-A CLI for transferring Plex watch history from one Plex library database to another, matching items by exact filename basename only. The user provides a source and target location, and the script discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then transfers watch history without relying on media paths.
+A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. The user provides source and target locations, and the script discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then performs watch-history or playlist operations without relying on media paths.
 
 #### Features
-- `transfer`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
+- `transfer`, `transfer-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
 - Accepts source and target locations instead of requiring the full DB filename path
 - Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
 - Exact basename matching only; no partial filename matching
 - Optional source and target library section filters by library name
 - Separate source and target account ids for account-scoped read and write operations
-- Interactive mode when required transfer inputs are omitted, including library and account selection from the discovered source and target DB contents
+- Interactive mode when required transfer inputs are omitted, including library, account, and playlist selection from the discovered source and target DB contents
 - Smart interactive defaults for shared named accounts and existing CLI-provided values
 - Dry-run by default with table, CSV, or JSON console output and JSON, CSV, or table report output
 - Configurable table columns with compact labels, right-aligned numeric columns, truncation, and optional `column:width` overrides
@@ -197,6 +197,11 @@ A CLI for transferring Plex watch history from one Plex library database to anot
 - Planned mutations are only created when the target actually needs to change; in-sync and target-ahead rows are left untouched unless conflict policy explicitly allows overwrite behavior
 - Guarded write path that inspects the target `metadata_item_views` schema before inserting history rows
 - Updates Plex account-scoped watch state in both `metadata_item_views` and `metadata_item_settings` when supported by the target schema
+- Playlist listing supports library scoping, optional inclusion of empty playlists, and shows playlist ownership via `account_id` when available
+- Playlist transfer uses the same filename-based matching strategy as watch transfer for playlist members
+- Playlist transfer supports selecting specific playlists by id or exact name and conflict handling via `unique`, `merge`, `replace`, or `skip`
+- Empty playlists are excluded by default for both `list-playlists` and `transfer-playlists` unless `--include-empty-playlists` is used
+- Playlist transfer requires an explicit `--target-account-id` in non-interactive mode so created or updated target playlists are assigned to the intended Plex account
 - Apply mode blocks until Plex Media Server is no longer running
 
 #### Usage Examples
@@ -217,6 +222,12 @@ python plex_watch_status_transfer.py transfer --source-path "C:\Users\you\AppDat
 python plex_watch_status_transfer.py list-libraries --path "C:\Users\you\AppData\Local\Plex Media Server"
 python plex_watch_status_transfer.py list-accounts --path "C:\Users\you\AppData\Local\Plex Media Server"
 
+# List playlists in a DB and show owner account ids when available
+python plex_watch_status_transfer.py list-playlists --path "C:\Users\you\AppData\Local\Plex Media Server" --library TV --console-format table
+
+# Preview transferring selected playlists into a target account
+python plex_watch_status_transfer.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
+
 # Omit required transfer values to use the interactive workflow
 python plex_watch_status_transfer.py transfer
 ```
@@ -229,6 +240,9 @@ python plex_watch_status_transfer.py transfer
 - Interactive transfer mode first performs a dry-run, shows only rows with planned mutations by default, and then asks whether to apply the changes.
 - By default, rows that are already in sync or where the target is already ahead do not produce planned mutations.
 - Depending on the Plex schema version, source and target account ids may be required for account-scoped reads and writes.
+- Playlist discovery can read both legacy/custom playlist rows and metadata-backed Plex playlists.
+- `transfer-playlists` excludes empty playlists by default and prints a notice explaining how to include them.
+- `transfer-playlists` requires `--target-account-id` in non-interactive mode; interactive mode can prompt for it.
 
 ### media-to-mp3.py
 Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.
