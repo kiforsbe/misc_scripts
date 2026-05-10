@@ -443,6 +443,23 @@ class PlexDatabase:
                 row_values = [values[column] for column in columns]
                 for _ in range(int(mutation.details["count"])):
                     self.connection.execute(sql, row_values)
+            elif mutation.action == "replace_views":
+                row_ids = [int(row_id) for row_id in mutation.details["row_ids"]]
+                if row_ids:
+                    placeholders = ", ".join("?" for _ in row_ids)
+                    self.connection.execute(
+                        f"DELETE FROM metadata_item_views WHERE rowid IN ({placeholders})",
+                        row_ids,
+                    )
+
+                values = mutation.details["values"]
+                columns = list(values)
+                placeholders = ", ".join("?" for _ in columns)
+                quoted_columns = ", ".join(self.quote_identifier(column) for column in columns)
+                sql = f"INSERT INTO metadata_item_views ({quoted_columns}) VALUES ({placeholders})"
+                row_values = [values[column] for column in columns]
+                for _ in range(int(mutation.details["count"])):
+                    self.connection.execute(sql, row_values)
             elif mutation.action == "update_latest_view":
                 self.connection.execute(
                     "UPDATE metadata_item_views SET viewed_at = ? WHERE rowid = ?",
@@ -905,31 +922,71 @@ class PlexMutationPlanner:
             delta = source_history.watch_count - target_history.watch_count
             resulting_watch_count = target_history.watch_count
             resulting_last_viewed_at = target_history.last_viewed_at
+            source_last_viewed_at = source_history.last_viewed_at or 0
+            target_last_viewed_at = target_history.last_viewed_at or 0
+            target_count_ahead = target_history.watch_count > source_history.watch_count
+            target_timestamp_ahead = (
+                target_history.watch_count == source_history.watch_count
+                and target_last_viewed_at > source_last_viewed_at
+            )
+            needs_target_change = False
             match.account_status = "not_needed"
             match.dry_run_status = "in_sync"
 
-            if self.conflict_policy == "skip" and target_history.watch_count > 0:
-                settings_values = self.build_item_settings_values(
-                    match.target.guid,
-                    resulting_watch_count,
-                    resulting_last_viewed_at,
-                )
-                if settings_values is not None:
-                    mutations.append(
-                        PlannedMutation(
-                            action="upsert_settings",
-                            target_guid=match.target.guid,
-                            details=settings_values,
-                        )
-                    )
-                match.dry_run_status = "skipped_conflict"
-                continue
-
-            if self.conflict_policy == "overwrite" and target_history.watch_count > source_history.watch_count:
-                delta = 0
+            if target_count_ahead or target_timestamp_ahead:
                 match.dry_run_status = "target_ahead"
 
-            if delta > 0:
+            if self.conflict_policy == "skip" and target_history.watch_count > 0:
+                if delta > 0 or (
+                    source_history.last_viewed_at
+                    and source_history.watch_count == target_history.watch_count
+                    and source_last_viewed_at != target_last_viewed_at
+                ):
+                    match.dry_run_status = "skipped_conflict"
+                continue
+
+            if self.conflict_policy == "overwrite" and target_count_ahead:
+                viewed_at = source_history.last_viewed_at or int(datetime.now().timestamp())
+                insert_values, account_status, error_message = self.resolve_insert_defaults(match.target, viewed_at)
+                match.account_status = account_status
+                if error_message:
+                    match.dry_run_status = "missing_required_account" if account_status == "missing_required" else "blocked_required_columns"
+                    match.notes.append(error_message)
+                    continue
+                mutations.append(
+                    PlannedMutation(
+                        action="replace_views",
+                        target_guid=match.target.guid,
+                        details={
+                            "row_ids": list(target_history.row_ids),
+                            "count": source_history.watch_count,
+                            "values": insert_values,
+                            "source_watch_count": source_history.watch_count,
+                            "target_watch_count": target_history.watch_count,
+                        },
+                    )
+                )
+                resulting_watch_count = source_history.watch_count
+                resulting_last_viewed_at = viewed_at
+                match.dry_run_status = "ready_overwrite"
+                needs_target_change = True
+            elif self.conflict_policy == "overwrite" and target_timestamp_ahead and target_history.row_ids:
+                mutations.append(
+                    PlannedMutation(
+                        action="update_latest_view",
+                        target_guid=match.target.guid,
+                        details={
+                            "row_id": target_history.row_ids[-1],
+                            "viewed_at": source_history.last_viewed_at,
+                        },
+                    )
+                )
+                resulting_watch_count = target_history.watch_count
+                resulting_last_viewed_at = source_history.last_viewed_at
+                match.dry_run_status = "ready_overwrite"
+                needs_target_change = True
+
+            elif delta > 0:
                 viewed_at = source_history.last_viewed_at or int(datetime.now().timestamp())
                 insert_values, account_status, error_message = self.resolve_insert_defaults(match.target, viewed_at)
                 match.account_status = account_status
@@ -952,6 +1009,7 @@ class PlexMutationPlanner:
                 resulting_watch_count = source_history.watch_count
                 resulting_last_viewed_at = viewed_at
                 match.dry_run_status = "ready_insert"
+                needs_target_change = True
             elif (
                 source_history.last_viewed_at
                 and target_history.watch_count > 0
@@ -972,6 +1030,10 @@ class PlexMutationPlanner:
                 resulting_watch_count = target_history.watch_count
                 resulting_last_viewed_at = source_history.last_viewed_at
                 match.dry_run_status = "ready_update"
+                needs_target_change = True
+
+            if not needs_target_change:
+                continue
 
             settings_values = self.build_item_settings_values(
                 match.target.guid,
@@ -1879,6 +1941,8 @@ class PlexWatchStatusTransferApp:
                     matches,
                     dry_run_filter_mode,
                 )
+            elif self.interactive_transfer and not self.args.apply:
+                filtered_matches = self.filter_matches_with_planned_mutations(matches, mutations)
             filtered_target_guids = {
                 match.target.guid
                 for match in filtered_matches
@@ -1929,6 +1993,18 @@ class PlexWatchStatusTransferApp:
                 continue
             filtered_matches.append(match)
         return filtered_matches
+
+    @staticmethod
+    def filter_matches_with_planned_mutations(
+        matches: Sequence[MatchResult],
+        mutations: Sequence[PlannedMutation],
+    ) -> List[MatchResult]:
+        planned_target_guids = {mutation.target_guid for mutation in mutations}
+        return [
+            match
+            for match in matches
+            if match.target is not None and match.target.guid in planned_target_guids
+        ]
 
     @staticmethod
     def is_warning_match(match: MatchResult) -> bool:
