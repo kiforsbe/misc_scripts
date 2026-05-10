@@ -1447,6 +1447,7 @@ class PlexWatchStatusTransferApp:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.report_writer = PlexReportWriter()
+        self.interactive_transfer = False
 
     @classmethod
     def build_parser(cls) -> argparse.ArgumentParser:
@@ -1743,8 +1744,32 @@ class PlexWatchStatusTransferApp:
             if valid:
                 return selections
 
+    @staticmethod
+    def prompt_yes_no(prompt: str, default: bool = False) -> bool:
+        default_hint = "[Y/n]" if default else "[y/N]"
+        while True:
+            value = input(f"{prompt} {default_hint}: ").strip().casefold()
+            if not value:
+                return default
+            if value in {"y", "yes"}:
+                return True
+            if value in {"n", "no"}:
+                return False
+            print("Answer yes or no.")
+
+    @staticmethod
+    def apply_planned_mutations(target_db_path: Path, mutations: Sequence[PlannedMutation]) -> None:
+        PlexEnvironment.wait_for_plex_shutdown()
+        database = PlexDatabase(target_db_path, readonly=False)
+        try:
+            database.begin_immediate()
+            database.apply_mutations(mutations)
+            database.commit()
+        finally:
+            database.close()
+
     @classmethod
-    def populate_missing_transfer_args(cls, args: argparse.Namespace) -> None:
+    def populate_missing_transfer_args(cls, args: argparse.Namespace) -> bool:
         required_values = (
             args.source_path,
             args.target_path,
@@ -1752,7 +1777,7 @@ class PlexWatchStatusTransferApp:
             args.target_account_id,
         )
         if all(value is not None for value in required_values):
-            return
+            return False
 
         print("Interactive transfer setup")
         args.source_path = cls.prompt_with_default("Source Plex path", args.source_path)
@@ -1803,9 +1828,10 @@ class PlexWatchStatusTransferApp:
             target_accounts,
             target_account_default,
         )
+        return True
 
     def run_transfer(self) -> int:
-        self.populate_missing_transfer_args(self.args)
+        self.interactive_transfer = self.populate_missing_transfer_args(self.args)
         dry_run_filter_mode = self.args.dry_run_status_filter
         dry_run_filters_active = dry_run_filter_mode != "all"
 
@@ -1874,6 +1900,15 @@ class PlexWatchStatusTransferApp:
             self.report_writer.print_summary(output_matches, output_mutations, self.args.apply, stream=summary_stream)
             if not self.args.apply and dry_run_filters_active:
                 print(f"Displayed rows: {len(output_matches)} of {len(matches)}", file=summary_stream)
+
+            if self.interactive_transfer and not self.args.apply:
+                should_apply = self.prompt_yes_no("Apply these changes?", default=False)
+                if should_apply:
+                    self.apply_planned_mutations(target_db_path, mutations)
+                    self.report_writer.print_summary(matches, mutations, True, stream=summary_stream)
+                else:
+                    print("Changes were not applied.", file=summary_stream)
+
             self.report_writer.detach_redirected_stdout()
             return 0
         finally:
