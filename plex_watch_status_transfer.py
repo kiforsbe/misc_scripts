@@ -2609,10 +2609,6 @@ class PlexWatchStatusTransferApp:
         library_by_id = {library.id: library for library in libraries}
         library_by_name = {library.name.casefold(): library for library in libraries if library.name}
 
-        print(prompt)
-        for library in libraries:
-            print(f"  {cls.describe_library_section(library)}")
-
         invalid_defaults = [name for name in default_names if name.casefold() not in library_by_name]
         if invalid_defaults:
             print(
@@ -2640,6 +2636,10 @@ class PlexWatchStatusTransferApp:
                 return list(selected)
 
         cls.maybe_warn_questionary_unavailable()
+
+        print(prompt)
+        for library in libraries:
+            print(f"  {cls.describe_library_section(library)}")
 
         default_label = ", ".join(default_names) if default_names else "all"
         prompt_suffix = f" [{default_label}]" if default_label else ""
