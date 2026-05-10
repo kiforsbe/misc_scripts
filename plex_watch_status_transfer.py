@@ -1,15 +1,17 @@
 import argparse
 import csv
+import errno
 import json
 import os
 import sqlite3
 import subprocess
+import sys
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, TextIO, Tuple
 
 
 @dataclass
@@ -92,6 +94,12 @@ class PlannedMutation:
     action: str
     target_guid: str
     details: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TableColumnSpec:
+    name: str
+    width: Optional[int] = None
 
 
 class PlexFilenameParser:
@@ -643,7 +651,81 @@ class PlexMutationPlanner:
 
 
 class PlexReportWriter:
-    def emit_report(self, report_path: Optional[Path], matches: Sequence[MatchResult], mutations: Sequence[PlannedMutation]) -> None:
+    MATCH_ROW_COLUMNS = (
+        "status",
+        "confidence",
+        "reason",
+        "source_guid",
+        "source_title",
+        "source_filename",
+        "source_path",
+        "source_watch_count",
+        "source_last_viewed_at",
+        "target_guid",
+        "target_title",
+        "target_filename",
+        "target_path",
+        "target_watch_count",
+        "target_last_viewed_at",
+        "notes",
+    )
+    TABLE_DEFAULT_COLUMNS = (
+        "status",
+        "source_filename",
+        "source_watch_count",
+        "target_filename",
+        "target_watch_count",
+    )
+    TABLE_MANDATORY_COLUMNS = (
+        "status",
+        "source_filename",
+    )
+    TABLE_COLUMN_LABELS = {
+        "status": "status",
+        "confidence": "conf",
+        "reason": "reason",
+        "source_guid": "src_guid",
+        "source_title": "src_title",
+        "source_filename": "src_file",
+        "source_path": "src_path",
+        "source_watch_count": "src_cnt",
+        "source_last_viewed_at": "src_seen",
+        "target_guid": "tgt_guid",
+        "target_title": "tgt_title",
+        "target_filename": "tgt_file",
+        "target_path": "tgt_path",
+        "target_watch_count": "tgt_cnt",
+        "target_last_viewed_at": "tgt_seen",
+        "notes": "notes",
+    }
+    TABLE_NUMERIC_COLUMNS = {
+        "confidence",
+        "source_watch_count",
+        "source_last_viewed_at",
+        "target_watch_count",
+        "target_last_viewed_at",
+    }
+    TABLE_COLUMN_MAX_WIDTHS = {
+        "status": 10,
+        "confidence": 10,
+        "reason": 28,
+        "source_guid": 40,
+        "source_title": 36,
+        "source_filename": 44,
+        "source_path": 56,
+        "source_watch_count": 6,
+        "source_last_viewed_at": 18,
+        "target_guid": 40,
+        "target_title": 36,
+        "target_filename": 44,
+        "target_path": 56,
+        "target_watch_count": 6,
+        "target_last_viewed_at": 18,
+        "notes": 40,
+    }
+    TABLE_FALLBACK_MAX_WIDTH = 32
+
+    def build_payload(self, matches: Sequence[MatchResult], mutations: Sequence[PlannedMutation]) -> Dict[str, Any]:
         payload = {
             "summary": {
                 "matched": sum(1 for item in matches if item.status == "matched"),
@@ -678,67 +760,259 @@ class PlexReportWriter:
             "mutations": [asdict(mutation) for mutation in mutations],
         }
 
+        return payload
+
+    def build_match_rows(self, matches: Sequence[MatchResult]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "status": match.status,
+                "confidence": round(match.confidence, 3),
+                "reason": match.reason,
+                "source_guid": match.source.guid,
+                "source_title": match.source.title,
+                "source_filename": match.source.basename,
+                "source_path": match.source.file_path,
+                "source_watch_count": match.source_history.watch_count,
+                "source_last_viewed_at": match.source_history.last_viewed_at,
+                "target_guid": match.target.guid if match.target else None,
+                "target_title": match.target.title if match.target else None,
+                "target_filename": match.target.basename if match.target else None,
+                "target_path": match.target.file_path if match.target else None,
+                "target_watch_count": match.target_history.watch_count if match.target_history else None,
+                "target_last_viewed_at": match.target_history.last_viewed_at if match.target_history else None,
+                "notes": "; ".join(match.notes),
+            }
+            for match in matches
+        ]
+
+    def emit_console(
+        self,
+        console_format: str,
+        matches: Sequence[MatchResult],
+        mutations: Sequence[PlannedMutation],
+        columns: Optional[Sequence[TableColumnSpec]] = None,
+    ) -> None:
+        payload = self.build_payload(matches, mutations)
+        rows = self.build_match_rows(matches)
+
+        try:
+            if console_format == "json":
+                print(json.dumps(payload, indent=2))
+                sys.stdout.flush()
+                return
+
+            if console_format == "csv":
+                self._write_csv_rows(sys.stdout, rows, self.MATCH_ROW_COLUMNS)
+                sys.stdout.flush()
+                return
+
+            if console_format == "table":
+                resolved_columns = self.resolve_table_columns(columns)
+                self._write_table(sys.stdout, rows, resolved_columns)
+                sys.stdout.flush()
+                return
+        except OSError as exc:
+            if self._is_broken_pipe_error(exc):
+                sys.stdout = open(os.devnull, "w", encoding="utf-8")
+                return
+            raise
+
+        raise RuntimeError(f"Unsupported console format: {console_format}")
+
+    def emit_report(
+        self,
+        report_path: Optional[Path],
+        report_format: str,
+        matches: Sequence[MatchResult],
+        mutations: Sequence[PlannedMutation],
+        columns: Optional[Sequence[TableColumnSpec]] = None,
+    ) -> None:
         if report_path is None:
-            print(json.dumps(payload, indent=2))
             return
+
+        resolved_format = self.resolve_report_format(report_path, report_format)
+        payload = self.build_payload(matches, mutations)
+        rows = self.build_match_rows(matches)
+
+        if resolved_format == "json":
+            with report_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+            return
+
+        if resolved_format == "csv":
+            with report_path.open("w", newline="", encoding="utf-8") as handle:
+                self._write_csv_rows(handle, rows, self.MATCH_ROW_COLUMNS)
+            return
+
+        if resolved_format == "table":
+            with report_path.open("w", encoding="utf-8") as handle:
+                self._write_table(handle, rows, self.resolve_table_columns(columns))
+            return
+
+        raise RuntimeError(f"Unsupported report format: {resolved_format}")
+
+    @classmethod
+    def resolve_report_format(cls, report_path: Path, report_format: str) -> str:
+        if report_format != "auto":
+            return report_format
 
         if report_path.suffix.casefold() == ".csv":
-            self._write_csv_report(report_path, matches)
-            return
+            return "csv"
+        if report_path.suffix.casefold() in {".table", ".txt"}:
+            return "table"
+        return "json"
 
-        with report_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
+    @classmethod
+    def resolve_table_columns(cls, columns: Optional[Sequence[TableColumnSpec]]) -> List[TableColumnSpec]:
+        requested = list(columns or [TableColumnSpec(name) for name in cls.TABLE_DEFAULT_COLUMNS])
+        resolved: List[TableColumnSpec] = []
+        seen = set()
 
-    def _write_csv_report(self, report_path: Path, matches: Sequence[MatchResult]) -> None:
-        with report_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=[
-                    "status",
-                    "confidence",
-                    "reason",
-                    "source_guid",
-                    "source_title",
-                    "source_basename",
-                    "source_watch_count",
-                    "source_last_viewed_at",
-                    "target_guid",
-                    "target_title",
-                    "target_basename",
-                    "target_watch_count",
-                    "target_last_viewed_at",
-                    "notes",
-                ],
-            )
-            writer.writeheader()
-            for match in matches:
-                writer.writerow(
-                    {
-                        "status": match.status,
-                        "confidence": round(match.confidence, 3),
-                        "reason": match.reason,
-                        "source_guid": match.source.guid,
-                        "source_title": match.source.title,
-                        "source_basename": match.source.basename,
-                        "source_watch_count": match.source_history.watch_count,
-                        "source_last_viewed_at": match.source_history.last_viewed_at,
-                        "target_guid": match.target.guid if match.target else None,
-                        "target_title": match.target.title if match.target else None,
-                        "target_basename": match.target.basename if match.target else None,
-                        "target_watch_count": match.target_history.watch_count if match.target_history else None,
-                        "target_last_viewed_at": match.target_history.last_viewed_at if match.target_history else None,
-                        "notes": "; ".join(match.notes),
-                    }
+        for column in cls.TABLE_MANDATORY_COLUMNS:
+            if column not in seen:
+                resolved.append(TableColumnSpec(column, cls.TABLE_COLUMN_MAX_WIDTHS.get(column)))
+                seen.add(column)
+
+        for column in requested:
+            if column.name not in cls.MATCH_ROW_COLUMNS:
+                supported = ", ".join(cls.MATCH_ROW_COLUMNS)
+                raise RuntimeError(f"Unsupported column '{column.name}'. Supported columns: {supported}")
+            if column.name in seen:
+                continue
+            resolved.append(
+                TableColumnSpec(
+                    name=column.name,
+                    width=column.width if column.width is not None else cls.TABLE_COLUMN_MAX_WIDTHS.get(column.name),
                 )
+            )
+            seen.add(column.name)
+        return resolved
 
     @staticmethod
-    def print_summary(matches: Sequence[MatchResult], mutations: Sequence[PlannedMutation], apply: bool) -> None:
+    def _stringify_cell(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _truncate_cell(value: str, width: int) -> str:
+        if width < 1:
+            raise RuntimeError("Table column width must be at least 1.")
+        if len(value) <= width:
+            return value
+        if width <= 3:
+            return "." * width
+        return value[: width - 3] + "..."
+
+    @staticmethod
+    def _is_broken_pipe_error(exc: OSError) -> bool:
+        return exc.errno in {errno.EPIPE, errno.EINVAL, errno.ECONNRESET}
+
+    @classmethod
+    def _write_csv_rows(cls, handle: TextIO, rows: Sequence[Dict[str, Any]], fieldnames: Sequence[str]) -> None:
+        writer = csv.DictWriter(handle, fieldnames=list(fieldnames), lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field) for field in fieldnames})
+
+    @classmethod
+    def _write_table(cls, handle: TextIO, rows: Sequence[Dict[str, Any]], columns: Sequence[TableColumnSpec]) -> None:
+        if not columns:
+            raise RuntimeError("Table output requires at least one column.")
+
+        labels = {
+            column.name: cls.TABLE_COLUMN_LABELS.get(column.name, column.name)
+            for column in columns
+        }
+        max_widths = {
+            column.name: max(
+                len(labels[column.name]),
+                column.width if column.width is not None else cls.TABLE_FALLBACK_MAX_WIDTH,
+            )
+            for column in columns
+        }
+        widths = {
+            column.name: len(labels[column.name])
+            for column in columns
+        }
+        string_rows: List[Dict[str, str]] = []
+        for row in rows:
+            string_row = {}
+            for column in columns:
+                value = cls._truncate_cell(
+                    cls._stringify_cell(row.get(column.name)),
+                    max_widths[column.name],
+                )
+                string_row[column.name] = value
+                widths[column.name] = max(widths[column.name], len(value))
+            string_rows.append(string_row)
+
+        header = " | ".join(labels[column.name].ljust(widths[column.name]) for column in columns)
+        separator = "-+-".join("-" * widths[column.name] for column in columns)
+        handle.write(header + "\n")
+        handle.write(separator + "\n")
+        for row in string_rows:
+            handle.write(
+                " | ".join(
+                    cls._format_table_cell(row[column.name], widths[column.name], column.name)
+                    for column in columns
+                )
+                + "\n"
+            )
+
+    @classmethod
+    def _format_table_cell(cls, value: str, width: int, column_name: str) -> str:
+        if column_name in cls.TABLE_NUMERIC_COLUMNS:
+            return value.rjust(width)
+        return value.ljust(width)
+
+    @staticmethod
+    def parse_columns(columns_value: Optional[str]) -> Optional[List[TableColumnSpec]]:
+        if not columns_value:
+            return None
+        columns: List[TableColumnSpec] = []
+        for raw_column in columns_value.split(","):
+            column = raw_column.strip()
+            if not column:
+                continue
+            if ":" not in column:
+                columns.append(TableColumnSpec(column))
+                continue
+            name, width_text = column.rsplit(":", 1)
+            name = name.strip()
+            width_text = width_text.strip()
+            if not name:
+                raise RuntimeError("Column overrides must include a column name before ':'.")
+            if not width_text.isdigit():
+                raise RuntimeError(f"Invalid width override '{column}'. Use column_name:width.")
+            width = int(width_text)
+            if width < 1:
+                raise RuntimeError(f"Invalid width override '{column}'. Width must be at least 1.")
+            columns.append(TableColumnSpec(name, width))
+        return columns or None
+
+    @classmethod
+    def print_summary(
+        cls,
+        matches: Sequence[MatchResult],
+        mutations: Sequence[PlannedMutation],
+        apply: bool,
+        stream: TextIO = sys.stdout,
+    ) -> None:
         matched = sum(1 for item in matches if item.status == "matched")
         unmatched = sum(1 for item in matches if item.status == "unmatched")
-        print(f"Matched watched items: {matched}")
-        print(f"Unmatched watched items: {unmatched}")
-        print(f"Planned mutations: {len(mutations)}")
-        print("Mode: apply" if apply else "Mode: dry-run")
+        try:
+            print(f"Matched watched items: {matched}", file=stream)
+            print(f"Unmatched watched items: {unmatched}", file=stream)
+            print(f"Planned mutations: {len(mutations)}", file=stream)
+            print("Mode: apply" if apply else "Mode: dry-run", file=stream)
+            stream.flush()
+        except OSError as exc:
+            if cls._is_broken_pipe_error(exc):
+                if stream is sys.stdout:
+                    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+                return
+            raise
 
 
 class PlexWatchStatusTransferApp:
@@ -801,7 +1075,27 @@ class PlexWatchStatusTransferApp:
             "--report",
             type=Path,
             default=None,
-            help="Optional path for a JSON or CSV report. Defaults to printing JSON to stdout.",
+            help="Optional path for a JSON, CSV, or plain-text table report.",
+        )
+        parser.add_argument(
+            "--report-format",
+            choices=["auto", "json", "csv", "table"],
+            default="auto",
+            help="Explicit report format. Defaults to auto-detecting from the report file extension.",
+        )
+        parser.add_argument(
+            "--console-format",
+            choices=["json", "csv", "table"],
+            default="table",
+            help="Console output format for match results.",
+        )
+        parser.add_argument(
+            "--columns",
+            default=None,
+            help=(
+                "Comma-separated column list for table output. Use column or column:width. "
+                f"Mandatory columns are: {', '.join(PlexReportWriter.TABLE_MANDATORY_COLUMNS)}"
+            ),
         )
         parser.add_argument(
             "--apply",
@@ -848,14 +1142,17 @@ class PlexWatchStatusTransferApp:
 
             mutation_planner = PlexMutationPlanner(target_schema, self.args.account_id, self.args.conflict_policy)
             mutations = mutation_planner.plan_mutations(matches)
+            columns = self.report_writer.parse_columns(self.args.columns)
 
             if self.args.apply:
                 target_database.begin_immediate()
                 target_database.apply_mutations(mutations)
                 target_database.commit()
 
-            self.report_writer.emit_report(self.args.report, matches, mutations)
-            self.report_writer.print_summary(matches, mutations, self.args.apply)
+            self.report_writer.emit_console(self.args.console_format, matches, mutations, columns)
+            self.report_writer.emit_report(self.args.report, self.args.report_format, matches, mutations, columns)
+            summary_stream = sys.stderr if self.args.console_format in {"json", "csv"} else sys.stdout
+            self.report_writer.print_summary(matches, mutations, self.args.apply, stream=summary_stream)
             return 0
         finally:
             source_database.close()
