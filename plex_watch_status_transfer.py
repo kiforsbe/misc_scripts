@@ -1,6 +1,7 @@
 import argparse
 import csv
 import errno
+import hashlib
 import importlib
 import json
 import os
@@ -10,6 +11,7 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -182,6 +184,7 @@ class PlexPlaylist:
     play_queue_id: Optional[int]
     account_id: Optional[int]
     items: List[PlexPlaylistItem]
+    storage_model: str = "custom"
 
     @property
     def scoped_items(self) -> List[PlexPlaylistItem]:
@@ -288,6 +291,21 @@ class PlexDatabase:
         self.readonly = readonly
         self.connection = self._connect()
 
+    @staticmethod
+    def sqlite_icu_root_collation(left: Optional[str], right: Optional[str]) -> int:
+        if left is None:
+            return 0 if right is None else -1
+        if right is None:
+            return 1
+
+        left_key = str(left).casefold()
+        right_key = str(right).casefold()
+        if left_key < right_key:
+            return -1
+        if left_key > right_key:
+            return 1
+        return 0
+
     def _connect(self) -> sqlite3.Connection:
         if self.readonly:
             uri = f"file:{self.db_path.as_posix()}?mode=ro"
@@ -295,6 +313,7 @@ class PlexDatabase:
         else:
             connection = sqlite3.connect(str(self.db_path))
         connection.row_factory = sqlite3.Row
+        connection.create_collation("icu_root", self.sqlite_icu_root_collation)
         return connection
 
     def close(self) -> None:
@@ -521,9 +540,97 @@ class PlexDatabase:
         scoped_by_id = self.build_inventory_by_metadata_id(scoped_inventory)
         all_by_id = scoped_by_id if inventory_all is None else self.build_inventory_by_metadata_id(inventory_all)
 
-        use_metadata_playlist_model = bool(schema.play_queue_generators_columns)
-        if use_metadata_playlist_model:
-            query = """
+        def collect_playlists(query: str, storage_model: str) -> List[PlexPlaylist]:
+            playlists: List[PlexPlaylist] = []
+            current_playlist_id: Optional[int] = None
+            current_items: List[PlexPlaylistItem] = []
+            current_header: Optional[Dict[str, Any]] = None
+
+            def flush_current() -> None:
+                if current_header is None:
+                    return
+                playlists.append(
+                    PlexPlaylist(
+                        id=int(current_header["playlist_id"]),
+                        name=str(current_header["playlist_name"] or ""),
+                        description=current_header["playlist_description"],
+                        play_queue_id=PlexFilenameParser.safe_int(current_header["play_queue_id"]),
+                        account_id=PlexFilenameParser.safe_int(current_header["account_id"]),
+                        items=list(current_items),
+                        storage_model=storage_model,
+                    )
+                )
+
+            for row in self.connection.execute(query):
+                playlist_id = int(row["playlist_id"])
+                if current_playlist_id != playlist_id:
+                    flush_current()
+                    current_playlist_id = playlist_id
+                    current_header = dict(row)
+                    current_items = []
+
+                metadata_item_id = PlexFilenameParser.safe_int(row["metadata_item_id"])
+                if metadata_item_id is None:
+                    continue
+
+                scoped_media = scoped_by_id.get(metadata_item_id)
+                media = scoped_media or all_by_id.get(metadata_item_id)
+                notes: List[str] = []
+                in_scope = scoped_media is not None
+                if scoped_media is None and media is not None:
+                    notes.append("outside selected source library scope")
+                if media is None:
+                    notes.append("no file-backed media row available for this playlist item")
+
+                current_items.append(
+                    PlexPlaylistItem(
+                        play_queue_item_id=PlexFilenameParser.safe_int(row["play_queue_item_id"]),
+                        metadata_item_id=metadata_item_id,
+                        order_value=float(row["order_value"] or 0.0),
+                        media=media,
+                        title=row["item_title"],
+                        library_section_name=row["item_library_name"],
+                        in_scope=in_scope,
+                        notes=notes,
+                    )
+                )
+
+            flush_current()
+            return playlists
+
+        playlists_by_name: Dict[str, PlexPlaylist] = {}
+
+        if schema.custom_channels_columns and schema.play_queue_items_columns:
+            custom_query = """
+            SELECT
+                cc.id AS playlist_id,
+                cc.name AS playlist_name,
+                cc.description AS playlist_description,
+                pq.id AS play_queue_id,
+                pq.account_id AS account_id,
+                pqi.id AS play_queue_item_id,
+                pqi.metadata_item_id AS metadata_item_id,
+                pqi."order" AS order_value,
+                md.title AS item_title,
+                ls.name AS item_library_name
+            FROM custom_channels cc
+            LEFT JOIN (
+                SELECT playlist_id, MAX(id) AS play_queue_id
+                FROM play_queues
+                WHERE playlist_id IS NOT NULL
+                GROUP BY playlist_id
+            ) latest_queue ON latest_queue.playlist_id = cc.id
+            LEFT JOIN play_queues pq ON pq.id = latest_queue.play_queue_id
+            LEFT JOIN play_queue_items pqi ON pqi.play_queue_id = pq.id
+            LEFT JOIN metadata_items md ON md.id = pqi.metadata_item_id
+            LEFT JOIN library_sections ls ON ls.id = md.library_section_id
+            ORDER BY cc.name COLLATE NOCASE, cc.id, pqi."order", pqi.id
+            """
+            for playlist in collect_playlists(custom_query, "custom"):
+                playlists_by_name[playlist.name.casefold()] = playlist
+
+        if schema.play_queue_generators_columns:
+            metadata_query = """
             SELECT
                 playlist.id AS playlist_id,
                 playlist.title AS playlist_name,
@@ -552,88 +659,10 @@ class PlexDatabase:
             WHERE playlist.metadata_type = 15
             ORDER BY playlist.title COLLATE NOCASE, playlist.id, generator."order", generator.id
             """
-        else:
-            query = """
-            SELECT
-                cc.id AS playlist_id,
-                cc.name AS playlist_name,
-                cc.description AS playlist_description,
-                pq.id AS play_queue_id,
-                pq.account_id AS account_id,
-                pqi.id AS play_queue_item_id,
-                pqi.metadata_item_id AS metadata_item_id,
-                pqi."order" AS order_value,
-                md.title AS item_title,
-                ls.name AS item_library_name
-            FROM custom_channels cc
-            LEFT JOIN (
-                SELECT playlist_id, MAX(id) AS play_queue_id
-                FROM play_queues
-                WHERE playlist_id IS NOT NULL
-                GROUP BY playlist_id
-            ) latest_queue ON latest_queue.playlist_id = cc.id
-            LEFT JOIN play_queues pq ON pq.id = latest_queue.play_queue_id
-            LEFT JOIN play_queue_items pqi ON pqi.play_queue_id = pq.id
-            LEFT JOIN metadata_items md ON md.id = pqi.metadata_item_id
-            LEFT JOIN library_sections ls ON ls.id = md.library_section_id
-            ORDER BY cc.name COLLATE NOCASE, cc.id, pqi."order", pqi.id
-            """
+            for playlist in collect_playlists(metadata_query, "metadata"):
+                playlists_by_name[playlist.name.casefold()] = playlist
 
-        playlists: List[PlexPlaylist] = []
-        current_playlist_id: Optional[int] = None
-        current_items: List[PlexPlaylistItem] = []
-        current_header: Optional[Dict[str, Any]] = None
-
-        def flush_current() -> None:
-            if current_header is None:
-                return
-            playlists.append(
-                PlexPlaylist(
-                    id=int(current_header["playlist_id"]),
-                    name=str(current_header["playlist_name"] or ""),
-                    description=current_header["playlist_description"],
-                    play_queue_id=PlexFilenameParser.safe_int(current_header["play_queue_id"]),
-                    account_id=PlexFilenameParser.safe_int(current_header["account_id"]),
-                    items=list(current_items),
-                )
-            )
-
-        for row in self.connection.execute(query):
-            playlist_id = int(row["playlist_id"])
-            if current_playlist_id != playlist_id:
-                flush_current()
-                current_playlist_id = playlist_id
-                current_header = dict(row)
-                current_items = []
-
-            metadata_item_id = PlexFilenameParser.safe_int(row["metadata_item_id"])
-            if metadata_item_id is None:
-                continue
-
-            scoped_media = scoped_by_id.get(metadata_item_id)
-            media = scoped_media or all_by_id.get(metadata_item_id)
-            notes: List[str] = []
-            in_scope = scoped_media is not None
-            if scoped_media is None and media is not None:
-                notes.append("outside selected source library scope")
-            if media is None:
-                notes.append("no file-backed media row available for this playlist item")
-
-            current_items.append(
-                PlexPlaylistItem(
-                    play_queue_item_id=PlexFilenameParser.safe_int(row["play_queue_item_id"]),
-                    metadata_item_id=metadata_item_id,
-                    order_value=float(row["order_value"] or 0.0),
-                    media=media,
-                    title=row["item_title"],
-                    library_section_name=row["item_library_name"],
-                    in_scope=in_scope,
-                    notes=notes,
-                )
-            )
-
-        flush_current()
-        return playlists
+        return sorted(playlists_by_name.values(), key=lambda playlist: (playlist.name.casefold(), playlist.id))
 
     def find_existing_playlist_by_name(
         self,
@@ -802,82 +831,339 @@ class PlexDatabase:
                 )
             elif mutation.action == "create_playlist":
                 details = mutation.details
-                now = int(datetime.now().timestamp())
-                cursor = self.connection.execute(
-                    """
-                    INSERT INTO custom_channels (
-                        name,
-                        description,
-                        ordering,
-                        visibility,
-                        displayed_on,
-                        content_rating
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        details["name"],
-                        details.get("description"),
-                        details.get("ordering", 0),
-                        details.get("visibility"),
-                        details.get("displayed_on"),
-                        details.get("content_rating"),
-                    ),
-                )
-                playlist_id = int(cursor.lastrowid)
-                play_queue_cursor = self.connection.execute(
-                    """
-                    INSERT INTO play_queues (
-                        client_identifier,
-                        account_id,
-                        playlist_id,
-                        play_queue_generator_id,
-                        version,
-                        created_at,
-                        updated_at,
-                        metadata_type,
-                        total_items_count,
-                        extra_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        details.get("client_identifier") or uuid.uuid4().hex,
-                        details.get("account_id"),
-                        playlist_id,
-                        None,
-                        1,
-                        now,
-                        now,
-                        details.get("metadata_type"),
-                        len(details.get("metadata_item_ids", [])),
-                        details.get("extra_data"),
-                    ),
-                )
-                self.insert_playlist_items(
-                    int(play_queue_cursor.lastrowid),
-                    details.get("metadata_item_ids", []),
-                )
+                if details.get("storage_model") == "metadata" or self.prefers_metadata_playlist_storage():
+                    self.create_metadata_playlist(details)
+                else:
+                    now = int(datetime.now().timestamp())
+                    cursor = self.connection.execute(
+                        """
+                        INSERT INTO custom_channels (
+                            name,
+                            description,
+                            ordering,
+                            visibility,
+                            displayed_on,
+                            content_rating
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            details["name"],
+                            details.get("description"),
+                            details.get("ordering", 0),
+                            details.get("visibility"),
+                            details.get("displayed_on"),
+                            details.get("content_rating"),
+                        ),
+                    )
+                    playlist_id = int(cursor.lastrowid)
+                    play_queue_cursor = self.connection.execute(
+                        """
+                        INSERT INTO play_queues (
+                            client_identifier,
+                            account_id,
+                            playlist_id,
+                            play_queue_generator_id,
+                            version,
+                            created_at,
+                            updated_at,
+                            metadata_type,
+                            total_items_count,
+                            extra_data
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            details.get("client_identifier") or uuid.uuid4().hex,
+                            details.get("account_id"),
+                            playlist_id,
+                            None,
+                            1,
+                            now,
+                            now,
+                            details.get("metadata_type"),
+                            len(details.get("metadata_item_ids", [])),
+                            details.get("extra_data"),
+                        ),
+                    )
+                    self.insert_playlist_items(
+                        int(play_queue_cursor.lastrowid),
+                        details.get("metadata_item_ids", []),
+                    )
             elif mutation.action == "merge_playlist_items":
                 details = mutation.details
-                self.insert_playlist_items(
-                    int(details["play_queue_id"]),
-                    details.get("metadata_item_ids", []),
-                    self.next_playlist_order(int(details["play_queue_id"])),
-                )
-                self.refresh_playlist_queue_totals(int(details["play_queue_id"]))
+                if details.get("storage_model") == "metadata":
+                    self.insert_playlist_generators(
+                        int(details["playlist_id"]),
+                        details.get("metadata_item_ids", []),
+                        self.next_playlist_generator_order(int(details["playlist_id"])),
+                    )
+                    self.refresh_metadata_playlist_totals(int(details["playlist_id"]))
+                else:
+                    self.insert_playlist_items(
+                        int(details["play_queue_id"]),
+                        details.get("metadata_item_ids", []),
+                        self.next_playlist_order(int(details["play_queue_id"])),
+                    )
+                    self.refresh_playlist_queue_totals(int(details["play_queue_id"]))
             elif mutation.action == "replace_playlist_items":
                 details = mutation.details
-                play_queue_id = int(details["play_queue_id"])
-                self.connection.execute(
-                    "DELETE FROM play_queue_items WHERE play_queue_id = ?",
-                    (play_queue_id,),
-                )
-                self.insert_playlist_items(
-                    play_queue_id,
-                    details.get("metadata_item_ids", []),
-                )
-                self.refresh_playlist_queue_totals(play_queue_id)
+                if details.get("storage_model") == "metadata":
+                    playlist_id = int(details["playlist_id"])
+                    self.connection.execute(
+                        "DELETE FROM play_queue_generators WHERE playlist_id = ?",
+                        (playlist_id,),
+                    )
+                    self.insert_playlist_generators(
+                        playlist_id,
+                        details.get("metadata_item_ids", []),
+                    )
+                    self.refresh_metadata_playlist_totals(playlist_id)
+                else:
+                    play_queue_id = int(details["play_queue_id"])
+                    self.connection.execute(
+                        "DELETE FROM play_queue_items WHERE play_queue_id = ?",
+                        (play_queue_id,),
+                    )
+                    self.insert_playlist_items(
+                        play_queue_id,
+                        details.get("metadata_item_ids", []),
+                    )
+                    self.refresh_playlist_queue_totals(play_queue_id)
             else:
                 raise RuntimeError(f"Unsupported mutation action: {mutation.action}")
+
+    def prefers_metadata_playlist_storage(self) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM metadata_items playlist
+            JOIN play_queue_generators generator ON generator.playlist_id = playlist.id
+            WHERE playlist.metadata_type = 15
+            LIMIT 1
+            """
+        ).fetchone()
+        return row is not None
+
+    @contextmanager
+    def temporarily_disable_metadata_fts_triggers(self):
+        trigger_rows = self.connection.execute(
+            """
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type = 'trigger'
+              AND tbl_name = 'metadata_items'
+              AND name LIKE 'fts4_metadata_titles_%'
+            ORDER BY name
+            """
+        ).fetchall()
+        try:
+            for row in trigger_rows:
+                self.connection.execute(f'DROP TRIGGER IF EXISTS {self.quote_identifier(row["name"])}')
+            yield
+        finally:
+            for row in trigger_rows:
+                if row["sql"]:
+                    self.connection.execute(str(row["sql"]))
+
+    def build_playlist_extra_data(self, metadata_item_ids: Sequence[int], owner_id: Optional[int] = None) -> str:
+        placeholders = ", ".join("?" for _ in metadata_item_ids)
+        section_ids: List[str] = []
+        if metadata_item_ids:
+            query = f"""
+            SELECT DISTINCT library_section_id
+            FROM metadata_items
+            WHERE id IN ({placeholders})
+              AND library_section_id IS NOT NULL
+            ORDER BY library_section_id
+            """
+            section_ids = [
+                str(int(row["library_section_id"]))
+                for row in self.connection.execute(query, [int(item_id) for item_id in metadata_item_ids])
+            ]
+        section_ids_value = ",".join(section_ids)
+        owner_value = str(owner_id if owner_id is not None else 1)
+        return json.dumps(
+            {
+                "pv:durationInSeconds": "1",
+                "pv:owner": owner_value,
+                "pv:sectionIDs": section_ids_value,
+                "url": (
+                    f"pv%3AdurationInSeconds=1&pv%3Aowner={owner_value}&pv%3AsectionIDs="
+                    + section_ids_value
+                ),
+            },
+            separators=(",", ":"),
+        )
+
+    def ensure_metadata_item_account(self, metadata_item_id: int, account_id: Optional[int]) -> None:
+        if account_id is None:
+            return
+        existing = self.connection.execute(
+            "SELECT 1 FROM metadata_item_accounts WHERE metadata_item_id = ? AND account_id = ? LIMIT 1",
+            (metadata_item_id, account_id),
+        ).fetchone()
+        if existing is not None:
+            return
+        self.connection.execute(
+            "INSERT INTO metadata_item_accounts (account_id, metadata_item_id) VALUES (?, ?)",
+            (account_id, metadata_item_id),
+        )
+
+    def create_metadata_playlist(self, details: Dict[str, Any]) -> None:
+        metadata_item_ids = [int(item_id) for item_id in details.get("metadata_item_ids", [])]
+        account_id = PlexFilenameParser.safe_int(details.get("account_id"))
+        now = int(datetime.now().timestamp())
+        title = str(details["name"])
+        total_duration_seconds = 0
+        if metadata_item_ids:
+            placeholders = ", ".join("?" for _ in metadata_item_ids)
+            duration_row = self.connection.execute(
+                f"SELECT COALESCE(SUM(duration), 0) AS total_duration FROM metadata_items WHERE id IN ({placeholders})",
+                metadata_item_ids,
+            ).fetchone()
+            total_duration_seconds = int((duration_row["total_duration"] or 0) / 1000)
+        extra_data = details.get("extra_data") or self.build_playlist_extra_data(metadata_item_ids, owner_id=account_id)
+        guid = details.get("guid") or f"com.plexapp.agents.none://{uuid.uuid4()}"
+        hash_value = hashlib.sha1(f"{guid}|{title}|{now}".encode("utf-8")).hexdigest()
+        with self.temporarily_disable_metadata_fts_triggers():
+            cursor = self.connection.execute(
+                """
+                INSERT INTO metadata_items (
+                    metadata_type,
+                    guid,
+                    media_item_count,
+                    title,
+                    title_sort,
+                    original_title,
+                    studio,
+                    tagline,
+                    summary,
+                    content_rating,
+                    "index",
+                    absolute_index,
+                    duration,
+                    user_thumb_url,
+                    user_art_url,
+                    user_banner_url,
+                    user_music_url,
+                    user_fields,
+                    tags_genre,
+                    tags_collection,
+                    tags_director,
+                    tags_writer,
+                    tags_star,
+                    added_at,
+                    created_at,
+                    updated_at,
+                    tags_country,
+                    extra_data,
+                    hash,
+                    changed_at,
+                    resources_changed_at,
+                    edition_title,
+                    slug,
+                    is_adult,
+                    user_clear_logo_url,
+                    user_square_art_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    15,
+                    guid,
+                    len(metadata_item_ids),
+                    title,
+                    title,
+                    "",
+                    "",
+                    "",
+                    details.get("description") or "",
+                    "",
+                    0,
+                    1,
+                    total_duration_seconds,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    now,
+                    now,
+                    now,
+                    "",
+                    extra_data,
+                    hash_value,
+                    now,
+                    now,
+                    "",
+                    "",
+                    0,
+                    "",
+                    "",
+                ),
+            )
+        playlist_id = int(cursor.lastrowid)
+        self.ensure_metadata_item_account(playlist_id, account_id)
+        self.insert_playlist_generators(playlist_id, metadata_item_ids)
+
+    def next_playlist_generator_order(self, playlist_id: int) -> float:
+        row = self.connection.execute(
+            'SELECT MAX("order") AS max_order FROM play_queue_generators WHERE playlist_id = ?',
+            (playlist_id,),
+        ).fetchone()
+        current = float(row["max_order"] or 0.0)
+        if current < 1000.0:
+            return 1000.0
+        return current + 1000.0
+
+    def insert_playlist_generators(
+        self,
+        playlist_id: int,
+        metadata_item_ids: Sequence[int],
+        starting_order: float = 1000.0,
+    ) -> None:
+        now = int(datetime.now().timestamp())
+        order_value = starting_order
+        for metadata_item_id in metadata_item_ids:
+            self.connection.execute(
+                'INSERT INTO play_queue_generators (playlist_id, metadata_item_id, uri, "limit", continuous, "order", created_at, updated_at, changed_at, recursive, type, extra_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (playlist_id, int(metadata_item_id), "", None, 0, order_value, now, now, now, 0, None, None),
+            )
+            order_value += 1000.0
+
+    def refresh_metadata_playlist_totals(self, playlist_id: int) -> None:
+        now = int(datetime.now().timestamp())
+        count_row = self.connection.execute(
+            'SELECT COUNT(*) AS item_count FROM play_queue_generators WHERE playlist_id = ?',
+            (playlist_id,),
+        ).fetchone()
+        item_count = int(count_row["item_count"] or 0)
+        duration_row = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(md.duration), 0) AS total_duration
+            FROM play_queue_generators generator
+            JOIN metadata_items md ON md.id = generator.metadata_item_id
+            WHERE generator.playlist_id = ?
+            """,
+            (playlist_id,),
+        ).fetchone()
+        total_duration_seconds = int((duration_row["total_duration"] or 0) / 1000)
+        with self.temporarily_disable_metadata_fts_triggers():
+            self.connection.execute(
+                """
+                UPDATE metadata_items
+                SET media_item_count = ?,
+                    duration = ?,
+                    updated_at = ?,
+                    changed_at = ?,
+                    resources_changed_at = ?
+                WHERE id = ?
+                """,
+                (item_count, total_duration_seconds, now, now, now, playlist_id),
+            )
 
     def next_playlist_order(self, play_queue_id: int) -> float:
         row = self.connection.execute(
@@ -1594,6 +1880,7 @@ class PlexPlaylistPlanner:
                             "account_id": target_account_id,
                             "metadata_type": transfer_items[0].metadata_type if transfer_items else None,
                             "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
+                            "storage_model": "metadata",
                         },
                     )
                 )
@@ -1616,13 +1903,14 @@ class PlexPlaylistPlanner:
                             "account_id": target_account_id,
                             "metadata_type": transfer_items[0].metadata_type if transfer_items else None,
                             "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
+                            "storage_model": "metadata",
                         },
                     )
                 )
             elif self.conflict_policy == "replace":
                 action = "replace_existing"
                 status = "ready_replace"
-                if existing_target_playlist.play_queue_id is None:
+                if existing_target_playlist.storage_model == "custom" and existing_target_playlist.play_queue_id is None:
                     status = "blocked_missing_target_queue"
                     notes.append("target playlist exists but has no play queue row")
                     transfer_items = []
@@ -1633,6 +1921,8 @@ class PlexPlaylistPlanner:
                             target_guid=f"playlist:{existing_target_playlist.name}",
                             details={
                                 "play_queue_id": existing_target_playlist.play_queue_id,
+                                "playlist_id": existing_target_playlist.id,
+                                "storage_model": existing_target_playlist.storage_model,
                                 "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
                             },
                         )
@@ -1640,7 +1930,7 @@ class PlexPlaylistPlanner:
             else:
                 action = "merge_existing"
                 status = "ready_merge"
-                if existing_target_playlist.play_queue_id is None:
+                if existing_target_playlist.storage_model == "custom" and existing_target_playlist.play_queue_id is None:
                     status = "blocked_missing_target_queue"
                     notes.append("target playlist exists but has no play queue row")
                     transfer_items = []
@@ -1666,6 +1956,8 @@ class PlexPlaylistPlanner:
                                 target_guid=f"playlist:{existing_target_playlist.name}",
                                 details={
                                     "play_queue_id": existing_target_playlist.play_queue_id,
+                                    "playlist_id": existing_target_playlist.id,
+                                    "storage_model": existing_target_playlist.storage_model,
                                     "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
                                 },
                             )
@@ -2345,6 +2637,18 @@ class PlexWatchStatusTransferApp:
             action="append",
             default=[],
             help="Target library section name to search for playlist item matches. Repeat to include multiple sections.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--source-account-id",
+            type=int,
+            default=None,
+            help="Optional source account id associated with the source Plex database.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--target-account-id",
+            type=int,
+            default=None,
+            help="Target account id to associate with created or updated target playlists.",
         )
         transfer_playlists_parser.add_argument(
             "--playlist",
@@ -3100,7 +3404,8 @@ class PlexWatchStatusTransferApp:
     def populate_missing_playlist_transfer_args(cls, args: argparse.Namespace) -> bool:
         needs_paths = args.source_path is None or args.target_path is None
         needs_playlist_selection = not args.playlist and getattr(sys.stdin, "isatty", lambda: False)()
-        if not needs_paths and not needs_playlist_selection:
+        needs_target_account = args.target_account_id is None and getattr(sys.stdin, "isatty", lambda: False)()
+        if not needs_paths and not needs_playlist_selection and not needs_target_account:
             return False
 
         print("Interactive playlist transfer setup")
@@ -3129,6 +3434,7 @@ class PlexWatchStatusTransferApp:
         try:
             target_schema = target_database.inspect_schema()
             target_libraries = target_database.list_library_sections()
+            target_accounts = target_database.list_accounts()
             args.target_library = cls.prompt_library_filters(
                 "Target libraries:",
                 target_libraries,
@@ -3143,6 +3449,13 @@ class PlexWatchStatusTransferApp:
             target_playlists = target_database.list_playlists(target_schema, target_inventory, target_inventory_all)
         finally:
             target_database.close()
+
+        if args.target_account_id is None:
+            args.target_account_id = cls.prompt_account_id(
+                "Target accounts:",
+                target_accounts,
+                args.target_account_id,
+            )
 
         if not args.include_empty_playlists:
             print("Empty playlists are excluded by default. Use --include-empty-playlists to include them.")
@@ -3291,6 +3604,11 @@ class PlexWatchStatusTransferApp:
                 self.args.include_empty_playlists,
             )
             target_playlists = target_database.list_playlists(target_schema, target_inventory, target_inventory_all)
+            target_account_id = self.args.target_account_id
+            if target_account_id is None:
+                raise RuntimeError(
+                    "Playlist transfer requires --target-account-id. Pass it explicitly or use interactive mode to choose a target account."
+                )
 
             if not self.args.include_empty_playlists:
                 print("Empty playlists are excluded by default. Use --include-empty-playlists to include them.")
@@ -3306,6 +3624,7 @@ class PlexWatchStatusTransferApp:
                 target_playlists,
                 target_inventory,
                 target_inventory_all,
+                target_account_id=target_account_id,
                 has_target_library_filter=bool(self.args.target_library),
             )
 
@@ -3326,12 +3645,16 @@ class PlexWatchStatusTransferApp:
             self.print_playlist_unmatched_details(plans, summary_stream)
 
             if self.interactive_transfer and not self.args.apply:
-                should_apply = self.prompt_yes_no("Apply these playlist changes?", default=False)
+                print("Dry-run only: no playlist changes have been written yet.", file=summary_stream)
+                should_apply = self.prompt_yes_no(
+                    "Write these playlist changes to the target Plex DB now?",
+                    default=False,
+                )
                 if should_apply:
                     self.apply_planned_mutations(target_db_path, mutations)
                     self.print_playlist_summary(plans, mutations, True, summary_stream)
                 else:
-                    print("Changes were not applied.", file=summary_stream)
+                    print("No playlist changes were written.", file=summary_stream)
 
             self.report_writer.detach_redirected_stdout()
             return 0
