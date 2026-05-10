@@ -607,13 +607,14 @@ class PlexDatabase:
                 cc.name AS playlist_name,
                 cc.description AS playlist_description,
                 pq.id AS play_queue_id,
-                pq.account_id AS account_id,
+                COALESCE(pq.account_id, mia.account_id) AS account_id,
                 pqi.id AS play_queue_item_id,
                 pqi.metadata_item_id AS metadata_item_id,
                 pqi."order" AS order_value,
                 md.title AS item_title,
                 ls.name AS item_library_name
             FROM custom_channels cc
+            LEFT JOIN metadata_item_accounts mia ON mia.metadata_item_id = cc.id
             LEFT JOIN (
                 SELECT playlist_id, MAX(id) AS play_queue_id
                 FROM play_queues
@@ -636,13 +637,14 @@ class PlexDatabase:
                 playlist.title AS playlist_name,
                 NULL AS playlist_description,
                 latest_queue.play_queue_id AS play_queue_id,
-                latest_queue.account_id AS account_id,
+                COALESCE(latest_queue.account_id, mia.account_id) AS account_id,
                 generator.id AS play_queue_item_id,
                 generator.metadata_item_id AS metadata_item_id,
                 generator."order" AS order_value,
                 md.title AS item_title,
                 ls.name AS item_library_name
             FROM metadata_items playlist
+            LEFT JOIN metadata_item_accounts mia ON mia.metadata_item_id = playlist.id
             LEFT JOIN (
                 SELECT pq.playlist_id, pq.id AS play_queue_id, pq.account_id
                 FROM play_queues pq
@@ -2487,6 +2489,7 @@ class PlexWatchStatusTransferApp:
     PLAYLIST_LIST_ROW_COLUMNS = (
         "playlist_id",
         "source_playlist",
+        "account_id",
         "source_item_count",
         "status",
         "notes",
@@ -2494,6 +2497,7 @@ class PlexWatchStatusTransferApp:
     PLAYLIST_LIST_TABLE_COLUMNS = (
         TableColumnSpec("playlist_id"),
         TableColumnSpec("source_playlist"),
+        TableColumnSpec("account_id"),
         TableColumnSpec("source_item_count"),
         TableColumnSpec("status"),
         TableColumnSpec("notes"),
@@ -3844,6 +3848,7 @@ class PlexWatchStatusTransferApp:
                 {
                     "playlist_id": playlist.id,
                     "source_playlist": playlist.name,
+                    "account_id": playlist.account_id,
                     "source_item_count": len(playlist.scoped_items),
                     "status": "empty" if playlist.is_empty_in_scope else "available",
                     "notes": "empty in selected source library scope" if playlist.is_empty_in_scope else "",
