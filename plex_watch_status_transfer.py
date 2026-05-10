@@ -49,9 +49,11 @@ class PlexSchema:
     @property
     def supports_playlists(self) -> bool:
         return bool(
-            self.custom_channels_columns
-            and self.play_queues_columns
-            and self.play_queue_items_columns
+            self.play_queues_columns
+            and (
+                self.play_queue_generators_columns
+                or (self.custom_channels_columns and self.play_queue_items_columns)
+            )
         )
 
 
@@ -519,31 +521,63 @@ class PlexDatabase:
         scoped_by_id = self.build_inventory_by_metadata_id(scoped_inventory)
         all_by_id = scoped_by_id if inventory_all is None else self.build_inventory_by_metadata_id(inventory_all)
 
-        query = """
-        SELECT
-            cc.id AS playlist_id,
-            cc.name AS playlist_name,
-            cc.description AS playlist_description,
-            pq.id AS play_queue_id,
-            pq.account_id AS account_id,
-            pqi.id AS play_queue_item_id,
-            pqi.metadata_item_id AS metadata_item_id,
-            pqi."order" AS order_value,
-            md.title AS item_title,
-            ls.name AS item_library_name
-        FROM custom_channels cc
-        LEFT JOIN (
-            SELECT playlist_id, MAX(id) AS play_queue_id
-            FROM play_queues
-            WHERE playlist_id IS NOT NULL
-            GROUP BY playlist_id
-        ) latest_queue ON latest_queue.playlist_id = cc.id
-        LEFT JOIN play_queues pq ON pq.id = latest_queue.play_queue_id
-        LEFT JOIN play_queue_items pqi ON pqi.play_queue_id = pq.id
-        LEFT JOIN metadata_items md ON md.id = pqi.metadata_item_id
-        LEFT JOIN library_sections ls ON ls.id = md.library_section_id
-        ORDER BY cc.name COLLATE NOCASE, cc.id, pqi."order", pqi.id
-        """
+        use_metadata_playlist_model = bool(schema.play_queue_generators_columns)
+        if use_metadata_playlist_model:
+            query = """
+            SELECT
+                playlist.id AS playlist_id,
+                playlist.title AS playlist_name,
+                NULL AS playlist_description,
+                latest_queue.play_queue_id AS play_queue_id,
+                latest_queue.account_id AS account_id,
+                generator.id AS play_queue_item_id,
+                generator.metadata_item_id AS metadata_item_id,
+                generator."order" AS order_value,
+                md.title AS item_title,
+                ls.name AS item_library_name
+            FROM metadata_items playlist
+            LEFT JOIN (
+                SELECT pq.playlist_id, pq.id AS play_queue_id, pq.account_id
+                FROM play_queues pq
+                INNER JOIN (
+                    SELECT playlist_id, MAX(id) AS play_queue_id
+                    FROM play_queues
+                    WHERE playlist_id IS NOT NULL
+                    GROUP BY playlist_id
+                ) latest ON latest.play_queue_id = pq.id
+            ) latest_queue ON latest_queue.playlist_id = playlist.id
+            LEFT JOIN play_queue_generators generator ON generator.playlist_id = playlist.id
+            LEFT JOIN metadata_items md ON md.id = generator.metadata_item_id
+            LEFT JOIN library_sections ls ON ls.id = md.library_section_id
+            WHERE playlist.metadata_type = 15
+            ORDER BY playlist.title COLLATE NOCASE, playlist.id, generator."order", generator.id
+            """
+        else:
+            query = """
+            SELECT
+                cc.id AS playlist_id,
+                cc.name AS playlist_name,
+                cc.description AS playlist_description,
+                pq.id AS play_queue_id,
+                pq.account_id AS account_id,
+                pqi.id AS play_queue_item_id,
+                pqi.metadata_item_id AS metadata_item_id,
+                pqi."order" AS order_value,
+                md.title AS item_title,
+                ls.name AS item_library_name
+            FROM custom_channels cc
+            LEFT JOIN (
+                SELECT playlist_id, MAX(id) AS play_queue_id
+                FROM play_queues
+                WHERE playlist_id IS NOT NULL
+                GROUP BY playlist_id
+            ) latest_queue ON latest_queue.playlist_id = cc.id
+            LEFT JOIN play_queues pq ON pq.id = latest_queue.play_queue_id
+            LEFT JOIN play_queue_items pqi ON pqi.play_queue_id = pq.id
+            LEFT JOIN metadata_items md ON md.id = pqi.metadata_item_id
+            LEFT JOIN library_sections ls ON ls.id = md.library_section_id
+            ORDER BY cc.name COLLATE NOCASE, cc.id, pqi."order", pqi.id
+            """
 
         playlists: List[PlexPlaylist] = []
         current_playlist_id: Optional[int] = None
@@ -2130,6 +2164,9 @@ class PlexReportWriter:
 
 class PlexWatchStatusTransferApp:
     DRY_RUN_FILTER_MODES = {"all", "warnings", "errors"}
+    _questionary_module = None
+    _questionary_checked = False
+    _questionary_warning_shown = False
     PLAYLIST_ROW_COLUMNS = (
         "playlist_id",
         "source_playlist",
@@ -2454,10 +2491,22 @@ class PlexWatchStatusTransferApp:
 
     @staticmethod
     def load_questionary_module():
-        try:
-            return importlib.import_module("questionary")
-        except Exception:
-            return None
+        if not PlexWatchStatusTransferApp._questionary_checked:
+            PlexWatchStatusTransferApp._questionary_checked = True
+            try:
+                PlexWatchStatusTransferApp._questionary_module = importlib.import_module("questionary")
+            except Exception:
+                PlexWatchStatusTransferApp._questionary_module = None
+        return PlexWatchStatusTransferApp._questionary_module
+
+    @classmethod
+    def maybe_warn_questionary_unavailable(cls) -> None:
+        if cls.load_questionary_module() is not None or cls._questionary_warning_shown:
+            return
+        cls._questionary_warning_shown = True
+        print(
+            "questionary is not installed; using plain text prompts instead of the interactive selector."
+        )
 
     @staticmethod
     def prompt_with_default(prompt: str, default: Optional[str] = None) -> str:
@@ -2572,6 +2621,26 @@ class PlexWatchStatusTransferApp:
             )
             default_names = [name for name in default_names if name.casefold() in library_by_name]
 
+        questionary = cls.load_questionary_module()
+        if questionary is not None:
+            choices = [
+                questionary.Choice(
+                    title=f"{library.id}: {library.name}",
+                    value=library.name,
+                    checked=library.name in default_names,
+                )
+                for library in libraries
+            ]
+            selected = questionary.checkbox(
+                prompt,
+                choices=choices,
+                instruction="Space to toggle, Enter to confirm, Esc to cancel",
+            ).ask()
+            if selected is not None:
+                return list(selected)
+
+        cls.maybe_warn_questionary_unavailable()
+
         default_label = ", ".join(default_names) if default_names else "all"
         prompt_suffix = f" [{default_label}]" if default_label else ""
         while True:
@@ -2629,6 +2698,8 @@ class PlexWatchStatusTransferApp:
             if selected:
                 return selected
 
+        cls.maybe_warn_questionary_unavailable()
+
         while True:
             rendered_choices = "/".join(choices)
             raw_value = cls.prompt_with_default(f"{prompt} ({rendered_choices})", default)
@@ -2674,6 +2745,8 @@ class PlexWatchStatusTransferApp:
             selected = questionary.checkbox(prompt, choices=choices).ask()
             if selected is not None:
                 return list(selected)
+
+        cls.maybe_warn_questionary_unavailable()
 
         print(prompt)
         for playlist in playlists:
