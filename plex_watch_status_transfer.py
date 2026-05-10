@@ -1463,12 +1463,12 @@ class PlexWatchStatusTransferApp:
         transfer_parser.set_defaults(command="transfer")
         transfer_parser.add_argument(
             "--source-path",
-            required=True,
+            default=None,
             help="Path to the source Plex location. Can be the DB file itself or a folder containing com.plexapp.plugins.library.db.",
         )
         transfer_parser.add_argument(
             "--target-path",
-            required=True,
+            default=None,
             help="Path to the target Plex location. Can be the DB file itself or a folder containing com.plexapp.plugins.library.db.",
         )
         transfer_parser.add_argument(
@@ -1504,13 +1504,13 @@ class PlexWatchStatusTransferApp:
         transfer_parser.add_argument(
             "--source-account-id",
             type=int,
-            required=True,
+            default=None,
             help="Account id to use when reading source watch history.",
         )
         transfer_parser.add_argument(
             "--target-account-id",
             type=int,
-            required=True,
+            default=None,
             help="Account id to use when reading and writing target Plex watch state.",
         )
         transfer_parser.add_argument(
@@ -1600,7 +1600,212 @@ class PlexWatchStatusTransferApp:
             return self.run_list_accounts()
         return self.run_transfer()
 
+    @staticmethod
+    def prompt_with_default(prompt: str, default: Optional[str] = None) -> str:
+        while True:
+            suffix = f" [{default}]" if default not in (None, "") else ""
+            value = input(f"{prompt}{suffix}: ").strip()
+            if value:
+                return value
+            if default not in (None, ""):
+                return str(default)
+            print("A value is required.")
+
+    @classmethod
+    def prompt_int_with_default(cls, prompt: str, default: Optional[int] = None) -> int:
+        while True:
+            raw_value = cls.prompt_with_default(prompt, None if default is None else str(default))
+            try:
+                return int(raw_value)
+            except ValueError:
+                print("Enter a whole number.")
+
+    @staticmethod
+    def describe_account(account: PlexAccount) -> str:
+        if account.name:
+            return f"{account.id}: {account.name}"
+        return f"{account.id}: (unnamed account)"
+
+    @classmethod
+    def prompt_account_id(
+        cls,
+        prompt: str,
+        accounts: Sequence[PlexAccount],
+        default: Optional[int] = None,
+    ) -> int:
+        valid_ids = {account.id for account in accounts}
+        if not valid_ids:
+            raise RuntimeError("No Plex accounts were found in the selected database.")
+
+        print(prompt)
+        for account in accounts:
+            print(f"  {cls.describe_account(account)}")
+
+        if default is not None and default not in valid_ids:
+            print(f"Default account id {default} is not present in this database.")
+            default = None
+
+        while True:
+            selected_id = cls.prompt_int_with_default("Choose account id", default)
+            if selected_id in valid_ids:
+                return selected_id
+            print("Choose one of the listed account ids.")
+
+    @staticmethod
+    def infer_interactive_account_defaults(
+        source_accounts: Sequence[PlexAccount],
+        target_accounts: Sequence[PlexAccount],
+        source_default: Optional[int],
+        target_default: Optional[int],
+    ) -> Tuple[Optional[int], Optional[int]]:
+        def named_account_map(accounts: Sequence[PlexAccount]) -> Dict[str, PlexAccount]:
+            return {
+                account.name.casefold(): account
+                for account in accounts
+                if account.name
+            }
+
+        resolved_source_default = source_default
+        resolved_target_default = target_default
+
+        source_named = named_account_map(source_accounts)
+        target_named = named_account_map(target_accounts)
+        shared_names = sorted(set(source_named) & set(target_named))
+        if len(shared_names) == 1:
+            shared_name = shared_names[0]
+            if resolved_source_default is None:
+                resolved_source_default = source_named[shared_name].id
+            if resolved_target_default is None:
+                resolved_target_default = target_named[shared_name].id
+
+        if resolved_source_default is None and len(source_named) == 1:
+            resolved_source_default = next(iter(source_named.values())).id
+        if resolved_target_default is None and len(target_named) == 1:
+            resolved_target_default = next(iter(target_named.values())).id
+
+        return resolved_source_default, resolved_target_default
+
+    @staticmethod
+    def describe_library_section(section: PlexLibrarySection) -> str:
+        if section.name:
+            return f"{section.id}: {section.name}"
+        return f"{section.id}: (unnamed library)"
+
+    @classmethod
+    def prompt_library_filters(
+        cls,
+        prompt: str,
+        libraries: Sequence[PlexLibrarySection],
+        default_names: Sequence[str],
+    ) -> List[str]:
+        library_by_id = {library.id: library for library in libraries}
+        library_by_name = {library.name.casefold(): library for library in libraries if library.name}
+
+        print(prompt)
+        for library in libraries:
+            print(f"  {cls.describe_library_section(library)}")
+
+        invalid_defaults = [name for name in default_names if name.casefold() not in library_by_name]
+        if invalid_defaults:
+            print(
+                "Ignoring default libraries not present in this database: "
+                + ", ".join(invalid_defaults)
+            )
+            default_names = [name for name in default_names if name.casefold() in library_by_name]
+
+        default_label = ", ".join(default_names) if default_names else "all"
+        prompt_suffix = f" [{default_label}]" if default_label else ""
+        while True:
+            raw_value = input(
+                f"Choose library ids or names (comma-separated, Enter for all libraries){prompt_suffix}: "
+            ).strip()
+            if not raw_value:
+                return list(default_names)
+
+            selections: List[str] = []
+            seen = set()
+            valid = True
+            for token in (part.strip() for part in raw_value.split(",")):
+                if not token:
+                    continue
+                library: Optional[PlexLibrarySection] = None
+                if token.isdigit():
+                    library = library_by_id.get(int(token))
+                if library is None:
+                    library = library_by_name.get(token.casefold())
+                if library is None:
+                    print(f"Choose only listed libraries. Invalid selection: {token}")
+                    valid = False
+                    break
+                if library.name not in seen:
+                    seen.add(library.name)
+                    selections.append(library.name)
+            if valid:
+                return selections
+
+    @classmethod
+    def populate_missing_transfer_args(cls, args: argparse.Namespace) -> None:
+        required_values = (
+            args.source_path,
+            args.target_path,
+            args.source_account_id,
+            args.target_account_id,
+        )
+        if all(value is not None for value in required_values):
+            return
+
+        print("Interactive transfer setup")
+        args.source_path = cls.prompt_with_default("Source Plex path", args.source_path)
+        args.target_path = cls.prompt_with_default("Target Plex path", args.target_path)
+
+        source_db_path = PlexDatabaseLocator.resolve_db_path(args.source_path, "source")
+        target_db_path = PlexDatabaseLocator.resolve_db_path(args.target_path, "target")
+
+        source_database = PlexDatabase(source_db_path, readonly=True)
+        try:
+            source_libraries = source_database.list_library_sections()
+            source_accounts = source_database.list_accounts()
+        finally:
+            source_database.close()
+
+        target_database = PlexDatabase(target_db_path, readonly=True)
+        try:
+            target_libraries = target_database.list_library_sections()
+            target_accounts = target_database.list_accounts()
+        finally:
+            target_database.close()
+
+        source_account_default, target_account_default = cls.infer_interactive_account_defaults(
+            source_accounts,
+            target_accounts,
+            args.source_account_id,
+            args.target_account_id,
+        )
+
+        args.source_library = cls.prompt_library_filters(
+            "Source libraries:",
+            source_libraries,
+            args.source_library,
+        )
+        args.target_library = cls.prompt_library_filters(
+            "Target libraries:",
+            target_libraries,
+            args.target_library,
+        )
+
+        args.source_account_id = cls.prompt_account_id(
+            "Source accounts:",
+            source_accounts,
+            source_account_default,
+        )
+        args.target_account_id = cls.prompt_account_id(
+            "Target accounts:",
+            target_accounts,
+            target_account_default,
+        )
+
     def run_transfer(self) -> int:
+        self.populate_missing_transfer_args(self.args)
         dry_run_filter_mode = self.args.dry_run_status_filter
         dry_run_filters_active = dry_run_filter_mode != "all"
 
