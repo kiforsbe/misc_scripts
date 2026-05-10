@@ -53,6 +53,8 @@ class MediaRecord:
     title: Optional[str]
     year: Optional[int]
     file_path: str
+    library_section_id: Optional[int]
+    library_section_name: Optional[str]
     basename: str
     basename_key: str
     file_size: Optional[int]
@@ -87,6 +89,9 @@ class MatchResult:
     target: Optional[MediaRecord]
     target_history: Optional[WatchHistory]
     notes: List[str]
+    dry_run_status: str = "unknown"
+    account_status: str = "not_applicable"
+    library_status: str = "not_requested"
 
 
 @dataclass
@@ -232,6 +237,8 @@ class PlexDatabase:
             md.title AS title,
             md.year AS year,
             mp.file AS file_path,
+            ls.id AS library_section_id,
+            ls.name AS library_section_name,
             parent.guid AS parent_guid,
             grandparent.guid AS grandparent_guid
             {size_select}
@@ -260,6 +267,8 @@ class PlexDatabase:
                     title=row["title"],
                     year=PlexFilenameParser.safe_int(row["year"]),
                     file_path=file_path,
+                    library_section_id=PlexFilenameParser.safe_int(row["library_section_id"]),
+                    library_section_name=row["library_section_name"],
                     basename=basename,
                     basename_key=PlexFilenameParser.normalize_basename(file_path),
                     file_size=PlexFilenameParser.safe_int(row["file_size"]),
@@ -613,6 +622,7 @@ class PlexMatcher:
                         target=None,
                         target_history=None,
                         notes=notes,
+                        dry_run_status="unmatched",
                     )
                 )
                 continue
@@ -627,6 +637,7 @@ class PlexMatcher:
                     target=target,
                     target_history=target_history.get(target.guid, WatchHistory(target.guid, 0, None, [])),
                     notes=notes,
+                    dry_run_status="matched",
                 )
             )
         return results
@@ -638,18 +649,24 @@ class PlexMutationPlanner:
         self.account_id = account_id
         self.conflict_policy = conflict_policy
 
-    def resolve_insert_defaults(self, target: MediaRecord, viewed_at: int) -> Dict[str, Any]:
+    def requires_account_id(self) -> bool:
+        column = self.schema.metadata_item_views_columns.get("account_id")
+        return bool(column and column.not_null and column.default_value is None)
+
+    def resolve_insert_defaults(self, target: MediaRecord, viewed_at: int) -> Tuple[Optional[Dict[str, Any]], str, Optional[str]]:
         values: Dict[str, Any] = {}
         columns = self.schema.metadata_item_views_columns
+        account_status = "not_needed"
         if "guid" in columns:
             values["guid"] = target.guid
         if "viewed_at" in columns:
             values["viewed_at"] = viewed_at
         if "account_id" in columns:
             if self.account_id is None and columns["account_id"].not_null and columns["account_id"].default_value is None:
-                raise RuntimeError("Target metadata_item_views requires account_id; pass --account-id.")
+                return None, "missing_required", "Target metadata_item_views requires account_id; pass --account-id."
             if self.account_id is not None:
                 values["account_id"] = self.account_id
+                account_status = "provided"
         if "parent_guid" in columns and target.parent_guid is not None:
             values["parent_guid"] = target.parent_guid
         if "grandparent_guid" in columns and target.grandparent_guid is not None:
@@ -664,10 +681,10 @@ class PlexMutationPlanner:
             if column.not_null and column.default_value is None:
                 unsupported_required.append(column.name)
         if unsupported_required:
-            raise RuntimeError(
+            return None, account_status, (
                 "Target metadata_item_views has unsupported required columns: " + ", ".join(sorted(unsupported_required))
             )
-        return values
+        return values, account_status, None
 
     def plan_mutations(self, matches: Sequence[MatchResult]) -> List[PlannedMutation]:
         mutations: List[PlannedMutation] = []
@@ -678,16 +695,25 @@ class PlexMutationPlanner:
             source_history = match.source_history
             target_history = match.target_history
             delta = source_history.watch_count - target_history.watch_count
+            match.account_status = "not_needed"
+            match.dry_run_status = "in_sync"
 
             if self.conflict_policy == "skip" and target_history.watch_count > 0:
+                match.dry_run_status = "skipped_conflict"
                 continue
 
             if self.conflict_policy == "overwrite" and target_history.watch_count > source_history.watch_count:
                 delta = 0
+                match.dry_run_status = "target_ahead"
 
             if delta > 0:
                 viewed_at = source_history.last_viewed_at or int(datetime.now().timestamp())
-                insert_values = self.resolve_insert_defaults(match.target, viewed_at)
+                insert_values, account_status, error_message = self.resolve_insert_defaults(match.target, viewed_at)
+                match.account_status = account_status
+                if error_message:
+                    match.dry_run_status = "missing_required_account" if account_status == "missing_required" else "blocked_required_columns"
+                    match.notes.append(error_message)
+                    continue
                 mutations.append(
                     PlannedMutation(
                         action="insert_views",
@@ -700,6 +726,8 @@ class PlexMutationPlanner:
                         },
                     )
                 )
+                match.dry_run_status = "ready_insert"
+                continue
 
             if (
                 source_history.last_viewed_at
@@ -718,20 +746,26 @@ class PlexMutationPlanner:
                         },
                     )
                 )
+                match.dry_run_status = "ready_update"
         return mutations
 
 
 class PlexReportWriter:
     MATCH_ROW_COLUMNS = (
         "status",
+        "dry_run_status",
+        "account_status",
+        "library_status",
         "confidence",
         "reason",
+        "source_library",
         "source_guid",
         "source_title",
         "source_filename",
         "source_path",
         "source_watch_count",
         "source_last_viewed_at",
+        "target_library",
         "target_guid",
         "target_title",
         "target_filename",
@@ -753,9 +787,13 @@ class PlexReportWriter:
     )
     TABLE_COLUMN_LABELS = {
         "status": "status",
+        "dry_run_status": "dry_run",
+        "account_status": "acct",
+        "library_status": "library",
         "confidence": "conf",
         "reason": "reason",
         "id": "id",
+        "source_library": "src_lib",
         "source_guid": "src_guid",
         "source_title": "src_title",
         "source_filename": "src_file",
@@ -772,6 +810,7 @@ class PlexReportWriter:
         "default_subtitle_language": "sub_lang",
         "auto_select_audio": "auto_audio",
         "auto_select_subtitle": "auto_sub",
+        "target_library": "tgt_lib",
         "target_guid": "tgt_guid",
         "target_title": "tgt_title",
         "target_filename": "tgt_file",
@@ -794,9 +833,13 @@ class PlexReportWriter:
     }
     TABLE_COLUMN_MAX_WIDTHS = {
         "status": 10,
+        "dry_run_status": 24,
+        "account_status": 18,
+        "library_status": 14,
         "confidence": 10,
         "reason": 28,
         "id": 6,
+        "source_library": 24,
         "source_guid": 40,
         "source_title": 36,
         "source_filename": 44,
@@ -813,6 +856,7 @@ class PlexReportWriter:
         "default_subtitle_language": 12,
         "auto_select_audio": 10,
         "auto_select_subtitle": 9,
+        "target_library": 24,
         "target_guid": 40,
         "target_title": 36,
         "target_filename": 44,
@@ -833,11 +877,15 @@ class PlexReportWriter:
             "matches": [
                 {
                     "status": match.status,
+                    "dry_run_status": match.dry_run_status,
+                    "account_status": match.account_status,
+                    "library_status": match.library_status,
                     "confidence": round(match.confidence, 3),
                     "reason": match.reason,
                     "notes": match.notes,
                     "source": {
                         "guid": match.source.guid,
+                        "library": match.source.library_section_name,
                         "title": match.source.title,
                         "file_path": match.source.file_path,
                         "basename": match.source.basename,
@@ -846,6 +894,7 @@ class PlexReportWriter:
                     },
                     "target": None if not match.target else {
                         "guid": match.target.guid,
+                        "library": match.target.library_section_name,
                         "title": match.target.title,
                         "file_path": match.target.file_path,
                         "basename": match.target.basename,
@@ -864,14 +913,19 @@ class PlexReportWriter:
         return [
             {
                 "status": match.status,
+                "dry_run_status": match.dry_run_status,
+                "account_status": match.account_status,
+                "library_status": match.library_status,
                 "confidence": round(match.confidence, 3),
                 "reason": match.reason,
+                "source_library": match.source.library_section_name,
                 "source_guid": match.source.guid,
                 "source_title": match.source.title,
                 "source_filename": match.source.basename,
                 "source_path": match.source.file_path,
                 "source_watch_count": match.source_history.watch_count,
                 "source_last_viewed_at": match.source_history.last_viewed_at,
+                "target_library": match.target.library_section_name if match.target else None,
                 "target_guid": match.target.guid if match.target else None,
                 "target_title": match.target.title if match.target else None,
                 "target_filename": match.target.basename if match.target else None,
@@ -911,7 +965,7 @@ class PlexReportWriter:
                 return
         except OSError as exc:
             if self._is_broken_pipe_error(exc):
-                sys.stdout = open(os.devnull, "w", encoding="utf-8")
+                self._suppress_stdout_after_pipe_error()
                 return
             raise
 
@@ -1005,6 +1059,30 @@ class PlexReportWriter:
     @staticmethod
     def _is_broken_pipe_error(exc: OSError) -> bool:
         return exc.errno in {errno.EPIPE, errno.EINVAL, errno.ECONNRESET}
+
+    @staticmethod
+    def _suppress_stdout_after_pipe_error() -> None:
+        devnull = open(os.devnull, "w", encoding="utf-8")
+        try:
+            os.dup2(devnull.fileno(), sys.stdout.fileno())
+        except (AttributeError, OSError):
+            pass
+        sys.stdout = devnull
+
+    @classmethod
+    def detach_redirected_stdout(cls) -> None:
+        try:
+            if sys.stdout.isatty():
+                return
+        except (AttributeError, OSError, ValueError):
+            return
+
+        try:
+            sys.stdout.flush()
+        except OSError as exc:
+            if not cls._is_broken_pipe_error(exc):
+                raise
+        cls._suppress_stdout_after_pipe_error()
 
     @classmethod
     def _write_csv_rows(cls, handle: TextIO, rows: Sequence[Dict[str, Any]], fieldnames: Sequence[str]) -> None:
@@ -1112,12 +1190,14 @@ class PlexReportWriter:
         except OSError as exc:
             if cls._is_broken_pipe_error(exc):
                 if stream is sys.stdout:
-                    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+                    cls._suppress_stdout_after_pipe_error()
                 return
             raise
 
 
 class PlexWatchStatusTransferApp:
+    DRY_RUN_FILTER_MODES = {"all", "warnings", "errors"}
+
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.report_writer = PlexReportWriter()
@@ -1212,6 +1292,15 @@ class PlexWatchStatusTransferApp:
             action="store_true",
             help="Write the planned mutations into the target DB. Without this flag the tool is dry-run only.",
         )
+        transfer_parser.add_argument(
+            "--dry-run-status-filter",
+            choices=["all", "warnings", "errors"],
+            default="all",
+            help=(
+                "Dry-run row filter mode. Use 'all' to show every row, 'warnings' to show unmatched rows, "
+                "or 'errors' to show the remaining problem rows."
+            ),
+        )
 
         list_libraries_parser = subparsers.add_parser(
             "list-libraries",
@@ -1260,6 +1349,12 @@ class PlexWatchStatusTransferApp:
         return self.run_transfer()
 
     def run_transfer(self) -> int:
+        dry_run_filter_mode = self.args.dry_run_status_filter
+        dry_run_filters_active = dry_run_filter_mode != "all"
+
+        if self.args.apply and dry_run_filters_active:
+            raise RuntimeError("Dry-run filters cannot be used with --apply.")
+
         source_db_path = PlexDatabaseLocator.resolve_db_path(self.args.source_path, "source")
         target_db_path = PlexDatabaseLocator.resolve_db_path(self.args.target_path, "target")
 
@@ -1275,6 +1370,9 @@ class PlexWatchStatusTransferApp:
 
             source_inventory = source_database.build_media_inventory(source_schema, self.args.source_library)
             target_inventory = target_database.build_media_inventory(target_schema, self.args.target_library)
+            target_inventory_all = target_inventory
+            if not self.args.apply:
+                target_inventory_all = target_database.build_media_inventory(target_schema, [])
             source_history = source_database.build_watch_history(self.args.source_library)
             target_history = target_database.build_watch_history(self.args.target_library)
 
@@ -1285,24 +1383,132 @@ class PlexWatchStatusTransferApp:
                 target_inventory=target_inventory,
                 target_history=target_history,
             )
+            self.annotate_library_statuses(matches, matcher, target_inventory_all, bool(self.args.target_library))
 
             mutation_planner = PlexMutationPlanner(target_schema, self.args.account_id, self.args.conflict_policy)
             mutations = mutation_planner.plan_mutations(matches)
             columns = self.report_writer.parse_columns(self.args.columns)
+            filtered_matches = matches
+            if dry_run_filters_active:
+                filtered_matches = self.filter_dry_run_matches(
+                    matches,
+                    dry_run_filter_mode,
+                )
+            filtered_target_guids = {
+                match.target.guid
+                for match in filtered_matches
+                if match.target is not None
+            }
+            filtered_mutations = [mutation for mutation in mutations if mutation.target_guid in filtered_target_guids]
 
             if self.args.apply:
                 target_database.begin_immediate()
                 target_database.apply_mutations(mutations)
                 target_database.commit()
 
-            self.report_writer.emit_console(self.args.console_format, matches, mutations, columns)
-            self.report_writer.emit_report(self.args.report, self.args.report_format, matches, mutations, columns)
+            output_matches = matches if self.args.apply else filtered_matches
+            output_mutations = mutations if self.args.apply else filtered_mutations
+
+            self.report_writer.emit_console(self.args.console_format, output_matches, output_mutations, columns)
+            self.report_writer.emit_report(self.args.report, self.args.report_format, output_matches, output_mutations, columns)
             summary_stream = sys.stderr if self.args.console_format in {"json", "csv"} else sys.stdout
-            self.report_writer.print_summary(matches, mutations, self.args.apply, stream=summary_stream)
+            self.report_writer.print_summary(output_matches, output_mutations, self.args.apply, stream=summary_stream)
+            if not self.args.apply and dry_run_filters_active:
+                print(f"Displayed rows: {len(output_matches)} of {len(matches)}", file=summary_stream)
+            self.report_writer.detach_redirected_stdout()
             return 0
         finally:
             source_database.close()
             target_database.close()
+
+    @staticmethod
+    def filter_dry_run_matches(
+        matches: Sequence[MatchResult],
+        dry_run_filter_mode: str,
+    ) -> List[MatchResult]:
+        if dry_run_filter_mode == "all":
+            return list(matches)
+
+        filtered_matches: List[MatchResult] = []
+        for match in matches:
+            if not PlexWatchStatusTransferApp.match_in_filter_mode(match, dry_run_filter_mode):
+                continue
+            filtered_matches.append(match)
+        return filtered_matches
+
+    @staticmethod
+    def is_warning_match(match: MatchResult) -> bool:
+        if match.status == "unmatched":
+            return True
+        return False
+
+    @staticmethod
+    def is_error_match(match: MatchResult) -> bool:
+        if PlexWatchStatusTransferApp.is_warning_match(match):
+            return False
+        if match.dry_run_status in {
+            "skipped_conflict",
+            "target_ahead",
+            "missing_required_account",
+            "blocked_required_columns",
+        }:
+            return True
+        if match.library_status in {"needed", "blocked", "not_found"}:
+            return True
+        return False
+
+    @staticmethod
+    def match_in_filter_mode(match: MatchResult, dry_run_filter_mode: str) -> bool:
+        if dry_run_filter_mode == "warnings":
+            return PlexWatchStatusTransferApp.is_warning_match(match)
+        if dry_run_filter_mode == "errors":
+            return PlexWatchStatusTransferApp.is_error_match(match)
+        return True
+
+    @staticmethod
+    def annotate_library_statuses(
+        matches: Sequence[MatchResult],
+        matcher: PlexMatcher,
+        target_inventory_all: Sequence[MediaRecord],
+        has_target_library_filter: bool,
+    ) -> None:
+        if not has_target_library_filter:
+            for match in matches:
+                match.library_status = "not_requested"
+            return
+
+        full_indexes = matcher.index_target_inventory(target_inventory_all)
+        for match in matches:
+            full_candidates = list(full_indexes.get(match.source.basename_key, []))
+            full_match = matcher.select_best_candidate(match.source, full_candidates) if full_candidates else None
+
+            if match.status == "matched" and match.target is not None:
+                if full_match is None or full_match.target.guid == match.target.guid:
+                    match.library_status = "matched"
+                else:
+                    match.library_status = "needed"
+                    match.notes.append(
+                        "target library filter influenced the selected match"
+                    )
+                continue
+
+            if not full_candidates:
+                match.library_status = "not_found"
+                continue
+
+            if full_match is not None:
+                match.library_status = "blocked"
+                match.notes.append(
+                    "matching target exists outside the selected target library"
+                )
+                if full_match.target.library_section_name:
+                    match.notes.append(
+                        f"matching target library: {full_match.target.library_section_name}"
+                    )
+                continue
+
+            match.library_status = "needed"
+            match.notes.append("basename candidates exist, but target library scoping or ambiguity prevented a match")
 
     def run_list_libraries(self) -> int:
         database = PlexDatabase(PlexDatabaseLocator.resolve_db_path(self.args.path, "path"), readonly=True)
