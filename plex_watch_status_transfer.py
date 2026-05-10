@@ -2524,17 +2524,19 @@ class PlexWatchStatusTransferApp:
         prompt: str,
         choices: Sequence[Any],
         instruction: Optional[str] = None,
+        selection_prompt: str = "Selection",
     ) -> Optional[List[Any]]:
         questionary = cls.load_questionary_module()
         if questionary is None:
             return None
 
+        print(prompt)
         prompt_kwargs: Dict[str, Any] = {
             "choices": list(choices),
         }
         if instruction is not None:
             prompt_kwargs["instruction"] = instruction
-        selected = questionary.checkbox(prompt, **prompt_kwargs).ask()
+        selected = questionary.checkbox(selection_prompt, **prompt_kwargs).ask()
         return list(cls.require_questionary_selection(selected))
 
     @classmethod
@@ -2543,12 +2545,14 @@ class PlexWatchStatusTransferApp:
         prompt: str,
         choices: Sequence[Any],
         default: Optional[str] = None,
+        selection_prompt: str = "Selection",
     ) -> Optional[Any]:
         questionary = cls.load_questionary_module()
         if questionary is None:
             return None
 
-        selected = questionary.select(prompt, choices=list(choices), default=default).ask()
+        print(prompt)
+        selected = questionary.select(selection_prompt, choices=list(choices), default=default).ask()
         return cls.require_questionary_selection(selected)
 
     @staticmethod
@@ -2681,6 +2685,7 @@ class PlexWatchStatusTransferApp:
                 prompt,
                 choices=choices,
                 instruction="Space to toggle, Enter to confirm, Esc to cancel",
+                selection_prompt="Libraries",
             )
 
         cls.maybe_warn_questionary_unavailable()
@@ -2740,7 +2745,7 @@ class PlexWatchStatusTransferApp:
         default: Optional[str] = None,
     ) -> str:
         valid = {choice.casefold(): choice for choice in choices}
-        selected = cls.prompt_questionary_select(prompt, choices, default)
+        selected = cls.prompt_questionary_select(prompt, choices, default, selection_prompt="Conflict behavior")
         if selected is not None:
             return str(selected)
 
@@ -2789,7 +2794,7 @@ class PlexWatchStatusTransferApp:
                         checked=str(playlist.id) in default_value_set,
                     )
                 )
-            return cls.prompt_questionary_checkbox(prompt, choices)
+            return cls.prompt_questionary_checkbox(prompt, choices, selection_prompt="Playlists")
 
         cls.maybe_warn_questionary_unavailable()
 
@@ -3122,12 +3127,20 @@ class PlexWatchStatusTransferApp:
 
         target_database = PlexDatabase(target_db_path, readonly=True)
         try:
+            target_schema = target_database.inspect_schema()
             target_libraries = target_database.list_library_sections()
             args.target_library = cls.prompt_library_filters(
                 "Target libraries:",
                 target_libraries,
                 args.target_library,
             )
+            target_inventory = target_database.build_media_inventory(target_schema, args.target_library)
+            target_inventory_all = (
+                target_inventory
+                if not args.target_library
+                else target_database.build_media_inventory(target_schema, [])
+            )
+            target_playlists = target_database.list_playlists(target_schema, target_inventory, target_inventory_all)
         finally:
             target_database.close()
 
@@ -3140,11 +3153,23 @@ class PlexWatchStatusTransferApp:
             args.playlist,
             args.include_empty_playlists,
         )
-        args.playlist_conflict_policy = cls.prompt_choice(
-            "Choose playlist conflict policy",
-            ["unique", "merge", "replace", "skip"],
-            args.playlist_conflict_policy,
+
+        selected_playlists = cls.resolve_playlist_selection(
+            playlists,
+            args.playlist,
+            args.include_empty_playlists,
         )
+        target_playlist_names = {playlist.name.casefold() for playlist in target_playlists}
+        has_playlist_conflicts = any(
+            playlist.name.casefold() in target_playlist_names
+            for playlist in selected_playlists
+        )
+        if has_playlist_conflicts:
+            args.playlist_conflict_policy = cls.prompt_choice(
+                "Choose playlist conflict policy:",
+                ["unique", "merge", "replace", "skip"],
+                args.playlist_conflict_policy,
+            )
         return True
 
     def run_transfer(self) -> int:
