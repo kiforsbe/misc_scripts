@@ -2475,8 +2475,12 @@ class PlexWatchStatusTransferApp:
 
     @classmethod
     def main(cls, argv: Optional[Sequence[str]] = None) -> int:
-        app = cls(cls.parse_args(argv))
-        return app.run()
+        try:
+            app = cls(cls.parse_args(argv))
+            return app.run()
+        except KeyboardInterrupt:
+            print("Aborted.", file=sys.stderr)
+            return 130
 
     def run(self) -> int:
         if self.args.command == "list-libraries":
@@ -2507,6 +2511,45 @@ class PlexWatchStatusTransferApp:
         print(
             "questionary is not installed; using plain text prompts instead of the interactive selector."
         )
+
+    @staticmethod
+    def require_questionary_selection(selected: Any) -> Any:
+        if selected is None:
+            raise KeyboardInterrupt
+        return selected
+
+    @classmethod
+    def prompt_questionary_checkbox(
+        cls,
+        prompt: str,
+        choices: Sequence[Any],
+        instruction: Optional[str] = None,
+    ) -> Optional[List[Any]]:
+        questionary = cls.load_questionary_module()
+        if questionary is None:
+            return None
+
+        prompt_kwargs: Dict[str, Any] = {
+            "choices": list(choices),
+        }
+        if instruction is not None:
+            prompt_kwargs["instruction"] = instruction
+        selected = questionary.checkbox(prompt, **prompt_kwargs).ask()
+        return list(cls.require_questionary_selection(selected))
+
+    @classmethod
+    def prompt_questionary_select(
+        cls,
+        prompt: str,
+        choices: Sequence[Any],
+        default: Optional[str] = None,
+    ) -> Optional[Any]:
+        questionary = cls.load_questionary_module()
+        if questionary is None:
+            return None
+
+        selected = questionary.select(prompt, choices=list(choices), default=default).ask()
+        return cls.require_questionary_selection(selected)
 
     @staticmethod
     def prompt_with_default(prompt: str, default: Optional[str] = None) -> str:
@@ -2617,23 +2660,28 @@ class PlexWatchStatusTransferApp:
             )
             default_names = [name for name in default_names if name.casefold() in library_by_name]
 
+        default_values = list(default_names) if default_names else [
+            library.name
+            for library in libraries
+            if library.name
+        ]
+        default_value_set = set(default_values)
+
         questionary = cls.load_questionary_module()
         if questionary is not None:
             choices = [
                 questionary.Choice(
                     title=f"{library.id}: {library.name}",
                     value=library.name,
-                    checked=library.name in default_names,
+                    checked=library.name in default_value_set,
                 )
                 for library in libraries
             ]
-            selected = questionary.checkbox(
+            return cls.prompt_questionary_checkbox(
                 prompt,
                 choices=choices,
                 instruction="Space to toggle, Enter to confirm, Esc to cancel",
-            ).ask()
-            if selected is not None:
-                return list(selected)
+            )
 
         cls.maybe_warn_questionary_unavailable()
 
@@ -2692,11 +2740,9 @@ class PlexWatchStatusTransferApp:
         default: Optional[str] = None,
     ) -> str:
         valid = {choice.casefold(): choice for choice in choices}
-        questionary = cls.load_questionary_module()
-        if questionary is not None:
-            selected = questionary.select(prompt, choices=list(choices), default=default).ask()
-            if selected:
-                return selected
+        selected = cls.prompt_questionary_select(prompt, choices, default)
+        if selected is not None:
+            return str(selected)
 
         cls.maybe_warn_questionary_unavailable()
 
@@ -2728,6 +2774,7 @@ class PlexWatchStatusTransferApp:
                 for playlist in playlists
                 if include_empty_playlists or not playlist.is_empty_in_scope
             ]
+        default_value_set = set(default_values)
 
         questionary = cls.load_questionary_module()
         if questionary is not None:
@@ -2739,12 +2786,10 @@ class PlexWatchStatusTransferApp:
                     questionary.Choice(
                         title=title,
                         value=str(playlist.id),
-                        checked=str(playlist.id) in default_values,
+                        checked=str(playlist.id) in default_value_set,
                     )
                 )
-            selected = questionary.checkbox(prompt, choices=choices).ask()
-            if selected is not None:
-                return list(selected)
+            return cls.prompt_questionary_checkbox(prompt, choices)
 
         cls.maybe_warn_questionary_unavailable()
 
