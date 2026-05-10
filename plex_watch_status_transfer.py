@@ -316,7 +316,11 @@ class PlexDatabase:
             )
         return inventory
 
-    def build_watch_history(self, library_filters: Sequence[str]) -> Dict[str, WatchHistory]:
+    def build_watch_history(
+        self,
+        library_filters: Sequence[str],
+        account_id: Optional[int] = None,
+    ) -> Dict[str, WatchHistory]:
         query = """
         SELECT
             md.guid AS guid,
@@ -329,6 +333,9 @@ class PlexDatabase:
         WHERE miv.guid IS NOT NULL
         """
         params: List[Any] = []
+        if account_id is not None:
+            query += " AND miv.account_id = ?"
+            params.append(account_id)
         if library_filters:
             placeholders = ", ".join("?" for _ in library_filters)
             query += f" AND ls.name IN ({placeholders})"
@@ -1495,10 +1502,16 @@ class PlexWatchStatusTransferApp:
             help="How to handle target items that already have watch history.",
         )
         transfer_parser.add_argument(
-            "--account-id",
+            "--source-account-id",
             type=int,
-            default=None,
-            help="Account id to use when the target metadata_item_views schema requires it.",
+            required=True,
+            help="Account id to use when reading source watch history.",
+        )
+        transfer_parser.add_argument(
+            "--target-account-id",
+            type=int,
+            required=True,
+            help="Account id to use when reading and writing target Plex watch state.",
         )
         transfer_parser.add_argument(
             "--report",
@@ -1606,17 +1619,16 @@ class PlexWatchStatusTransferApp:
         try:
             source_schema = source_database.inspect_schema()
             target_schema = target_database.inspect_schema()
-            effective_account_id = self.args.account_id
-            if effective_account_id is None:
-                effective_account_id = target_database.infer_preferred_account_id()
+            source_account_id = self.args.source_account_id
+            target_account_id = self.args.target_account_id
 
             source_inventory = source_database.build_media_inventory(source_schema, self.args.source_library)
             target_inventory = target_database.build_media_inventory(target_schema, self.args.target_library)
             target_inventory_all = target_inventory
             if not self.args.apply:
                 target_inventory_all = target_database.build_media_inventory(target_schema, [])
-            source_history = source_database.build_watch_history(self.args.source_library)
-            target_history = target_database.build_watch_history(self.args.target_library)
+            source_history = source_database.build_watch_history(self.args.source_library, source_account_id)
+            target_history = target_database.build_watch_history(self.args.target_library, target_account_id)
 
             matcher = PlexMatcher(self.args.match_mode, self.args.min_confidence)
             matches = matcher.collect_matches(
@@ -1627,7 +1639,7 @@ class PlexWatchStatusTransferApp:
             )
             self.annotate_library_statuses(matches, matcher, target_inventory_all, bool(self.args.target_library))
 
-            mutation_planner = PlexMutationPlanner(target_schema, effective_account_id, self.args.conflict_policy)
+            mutation_planner = PlexMutationPlanner(target_schema, target_account_id, self.args.conflict_policy)
             mutations = mutation_planner.plan_mutations(matches)
             columns = self.report_writer.parse_columns(self.args.columns)
             filtered_matches = matches
