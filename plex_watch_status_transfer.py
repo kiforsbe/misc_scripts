@@ -27,6 +27,7 @@ class TableColumn:
 class PlexSchema:
     media_parts_columns: Dict[str, TableColumn]
     metadata_item_views_columns: Dict[str, TableColumn]
+    metadata_item_settings_columns: Dict[str, TableColumn]
 
     @property
     def size_column(self) -> Optional[str]:
@@ -49,9 +50,13 @@ class ParsedIdentity:
 
 @dataclass
 class MediaRecord:
+    metadata_item_id: int
     guid: str
+    metadata_type: Optional[int]
     title: Optional[str]
     year: Optional[int]
+    item_index: Optional[int]
+    originally_available_at: Optional[int]
     file_path: str
     library_section_id: Optional[int]
     library_section_name: Optional[str]
@@ -59,7 +64,10 @@ class MediaRecord:
     basename_key: str
     file_size: Optional[int]
     duration: Optional[int]
+    parent_title: Optional[str]
+    parent_index: Optional[int]
     parent_guid: Optional[str]
+    grandparent_title: Optional[str]
     grandparent_guid: Optional[str]
     parsed_identity: ParsedIdentity
 
@@ -219,7 +227,21 @@ class PlexDatabase:
         return PlexSchema(
             media_parts_columns=self.load_table_columns("media_parts"),
             metadata_item_views_columns=self.load_table_columns("metadata_item_views"),
+            metadata_item_settings_columns=self.load_optional_table_columns("metadata_item_settings"),
         )
+
+    def load_optional_table_columns(self, table_name: str) -> Dict[str, TableColumn]:
+        rows = self.connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {
+            row["name"]: TableColumn(
+                name=row["name"],
+                declared_type=row["type"] or "",
+                not_null=bool(row["notnull"]),
+                default_value=row["dflt_value"],
+                primary_key_position=int(row["pk"]),
+            )
+            for row in rows
+        }
 
     def build_media_inventory(
         self,
@@ -233,13 +255,20 @@ class PlexDatabase:
 
         query = f"""
         SELECT
+            md.id AS metadata_item_id,
             md.guid AS guid,
+            md.metadata_type AS metadata_type,
             md.title AS title,
             md.year AS year,
+            md."index" AS item_index,
+            md.originally_available_at AS originally_available_at,
             mp.file AS file_path,
             ls.id AS library_section_id,
             ls.name AS library_section_name,
+            parent.title AS parent_title,
+            parent."index" AS parent_index,
             parent.guid AS parent_guid,
+            grandparent.title AS grandparent_title,
             grandparent.guid AS grandparent_guid
             {size_select}
             {duration_select}
@@ -263,9 +292,13 @@ class PlexDatabase:
             basename = Path(file_path).name
             inventory.append(
                 MediaRecord(
+                    metadata_item_id=int(row["metadata_item_id"]),
                     guid=row["guid"],
+                    metadata_type=PlexFilenameParser.safe_int(row["metadata_type"]),
                     title=row["title"],
                     year=PlexFilenameParser.safe_int(row["year"]),
+                    item_index=PlexFilenameParser.safe_int(row["item_index"]),
+                    originally_available_at=PlexFilenameParser.safe_int(row["originally_available_at"]),
                     file_path=file_path,
                     library_section_id=PlexFilenameParser.safe_int(row["library_section_id"]),
                     library_section_name=row["library_section_name"],
@@ -273,7 +306,10 @@ class PlexDatabase:
                     basename_key=PlexFilenameParser.normalize_basename(file_path),
                     file_size=PlexFilenameParser.safe_int(row["file_size"]),
                     duration=PlexFilenameParser.safe_int(row["duration"]),
+                    parent_title=row["parent_title"],
+                    parent_index=PlexFilenameParser.safe_int(row["parent_index"]),
                     parent_guid=row["parent_guid"],
+                    grandparent_title=row["grandparent_title"],
                     grandparent_guid=row["grandparent_guid"],
                     parsed_identity=PlexFilenameParser.parse_identity(basename),
                 )
@@ -362,6 +398,33 @@ class PlexDatabase:
             for row in self.connection.execute(query)
         ]
 
+    def infer_preferred_account_id(self) -> Optional[int]:
+        discovered_ids = {
+            int(row[0])
+            for row in self.connection.execute(
+                """
+                SELECT DISTINCT account_id FROM metadata_item_views WHERE account_id IS NOT NULL
+                UNION
+                SELECT DISTINCT account_id FROM metadata_item_settings WHERE account_id IS NOT NULL
+                UNION
+                SELECT DISTINCT account_id FROM metadata_item_accounts WHERE account_id IS NOT NULL
+                """
+            )
+            if row[0] is not None
+        }
+        if len(discovered_ids) == 1:
+            return next(iter(discovered_ids))
+
+        named_accounts = [
+            int(row["id"])
+            for row in self.connection.execute(
+                "SELECT id FROM accounts WHERE COALESCE(name, '') != '' ORDER BY id"
+            )
+        ]
+        if len(named_accounts) == 1:
+            return named_accounts[0]
+        return None
+
     def apply_mutations(self, mutations: Sequence[PlannedMutation]) -> None:
         for mutation in mutations:
             if mutation.action == "insert_views":
@@ -377,6 +440,100 @@ class PlexDatabase:
                 self.connection.execute(
                     "UPDATE metadata_item_views SET viewed_at = ? WHERE rowid = ?",
                     (mutation.details["viewed_at"], mutation.details["row_id"]),
+                )
+            elif mutation.action == "upsert_settings":
+                details = mutation.details
+                account_id = details["account_id"]
+                existing_row = self.connection.execute(
+                    """
+                    SELECT id
+                    FROM metadata_item_settings
+                    WHERE guid = ?
+                      AND ((account_id = ?) OR (account_id IS NULL AND ? IS NULL))
+                    ORDER BY id
+                    LIMIT 1
+                    """,
+                    (details["guid"], account_id, account_id),
+                ).fetchone()
+
+                if existing_row:
+                    self.connection.execute(
+                        """
+                        UPDATE metadata_item_settings
+                        SET view_count = ?,
+                            last_viewed_at = ?,
+                            updated_at = ?,
+                            changed_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            details["view_count"],
+                            details["last_viewed_at"],
+                            details["updated_at"],
+                            details["changed_at"],
+                            existing_row["id"],
+                        ),
+                    )
+                else:
+                    self.connection.execute(
+                        """
+                        INSERT INTO metadata_item_settings (
+                            account_id,
+                            guid,
+                            view_count,
+                            last_viewed_at,
+                            created_at,
+                            updated_at,
+                            changed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            account_id,
+                            details["guid"],
+                            details["view_count"],
+                            details["last_viewed_at"],
+                            details["created_at"],
+                            details["updated_at"],
+                            details["changed_at"],
+                        ),
+                    )
+            elif mutation.action == "refresh_view_rows":
+                details = mutation.details
+                self.connection.execute(
+                    """
+                    UPDATE metadata_item_views
+                    SET account_id = ?,
+                        metadata_type = ?,
+                        library_section_id = ?,
+                        grandparent_title = ?,
+                        parent_index = ?,
+                        parent_title = ?,
+                        "index" = ?,
+                        title = ?,
+                        viewed_at = COALESCE(viewed_at, ?),
+                        grandparent_guid = ?,
+                        originally_available_at = ?,
+                        view_type = ?
+                    WHERE guid = ?
+                      AND (? IS NULL OR account_id IS NULL OR account_id = ?)
+                    """,
+                    (
+                        details["account_id"],
+                        details["metadata_type"],
+                        details["library_section_id"],
+                        details["grandparent_title"],
+                        details["parent_index"],
+                        details["parent_title"],
+                        details["index"],
+                        details["title"],
+                        details["viewed_at"],
+                        details["grandparent_guid"],
+                        details["originally_available_at"],
+                        details["view_type"],
+                        details["guid"],
+                        details["account_id"],
+                        details["account_id"],
+                    ),
                 )
             else:
                 raise RuntimeError(f"Unsupported mutation action: {mutation.action}")
@@ -649,6 +806,50 @@ class PlexMutationPlanner:
         self.account_id = account_id
         self.conflict_policy = conflict_policy
 
+    def supports_item_settings(self) -> bool:
+        return bool(self.schema.metadata_item_settings_columns)
+
+    def build_item_settings_values(
+        self,
+        guid: str,
+        view_count: int,
+        last_viewed_at: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        if not self.supports_item_settings():
+            return None
+
+        timestamp = int(datetime.now().timestamp())
+        return {
+            "account_id": self.account_id,
+            "guid": guid,
+            "view_count": view_count,
+            "last_viewed_at": last_viewed_at,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "changed_at": timestamp,
+        }
+
+    def build_view_refresh_values(
+        self,
+        target: MediaRecord,
+        viewed_at: Optional[int],
+    ) -> Dict[str, Any]:
+        return {
+            "account_id": self.account_id,
+            "guid": target.guid,
+            "metadata_type": target.metadata_type,
+            "library_section_id": target.library_section_id,
+            "grandparent_title": target.grandparent_title,
+            "parent_index": target.parent_index,
+            "parent_title": target.parent_title,
+            "index": target.item_index,
+            "title": target.title,
+            "viewed_at": viewed_at,
+            "grandparent_guid": target.grandparent_guid,
+            "originally_available_at": target.originally_available_at,
+            "view_type": 0,
+        }
+
     def requires_account_id(self) -> bool:
         column = self.schema.metadata_item_views_columns.get("account_id")
         return bool(column and column.not_null and column.default_value is None)
@@ -695,10 +896,25 @@ class PlexMutationPlanner:
             source_history = match.source_history
             target_history = match.target_history
             delta = source_history.watch_count - target_history.watch_count
+            resulting_watch_count = target_history.watch_count
+            resulting_last_viewed_at = target_history.last_viewed_at
             match.account_status = "not_needed"
             match.dry_run_status = "in_sync"
 
             if self.conflict_policy == "skip" and target_history.watch_count > 0:
+                settings_values = self.build_item_settings_values(
+                    match.target.guid,
+                    resulting_watch_count,
+                    resulting_last_viewed_at,
+                )
+                if settings_values is not None:
+                    mutations.append(
+                        PlannedMutation(
+                            action="upsert_settings",
+                            target_guid=match.target.guid,
+                            details=settings_values,
+                        )
+                    )
                 match.dry_run_status = "skipped_conflict"
                 continue
 
@@ -726,10 +942,10 @@ class PlexMutationPlanner:
                         },
                     )
                 )
+                resulting_watch_count = source_history.watch_count
+                resulting_last_viewed_at = viewed_at
                 match.dry_run_status = "ready_insert"
-                continue
-
-            if (
+            elif (
                 source_history.last_viewed_at
                 and target_history.watch_count > 0
                 and source_history.watch_count == target_history.watch_count
@@ -746,7 +962,30 @@ class PlexMutationPlanner:
                         },
                     )
                 )
+                resulting_watch_count = target_history.watch_count
+                resulting_last_viewed_at = source_history.last_viewed_at
                 match.dry_run_status = "ready_update"
+
+            settings_values = self.build_item_settings_values(
+                match.target.guid,
+                resulting_watch_count,
+                resulting_last_viewed_at,
+            )
+            if settings_values is not None:
+                mutations.append(
+                    PlannedMutation(
+                        action="upsert_settings",
+                        target_guid=match.target.guid,
+                        details=settings_values,
+                    )
+                )
+            mutations.append(
+                PlannedMutation(
+                    action="refresh_view_rows",
+                    target_guid=match.target.guid,
+                    details=self.build_view_refresh_values(match.target, resulting_last_viewed_at),
+                )
+            )
         return mutations
 
 
@@ -1367,6 +1606,9 @@ class PlexWatchStatusTransferApp:
         try:
             source_schema = source_database.inspect_schema()
             target_schema = target_database.inspect_schema()
+            effective_account_id = self.args.account_id
+            if effective_account_id is None:
+                effective_account_id = target_database.infer_preferred_account_id()
 
             source_inventory = source_database.build_media_inventory(source_schema, self.args.source_library)
             target_inventory = target_database.build_media_inventory(target_schema, self.args.target_library)
@@ -1385,7 +1627,7 @@ class PlexWatchStatusTransferApp:
             )
             self.annotate_library_statuses(matches, matcher, target_inventory_all, bool(self.args.target_library))
 
-            mutation_planner = PlexMutationPlanner(target_schema, self.args.account_id, self.args.conflict_policy)
+            mutation_planner = PlexMutationPlanner(target_schema, effective_account_id, self.args.conflict_policy)
             mutations = mutation_planner.plan_mutations(matches)
             columns = self.report_writer.parse_columns(self.args.columns)
             filtered_matches = matches
