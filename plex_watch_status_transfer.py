@@ -1,12 +1,14 @@
 import argparse
 import csv
 import errno
+import importlib
 import json
 import os
 import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -28,6 +30,10 @@ class PlexSchema:
     media_parts_columns: Dict[str, TableColumn]
     metadata_item_views_columns: Dict[str, TableColumn]
     metadata_item_settings_columns: Dict[str, TableColumn]
+    custom_channels_columns: Dict[str, TableColumn]
+    play_queues_columns: Dict[str, TableColumn]
+    play_queue_items_columns: Dict[str, TableColumn]
+    play_queue_generators_columns: Dict[str, TableColumn]
 
     @property
     def size_column(self) -> Optional[str]:
@@ -39,6 +45,14 @@ class PlexSchema:
     @property
     def duration_column(self) -> Optional[str]:
         return "duration" if "duration" in self.media_parts_columns else None
+
+    @property
+    def supports_playlists(self) -> bool:
+        return bool(
+            self.custom_channels_columns
+            and self.play_queues_columns
+            and self.play_queue_items_columns
+        )
 
 
 @dataclass
@@ -136,6 +150,82 @@ class PlexAccount:
     auto_select_subtitle: Optional[int]
 
 
+@dataclass(frozen=True)
+class PlexPlaylistItem:
+    play_queue_item_id: Optional[int]
+    metadata_item_id: Optional[int]
+    order_value: float
+    media: Optional[MediaRecord]
+    title: Optional[str]
+    library_section_name: Optional[str]
+    in_scope: bool
+    notes: List[str]
+
+    @property
+    def display_label(self) -> str:
+        if self.media and self.media.basename:
+            return self.media.basename
+        if self.title:
+            return self.title
+        if self.metadata_item_id is not None:
+            return f"metadata:{self.metadata_item_id}"
+        return "unknown item"
+
+
+@dataclass(frozen=True)
+class PlexPlaylist:
+    id: int
+    name: str
+    description: Optional[str]
+    play_queue_id: Optional[int]
+    account_id: Optional[int]
+    items: List[PlexPlaylistItem]
+
+    @property
+    def scoped_items(self) -> List[PlexPlaylistItem]:
+        return [item for item in self.items if item.in_scope]
+
+    @property
+    def is_empty_in_scope(self) -> bool:
+        return not self.scoped_items
+
+
+@dataclass(frozen=True)
+class PlaylistMatchResult:
+    source_item: PlexPlaylistItem
+    status: str
+    target: Optional[MediaRecord]
+    confidence: float
+    reason: str
+    notes: List[str]
+
+
+@dataclass
+class PlaylistTransferPlan:
+    source_playlist: PlexPlaylist
+    target_playlist_name: Optional[str]
+    action: str
+    status: str
+    source_item_count: int
+    matched_items: List[PlaylistMatchResult]
+    transfer_items: List[MediaRecord]
+    unmatched_items: List[PlaylistMatchResult]
+    existing_target_playlist: Optional[PlexPlaylist]
+    notes: List[str]
+
+    @property
+    def matched_item_count(self) -> int:
+        return len(self.matched_items)
+
+    @property
+    def transfer_item_count(self) -> int:
+        return len(self.transfer_items)
+
+    @property
+    def unmatched_item_count(self) -> int:
+        return len(self.unmatched_items)
+
+
 class PlexFilenameParser:
     _guessit_wrapper = None
     _guessit_loaded = False
@@ -228,6 +318,10 @@ class PlexDatabase:
             media_parts_columns=self.load_table_columns("media_parts"),
             metadata_item_views_columns=self.load_table_columns("metadata_item_views"),
             metadata_item_settings_columns=self.load_optional_table_columns("metadata_item_settings"),
+            custom_channels_columns=self.load_optional_table_columns("custom_channels"),
+            play_queues_columns=self.load_optional_table_columns("play_queues"),
+            play_queue_items_columns=self.load_optional_table_columns("play_queue_items"),
+            play_queue_generators_columns=self.load_optional_table_columns("play_queue_generators"),
         )
 
     def load_optional_table_columns(self, table_name: str) -> Dict[str, TableColumn]:
@@ -405,6 +499,119 @@ class PlexDatabase:
             for row in self.connection.execute(query)
         ]
 
+    def build_inventory_by_metadata_id(self, inventory: Sequence[MediaRecord]) -> Dict[int, MediaRecord]:
+        return {
+            item.metadata_item_id: item
+            for item in inventory
+        }
+
+    def list_playlists(
+        self,
+        schema: PlexSchema,
+        scoped_inventory: Sequence[MediaRecord],
+        inventory_all: Optional[Sequence[MediaRecord]] = None,
+    ) -> List[PlexPlaylist]:
+        if not schema.supports_playlists:
+            raise RuntimeError(
+                "This Plex DB schema does not expose the playlist tables required by this tool."
+            )
+
+        scoped_by_id = self.build_inventory_by_metadata_id(scoped_inventory)
+        all_by_id = scoped_by_id if inventory_all is None else self.build_inventory_by_metadata_id(inventory_all)
+
+        query = """
+        SELECT
+            cc.id AS playlist_id,
+            cc.name AS playlist_name,
+            cc.description AS playlist_description,
+            pq.id AS play_queue_id,
+            pq.account_id AS account_id,
+            pqi.id AS play_queue_item_id,
+            pqi.metadata_item_id AS metadata_item_id,
+            pqi."order" AS order_value,
+            md.title AS item_title,
+            ls.name AS item_library_name
+        FROM custom_channels cc
+        LEFT JOIN (
+            SELECT playlist_id, MAX(id) AS play_queue_id
+            FROM play_queues
+            WHERE playlist_id IS NOT NULL
+            GROUP BY playlist_id
+        ) latest_queue ON latest_queue.playlist_id = cc.id
+        LEFT JOIN play_queues pq ON pq.id = latest_queue.play_queue_id
+        LEFT JOIN play_queue_items pqi ON pqi.play_queue_id = pq.id
+        LEFT JOIN metadata_items md ON md.id = pqi.metadata_item_id
+        LEFT JOIN library_sections ls ON ls.id = md.library_section_id
+        ORDER BY cc.name COLLATE NOCASE, cc.id, pqi."order", pqi.id
+        """
+
+        playlists: List[PlexPlaylist] = []
+        current_playlist_id: Optional[int] = None
+        current_items: List[PlexPlaylistItem] = []
+        current_header: Optional[Dict[str, Any]] = None
+
+        def flush_current() -> None:
+            if current_header is None:
+                return
+            playlists.append(
+                PlexPlaylist(
+                    id=int(current_header["playlist_id"]),
+                    name=str(current_header["playlist_name"] or ""),
+                    description=current_header["playlist_description"],
+                    play_queue_id=PlexFilenameParser.safe_int(current_header["play_queue_id"]),
+                    account_id=PlexFilenameParser.safe_int(current_header["account_id"]),
+                    items=list(current_items),
+                )
+            )
+
+        for row in self.connection.execute(query):
+            playlist_id = int(row["playlist_id"])
+            if current_playlist_id != playlist_id:
+                flush_current()
+                current_playlist_id = playlist_id
+                current_header = dict(row)
+                current_items = []
+
+            metadata_item_id = PlexFilenameParser.safe_int(row["metadata_item_id"])
+            if metadata_item_id is None:
+                continue
+
+            scoped_media = scoped_by_id.get(metadata_item_id)
+            media = scoped_media or all_by_id.get(metadata_item_id)
+            notes: List[str] = []
+            in_scope = scoped_media is not None
+            if scoped_media is None and media is not None:
+                notes.append("outside selected source library scope")
+            if media is None:
+                notes.append("no file-backed media row available for this playlist item")
+
+            current_items.append(
+                PlexPlaylistItem(
+                    play_queue_item_id=PlexFilenameParser.safe_int(row["play_queue_item_id"]),
+                    metadata_item_id=metadata_item_id,
+                    order_value=float(row["order_value"] or 0.0),
+                    media=media,
+                    title=row["item_title"],
+                    library_section_name=row["item_library_name"],
+                    in_scope=in_scope,
+                    notes=notes,
+                )
+            )
+
+        flush_current()
+        return playlists
+
+    def find_existing_playlist_by_name(
+        self,
+        playlists: Sequence[PlexPlaylist],
+        name: str,
+    ) -> Optional[PlexPlaylist]:
+        target_key = name.casefold()
+        for playlist in playlists:
+            if playlist.name.casefold() == target_key:
+                return playlist
+        return None
+
     def infer_preferred_account_id(self) -> Optional[int]:
         discovered_ids = {
             int(row[0])
@@ -559,8 +766,133 @@ class PlexDatabase:
                         details["account_id"],
                     ),
                 )
+            elif mutation.action == "create_playlist":
+                details = mutation.details
+                now = int(datetime.now().timestamp())
+                cursor = self.connection.execute(
+                    """
+                    INSERT INTO custom_channels (
+                        name,
+                        description,
+                        ordering,
+                        visibility,
+                        displayed_on,
+                        content_rating
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        details["name"],
+                        details.get("description"),
+                        details.get("ordering", 0),
+                        details.get("visibility"),
+                        details.get("displayed_on"),
+                        details.get("content_rating"),
+                    ),
+                )
+                playlist_id = int(cursor.lastrowid)
+                play_queue_cursor = self.connection.execute(
+                    """
+                    INSERT INTO play_queues (
+                        client_identifier,
+                        account_id,
+                        playlist_id,
+                        play_queue_generator_id,
+                        version,
+                        created_at,
+                        updated_at,
+                        metadata_type,
+                        total_items_count,
+                        extra_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        details.get("client_identifier") or uuid.uuid4().hex,
+                        details.get("account_id"),
+                        playlist_id,
+                        None,
+                        1,
+                        now,
+                        now,
+                        details.get("metadata_type"),
+                        len(details.get("metadata_item_ids", [])),
+                        details.get("extra_data"),
+                    ),
+                )
+                self.insert_playlist_items(
+                    int(play_queue_cursor.lastrowid),
+                    details.get("metadata_item_ids", []),
+                )
+            elif mutation.action == "merge_playlist_items":
+                details = mutation.details
+                self.insert_playlist_items(
+                    int(details["play_queue_id"]),
+                    details.get("metadata_item_ids", []),
+                    self.next_playlist_order(int(details["play_queue_id"])),
+                )
+                self.refresh_playlist_queue_totals(int(details["play_queue_id"]))
+            elif mutation.action == "replace_playlist_items":
+                details = mutation.details
+                play_queue_id = int(details["play_queue_id"])
+                self.connection.execute(
+                    "DELETE FROM play_queue_items WHERE play_queue_id = ?",
+                    (play_queue_id,),
+                )
+                self.insert_playlist_items(
+                    play_queue_id,
+                    details.get("metadata_item_ids", []),
+                )
+                self.refresh_playlist_queue_totals(play_queue_id)
             else:
                 raise RuntimeError(f"Unsupported mutation action: {mutation.action}")
+
+    def next_playlist_order(self, play_queue_id: int) -> float:
+        row = self.connection.execute(
+            'SELECT MAX("order") AS max_order FROM play_queue_items WHERE play_queue_id = ?',
+            (play_queue_id,),
+        ).fetchone()
+        current = float(row["max_order"] or 0.0)
+        if current < 1000.0:
+            return 1000.0
+        return current + 1000.0
+
+    def insert_playlist_items(
+        self,
+        play_queue_id: int,
+        metadata_item_ids: Sequence[int],
+        starting_order: float = 1000.0,
+    ) -> None:
+        order_value = starting_order
+        for metadata_item_id in metadata_item_ids:
+            self.connection.execute(
+                'INSERT INTO play_queue_items (play_queue_id, metadata_item_id, "order", up_next, play_queue_generator_id) VALUES (?, ?, ?, ?, ?)',
+                (play_queue_id, int(metadata_item_id), order_value, None, None),
+            )
+            order_value += 1000.0
+
+    def refresh_playlist_queue_totals(self, play_queue_id: int) -> None:
+        now = int(datetime.now().timestamp())
+        count_row = self.connection.execute(
+            'SELECT COUNT(*) AS item_count FROM play_queue_items WHERE play_queue_id = ?',
+            (play_queue_id,),
+        ).fetchone()
+        item_count = int(count_row["item_count"] or 0)
+        self.connection.execute(
+            """
+            UPDATE play_queues
+            SET total_items_count = ?,
+                updated_at = ?,
+                version = COALESCE(version, 0) + 1,
+                last_added_play_queue_item_id = (
+                    SELECT id
+                    FROM play_queue_items
+                    WHERE play_queue_id = ?
+                    ORDER BY "order" DESC, id DESC
+                    LIMIT 1
+                )
+            WHERE id = ?
+            """,
+            (item_count, now, play_queue_id, play_queue_id),
+        )
 
     def begin_immediate(self) -> None:
         self.connection.execute("BEGIN IMMEDIATE")
@@ -1058,6 +1390,273 @@ class PlexMutationPlanner:
         return mutations
 
 
+class PlexPlaylistPlanner:
+    def __init__(
+        self,
+        matcher: PlexMatcher,
+        conflict_policy: str,
+        include_empty_playlists: bool,
+    ) -> None:
+        self.matcher = matcher
+        self.conflict_policy = conflict_policy
+        self.include_empty_playlists = include_empty_playlists
+
+    @staticmethod
+    def resolve_unique_name(existing_names: Sequence[str], desired_name: str) -> str:
+        existing_keys = {name.casefold() for name in existing_names}
+        base_name = desired_name
+        if base_name.casefold() not in existing_keys:
+            return base_name
+
+        first_candidate = f"{base_name} (Imported)"
+        if first_candidate.casefold() not in existing_keys:
+            return first_candidate
+
+        suffix = 2
+        while True:
+            candidate = f"{base_name} (Imported {suffix})"
+            if candidate.casefold() not in existing_keys:
+                return candidate
+            suffix += 1
+
+    def build_item_match(
+        self,
+        source_item: PlexPlaylistItem,
+        target_indexes: Dict[str, List[MediaRecord]],
+        full_indexes: Dict[str, List[MediaRecord]],
+        has_target_library_filter: bool,
+    ) -> PlaylistMatchResult:
+        notes = list(source_item.notes)
+        if source_item.media is None:
+            return PlaylistMatchResult(
+                source_item=source_item,
+                status="unmatched",
+                target=None,
+                confidence=0.0,
+                reason="source_media_missing",
+                notes=notes,
+            )
+
+        target, confidence, reason, match_notes = self.matcher.find_match(source_item.media, target_indexes)
+        notes.extend(match_notes)
+        if target is not None:
+            return PlaylistMatchResult(
+                source_item=source_item,
+                status="matched",
+                target=target,
+                confidence=confidence,
+                reason=reason,
+                notes=notes,
+            )
+
+        if has_target_library_filter:
+            full_candidates = list(full_indexes.get(source_item.media.basename_key, []))
+            full_match = self.matcher.select_best_candidate(source_item.media, full_candidates) if full_candidates else None
+            if full_match is not None:
+                notes.append("matching target exists outside the selected target library")
+                if full_match.target.library_section_name:
+                    notes.append(f"matching target library: {full_match.target.library_section_name}")
+
+        return PlaylistMatchResult(
+            source_item=source_item,
+            status="unmatched",
+            target=None,
+            confidence=confidence,
+            reason=reason,
+            notes=notes,
+        )
+
+    def plan_transfers(
+        self,
+        source_playlists: Sequence[PlexPlaylist],
+        target_playlists: Sequence[PlexPlaylist],
+        target_inventory: Sequence[MediaRecord],
+        target_inventory_all: Sequence[MediaRecord],
+        target_account_id: Optional[int] = None,
+        has_target_library_filter: bool = False,
+    ) -> Tuple[List[PlaylistTransferPlan], List[PlannedMutation]]:
+        target_indexes = self.matcher.index_target_inventory(target_inventory)
+        full_indexes = self.matcher.index_target_inventory(target_inventory_all)
+        target_by_name = {
+            playlist.name.casefold(): playlist
+            for playlist in target_playlists
+        }
+        reserved_names = [playlist.name for playlist in target_playlists]
+
+        plans: List[PlaylistTransferPlan] = []
+        mutations: List[PlannedMutation] = []
+
+        for source_playlist in source_playlists:
+            scoped_items = source_playlist.scoped_items
+            notes: List[str] = []
+            if not self.include_empty_playlists and not scoped_items:
+                notes.append("empty in the selected source library scope; excluded by default")
+                plans.append(
+                    PlaylistTransferPlan(
+                        source_playlist=source_playlist,
+                        target_playlist_name=None,
+                        action="skip_empty",
+                        status="skipped_empty",
+                        source_item_count=0,
+                        matched_items=[],
+                        transfer_items=[],
+                        unmatched_items=[],
+                        existing_target_playlist=None,
+                        notes=notes,
+                    )
+                )
+                continue
+
+            matched_items: List[PlaylistMatchResult] = []
+            unmatched_items: List[PlaylistMatchResult] = []
+            for source_item in scoped_items:
+                match_result = self.build_item_match(
+                    source_item,
+                    target_indexes,
+                    full_indexes,
+                    has_target_library_filter,
+                )
+                if match_result.status == "matched":
+                    matched_items.append(match_result)
+                else:
+                    unmatched_items.append(match_result)
+
+            existing_target_playlist = target_by_name.get(source_playlist.name.casefold())
+            transfer_items = [
+                item.target
+                for item in matched_items
+                if item.target is not None
+            ]
+            action = "create_new"
+            status = "ready_create"
+            target_playlist_name = source_playlist.name
+
+            if not transfer_items:
+                notes.append("no playlist items matched in the selected target library scope")
+                plans.append(
+                    PlaylistTransferPlan(
+                        source_playlist=source_playlist,
+                        target_playlist_name=None,
+                        action="skip_unmatched",
+                        status="no_transferable_items",
+                        source_item_count=len(scoped_items),
+                        matched_items=matched_items,
+                        transfer_items=[],
+                        unmatched_items=unmatched_items,
+                        existing_target_playlist=existing_target_playlist,
+                        notes=notes,
+                    )
+                )
+                continue
+
+            if existing_target_playlist is None:
+                mutations.append(
+                    PlannedMutation(
+                        action="create_playlist",
+                        target_guid=f"playlist:{source_playlist.name}",
+                        details={
+                            "name": target_playlist_name,
+                            "description": source_playlist.description,
+                            "account_id": target_account_id,
+                            "metadata_type": transfer_items[0].metadata_type if transfer_items else None,
+                            "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
+                        },
+                    )
+                )
+            elif self.conflict_policy == "skip":
+                action = "skip_existing"
+                status = "skipped_conflict"
+                notes.append("target playlist already exists; conflict policy is skip")
+                transfer_items = []
+            elif self.conflict_policy == "unique":
+                action = "create_unique"
+                target_playlist_name = self.resolve_unique_name(reserved_names, source_playlist.name)
+                reserved_names.append(target_playlist_name)
+                mutations.append(
+                    PlannedMutation(
+                        action="create_playlist",
+                        target_guid=f"playlist:{target_playlist_name}",
+                        details={
+                            "name": target_playlist_name,
+                            "description": source_playlist.description,
+                            "account_id": target_account_id,
+                            "metadata_type": transfer_items[0].metadata_type if transfer_items else None,
+                            "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
+                        },
+                    )
+                )
+            elif self.conflict_policy == "replace":
+                action = "replace_existing"
+                status = "ready_replace"
+                if existing_target_playlist.play_queue_id is None:
+                    status = "blocked_missing_target_queue"
+                    notes.append("target playlist exists but has no play queue row")
+                    transfer_items = []
+                else:
+                    mutations.append(
+                        PlannedMutation(
+                            action="replace_playlist_items",
+                            target_guid=f"playlist:{existing_target_playlist.name}",
+                            details={
+                                "play_queue_id": existing_target_playlist.play_queue_id,
+                                "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
+                            },
+                        )
+                    )
+            else:
+                action = "merge_existing"
+                status = "ready_merge"
+                if existing_target_playlist.play_queue_id is None:
+                    status = "blocked_missing_target_queue"
+                    notes.append("target playlist exists but has no play queue row")
+                    transfer_items = []
+                else:
+                    existing_target_ids = {
+                        item.media.metadata_item_id
+                        for item in existing_target_playlist.items
+                        if item.media is not None
+                    }
+                    unique_transfer_items = [
+                        item
+                        for item in transfer_items
+                        if item.metadata_item_id not in existing_target_ids
+                    ]
+                    duplicate_count = len(transfer_items) - len(unique_transfer_items)
+                    if duplicate_count:
+                        notes.append(f"{duplicate_count} matched items already exist in the target playlist")
+                    transfer_items = unique_transfer_items
+                    if transfer_items:
+                        mutations.append(
+                            PlannedMutation(
+                                action="merge_playlist_items",
+                                target_guid=f"playlist:{existing_target_playlist.name}",
+                                details={
+                                    "play_queue_id": existing_target_playlist.play_queue_id,
+                                    "metadata_item_ids": [item.metadata_item_id for item in transfer_items],
+                                },
+                            )
+                        )
+                    else:
+                        status = "in_sync"
+
+            plans.append(
+                PlaylistTransferPlan(
+                    source_playlist=source_playlist,
+                    target_playlist_name=target_playlist_name,
+                    action=action,
+                    status=status,
+                    source_item_count=len(scoped_items),
+                    matched_items=matched_items,
+                    transfer_items=transfer_items,
+                    unmatched_items=unmatched_items,
+                    existing_target_playlist=existing_target_playlist,
+                    notes=notes,
+                )
+            )
+
+        return plans, mutations
+
+
 class PlexReportWriter:
     MATCH_ROW_COLUMNS = (
         "status",
@@ -1126,6 +1725,16 @@ class PlexReportWriter:
         "target_watch_count": "tgt_cnt",
         "target_last_viewed_at": "tgt_seen",
         "notes": "notes",
+        "playlist_id": "pl_id",
+        "source_playlist": "src_playlist",
+        "target_playlist": "tgt_playlist",
+        "action": "action",
+        "source_item_count": "src_items",
+        "matched_item_count": "matched",
+        "transfer_item_count": "transfer",
+        "existing_item_count": "existing",
+        "unmatched_item_count": "unmatched",
+        "unmatched_items": "unmatched_items",
     }
     TABLE_NUMERIC_COLUMNS = {
         "confidence",
@@ -1138,6 +1747,12 @@ class PlexReportWriter:
         "source_last_viewed_at",
         "target_watch_count",
         "target_last_viewed_at",
+        "playlist_id",
+        "source_item_count",
+        "matched_item_count",
+        "transfer_item_count",
+        "existing_item_count",
+        "unmatched_item_count",
     }
     TABLE_COLUMN_MAX_WIDTHS = {
         "status": 10,
@@ -1172,6 +1787,16 @@ class PlexReportWriter:
         "target_watch_count": 6,
         "target_last_viewed_at": 18,
         "notes": 40,
+        "playlist_id": 6,
+        "source_playlist": 30,
+        "target_playlist": 30,
+        "action": 16,
+        "source_item_count": 8,
+        "matched_item_count": 8,
+        "transfer_item_count": 8,
+        "existing_item_count": 8,
+        "unmatched_item_count": 10,
+        "unmatched_items": 52,
     }
     TABLE_FALLBACK_MAX_WIDTH = 32
 
@@ -1505,6 +2130,45 @@ class PlexReportWriter:
 
 class PlexWatchStatusTransferApp:
     DRY_RUN_FILTER_MODES = {"all", "warnings", "errors"}
+    PLAYLIST_ROW_COLUMNS = (
+        "playlist_id",
+        "source_playlist",
+        "target_playlist",
+        "status",
+        "action",
+        "source_item_count",
+        "matched_item_count",
+        "transfer_item_count",
+        "existing_item_count",
+        "unmatched_item_count",
+        "notes",
+        "unmatched_items",
+    )
+    PLAYLIST_TABLE_COLUMNS = (
+        TableColumnSpec("playlist_id"),
+        TableColumnSpec("source_playlist"),
+        TableColumnSpec("target_playlist"),
+        TableColumnSpec("status"),
+        TableColumnSpec("action"),
+        TableColumnSpec("matched_item_count"),
+        TableColumnSpec("transfer_item_count"),
+        TableColumnSpec("unmatched_item_count"),
+        TableColumnSpec("notes"),
+    )
+    PLAYLIST_LIST_ROW_COLUMNS = (
+        "playlist_id",
+        "source_playlist",
+        "source_item_count",
+        "status",
+        "notes",
+    )
+    PLAYLIST_LIST_TABLE_COLUMNS = (
+        TableColumnSpec("playlist_id"),
+        TableColumnSpec("source_playlist"),
+        TableColumnSpec("source_item_count"),
+        TableColumnSpec("status"),
+        TableColumnSpec("notes"),
+    )
 
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -1617,6 +2281,127 @@ class PlexWatchStatusTransferApp:
             ),
         )
 
+        transfer_playlists_parser = subparsers.add_parser(
+            "transfer-playlists",
+            help="Transfer Plex playlists between two Plex library databases.",
+            description="Transfer Plex playlists between two Plex SQLite library databases using filename-based item matching.",
+        )
+        transfer_playlists_parser.set_defaults(command="transfer-playlists")
+        transfer_playlists_parser.add_argument(
+            "--source-path",
+            default=None,
+            help="Path to the source Plex location or DB file.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--target-path",
+            default=None,
+            help="Path to the target Plex location or DB file.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--source-library",
+            action="append",
+            default=[],
+            help="Source library section name to search for playlist items. Repeat to include multiple sections.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--target-library",
+            action="append",
+            default=[],
+            help="Target library section name to search for playlist item matches. Repeat to include multiple sections.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--playlist",
+            action="append",
+            default=[],
+            help="Playlist id or exact playlist name to transfer. Repeat to include multiple playlists.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--playlist-conflict-policy",
+            choices=["unique", "merge", "replace", "skip"],
+            default="unique",
+            help="How to handle target playlists that already exist with the same name.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--include-empty-playlists",
+            action="store_true",
+            help="Include playlists that are empty after applying the selected source library scope.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--match-mode",
+            choices=["strict", "balanced", "loose"],
+            default="balanced",
+            help="Controls how strict duplicate resolution is when multiple target rows share the exact same basename.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--min-confidence",
+            type=float,
+            default=0.65,
+            help="Minimum confidence required to resolve duplicate exact-basename candidates.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--report",
+            type=Path,
+            default=None,
+            help="Optional path for a JSON, CSV, or plain-text table report.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--report-format",
+            choices=["auto", "json", "csv", "table"],
+            default="auto",
+            help="Explicit report format. Defaults to auto-detecting from the report file extension.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--console-format",
+            choices=["json", "csv", "table"],
+            default="table",
+            help="Console output format for playlist transfer results.",
+        )
+        transfer_playlists_parser.add_argument(
+            "--apply",
+            action="store_true",
+            help="Write the planned playlist mutations into the target DB. Without this flag the tool is dry-run only.",
+        )
+
+        list_playlists_parser = subparsers.add_parser(
+            "list-playlists",
+            help="List playlists in a Plex library database.",
+        )
+        list_playlists_parser.set_defaults(command="list-playlists")
+        list_playlists_parser.add_argument(
+            "--path",
+            required=True,
+            help="Path to the Plex location or DB file to inspect.",
+        )
+        list_playlists_parser.add_argument(
+            "--library",
+            action="append",
+            default=[],
+            help="Library section name to scope playlist item discovery. Repeat to include multiple sections.",
+        )
+        list_playlists_parser.add_argument(
+            "--include-empty-playlists",
+            action="store_true",
+            help="Include playlists that are empty after library scoping.",
+        )
+        list_playlists_parser.add_argument(
+            "--console-format",
+            choices=["json", "csv", "table"],
+            default="table",
+            help="Console output format for playlist listing.",
+        )
+        list_playlists_parser.add_argument(
+            "--report",
+            type=Path,
+            default=None,
+            help="Optional path for a JSON, CSV, or plain-text table report.",
+        )
+        list_playlists_parser.add_argument(
+            "--report-format",
+            choices=["auto", "json", "csv", "table"],
+            default="auto",
+            help="Explicit report format. Defaults to auto-detecting from the report file extension.",
+        )
+
         list_libraries_parser = subparsers.add_parser(
             "list-libraries",
             help="List Plex library sections in a Plex library database.",
@@ -1644,7 +2429,7 @@ class PlexWatchStatusTransferApp:
     @classmethod
     def parse_args(cls, argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         raw_argv = list(argv) if argv is not None else sys.argv[1:]
-        subcommands = {"transfer", "list-libraries", "list-accounts"}
+        subcommands = {"transfer", "transfer-playlists", "list-playlists", "list-libraries", "list-accounts"}
         if raw_argv and not raw_argv[0].startswith("-") and raw_argv[0] not in subcommands:
             raw_argv = ["transfer", *raw_argv]
         if raw_argv and raw_argv[0].startswith("-") and raw_argv[0] not in {"-h", "--help"}:
@@ -1661,7 +2446,18 @@ class PlexWatchStatusTransferApp:
             return self.run_list_libraries()
         if self.args.command == "list-accounts":
             return self.run_list_accounts()
+        if self.args.command == "list-playlists":
+            return self.run_list_playlists()
+        if self.args.command == "transfer-playlists":
+            return self.run_transfer_playlists()
         return self.run_transfer()
+
+    @staticmethod
+    def load_questionary_module():
+        try:
+            return importlib.import_module("questionary")
+        except Exception:
+            return None
 
     @staticmethod
     def prompt_with_default(prompt: str, default: Optional[str] = None) -> str:
@@ -1819,6 +2615,97 @@ class PlexWatchStatusTransferApp:
                 return False
             print("Answer yes or no.")
 
+    @classmethod
+    def prompt_choice(
+        cls,
+        prompt: str,
+        choices: Sequence[str],
+        default: Optional[str] = None,
+    ) -> str:
+        valid = {choice.casefold(): choice for choice in choices}
+        questionary = cls.load_questionary_module()
+        if questionary is not None:
+            selected = questionary.select(prompt, choices=list(choices), default=default).ask()
+            if selected:
+                return selected
+
+        while True:
+            rendered_choices = "/".join(choices)
+            raw_value = cls.prompt_with_default(f"{prompt} ({rendered_choices})", default)
+            selected = valid.get(raw_value.casefold())
+            if selected is not None:
+                return selected
+            print("Choose one of the listed values.")
+
+    @classmethod
+    def prompt_playlist_filters(
+        cls,
+        prompt: str,
+        playlists: Sequence[PlexPlaylist],
+        default_selectors: Sequence[str],
+        include_empty_playlists: bool,
+    ) -> List[str]:
+        playlist_by_id = {str(playlist.id): playlist for playlist in playlists}
+        playlist_by_name = {playlist.name.casefold(): playlist for playlist in playlists}
+
+        default_values: List[str] = []
+        if default_selectors:
+            default_values = list(default_selectors)
+        else:
+            default_values = [
+                str(playlist.id)
+                for playlist in playlists
+                if include_empty_playlists or not playlist.is_empty_in_scope
+            ]
+
+        questionary = cls.load_questionary_module()
+        if questionary is not None:
+            choices = []
+            for playlist in playlists:
+                status = "empty" if playlist.is_empty_in_scope else f"{len(playlist.scoped_items)} in scope"
+                title = f"{playlist.id}: {playlist.name} ({status})"
+                choices.append(
+                    questionary.Choice(
+                        title=title,
+                        value=str(playlist.id),
+                        checked=str(playlist.id) in default_values,
+                    )
+                )
+            selected = questionary.checkbox(prompt, choices=choices).ask()
+            if selected is not None:
+                return list(selected)
+
+        print(prompt)
+        for playlist in playlists:
+            status = "empty" if playlist.is_empty_in_scope else f"{len(playlist.scoped_items)} in scope"
+            print(f"  {playlist.id}: {playlist.name} ({status})")
+
+        default_label = ", ".join(default_values) if default_values else "none"
+        while True:
+            raw_value = input(
+                f"Choose playlist ids or exact names (comma-separated, Enter for default selection) [{default_label}]: "
+            ).strip()
+            if not raw_value:
+                return list(default_values)
+
+            selections: List[str] = []
+            seen = set()
+            valid = True
+            for token in (part.strip() for part in raw_value.split(",")):
+                if not token:
+                    continue
+                playlist = playlist_by_id.get(token) or playlist_by_name.get(token.casefold())
+                if playlist is None:
+                    print(f"Choose only listed playlists. Invalid selection: {token}")
+                    valid = False
+                    break
+                playlist_id = str(playlist.id)
+                if playlist_id not in seen:
+                    seen.add(playlist_id)
+                    selections.append(playlist_id)
+            if valid:
+                return selections
+
     @staticmethod
     def apply_planned_mutations(target_db_path: Path, mutations: Sequence[PlannedMutation]) -> None:
         PlexEnvironment.wait_for_plex_shutdown()
@@ -1829,6 +2716,200 @@ class PlexWatchStatusTransferApp:
             database.commit()
         finally:
             database.close()
+
+    @classmethod
+    def resolve_playlist_selection(
+        cls,
+        playlists: Sequence[PlexPlaylist],
+        selectors: Sequence[str],
+        include_empty_playlists: bool,
+    ) -> List[PlexPlaylist]:
+        playlist_by_id = {str(playlist.id): playlist for playlist in playlists}
+        playlist_by_name = {playlist.name.casefold(): playlist for playlist in playlists}
+
+        if not selectors:
+            selected = list(playlists)
+        else:
+            selected = []
+            seen = set()
+            for selector in selectors:
+                playlist = playlist_by_id.get(str(selector)) or playlist_by_name.get(str(selector).casefold())
+                if playlist is None:
+                    raise RuntimeError(f"Playlist not found in source DB selection: {selector}")
+                if playlist.id in seen:
+                    continue
+                seen.add(playlist.id)
+                selected.append(playlist)
+
+        if include_empty_playlists:
+            return selected
+        return [playlist for playlist in selected if not playlist.is_empty_in_scope]
+
+    @classmethod
+    def build_playlist_rows(cls, plans: Sequence[PlaylistTransferPlan]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for plan in plans:
+            unmatched_labels = "; ".join(item.source_item.display_label for item in plan.unmatched_items[:5])
+            if len(plan.unmatched_items) > 5:
+                unmatched_labels += f"; +{len(plan.unmatched_items) - 5} more"
+            rows.append(
+                {
+                    "playlist_id": plan.source_playlist.id,
+                    "source_playlist": plan.source_playlist.name,
+                    "target_playlist": plan.target_playlist_name,
+                    "status": plan.status,
+                    "action": plan.action,
+                    "source_item_count": plan.source_item_count,
+                    "matched_item_count": plan.matched_item_count,
+                    "transfer_item_count": plan.transfer_item_count,
+                    "existing_item_count": len(plan.existing_target_playlist.items) if plan.existing_target_playlist else 0,
+                    "unmatched_item_count": plan.unmatched_item_count,
+                    "notes": "; ".join(plan.notes),
+                    "unmatched_items": unmatched_labels,
+                }
+            )
+        return rows
+
+    def emit_playlist_outputs(
+        self,
+        plans: Sequence[PlaylistTransferPlan],
+        mutations: Sequence[PlannedMutation],
+        console_format: str,
+        report_path: Optional[Path],
+        report_format: str,
+    ) -> None:
+        rows = self.build_playlist_rows(plans)
+        payload = {
+            "summary": {
+                "playlists": len(plans),
+                "planned_mutations": len(mutations),
+                "playlists_with_unmatched_items": sum(1 for plan in plans if plan.unmatched_items),
+            },
+            "playlists": [
+                {
+                    "id": plan.source_playlist.id,
+                    "source_name": plan.source_playlist.name,
+                    "target_name": plan.target_playlist_name,
+                    "status": plan.status,
+                    "action": plan.action,
+                    "source_item_count": plan.source_item_count,
+                    "matched_item_count": plan.matched_item_count,
+                    "transfer_item_count": plan.transfer_item_count,
+                    "notes": plan.notes,
+                    "unmatched_items": [
+                        {
+                            "label": item.source_item.display_label,
+                            "reason": item.reason,
+                            "notes": item.notes,
+                        }
+                        for item in plan.unmatched_items
+                    ],
+                }
+                for plan in plans
+            ],
+            "mutations": [asdict(mutation) for mutation in mutations],
+        }
+
+        if console_format == "json":
+            print(json.dumps(payload, indent=2))
+        elif console_format == "csv":
+            self.report_writer._write_csv_rows(sys.stdout, rows, self.PLAYLIST_ROW_COLUMNS)
+        else:
+            self.report_writer.write_table_rows(sys.stdout, rows, self.PLAYLIST_TABLE_COLUMNS)
+
+        if report_path is None:
+            return
+
+        resolved_format = self.report_writer.resolve_report_format(report_path, report_format)
+        if resolved_format == "json":
+            with report_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+        elif resolved_format == "csv":
+            with report_path.open("w", newline="", encoding="utf-8") as handle:
+                self.report_writer._write_csv_rows(handle, rows, self.PLAYLIST_ROW_COLUMNS)
+        else:
+            with report_path.open("w", encoding="utf-8") as handle:
+                self.report_writer.write_table_rows(handle, rows, self.PLAYLIST_TABLE_COLUMNS)
+
+    def emit_playlist_listing_outputs(
+        self,
+        rows: Sequence[Dict[str, Any]],
+        console_format: str,
+        report_path: Optional[Path],
+        report_format: str,
+    ) -> None:
+        payload = {
+            "summary": {
+                "playlists": len(rows),
+                "empty": sum(1 for row in rows if row.get("status") == "empty"),
+            },
+            "playlists": list(rows),
+        }
+
+        if console_format == "json":
+            print(json.dumps(payload, indent=2))
+        elif console_format == "csv":
+            self.report_writer._write_csv_rows(sys.stdout, rows, self.PLAYLIST_LIST_ROW_COLUMNS)
+        else:
+            self.report_writer.write_table_rows(sys.stdout, rows, self.PLAYLIST_LIST_TABLE_COLUMNS)
+
+        if report_path is None:
+            return
+
+        resolved_format = self.report_writer.resolve_report_format(report_path, report_format)
+        if resolved_format == "json":
+            with report_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+        elif resolved_format == "csv":
+            with report_path.open("w", newline="", encoding="utf-8") as handle:
+                self.report_writer._write_csv_rows(handle, rows, self.PLAYLIST_LIST_ROW_COLUMNS)
+        else:
+            with report_path.open("w", encoding="utf-8") as handle:
+                self.report_writer.write_table_rows(handle, rows, self.PLAYLIST_LIST_TABLE_COLUMNS)
+
+    @staticmethod
+    def print_playlist_summary(
+        plans: Sequence[PlaylistTransferPlan],
+        mutations: Sequence[PlannedMutation],
+        apply: bool,
+        stream: TextIO = sys.stdout,
+    ) -> None:
+        try:
+            print(f"Selected playlists: {len(plans)}", file=stream)
+            print(
+                f"Playlists with unmatched items: {sum(1 for plan in plans if plan.unmatched_items)}",
+                file=stream,
+            )
+            print(f"Planned playlist mutations: {len(mutations)}", file=stream)
+            print("Mode: apply" if apply else "Mode: dry-run", file=stream)
+            stream.flush()
+        except OSError as exc:
+            if PlexReportWriter._is_broken_pipe_error(exc):
+                if stream is sys.stdout:
+                    PlexReportWriter._suppress_stdout_after_pipe_error()
+                return
+            raise
+
+    @staticmethod
+    def print_playlist_unmatched_details(
+        plans: Sequence[PlaylistTransferPlan],
+        stream: TextIO = sys.stdout,
+    ) -> None:
+        try:
+            for plan in plans:
+                if not plan.unmatched_items:
+                    continue
+                print(f"Unmatched items for playlist '{plan.source_playlist.name}':", file=stream)
+                for item in plan.unmatched_items:
+                    extra = f" ({'; '.join(item.notes)})" if item.notes else ""
+                    print(f"  - {item.source_item.display_label}: {item.reason}{extra}", file=stream)
+            stream.flush()
+        except OSError as exc:
+            if PlexReportWriter._is_broken_pipe_error(exc):
+                if stream is sys.stdout:
+                    PlexReportWriter._suppress_stdout_after_pipe_error()
+                return
+            raise
 
     @classmethod
     def populate_missing_transfer_args(cls, args: argparse.Namespace) -> bool:
@@ -1889,6 +2970,62 @@ class PlexWatchStatusTransferApp:
             "Target accounts:",
             target_accounts,
             target_account_default,
+        )
+        return True
+
+    @classmethod
+    def populate_missing_playlist_transfer_args(cls, args: argparse.Namespace) -> bool:
+        needs_paths = args.source_path is None or args.target_path is None
+        needs_playlist_selection = not args.playlist and getattr(sys.stdin, "isatty", lambda: False)()
+        if not needs_paths and not needs_playlist_selection:
+            return False
+
+        print("Interactive playlist transfer setup")
+        args.source_path = cls.prompt_with_default("Source Plex path", args.source_path)
+        args.target_path = cls.prompt_with_default("Target Plex path", args.target_path)
+
+        source_db_path = PlexDatabaseLocator.resolve_db_path(args.source_path, "source")
+        target_db_path = PlexDatabaseLocator.resolve_db_path(args.target_path, "target")
+
+        source_database = PlexDatabase(source_db_path, readonly=True)
+        try:
+            source_schema = source_database.inspect_schema()
+            source_libraries = source_database.list_library_sections()
+            args.source_library = cls.prompt_library_filters(
+                "Source libraries:",
+                source_libraries,
+                args.source_library,
+            )
+            scoped_inventory = source_database.build_media_inventory(source_schema, args.source_library)
+            all_inventory = scoped_inventory if not args.source_library else source_database.build_media_inventory(source_schema, [])
+            playlists = source_database.list_playlists(source_schema, scoped_inventory, all_inventory)
+        finally:
+            source_database.close()
+
+        target_database = PlexDatabase(target_db_path, readonly=True)
+        try:
+            target_libraries = target_database.list_library_sections()
+            args.target_library = cls.prompt_library_filters(
+                "Target libraries:",
+                target_libraries,
+                args.target_library,
+            )
+        finally:
+            target_database.close()
+
+        if not args.include_empty_playlists:
+            print("Empty playlists are excluded by default. Use --include-empty-playlists to include them.")
+
+        args.playlist = cls.prompt_playlist_filters(
+            "Select playlists to transfer:",
+            playlists,
+            args.playlist,
+            args.include_empty_playlists,
+        )
+        args.playlist_conflict_policy = cls.prompt_choice(
+            "Choose playlist conflict policy",
+            ["unique", "merge", "replace", "skip"],
+            args.playlist_conflict_policy,
         )
         return True
 
@@ -1970,6 +3107,86 @@ class PlexWatchStatusTransferApp:
                 if should_apply:
                     self.apply_planned_mutations(target_db_path, mutations)
                     self.report_writer.print_summary(matches, mutations, True, stream=summary_stream)
+                else:
+                    print("Changes were not applied.", file=summary_stream)
+
+            self.report_writer.detach_redirected_stdout()
+            return 0
+        finally:
+            source_database.close()
+            target_database.close()
+
+    def run_transfer_playlists(self) -> int:
+        self.interactive_transfer = self.populate_missing_playlist_transfer_args(self.args)
+
+        source_db_path = PlexDatabaseLocator.resolve_db_path(self.args.source_path, "source")
+        target_db_path = PlexDatabaseLocator.resolve_db_path(self.args.target_path, "target")
+
+        if self.args.apply:
+            PlexEnvironment.wait_for_plex_shutdown()
+
+        source_database = PlexDatabase(source_db_path, readonly=True)
+        target_database = PlexDatabase(target_db_path, readonly=not self.args.apply)
+
+        try:
+            source_schema = source_database.inspect_schema()
+            target_schema = target_database.inspect_schema()
+            if not source_schema.supports_playlists:
+                raise RuntimeError("Source DB does not expose the playlist tables required for playlist transfer.")
+            if not target_schema.supports_playlists:
+                raise RuntimeError("Target DB does not expose the playlist tables required for playlist transfer.")
+
+            source_inventory = source_database.build_media_inventory(source_schema, self.args.source_library)
+            source_inventory_all = source_inventory if not self.args.source_library else source_database.build_media_inventory(source_schema, [])
+            target_inventory = target_database.build_media_inventory(target_schema, self.args.target_library)
+            target_inventory_all = target_inventory if not self.args.target_library else target_database.build_media_inventory(target_schema, [])
+
+            source_playlists = source_database.list_playlists(source_schema, source_inventory, source_inventory_all)
+            selected_playlists = self.resolve_playlist_selection(
+                source_playlists,
+                self.args.playlist,
+                self.args.include_empty_playlists,
+            )
+            target_playlists = target_database.list_playlists(target_schema, target_inventory, target_inventory_all)
+
+            if not self.args.include_empty_playlists:
+                print("Empty playlists are excluded by default. Use --include-empty-playlists to include them.")
+
+            matcher = PlexMatcher(self.args.match_mode, self.args.min_confidence)
+            planner = PlexPlaylistPlanner(
+                matcher,
+                self.args.playlist_conflict_policy,
+                self.args.include_empty_playlists,
+            )
+            plans, mutations = planner.plan_transfers(
+                selected_playlists,
+                target_playlists,
+                target_inventory,
+                target_inventory_all,
+                has_target_library_filter=bool(self.args.target_library),
+            )
+
+            if self.args.apply and mutations:
+                target_database.begin_immediate()
+                target_database.apply_mutations(mutations)
+                target_database.commit()
+
+            self.emit_playlist_outputs(
+                plans,
+                mutations,
+                self.args.console_format,
+                self.args.report,
+                self.args.report_format,
+            )
+            summary_stream = sys.stderr if self.args.console_format in {"json", "csv"} else sys.stdout
+            self.print_playlist_summary(plans, mutations, self.args.apply, summary_stream)
+            self.print_playlist_unmatched_details(plans, summary_stream)
+
+            if self.interactive_transfer and not self.args.apply:
+                should_apply = self.prompt_yes_no("Apply these playlist changes?", default=False)
+                if should_apply:
+                    self.apply_planned_mutations(target_db_path, mutations)
+                    self.print_playlist_summary(plans, mutations, True, summary_stream)
                 else:
                     print("Changes were not applied.", file=summary_stream)
 
@@ -2138,6 +3355,36 @@ class PlexWatchStatusTransferApp:
                     TableColumnSpec("auto_select_subtitle"),
                 ],
             )
+            return 0
+        finally:
+            database.close()
+
+    def run_list_playlists(self) -> int:
+        database = PlexDatabase(PlexDatabaseLocator.resolve_db_path(self.args.path, "path"), readonly=True)
+        try:
+            schema = database.inspect_schema()
+            if not schema.supports_playlists:
+                raise RuntimeError("This Plex DB does not expose the playlist tables required for playlist listing.")
+
+            scoped_inventory = database.build_media_inventory(schema, self.args.library)
+            all_inventory = scoped_inventory if not self.args.library else database.build_media_inventory(schema, [])
+            playlists = database.list_playlists(schema, scoped_inventory, all_inventory)
+            selected_playlists = playlists if self.args.include_empty_playlists else [
+                playlist
+                for playlist in playlists
+                if not playlist.is_empty_in_scope
+            ]
+            rows = [
+                {
+                    "playlist_id": playlist.id,
+                    "source_playlist": playlist.name,
+                    "source_item_count": len(playlist.scoped_items),
+                    "status": "empty" if playlist.is_empty_in_scope else "available",
+                    "notes": "empty in selected source library scope" if playlist.is_empty_in_scope else "",
+                }
+                for playlist in selected_playlists
+            ]
+            self.emit_playlist_listing_outputs(rows, self.args.console_format, self.args.report, self.args.report_format)
             return 0
         finally:
             database.close()
