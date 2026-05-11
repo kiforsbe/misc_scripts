@@ -1,0 +1,4 @@
+# plex_watch_status_transfer.py
+guessit
+# Optional: install for interactive checkbox/select prompts.
+questionary

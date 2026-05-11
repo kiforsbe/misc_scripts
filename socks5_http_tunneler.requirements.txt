@@ -1,0 +1,5 @@
+# socks5_http_tunneler.py
+requests
+PySocks
+tqdm
+urllib3

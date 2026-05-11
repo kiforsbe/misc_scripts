@@ -1,0 +1,4 @@
+# serve_local.py
+# No required third-party packages.
+# Optional: install this if you use --qrcode.
+qrcode-terminal

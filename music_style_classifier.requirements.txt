@@ -1,0 +1,7 @@
+# music_style_classifier.py
+ffmpeg-python
+librosa
+safetensors
+torch
+transformers
+# Requires the ffmpeg executable to be installed separately and available on PATH.

@@ -1,0 +1,7 @@
+# latest_episodes_viewer.py
+guessit
+Pillow
+requests
+rapidfuzz
+tqdm
+zstandard

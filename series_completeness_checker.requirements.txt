@@ -1,0 +1,7 @@
+# series_completeness_checker.py
+guessit
+Pillow
+requests
+rapidfuzz
+tqdm
+zstandard

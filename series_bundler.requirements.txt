@@ -1,0 +1,6 @@
+# series_bundler.py
+guessit
+requests
+rapidfuzz
+tqdm
+zstandard
