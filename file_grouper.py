@@ -1,7 +1,9 @@
+# pyright: reportMissingImports=false, reportMissingModuleSource=false
 import argparse
 import json
 import os
 import sys
+import types
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Set, Any, Optional
@@ -90,52 +92,106 @@ except ImportError as exc:
     print(f"Error: Failed to import local guessit_wrapper.py: {exc}")
     sys.exit(1)
 
+VIDEO_OPTIMIZER_DIR = os.path.join(os.path.dirname(__file__), 'video-optimizer-v2')
+if VIDEO_OPTIMIZER_DIR not in sys.path:
+    sys.path.append(VIDEO_OPTIMIZER_DIR)
+
+MetadataManager = None
+BaseMetadataProvider = None
+TitleInfo = None
+AnimeDataProvider = None
+IMDbDataProvider = None
+PlexMetadataProvider = None
+PlexWatchStatus = None
+MyAnimeListWatchStatusProvider = None
+MyAnimeListWatchStatus = None
+
+
+def _missing_dependency_message(feature_name: str, exc: ImportError) -> str:
+    missing_name = getattr(exc, 'name', None)
+    if missing_name:
+        return (
+            f"Warning: {feature_name} unavailable because dependency '{missing_name}' is missing. "
+            f"Install it with: pip install {missing_name}"
+        )
+    return f"Warning: {feature_name} unavailable: {exc}"
+
+
 try:
-    # Load this library from subfolder video-optimizer-v2
-    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
     from metadata_provider import MetadataManager, BaseMetadataProvider, TitleInfo
-    from anime_metadata import AnimeDataProvider
-    from imdb_metadata import IMDbDataProvider
-    from plex_metadata import PlexMetadataProvider, PlexWatchStatus
-    from myanimelist_watch_status import MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
-    
-    # Initialize metadata manager as a global variable
-    METADATA_MANAGER = None
-    METADATA_MANAGER_WEIGHTS = None
-    PLEX_PROVIDER = None
+except ImportError as exc:
+    print(f"Warning: video-optimizer-v2 core metadata modules unavailable: {exc}")
 
-    def get_metadata_manager(anime_provider_weight=1.0, imdb_provider_weight=0.8):
-        """Get or initialize the metadata manager with configurable provider weights."""
-        global METADATA_MANAGER, METADATA_MANAGER_WEIGHTS
+if MetadataManager is not None:
+    try:
+        from anime_metadata import AnimeDataProvider
+    except ImportError as exc:
+        print(_missing_dependency_message("Anime metadata provider", exc))
 
-        requested_weights = (float(anime_provider_weight), float(imdb_provider_weight))
-        if METADATA_MANAGER is None or METADATA_MANAGER_WEIGHTS != requested_weights:
-            anime_provider = AnimeDataProvider()
-            anime_provider.provider_weight = requested_weights[0]
+    try:
+        from imdb_metadata import IMDbDataProvider
+    except ImportError as exc:
+        print(_missing_dependency_message("IMDb metadata provider", exc))
 
-            imdb_provider = IMDbDataProvider()
-            imdb_provider.provider_weight = requested_weights[1]
+    try:
+        from plex_metadata import PlexMetadataProvider, PlexWatchStatus
+    except ImportError as exc:
+        print(f"Warning: Plex metadata provider unavailable: {exc}")
 
-            METADATA_MANAGER = MetadataManager([anime_provider, imdb_provider])
-            METADATA_MANAGER_WEIGHTS = requested_weights
+    try:
+        from myanimelist_watch_status import MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
+    except ImportError as exc:
+        print(f"Warning: MyAnimeList watch status provider unavailable: {exc}")
 
-        return METADATA_MANAGER
-    
-    def get_plex_provider():
-        """Get or initialize the Plex provider"""
-        global PLEX_PROVIDER
-        if PLEX_PROVIDER is None:
-            PLEX_PROVIDER = PlexMetadataProvider()
-        return PLEX_PROVIDER
-except ImportError:
-    print("Warning: metadata_provider not found. Enhanced metadata features will be disabled.")
-    MetadataManager = None
-    BaseMetadataProvider = None
-    TitleInfo = None
-    PlexMetadataProvider = None
-    PlexWatchStatus = None
-    MyAnimeListWatchStatusProvider = None
-    MyAnimeListWatchStatus = None
+
+METADATA_MANAGER = None
+METADATA_MANAGER_WEIGHTS = None
+PLEX_PROVIDER = None
+METADATA_MANAGER_AVAILABLE = (
+    MetadataManager is not None and AnimeDataProvider is not None and IMDbDataProvider is not None
+)
+PLEX_PROVIDER_AVAILABLE = PlexMetadataProvider is not None
+MYANIMELIST_PROVIDER_AVAILABLE = MyAnimeListWatchStatusProvider is not None
+
+
+def get_metadata_manager(anime_provider_weight=1.0, imdb_provider_weight=0.8):
+    """Get or initialize the metadata manager with configurable provider weights."""
+    global METADATA_MANAGER, METADATA_MANAGER_WEIGHTS
+
+    if not METADATA_MANAGER_AVAILABLE:
+        return None
+
+    requested_weights = (float(anime_provider_weight), float(imdb_provider_weight))
+    if METADATA_MANAGER is None or METADATA_MANAGER_WEIGHTS != requested_weights:
+        anime_provider = AnimeDataProvider()
+        anime_provider.provider_weight = requested_weights[0]
+
+        imdb_provider = IMDbDataProvider()
+        imdb_provider.provider_weight = requested_weights[1]
+
+        METADATA_MANAGER = MetadataManager([anime_provider, imdb_provider])
+        METADATA_MANAGER_WEIGHTS = requested_weights
+
+    return METADATA_MANAGER
+
+
+def get_plex_provider():
+    """Get or initialize the Plex provider"""
+    global PLEX_PROVIDER
+    if not PLEX_PROVIDER_AVAILABLE:
+        return None
+    if PLEX_PROVIDER is None:
+        PLEX_PROVIDER = PlexMetadataProvider()
+    return PLEX_PROVIDER
+
+
+if MyAnimeListWatchStatus is None:
+    MyAnimeListWatchStatus = types.SimpleNamespace
+if PlexWatchStatus is None:
+    PlexWatchStatus = types.SimpleNamespace
+
+PlexWatchStatusType = Any
+MyAnimeListWatchStatusType = Any
 
 class FileGrouper:
     """Groups files based on filename metadata extracted using guessit."""
@@ -813,7 +869,7 @@ class FileGrouper:
             'air_date': episode_info.air_date
         }
     
-    def _serialize_plex_watch_status(self, watch_status: PlexWatchStatus) -> Dict[str, Any]:
+    def _serialize_plex_watch_status(self, watch_status: PlexWatchStatusType) -> Dict[str, Any]:
         """Convert PlexWatchStatus object to serializable dict"""
         if not watch_status:
             return {}
@@ -832,7 +888,7 @@ class FileGrouper:
             'queried_id': getattr(watch_status, 'queried_id', None)
         }
     
-    def _serialize_mal_watch_status(self, watch_status: MyAnimeListWatchStatus) -> Dict[str, Any]:
+    def _serialize_mal_watch_status(self, watch_status: MyAnimeListWatchStatusType) -> Dict[str, Any]:
         """Convert MyAnimeListWatchStatus object to serializable dict"""
         if not watch_status:
             return {}

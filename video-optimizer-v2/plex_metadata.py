@@ -174,11 +174,19 @@ class PlexConnectionPool:
             self._pool.clear()
         
         if self._cleanup_thread and self._cleanup_thread.is_alive():
-            self._cleanup_thread.join(timeout=1.0)
+            try:
+                if threading.current_thread() is not self._cleanup_thread:
+                    self._cleanup_thread.join(timeout=1.0)
+            except Exception:
+                # Interpreter shutdown can make thread joins illegal.
+                pass
     
     def __del__(self):
         """Cleanup when pool is destroyed"""
-        self.close_all()
+        try:
+            self.close_all()
+        except Exception:
+            pass
     
     @classmethod
     def cleanup_all_instances(cls):
@@ -476,7 +484,10 @@ class PlexMetadataProvider:
     
     def __del__(self):
         """Cleanup when provider is destroyed"""
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
 # Module-level cleanup function
 def cleanup_all_plex_connections():

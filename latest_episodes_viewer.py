@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false, reportMissingModuleSource=false
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from collections import defaultdict
@@ -10,7 +11,14 @@ import argparse
 import logging
 
 from video_thumbnail_generator import VideoThumbnailGenerator
-from file_grouper import FileGrouper, CustomJSONEncoder
+from file_grouper import (
+    FileGrouper,
+    CustomJSONEncoder,
+    get_metadata_manager,
+    get_plex_provider,
+    METADATA_MANAGER_AVAILABLE,
+    PLEX_PROVIDER_AVAILABLE,
+)
 
 try:
     from tqdm import tqdm
@@ -32,41 +40,24 @@ except ImportError:
         def __exit__(self, *args):
             pass
 
-# Try to get metadata manager - it may not be available if dependencies aren't installed
-try:
-    from file_grouper import get_metadata_manager, get_plex_provider
-    metadata_manager_available = True
-    plex_provider_available = True
-except ImportError:
-    metadata_manager_available = False
-    plex_provider_available = False
-    def get_metadata_manager():
-        return None
-    def get_plex_provider():
-        return None
+metadata_manager_available = METADATA_MANAGER_AVAILABLE
+plex_provider_available = PLEX_PROVIDER_AVAILABLE
 
-# Try to load metadata providers from video-optimizer-v2
+MyAnimeListWatchStatusProvider = None
+MyAnimeListWatchStatus = None
+resolve_myanimelist_xml_path = None
+
 try:
-    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
-    from metadata_provider import MetadataManager, BaseMetadataProvider, TitleInfo
-    from anime_metadata import AnimeDataProvider
-    from imdb_metadata import IMDbDataProvider
-    from plex_metadata import PlexMetadataProvider, PlexWatchStatus
+    video_optimizer_dir = os.path.join(os.path.dirname(__file__), 'video-optimizer-v2')
+    if video_optimizer_dir not in sys.path:
+        sys.path.append(video_optimizer_dir)
     from myanimelist_watch_status import (
         MyAnimeListWatchStatusProvider,
         MyAnimeListWatchStatus,
         resolve_myanimelist_xml_path,
     )
-except ImportError:
-    print("Warning: video-optimizer-v2 metadata providers not found. Enhanced metadata features will be disabled.")
-    MetadataManager = None
-    BaseMetadataProvider = None
-    TitleInfo = None
-    PlexMetadataProvider = None
-    PlexWatchStatus = None
-    MyAnimeListWatchStatusProvider = None
-    MyAnimeListWatchStatus = None
-    resolve_myanimelist_xml_path = None
+except ImportError as exc:
+    print(f"Warning: MyAnimeList functionality not available: {exc}")
 
 
 class LatestEpisodesViewer:
