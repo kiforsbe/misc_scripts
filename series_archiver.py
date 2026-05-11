@@ -1,13 +1,16 @@
 import argparse
+import importlib
+import tempfile
 import json
 import os
 import shutil
 import sys
 import re
 import binascii
+from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Protocol
+from typing import Any, Dict, List, Optional, Tuple, Protocol
 from presentation import Presenter, color_text, get_emoji, Colors
 
 try:
@@ -15,6 +18,13 @@ try:
     TQDM_AVAILABLE = True
 except ImportError:
     TQDM_AVAILABLE = False
+
+try:
+    bencodepy = importlib.import_module('bencodepy')
+    BENCODEPY_AVAILABLE = True
+except ImportError:
+    bencodepy = None
+    BENCODEPY_AVAILABLE = False
 
 
 class ProgressReporter(Protocol):
@@ -475,6 +485,369 @@ class SeriesArchiver:
         except Exception as e:
             self._log(f"Error calculating CRC for {filename}: {e}", 1)
             return False, expected_crc.upper(), "ERROR"
+
+    def _normalize_match_name(self, value: str) -> str:
+        """Normalize torrent and media names for filename similarity matching."""
+        name = os.path.basename(value or '')
+        name = re.sub(r'\.[^.]+$', '', name)
+        name = re.sub(r'\[[A-Fa-f0-9]{8}\]', ' ', name)
+        name = re.sub(r'[._\-\[\]\(\)]+', ' ', name)
+        name = re.sub(r'\s+', ' ', name).strip().lower()
+        return name
+
+    def _filename_similarity(self, left: str, right: str) -> float:
+        """Return a similarity score between two filenames."""
+        left_name = self._normalize_match_name(left)
+        right_name = self._normalize_match_name(right)
+
+        if not left_name or not right_name:
+            return 0.0
+        if left_name == right_name:
+            return 1.0
+        if left_name in right_name or right_name in left_name:
+            return 0.95
+        return SequenceMatcher(None, left_name, right_name).ratio()
+
+    def _bdecode(self, payload: bytes) -> Any:
+        """Decode bencoded torrent data, using bencodepy when available."""
+        if BENCODEPY_AVAILABLE:
+            return bencodepy.decode(payload)
+
+        def _decode_at(index: int) -> Tuple[Any, int]:
+            token = payload[index:index + 1]
+            if token == b'i':
+                end = payload.index(b'e', index)
+                return int(payload[index + 1:end]), end + 1
+            if token == b'l':
+                index += 1
+                items = []
+                while payload[index:index + 1] != b'e':
+                    item, index = _decode_at(index)
+                    items.append(item)
+                return items, index + 1
+            if token == b'd':
+                index += 1
+                items = {}
+                while payload[index:index + 1] != b'e':
+                    key, index = _decode_at(index)
+                    value, index = _decode_at(index)
+                    items[key] = value
+                return items, index + 1
+            if token.isdigit():
+                colon_index = payload.index(b':', index)
+                length = int(payload[index:colon_index])
+                start = colon_index + 1
+                end = start + length
+                return payload[start:end], end
+            raise ValueError(f'Invalid bencode token at index {index}')
+
+        decoded, end_index = _decode_at(0)
+        if end_index != len(payload):
+            raise ValueError('Unexpected trailing data in torrent payload')
+        return decoded
+
+    def _decode_torrent_text(self, value: Any) -> str:
+        """Decode torrent bytes to a safe display string."""
+        if isinstance(value, bytes):
+            return value.decode('utf-8', errors='replace')
+        return str(value)
+
+    def _read_torrent_metadata(self, torrent_path: str) -> Optional[Dict[str, Any]]:
+        """Read a .torrent file and return simplified metadata for matching."""
+        try:
+            with open(torrent_path, 'rb') as torrent_file:
+                raw_metadata = self._bdecode(torrent_file.read())
+        except Exception as exc:
+            self._log(f"Could not parse torrent '{torrent_path}': {exc}", 2)
+            return None
+
+        if not isinstance(raw_metadata, dict):
+            return None
+
+        info = raw_metadata.get(b'info')
+        if not isinstance(info, dict):
+            return None
+
+        torrent_name = self._decode_torrent_text(info.get(b'name', Path(torrent_path).stem))
+        files = []
+
+        if b'files' in info and isinstance(info[b'files'], list):
+            for file_entry in info[b'files']:
+                if not isinstance(file_entry, dict):
+                    continue
+                path_parts = file_entry.get(b'path') or file_entry.get(b'path.utf-8')
+                if not isinstance(path_parts, list):
+                    continue
+                relative_parts = [self._decode_torrent_text(part) for part in path_parts]
+                relative_path = os.path.join(*relative_parts) if relative_parts else ''
+                if not relative_path:
+                    continue
+                files.append({
+                    'relative_path': relative_path,
+                    'display_name': os.path.basename(relative_path)
+                })
+        else:
+            files.append({
+                'relative_path': torrent_name,
+                'display_name': os.path.basename(torrent_name)
+            })
+
+        return {
+            'torrent_path': torrent_path,
+            'torrent_name': torrent_name,
+            'files': files
+        }
+
+    def _collect_candidate_torrent_files(self, failed_filepath: str, torrent_files_path: Optional[str]) -> List[str]:
+        """Collect candidate .torrent files, prioritizing ones next to the failed file."""
+        candidates = []
+        seen = set()
+
+        local_folder = Path(failed_filepath).parent
+        if local_folder.exists():
+            for torrent_path in sorted(local_folder.glob('*.torrent')):
+                resolved = str(torrent_path.resolve())
+                if resolved not in seen:
+                    candidates.append(resolved)
+                    seen.add(resolved)
+
+        if torrent_files_path:
+            torrent_root = Path(torrent_files_path)
+            if torrent_root.exists():
+                for torrent_path in sorted(torrent_root.rglob('*.torrent')):
+                    resolved = str(torrent_path.resolve())
+                    if resolved not in seen:
+                        candidates.append(resolved)
+                        seen.add(resolved)
+
+        return candidates
+
+    def _score_torrent_candidate(self, failed_filename: str, torrent_path: str) -> float:
+        """Score a torrent file by filename similarity before parsing its contents."""
+        return self._filename_similarity(failed_filename, Path(torrent_path).stem)
+
+    def _find_best_torrent_match(
+        self,
+        failed_filepath: str,
+        failed_result: Dict[str, Any],
+        torrent_files_path: Optional[str]
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
+        """Find the best torrent/file match for a failed media file."""
+        failed_filename = failed_result.get('filename') or os.path.basename(failed_filepath)
+        candidates = self._collect_candidate_torrent_files(failed_filepath, torrent_files_path)
+        if not candidates:
+            return None, 0
+
+        ranked_candidates = sorted(
+            candidates,
+            key=lambda candidate: (
+                1 if Path(candidate).parent == Path(failed_filepath).parent else 0,
+                self._score_torrent_candidate(failed_filename, candidate)
+            ),
+            reverse=True
+        )
+
+        likely_suspects = []
+        remaining_candidates = []
+        for index, candidate in enumerate(ranked_candidates):
+            candidate_score = self._score_torrent_candidate(failed_filename, candidate)
+            if index < 10 or candidate_score >= 0.45 or Path(candidate).parent == Path(failed_filepath).parent:
+                likely_suspects.append(candidate)
+            else:
+                remaining_candidates.append(candidate)
+
+        search_order = likely_suspects + remaining_candidates
+        best_match = None
+        inspected_count = 0
+
+        for torrent_path in search_order:
+            metadata = self._read_torrent_metadata(torrent_path)
+            inspected_count += 1
+            if not metadata:
+                continue
+
+            torrent_name_score = self._score_torrent_candidate(failed_filename, torrent_path)
+            for file_entry in metadata['files']:
+                file_score = self._filename_similarity(failed_filename, file_entry['display_name'])
+                total_score = max(file_score, torrent_name_score * 0.85)
+                if file_score >= 0.995:
+                    total_score = 1.0
+
+                candidate_match = {
+                    'torrent_path': metadata['torrent_path'],
+                    'torrent_name': metadata['torrent_name'],
+                    'relative_path': file_entry['relative_path'],
+                    'display_name': file_entry['display_name'],
+                    'torrent_name_score': torrent_name_score,
+                    'file_score': file_score,
+                    'total_score': total_score
+                }
+
+                if best_match is None or candidate_match['total_score'] > best_match['total_score']:
+                    best_match = candidate_match
+
+            if best_match and best_match['total_score'] >= 0.99:
+                break
+
+        if best_match and best_match['total_score'] >= 0.55:
+            return best_match, inspected_count
+        return None, inspected_count
+
+    def _resolve_recovery_source_paths(
+        self,
+        failed_filepath: str,
+        match: Dict[str, Any],
+        torrent_recovery: Dict[str, Optional[str]]
+    ) -> List[Path]:
+        """Resolve likely filesystem locations for the matched torrent payload file."""
+        relative_path = Path(match['relative_path'])
+        torrent_name = Path(match['torrent_name'])
+        torrent_parent = Path(match['torrent_path']).parent
+        roots = []
+
+        library_path = torrent_recovery.get('torrent_library_path')
+        if library_path:
+            roots.append(Path(library_path))
+
+        roots.append(torrent_parent)
+        roots.append(Path(failed_filepath).parent)
+
+        candidates = []
+        seen = set()
+        for root in roots:
+            for candidate in (
+                root / relative_path,
+                root / torrent_name / relative_path,
+                root / torrent_name.name / relative_path,
+                root / relative_path.name
+            ):
+                resolved_key = str(candidate)
+                if resolved_key not in seen:
+                    candidates.append(candidate)
+                    seen.add(resolved_key)
+
+        return candidates
+
+    def _attempt_torrent_file_recovery(
+        self,
+        failed_filepath: str,
+        failed_result: Dict[str, Any],
+        match: Dict[str, Any],
+        torrent_recovery: Dict[str, Optional[str]]
+    ) -> Tuple[bool, str]:
+        """Attempt to replace a corrupt file with a matching file from a torrent library/content path."""
+        expected_crc = failed_result.get('expected_crc')
+        if not expected_crc or expected_crc == 'N/A':
+            return False, 'Expected CRC is not available for recovery.'
+
+        candidate_paths = self._resolve_recovery_source_paths(failed_filepath, match, torrent_recovery)
+        failed_path = Path(failed_filepath)
+
+        for candidate_path in candidate_paths:
+            if not candidate_path.exists() or not candidate_path.is_file():
+                continue
+
+            try:
+                if candidate_path.resolve() == failed_path.resolve():
+                    continue
+            except OSError:
+                pass
+
+            temp_recovery_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=failed_path.suffix, dir=str(failed_path.parent)) as temp_file:
+                    temp_recovery_path = Path(temp_file.name)
+
+                shutil.copy2(str(candidate_path), str(temp_recovery_path))
+                is_valid, _, actual_crc = self._verify_file_crc(str(temp_recovery_path), expected_crc)
+                if not is_valid:
+                    temp_recovery_path.unlink(missing_ok=True)
+                    continue
+
+                os.replace(str(temp_recovery_path), failed_filepath)
+                return True, f"Recovered from {candidate_path} (CRC {actual_crc})"
+            except Exception as exc:
+                if temp_recovery_path and temp_recovery_path.exists():
+                    temp_recovery_path.unlink(missing_ok=True)
+                self._log(f"Recovery attempt failed for {failed_filepath} using {candidate_path}: {exc}", 1)
+
+        return False, 'No matching readable file was found in the torrent library/content paths.'
+
+    def _run_torrent_recovery_for_crc_failures(
+        self,
+        crc_results: Dict[str, Dict],
+        torrent_recovery: Optional[Dict[str, Optional[str]]] = None
+    ) -> None:
+        """Look up and attempt recovery for files that failed CRC validation."""
+        if not torrent_recovery or not torrent_recovery.get('enabled'):
+            return
+
+        failed_files = {
+            filepath: result
+            for filepath, result in crc_results.items()
+            if result.get('expected_crc') != 'N/A' and not result.get('is_valid', False)
+        }
+
+        if not failed_files:
+            return
+
+        print(f"\n{self._color('=== TORRENT RECOVERY REQUESTED ===', Colors.CYAN + Colors.BOLD)}")
+        print(f"  Failed files queued: {self._color(str(len(failed_files)), Colors.WHITE)}")
+        print(f"  Torrent files path: {self._color(str(torrent_recovery.get('torrent_files_path')), Colors.WHITE)}")
+
+        torrent_library_path = torrent_recovery.get('torrent_library_path')
+        if torrent_library_path:
+            print(f"  Torrent library path: {self._color(str(torrent_library_path), Colors.WHITE)}")
+        else:
+            print(f"  Torrent library path: {self._color('Not provided', Colors.YELLOW)}")
+
+        recovered_count = 0
+        matched_count = 0
+        no_match_count = 0
+
+        for failed_filepath, failed_result in failed_files.items():
+            failed_filename = failed_result.get('filename') or os.path.basename(failed_filepath)
+            best_match, inspected_count = self._find_best_torrent_match(
+                failed_filepath,
+                failed_result,
+                torrent_recovery.get('torrent_files_path')
+            )
+
+            if not best_match:
+                no_match_count += 1
+                print(
+                    f"  {self._color('[no-match]', Colors.YELLOW)} No torrent match found for "
+                    f"{self._color(failed_filename, Colors.WHITE)} after inspecting "
+                    f"{self._color(str(inspected_count), Colors.WHITE)} torrent files"
+                )
+                continue
+
+            matched_count += 1
+            score_color = Colors.GREEN if best_match['total_score'] >= 0.9 else Colors.YELLOW
+            score_text = self._color(f"{best_match['total_score']:.2f}", score_color)
+            print(
+                f"  {self._color('[match]', Colors.CYAN)} Match for {self._color(failed_filename, Colors.WHITE)}: "
+                f"{self._color(best_match['display_name'], Colors.CYAN)} in "
+                f"{self._color(os.path.basename(best_match['torrent_path']), Colors.WHITE)} "
+                f"(score {score_text})"
+            )
+
+            recovered, message = self._attempt_torrent_file_recovery(
+                failed_filepath,
+                failed_result,
+                best_match,
+                torrent_recovery
+            )
+            if recovered:
+                recovered_count += 1
+                print(f"    {self._color('[recovered]', Colors.GREEN)} {message}")
+            else:
+                print(f"    {self._color('[unresolved]', Colors.YELLOW)} {message}")
+
+        print(f"\n{self._color('Torrent Recovery Summary:', Colors.CYAN)}")
+        print(f"  Matched torrents: {self._color(str(matched_count), Colors.GREEN if matched_count else Colors.YELLOW)}")
+        print(f"  Recovered files: {self._color(str(recovered_count), Colors.GREEN if recovered_count else Colors.YELLOW)}")
+        print(f"  No torrent match: {self._color(str(no_match_count), Colors.YELLOW)}")
     
     def check_files_crc(self, files_or_groups, is_groups: bool = False) -> Dict[str, Dict]:
         """
@@ -581,7 +954,8 @@ class SeriesArchiver:
         return results
     
     def archive_groups(self, selected_groups: List[str], destination_root: str, 
-                      copy_files: bool = False, dry_run: bool = False, verify_crc: bool = False) -> Dict[str, str]:
+                      copy_files: bool = False, dry_run: bool = False, verify_crc: bool = False,
+                      torrent_recovery: Optional[Dict[str, Optional[str]]] = None) -> Dict[str, str]:
         """
         Archive selected groups to destination folders.
         
@@ -853,6 +1227,7 @@ class SeriesArchiver:
                         print(f"\n{self._color('✅ All files passed CRC verification!', Colors.GREEN + Colors.BOLD)}")
                     else:
                         print(f"\n{self._color(f'❌ {invalid_count} files failed CRC verification!', Colors.RED + Colors.BOLD)}")
+                        self._run_torrent_recovery_for_crc_failures(crc_results, torrent_recovery)
             # Dry-run: verify CRC on source files and report status
             elif dry_run:
                 print(f"\n{self._color('=== DRY-RUN CRC CHECK (source files) ===', Colors.CYAN + Colors.BOLD)}")
@@ -936,6 +1311,57 @@ class SeriesArchiver:
         }
         
         return summary
+
+
+def _add_torrent_recovery_arguments(parser) -> None:
+    """Add shared torrent recovery arguments to a subcommand parser."""
+    parser.add_argument('--recover-by-torrent', action='store_true',
+                       help='Attempt torrent-based recovery for files that fail CRC validation')
+    parser.add_argument('--torrent-files-path', metavar='DIR',
+                       help='Directory containing .torrent files to search for recovery matches')
+    parser.add_argument('--torrent-library-path', metavar='DIR',
+                       help='Optional path to the torrent content/library used for recovery')
+
+
+def _get_torrent_recovery_options(args, require_verify_crc: bool = False) -> Optional[Dict[str, Optional[str]]]:
+    """Normalize and validate torrent recovery CLI options."""
+    recover_by_torrent = bool(getattr(args, 'recover_by_torrent', False))
+    torrent_files_path = getattr(args, 'torrent_files_path', None)
+    torrent_library_path = getattr(args, 'torrent_library_path', None)
+
+    if not recover_by_torrent and (torrent_files_path or torrent_library_path):
+        raise ValueError(
+            'Torrent recovery paths require --recover-by-torrent.'
+        )
+
+    if not recover_by_torrent:
+        return None
+
+    if require_verify_crc and not getattr(args, 'verify_crc', False):
+        raise ValueError(
+            '--recover-by-torrent requires --verify-crc when used with the archive command.'
+        )
+
+    if not torrent_files_path:
+        raise ValueError(
+            '--recover-by-torrent requires --torrent-files-path.'
+        )
+
+    if not Path(torrent_files_path).exists():
+        raise ValueError(
+            f"Torrent files path not found: {torrent_files_path}"
+        )
+
+    if torrent_library_path and not Path(torrent_library_path).exists():
+        raise ValueError(
+            f"Torrent library path not found: {torrent_library_path}"
+        )
+
+    return {
+        'enabled': True,
+        'torrent_files_path': torrent_files_path,
+        'torrent_library_path': torrent_library_path
+    }
 
 
 def _normalize_datetime(dt: datetime) -> datetime:
@@ -1457,6 +1883,12 @@ def cmd_archive(args):
     
     use_colors = not getattr(args, 'no_color', False)
     archiver = SeriesArchiver(verbose=args.verbose, progress_reporter=progress_reporter, use_colors=use_colors)
+
+    try:
+        torrent_recovery = _get_torrent_recovery_options(args, require_verify_crc=True)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
     
     if not archiver.load_data(args.input_json):
         return 1
@@ -1507,7 +1939,8 @@ def cmd_archive(args):
         destination_root=args.destination,
         copy_files=args.copy,
         dry_run=args.dry_run,
-        verify_crc=getattr(args, 'verify_crc', False)
+        verify_crc=getattr(args, 'verify_crc', False),
+        torrent_recovery=torrent_recovery
     )
     
     if results:
@@ -1534,6 +1967,12 @@ def cmd_check_crc(args):
     """Handle the check-crc command."""
     use_colors = not getattr(args, 'no_color', False)
     archiver = SeriesArchiver(verbose=args.verbose, use_colors=use_colors)
+
+    try:
+        torrent_recovery = _get_torrent_recovery_options(args)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
     
     if args.input_json:
         # Check CRC for files in JSON groups
@@ -1566,7 +2005,8 @@ def cmd_check_crc(args):
             return 1
         
         print(f"Checking CRC for {len(groups_to_check)} groups...")
-        archiver.check_files_crc(groups_to_check, is_groups=True)
+        crc_results = archiver.check_files_crc(groups_to_check, is_groups=True)
+        archiver._run_torrent_recovery_for_crc_failures(crc_results, torrent_recovery)
     
     elif args.files:
         # Check CRC for individual files
@@ -1576,7 +2016,8 @@ def cmd_check_crc(args):
             return 1
         
         print(f"Checking CRC for {len(valid_files)} files...")
-        archiver.check_files_crc(valid_files, is_groups=False)
+        crc_results = archiver.check_files_crc(valid_files, is_groups=False)
+        archiver._run_torrent_recovery_for_crc_failures(crc_results, torrent_recovery)
     
     else:
         print("Error: Must provide either --input-json or files for CRC checking.")
@@ -1641,6 +2082,7 @@ def main():
                                help='Verify CRC32 of files after archiving (if CRC is present in filename)')
     archive_parser.add_argument('--no-color', action='store_true',
                                help='Disable color formatting in output')
+    _add_torrent_recovery_arguments(archive_parser)
     
     # Check CRC command
     crc_parser = subparsers.add_parser('check-crc', aliases=['crc'],
@@ -1654,6 +2096,7 @@ def main():
                            help='For JSON input: comma-separated list of group numbers or "all" (e.g., "1,3,5" or "all")')
     crc_parser.add_argument('--no-color', action='store_true',
                            help='Disable color formatting in output')
+    _add_torrent_recovery_arguments(crc_parser)
     
     args = parser.parse_args()
     

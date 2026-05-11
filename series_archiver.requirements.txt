@@ -1,2 +1,3 @@
 # series_archiver.py
 tqdm
+bencodepy
