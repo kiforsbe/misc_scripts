@@ -325,9 +325,11 @@ class LatestEpisodesViewer:
         """Generate thumbnails for episodes and return thumbnail index."""
         generator = VideoThumbnailGenerator(thumbnail_dir, max_height)
         video_files = [episode['file_path'] for episode in episodes_data]
-        return generator.generate_thumbnails_for_videos(
+        thumbnail_index = generator.generate_thumbnails_for_videos(
             video_files, verbose, force_regenerate=False, show_progress=(verbose >= 1)
         )
+        generator.save_thumbnail_index(thumbnail_index, verbose=verbose)
+        return thumbnail_index
 
 
 def main():

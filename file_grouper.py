@@ -77,8 +77,17 @@ class CustomJSONEncoder(json.JSONEncoder):
 
 try:
     from guessit_wrapper import guessit_wrapper
-except ImportError:
-    print("Error: guessit_wrapper library not found. Install with: pip install guessit_wrapper")
+except ModuleNotFoundError as exc:
+    if exc.name == 'guessit_wrapper':
+        print("Error: Local file guessit_wrapper.py was not found next to file_grouper.py")
+    else:
+        print(
+            f"Error: guessit_wrapper.py could not be imported because dependency '{exc.name}' is missing. "
+            f"Install it with: pip install {exc.name}"
+        )
+    sys.exit(1)
+except ImportError as exc:
+    print(f"Error: Failed to import local guessit_wrapper.py: {exc}")
     sys.exit(1)
 
 try:
