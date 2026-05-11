@@ -93,12 +93,16 @@ class VideoThumbnailGenerator:
         video_path: str,
         static_thumbnail: Optional[str],
         animated_thumbnail: Optional[str],
+        animated_expected: Optional[bool] = None,
     ) -> Dict[str, Any]:
         entry = {
             "video": str(video_path),
             "static_thumbnail": static_thumbnail,
             "animated_thumbnail": animated_thumbnail,
         }
+
+        if animated_expected is not None:
+            entry["animated_expected"] = animated_expected
 
         try:
             entry.update(self._get_video_cache_metadata(video_path))
@@ -157,6 +161,14 @@ class VideoThumbnailGenerator:
         materialized_entry["animated_thumbnail"] = animated_thumb if os.path.exists(animated_thumb) else None
         return materialized_entry
 
+    def _cached_entry_by_filename(self) -> Dict[str, Dict[str, Any]]:
+        cached_entries: Dict[str, Dict[str, Any]] = {}
+        for entry in self._load_thumbnail_index_cache():
+            entry_key = self._thumbnail_index_entry_key(entry)
+            if entry_key:
+                cached_entries[entry_key] = entry
+        return cached_entries
+
     def _thumbnail_index_entry_key(self, entry: Dict[str, Any]) -> str:
         return entry.get("video_filename") or self._get_video_filename(entry.get("video", ""))
 
@@ -183,11 +195,40 @@ class VideoThumbnailGenerator:
         video_filename = entry.get("video_filename") or self._get_video_filename(entry.get("video", ""))
         static_thumbnail = entry.get("static_thumbnail")
         animated_thumbnail = entry.get("animated_thumbnail")
-        return {
+        serialized_entry = {
             "video": video_filename,
             "static_thumbnail": os.path.basename(static_thumbnail) if static_thumbnail else None,
             "animated_thumbnail": os.path.basename(animated_thumbnail) if animated_thumbnail else None,
         }
+        if isinstance(entry.get("animated_expected"), bool):
+            serialized_entry["animated_expected"] = entry["animated_expected"]
+        return serialized_entry
+
+    def _cached_thumbnails_satisfy_request(
+        self,
+        video_path: str,
+        static_exists: bool,
+        animated_exists: bool,
+        cached_entry: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if not static_exists:
+            return False
+
+        video_path_str = str(video_path)
+        if self._is_image_file(video_path_str) or video_path_str.lower().endswith((".cbr", ".cbz")):
+            return True
+
+        if animated_exists:
+            return True
+
+        if cached_entry and cached_entry.get("animated_expected") is False:
+            return True
+
+        duration = self._get_video_duration(video_path_str, verbose=0)
+        if duration is None:
+            return False
+
+        return duration < self.min_duration
     
     def _thumbnail_cache_key(self, video_path: str) -> str:
         """Build a cache key from the full filename only."""
@@ -359,7 +400,7 @@ class VideoThumbnailGenerator:
         
         # Return existing thumbnail if it exists and we're not forcing regeneration
         if not force_regenerate and static_exists:
-            return self._build_thumbnail_entry(comic_path, static_thumb, None)
+            return self._build_thumbnail_entry(comic_path, static_thumb, None, animated_expected=False)
         
         try:
             # Try to use PIL for image processing
@@ -465,14 +506,14 @@ class VideoThumbnailGenerator:
                 
                 if verbose >= 2:
                     print(f"Generated comic thumbnail: {static_thumb}")
-                return self._build_thumbnail_entry(comic_path, static_thumb, None)
+                return self._build_thumbnail_entry(comic_path, static_thumb, None, animated_expected=False)
             
         except Exception as e:
             if verbose >= 1:
                 print(f"Failed to generate comic thumbnail for {comic_path}: {e}")
-            return self._build_thumbnail_entry(comic_path, None, None)
+            return self._build_thumbnail_entry(comic_path, None, None, animated_expected=False)
         
-        return self._build_thumbnail_entry(comic_path, None, None)
+        return self._build_thumbnail_entry(comic_path, None, None, animated_expected=False)
     
     def generate_thumbnail_for_video(self, video_path: str, verbose: int = 1, 
                                     force_regenerate: bool = False) -> Dict[str, Any]:
@@ -494,7 +535,7 @@ class VideoThumbnailGenerator:
             # Skip CBR files if skip_cbr is enabled
             if self.skip_cbr and video_path_str.lower().endswith('.cbr'):
                 self.logger.debug(f"Skipping CBR thumbnail generation (--skip-cbr enabled): {os.path.basename(video_path_str)}")
-                return self._build_thumbnail_entry(video_path_str, None, None)
+                return self._build_thumbnail_entry(video_path_str, None, None, animated_expected=False)
             return self._generate_comic_thumbnail(video_path_str, verbose, force_regenerate)
         
         static_thumb, animated_thumb = self._get_thumbnail_paths(video_path_str)
@@ -503,14 +544,16 @@ class VideoThumbnailGenerator:
         
         # Return existing thumbnails if they exist and we're not forcing regeneration
         if not force_regenerate and static_exists and animated_exists:
-            return self._build_thumbnail_entry(video_path_str, static_thumb, animated_thumb)
+            return self._build_thumbnail_entry(video_path_str, static_thumb, animated_thumb, animated_expected=True)
         
         # Get video duration
         duration = self._get_video_duration(video_path_str, verbose)
         if duration is None:
             if verbose >= 1:
                 print(f"Invalid or missing duration for {video_path_str}")
-            return self._build_thumbnail_entry(video_path_str, None, None)
+            return self._build_thumbnail_entry(video_path_str, None, None, animated_expected=True)
+
+        animated_expected = duration >= self.min_duration
         
         # Generate static thumbnail if needed (always generate regardless of duration)
         static_success = static_exists
@@ -519,7 +562,7 @@ class VideoThumbnailGenerator:
         
         # Generate animated thumbnail only for videos longer than minimum duration
         animated_success = animated_exists
-        if duration >= self.min_duration:
+        if animated_expected:
             if not animated_exists or force_regenerate:
                 animated_success = self._generate_animated_thumbnail(video_path_str, animated_thumb, duration, verbose)
         else:
@@ -532,6 +575,7 @@ class VideoThumbnailGenerator:
             video_path_str,
             static_thumb if static_success else None,
             animated_thumb if animated_success else None,
+            animated_expected=animated_expected,
         )
 
     def ensure_static_thumbnail(self, video_path: str, output_extension: str = 'webp',
@@ -583,6 +627,7 @@ class VideoThumbnailGenerator:
         # First pass: check which videos need thumbnail generation
         videos_needing_generation = []
         existing_thumbnails = {}
+        cached_entries = self._cached_entry_by_filename()
         
         if verbose >= 1:
             print(f"Checking existing thumbnails for {len(video_paths)} videos...")
@@ -591,15 +636,26 @@ class VideoThumbnailGenerator:
             video_path_str = str(video_path)
             static_thumb, animated_thumb = self._get_thumbnail_paths(video_path_str)
             static_exists, animated_exists = self._get_cached_thumbnail_status(static_thumb, animated_thumb)
+            cached_entry = cached_entries.get(self._get_video_filename(video_path_str))
             
-            if force_regenerate or not (static_exists and animated_exists):
+            if force_regenerate or not self._cached_thumbnails_satisfy_request(
+                video_path_str,
+                static_exists,
+                animated_exists,
+                cached_entry=cached_entry,
+            ):
                 videos_needing_generation.append(video_path_str)
             else:
                 # Store existing thumbnails
                 existing_thumbnails[video_path_str] = self._build_thumbnail_entry(
                     video_path_str,
                     static_thumb,
-                    animated_thumb,
+                    animated_thumb if animated_exists else None,
+                    animated_expected=(
+                        cached_entry.get("animated_expected")
+                        if cached_entry and isinstance(cached_entry.get("animated_expected"), bool)
+                        else animated_exists
+                    ),
                 )
         
         # Report what we found
