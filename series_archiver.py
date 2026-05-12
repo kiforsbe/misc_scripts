@@ -104,6 +104,13 @@ def _format_byte_size(size_bytes: int) -> str:
         size_value /= 1024.0
 
 
+def _format_progress_bar(progress_ratio: float, width: int = 20) -> str:
+    """Render a compact ASCII progress bar for CLI status output."""
+    clamped_ratio = min(max(progress_ratio, 0.0), 1.0)
+    filled_width = min(width, max(0, int(round(clamped_ratio * width))))
+    return '[' + ('#' * filled_width) + ('.' * (width - filled_width)) + ']'
+
+
 def _format_libtorrent_error(error_value: Any) -> str:
     """Render a libtorrent error_code as readable text."""
     if not error_value:
@@ -356,17 +363,17 @@ def _format_libtorrent_status(
     if matched_file_size > 0 and file_ok_bytes is not None:
         file_ok_ratio = min(file_ok_bytes / matched_file_size, 1.0)
         parts.append(
-            f"file-ok={_format_byte_size(file_ok_bytes)}/{_format_byte_size(matched_file_size)} ({file_ok_ratio:.2%})"
+            f"file-ok={_format_progress_bar(file_ok_ratio)} {_format_byte_size(file_ok_bytes)}/{_format_byte_size(matched_file_size)} ({file_ok_ratio:.2%})"
         )
     if estimated_repair_bytes > 0:
         fetched_ratio = min(total_payload_download / estimated_repair_bytes, 1.0)
         parts.append(
-            f"repair-fetched={_format_byte_size(total_payload_download)}/{_format_byte_size(estimated_repair_bytes)} ({fetched_ratio:.2%})"
+            f"repair-fetched={_format_progress_bar(fetched_ratio)} {_format_byte_size(total_payload_download)}/{_format_byte_size(estimated_repair_bytes)} ({fetched_ratio:.2%})"
         )
     elif total_wanted > 0:
         fetched_ratio = min(total_payload_download / total_wanted, 1.0)
         parts.append(
-            f"fetched={_format_byte_size(total_payload_download)}/{_format_byte_size(total_wanted)} ({fetched_ratio:.2%})"
+            f"fetched={_format_progress_bar(fetched_ratio)} {_format_byte_size(total_payload_download)}/{_format_byte_size(total_wanted)} ({fetched_ratio:.2%})"
         )
     else:
         parts.append(f"fetched={_format_byte_size(total_payload_download)}")
@@ -380,6 +387,62 @@ def _format_libtorrent_status(
         parts.append(f"error={error_text}")
 
     return ', '.join(parts)
+
+
+def _format_libtorrent_progress_postfix(
+    status: Any,
+    matched_file_size: int = 0,
+    file_piece_spans: Optional[List[Tuple[int, int]]] = None,
+    baseline_valid_piece_indexes: Optional[Set[int]] = None,
+) -> str:
+    """Create a compact postfix string for the torrent tqdm progress bar."""
+    state_value = getattr(status, 'state', None)
+    state_names = {
+        0: 'queued',
+        1: 'checking',
+        2: 'metadata',
+        3: 'downloading',
+        4: 'finished',
+        5: 'seeding',
+        6: 'allocating',
+        7: 'fastresume',
+    }
+    if isinstance(state_value, int):
+        state_name = state_names.get(state_value, str(state_value))
+    else:
+        state_name = str(state_value) if state_value is not None else 'unknown'
+
+    postfix_parts = [state_name]
+
+    file_ok_bytes = _get_libtorrent_file_ok_bytes(
+        status,
+        file_piece_spans or [],
+        matched_file_size,
+        baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+    )
+    if matched_file_size > 0 and file_ok_bytes is not None:
+        file_ok_ratio = min(file_ok_bytes / matched_file_size, 1.0)
+        postfix_parts.append(f"file-ok {file_ok_ratio:.2%}")
+
+    try:
+        download_rate = int(getattr(status, 'download_rate', 0) or 0)
+    except Exception:
+        download_rate = 0
+    if download_rate > 0:
+        postfix_parts.append(f"{download_rate / (1024 * 1024):.2f} MiB/s")
+
+    try:
+        num_peers = int(getattr(status, 'num_peers', 0) or 0)
+    except Exception:
+        num_peers = 0
+    if num_peers > 0:
+        postfix_parts.append(f"peers {num_peers}")
+
+    error_text = _format_libtorrent_error(getattr(status, 'errc', None))
+    if error_text:
+        postfix_parts.append(f"error {error_text}")
+
+    return ' | '.join(postfix_parts)
 
 try:
     from tqdm import tqdm
@@ -1484,6 +1547,7 @@ class SeriesArchiver:
             last_status_message = 'Matched torrent metadata was found, but the torrent session did not produce a CRC-valid file before timeout.'
             last_status_line = 'state=starting'
             last_logged_status_line = None
+            torrent_progress = None
 
             _safe_console_print(
                 f"    {self._color('[torrent]', Colors.CYAN)} Starting session for "
@@ -1505,51 +1569,86 @@ class SeriesArchiver:
                         f"{_format_byte_size(estimated_repair_bytes)} across {missing_piece_count} missing torrent piece(s)"
                     )
 
-            while time.time() < deadline:
-                try:
-                    is_valid, _, actual_crc = self._verify_file_crc(
-                        str(verification_path),
-                        expected_crc,
-                        show_progress=False
-                    )
-                except Exception:
-                    is_valid = False
-                    actual_crc = 'ERROR'
+            if TQDM_AVAILABLE and self.verbose >= 1:
+                progress_total = estimated_repair_bytes if estimated_repair_bytes > 0 else max(expected_file_size, 1)
+                progress_desc = 'Torrent repair' if estimated_repair_bytes > 0 else 'Torrent recovery'
+                torrent_progress = tqdm(
+                    total=progress_total,
+                    desc=progress_desc,
+                    unit='B',
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    leave=False,
+                    disable=False,
+                    position=1,
+                )
 
-                if is_valid:
+            try:
+                while time.time() < deadline:
                     try:
-                        session.remove_torrent(handle)
+                        is_valid, _, actual_crc = self._verify_file_crc(
+                            str(verification_path),
+                            expected_crc,
+                            show_progress=False
+                        )
+                    except Exception:
+                        is_valid = False
+                        actual_crc = 'ERROR'
+
+                    if is_valid:
+                        try:
+                            session.remove_torrent(handle)
+                        except Exception:
+                            pass
+                        return True, f"Recovered in place via torrent session (CRC {actual_crc}; {last_status_line})"
+
+                    try:
+                        status = _get_libtorrent_status(handle)
+                        last_status_line = _format_libtorrent_status(
+                            status,
+                            expected_file_size,
+                            file_piece_spans=file_piece_spans,
+                            baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+                            estimated_repair_bytes=estimated_repair_bytes,
+                        )
+
+                        if torrent_progress is not None:
+                            try:
+                                current_payload_download = int(getattr(status, 'total_payload_download', 0) or 0)
+                            except Exception:
+                                current_payload_download = 0
+
+                            progress_value = min(current_payload_download, torrent_progress.total)
+                            torrent_progress.n = max(0, progress_value)
+                            torrent_progress.set_postfix_str(
+                                _format_libtorrent_progress_postfix(
+                                    status,
+                                    matched_file_size=expected_file_size,
+                                    file_piece_spans=file_piece_spans,
+                                    baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+                                )
+                            )
+                            torrent_progress.refresh()
+                        elif last_status_line != last_logged_status_line:
+                            _safe_console_print(
+                                f"    {self._color('[torrent]', Colors.CYAN)} {last_status_line}"
+                            )
+                            last_logged_status_line = last_status_line
+
+                        last_status_message = (
+                            f"Torrent session status: {last_status_line}, "
+                            'but no CRC-valid file was recovered.'
+                        )
+                        error_text = _format_libtorrent_error(getattr(status, 'errc', None))
+                        if error_text:
+                            last_status_message = f'Torrent session error: {error_text} ({last_status_line})'
                     except Exception:
                         pass
-                    return True, f"Recovered in place via torrent session (CRC {actual_crc}; {last_status_line})"
 
-                try:
-                    status = _get_libtorrent_status(handle)
-                    last_status_line = _format_libtorrent_status(
-                        status,
-                        expected_file_size,
-                        file_piece_spans=file_piece_spans,
-                        baseline_valid_piece_indexes=baseline_valid_piece_indexes,
-                        estimated_repair_bytes=estimated_repair_bytes,
-                    )
-                    if last_status_line != last_logged_status_line:
-                        _safe_console_print(
-                            f"    {self._color('[torrent]', Colors.CYAN)} {last_status_line}"
-                        )
-                        last_logged_status_line = last_status_line
-
-                    progress = getattr(status, 'progress', 0.0)
-                    last_status_message = (
-                        f"Torrent session status: {last_status_line}, "
-                        'but no CRC-valid file was recovered.'
-                    )
-                    error_text = _format_libtorrent_error(getattr(status, 'errc', None))
-                    if error_text:
-                        last_status_message = f'Torrent session error: {error_text} ({last_status_line})'
-                except Exception:
-                    pass
-
-                time.sleep(1.0)
+                    time.sleep(1.0)
+            finally:
+                if torrent_progress is not None:
+                    torrent_progress.close()
 
             try:
                 session.remove_torrent(handle)
