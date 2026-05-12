@@ -1,3 +1,4 @@
 # series_archiver.py
 tqdm
+libtorrent
 bencodepy
