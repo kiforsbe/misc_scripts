@@ -191,6 +191,39 @@ def _get_libtorrent_valid_piece_indexes(status: Any) -> Set[int]:
     return valid_piece_indexes
 
 
+def _build_libtorrent_piece_bitfield(total_piece_count: int, valid_piece_indexes: Set[int]) -> List[bool]:
+    """Build a libtorrent-compatible piece bitfield from verified piece indexes."""
+    if total_piece_count <= 0:
+        return []
+
+    piece_bitfield = [False] * total_piece_count
+    for piece_index in valid_piece_indexes:
+        if 0 <= piece_index < total_piece_count:
+            piece_bitfield[piece_index] = True
+
+    return piece_bitfield
+
+
+def _estimate_missing_piece_repair_bytes(
+    torrent_info: Any,
+    file_piece_spans: List[Tuple[int, int]],
+    baseline_valid_piece_indexes: Set[int],
+) -> Tuple[int, int]:
+    """Estimate repair download bytes by counting whole missing torrent pieces."""
+    missing_piece_indexes = [piece_index for piece_index, _ in file_piece_spans if piece_index not in baseline_valid_piece_indexes]
+    if not missing_piece_indexes:
+        return 0, 0
+
+    estimated_bytes = 0
+    for piece_index in missing_piece_indexes:
+        try:
+            estimated_bytes += int(torrent_info.piece_size(piece_index))
+        except Exception:
+            pass
+
+    return estimated_bytes, len(missing_piece_indexes)
+
+
 def _get_libtorrent_file_ok_bytes(
     status: Any,
     file_piece_spans: List[Tuple[int, int]],
@@ -256,8 +289,8 @@ def _enable_sequential_download(handle: Any) -> None:
     """Enable sequential download through torrent flags when supported."""
     if hasattr(handle, 'set_flags') and hasattr(libtorrent, 'torrent_flags'):
         handle.set_flags(libtorrent.torrent_flags.sequential_download)
-        return
-    handle.set_sequential_download(True)
+    else:
+        raise RuntimeError('Current libtorrent flags API is unavailable; sequential download cannot be enabled without deprecated APIs.')
 
 
 def _matches_debug_crc_target(filepath: str, filename: str) -> bool:
@@ -274,6 +307,7 @@ def _format_libtorrent_status(
     matched_file_size: int = 0,
     file_piece_spans: Optional[List[Tuple[int, int]]] = None,
     baseline_valid_piece_indexes: Optional[Set[int]] = None,
+    estimated_repair_bytes: int = 0,
 ) -> str:
     """Create a short human-readable status line for a torrent session."""
     state_value = getattr(status, 'state', None)
@@ -324,7 +358,12 @@ def _format_libtorrent_status(
         parts.append(
             f"file-ok={_format_byte_size(file_ok_bytes)}/{_format_byte_size(matched_file_size)} ({file_ok_ratio:.2%})"
         )
-    if total_wanted > 0:
+    if estimated_repair_bytes > 0:
+        fetched_ratio = min(total_payload_download / estimated_repair_bytes, 1.0)
+        parts.append(
+            f"repair-fetched={_format_byte_size(total_payload_download)}/{_format_byte_size(estimated_repair_bytes)} ({fetched_ratio:.2%})"
+        )
+    elif total_wanted > 0:
         fetched_ratio = min(total_payload_download / total_wanted, 1.0)
         parts.append(
             f"fetched={_format_byte_size(total_payload_download)}/{_format_byte_size(total_wanted)} ({fetched_ratio:.2%})"
@@ -1398,21 +1437,33 @@ class SeriesArchiver:
                 expected_file_size,
                 baseline_valid_piece_indexes=baseline_valid_piece_indexes,
             ) or 0
+            estimated_repair_bytes, missing_piece_count = _estimate_missing_piece_repair_bytes(
+                torrent_info,
+                file_piece_spans,
+                baseline_valid_piece_indexes,
+            )
             try:
-                _call_libtorrent_without_deprecation_warnings(session.listen_on, 6881, 6891)
+                _configure_libtorrent_session(session)
             except Exception:
                 pass
 
-            handle = _call_libtorrent_without_deprecation_warnings(
-                session.add_torrent,
-                {
-                    'ti': torrent_info,
-                    'save_path': str(save_path)
-                }
-            )
+            params = self._build_matched_torrent_params(torrent_info, match, save_path, failed_path)
+            if baseline_valid_piece_indexes:
+                piece_bitfield = _build_libtorrent_piece_bitfield(int(torrent_info.num_pieces()), baseline_valid_piece_indexes)
+                if piece_bitfield:
+                    try:
+                        params.have_pieces = piece_bitfield
+                    except Exception:
+                        pass
+                    try:
+                        params.verified_pieces = piece_bitfield
+                    except Exception:
+                        pass
+
+            handle = session.add_torrent(params)
 
             try:
-                _call_libtorrent_without_deprecation_warnings(handle.set_sequential_download, True)
+                _enable_sequential_download(handle)
             except Exception:
                 pass
 
@@ -1448,6 +1499,11 @@ class SeriesArchiver:
                     f"{_format_byte_size(baseline_file_ok_bytes)}/{_format_byte_size(expected_file_size)} "
                     f"({baseline_file_ok_ratio:.2%}) from local torrent-piece hashes"
                 )
+                if missing_piece_count > 0:
+                    _safe_console_print(
+                        f"    {self._color('[torrent]', Colors.CYAN)} estimated repair="
+                        f"{_format_byte_size(estimated_repair_bytes)} across {missing_piece_count} missing torrent piece(s)"
+                    )
 
             while time.time() < deadline:
                 try:
@@ -1474,6 +1530,7 @@ class SeriesArchiver:
                         expected_file_size,
                         file_piece_spans=file_piece_spans,
                         baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+                        estimated_repair_bytes=estimated_repair_bytes,
                     )
                     if last_status_line != last_logged_status_line:
                         _safe_console_print(
