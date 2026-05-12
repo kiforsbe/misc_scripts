@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import importlib
 import time
 import json
@@ -11,7 +12,7 @@ import warnings
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 from presentation import Presenter, color_text, get_emoji, Colors
 
 
@@ -94,11 +95,169 @@ DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS = [
 ]
 
 
+def _format_byte_size(size_bytes: int) -> str:
+    """Return a compact human-readable byte size string."""
+    size_value = float(size_bytes)
+    for unit in ('B', 'KiB', 'MiB', 'GiB', 'TiB'):
+        if size_value < 1024.0 or unit == 'TiB':
+            return f"{size_value:.2f} {unit}"
+        size_value /= 1024.0
+
+
+def _format_libtorrent_error(error_value: Any) -> str:
+    """Render a libtorrent error_code as readable text."""
+    if not error_value:
+        return ''
+
+    try:
+        error_message = error_value.message()
+    except Exception:
+        error_message = str(error_value)
+
+    try:
+        error_code = error_value.value()
+    except Exception:
+        error_code = None
+
+    if error_code == 0:
+        return ''
+    if not error_message or error_message in {'No error', 'The operation completed successfully'}:
+        return ''
+    if error_code is None:
+        return error_message
+    return f"{error_message} ({error_code})"
+
+
+def _get_libtorrent_status(handle: Any) -> Any:
+    """Fetch torrent status with piece bitfields when the binding supports them."""
+    if hasattr(libtorrent, 'status_flags_t'):
+        try:
+            status_flags = libtorrent.status_flags_t.query_pieces | libtorrent.status_flags_t.query_verified_pieces
+            return handle.status(status_flags)
+        except Exception:
+            pass
+    return handle.status()
+
+
+def _get_libtorrent_file_piece_spans(
+    torrent_info: Any,
+    matched_index: Optional[int],
+    matched_file_size: int,
+) -> List[Tuple[int, int]]:
+    """Return the overlapping byte count for each torrent piece covering the matched file."""
+    if torrent_info is None or matched_index is None or matched_file_size <= 0:
+        return []
+
+    try:
+        first_mapping = torrent_info.map_file(matched_index, 0, 1)
+        last_mapping = torrent_info.map_file(matched_index, matched_file_size - 1, 1)
+        piece_length = int(torrent_info.piece_length())
+    except Exception:
+        return []
+
+    file_start = int(first_mapping.piece) * piece_length + int(first_mapping.start)
+    file_end = file_start + matched_file_size
+    first_piece = int(first_mapping.piece)
+    last_piece = int(last_mapping.piece)
+
+    spans = []
+    for piece_index in range(first_piece, last_piece + 1):
+        piece_start = piece_index * piece_length
+        piece_end = piece_start + int(torrent_info.piece_size(piece_index))
+        overlap_start = max(file_start, piece_start)
+        overlap_end = min(file_end, piece_end)
+        if overlap_end > overlap_start:
+            spans.append((piece_index, overlap_end - overlap_start))
+
+    return spans
+
+
+def _get_libtorrent_valid_piece_indexes(status: Any) -> Set[int]:
+    """Return the set of piece indexes libtorrent currently considers valid."""
+    if status is None:
+        return set()
+
+    valid_piece_indexes = set()
+    for attribute_name in ('pieces', 'verified_pieces'):
+        try:
+            piece_flags = getattr(status, attribute_name, None) or []
+        except Exception:
+            piece_flags = []
+
+        for piece_index, is_valid in enumerate(piece_flags):
+            if is_valid:
+                valid_piece_indexes.add(piece_index)
+
+    return valid_piece_indexes
+
+
+def _get_libtorrent_file_ok_bytes(
+    status: Any,
+    file_piece_spans: List[Tuple[int, int]],
+    matched_file_size: int,
+    baseline_valid_piece_indexes: Optional[Set[int]] = None,
+) -> Optional[int]:
+    """Estimate how many bytes of the matched file are currently backed by valid pieces."""
+    if matched_file_size <= 0 or not file_piece_spans:
+        return None
+
+    valid_piece_indexes = _get_libtorrent_valid_piece_indexes(status)
+    if baseline_valid_piece_indexes:
+        valid_piece_indexes.update(baseline_valid_piece_indexes)
+
+    valid_bytes = 0
+    for piece_index, overlap_bytes in file_piece_spans:
+        if piece_index not in valid_piece_indexes:
+            continue
+
+        valid_bytes += overlap_bytes
+
+    return min(valid_bytes, matched_file_size)
+
+
 def _call_libtorrent_without_deprecation_warnings(callback, *args, **kwargs):
-    """Call libtorrent APIs while hiding known deprecation warnings."""
+    """Call deprecated libtorrent APIs without surfacing warning noise in CLI output."""
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', DeprecationWarning)
         return callback(*args, **kwargs)
+
+
+def _configure_libtorrent_session(session: Any) -> None:
+    """Apply non-deprecated session settings used by recovery flows."""
+    if hasattr(session, 'apply_settings'):
+        session.apply_settings({
+            'listen_interfaces': '0.0.0.0:6881,[::]:6881'
+        })
+
+
+def _create_add_torrent_params(torrent_info: Any, save_path: Path) -> Any:
+    """Create add_torrent_params using the current libtorrent API."""
+    params = libtorrent.add_torrent_params()
+    params.ti = torrent_info
+    params.save_path = str(save_path)
+    if hasattr(libtorrent, 'torrent_flags') and hasattr(params, 'flags'):
+        params.flags |= libtorrent.torrent_flags.sequential_download
+    return params
+
+
+def _apply_match_to_add_torrent_params(params: Any, matched_index: Optional[int], priorities: List[int], failed_path: Optional[Path] = None) -> None:
+    """Preconfigure matched-file priorities and rename mapping before add_torrent()."""
+    if hasattr(libtorrent, 'torrent_flags') and hasattr(params, 'flags'):
+        params.flags |= libtorrent.torrent_flags.default_dont_download
+
+    if priorities:
+        params.file_priorities = priorities
+
+    if matched_index is not None and failed_path is not None:
+        params.renamed_files[matched_index] = failed_path.name
+
+
+def _enable_sequential_download(handle: Any) -> None:
+    """Enable sequential download through torrent flags when supported."""
+    if hasattr(handle, 'set_flags') and hasattr(libtorrent, 'torrent_flags'):
+        handle.set_flags(libtorrent.torrent_flags.sequential_download)
+        return
+    handle.set_sequential_download(True)
 
 
 def _matches_debug_crc_target(filepath: str, filename: str) -> bool:
@@ -110,7 +269,12 @@ def _matches_debug_crc_target(filepath: str, filename: str) -> bool:
     return any(substring in candidate_text for substring in DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS)
 
 
-def _format_libtorrent_status(status: Any) -> str:
+def _format_libtorrent_status(
+    status: Any,
+    matched_file_size: int = 0,
+    file_piece_spans: Optional[List[Tuple[int, int]]] = None,
+    baseline_valid_piece_indexes: Optional[Set[int]] = None,
+) -> str:
     """Create a short human-readable status line for a torrent session."""
     state_value = getattr(status, 'state', None)
     state_names = {
@@ -129,9 +293,14 @@ def _format_libtorrent_status(status: Any) -> str:
         state_name = str(state_value) if state_value is not None else 'unknown'
 
     try:
-        progress_text = f"{float(getattr(status, 'progress', 0.0) or 0.0):.2%}"
+        total_payload_download = int(getattr(status, 'total_payload_download', 0) or 0)
     except Exception:
-        progress_text = 'unknown'
+        total_payload_download = 0
+
+    try:
+        total_wanted = int(getattr(status, 'total_wanted', 0) or 0)
+    except Exception:
+        total_wanted = 0
 
     try:
         download_rate = int(getattr(status, 'download_rate', 0) or 0)
@@ -143,17 +312,33 @@ def _format_libtorrent_status(status: Any) -> str:
     except Exception:
         num_peers = 0
 
-    parts = [f"state={state_name}", f"progress={progress_text}"]
+    parts = [f"state={state_name}"]
+    file_ok_bytes = _get_libtorrent_file_ok_bytes(
+        status,
+        file_piece_spans or [],
+        matched_file_size,
+        baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+    )
+    if matched_file_size > 0 and file_ok_bytes is not None:
+        file_ok_ratio = min(file_ok_bytes / matched_file_size, 1.0)
+        parts.append(
+            f"file-ok={_format_byte_size(file_ok_bytes)}/{_format_byte_size(matched_file_size)} ({file_ok_ratio:.2%})"
+        )
+    if total_wanted > 0:
+        fetched_ratio = min(total_payload_download / total_wanted, 1.0)
+        parts.append(
+            f"fetched={_format_byte_size(total_payload_download)}/{_format_byte_size(total_wanted)} ({fetched_ratio:.2%})"
+        )
+    else:
+        parts.append(f"fetched={_format_byte_size(total_payload_download)}")
     if download_rate > 0:
         parts.append(f"down={download_rate / (1024 * 1024):.2f} MiB/s")
     if num_peers > 0:
         parts.append(f"peers={num_peers}")
 
-    error_value = getattr(status, 'errc', None)
-    if error_value:
-        error_text = str(error_value)
-        if error_text and error_text != 'system:0':
-            parts.append(f"error={error_text}")
+    error_text = _format_libtorrent_error(getattr(status, 'errc', None))
+    if error_text:
+        parts.append(f"error={error_text}")
 
     return ', '.join(parts)
 
@@ -736,18 +921,18 @@ class SeriesArchiver:
             torrent_info = libtorrent.torrent_info(str(match['torrent_path']))
             session = libtorrent.session()
             try:
-                _call_libtorrent_without_deprecation_warnings(session.listen_on, 6881, 6891)
+                _configure_libtorrent_session(session)
             except Exception:
                 pass
 
-            handle = _call_libtorrent_without_deprecation_warnings(session.add_torrent, {
-                'ti': torrent_info,
-                'save_path': str(temporary_root)
-            })
+            handle = session.add_torrent(
+                self._build_matched_torrent_params(torrent_info, match, temporary_root)
+            )
             try:
-                _call_libtorrent_without_deprecation_warnings(handle.set_sequential_download, True)
+                _enable_sequential_download(handle)
             except Exception:
                 pass
+            self._prioritize_matched_torrent_file(handle, torrent_info, match)
             try:
                 handle.resume()
             except Exception:
@@ -756,7 +941,6 @@ class SeriesArchiver:
                 handle.force_recheck()
             except Exception:
                 pass
-            self._prioritize_matched_torrent_file(handle, torrent_info, match)
 
             timeout_seconds = int(torrent_recovery.get('timeout_seconds') or 120)
             deadline = time.time() + timeout_seconds
@@ -872,46 +1056,8 @@ class SeriesArchiver:
             return value.decode('utf-8', errors='replace')
         return str(value)
 
-    def _read_torrent_metadata_with_libtorrent(self, torrent_path: str) -> Optional[Dict[str, Any]]:
-        """Read torrent metadata through libtorrent when it is available."""
-        if not LIBTORRENT_AVAILABLE:
-            return None
-
-        try:
-            torrent_info = libtorrent.torrent_info(str(torrent_path))
-            torrent_name = torrent_info.name()
-            file_storage = _call_libtorrent_without_deprecation_warnings(torrent_info.files)
-            file_count = file_storage.num_files()
-            files = []
-
-            if file_count > 0:
-                for index in range(file_count):
-                    relative_path = file_storage.file_path(index)
-                    files.append({
-                        'relative_path': relative_path,
-                        'display_name': os.path.basename(relative_path)
-                    })
-            else:
-                files.append({
-                    'relative_path': torrent_name,
-                    'display_name': os.path.basename(torrent_name)
-                })
-
-            return {
-                'torrent_path': torrent_path,
-                'torrent_name': torrent_name,
-                'files': files
-            }
-        except Exception as exc:
-            self._log(f"Could not read torrent '{torrent_path}' through libtorrent: {exc}", 2)
-            return None
-
     def _read_torrent_metadata(self, torrent_path: str) -> Optional[Dict[str, Any]]:
         """Read a .torrent file and return simplified metadata for matching."""
-        metadata = self._read_torrent_metadata_with_libtorrent(torrent_path)
-        if metadata:
-            return metadata
-
         try:
             with open(torrent_path, 'rb') as torrent_file:
                 raw_metadata = self._bdecode(torrent_file.read())
@@ -942,12 +1088,14 @@ class SeriesArchiver:
                     continue
                 files.append({
                     'relative_path': relative_path,
-                    'display_name': os.path.basename(relative_path)
+                    'display_name': os.path.basename(relative_path),
+                    'file_size': int(file_entry.get(b'length', 0) or 0)
                 })
         else:
             files.append({
                 'relative_path': torrent_name,
-                'display_name': os.path.basename(torrent_name)
+                'display_name': os.path.basename(torrent_name),
+                'file_size': int(info.get(b'length', 0) or 0)
             })
 
         return {
@@ -955,6 +1103,18 @@ class SeriesArchiver:
             'torrent_name': torrent_name,
             'files': files
         }
+
+    def _get_torrent_file_paths_in_order(self, torrent_path: str) -> List[str]:
+        """Return torrent file paths in declared order without using libtorrent file APIs."""
+        metadata = self._read_torrent_metadata(torrent_path)
+        if not metadata:
+            return []
+
+        return [
+            str(file_entry.get('relative_path', ''))
+            for file_entry in metadata.get('files', [])
+            if file_entry.get('relative_path')
+        ]
 
     def _collect_candidate_torrent_files(self, failed_filepath: str, torrent_files_path: Optional[str]) -> List[str]:
         """Collect candidate .torrent files, prioritizing ones next to the failed file."""
@@ -1036,6 +1196,7 @@ class SeriesArchiver:
                     'torrent_name': metadata['torrent_name'],
                     'relative_path': file_entry['relative_path'],
                     'display_name': file_entry['display_name'],
+                    'file_size': int(file_entry.get('file_size', 0) or 0),
                     'torrent_name_score': torrent_name_score,
                     'file_score': file_score,
                     'total_score': total_score
@@ -1070,6 +1231,106 @@ class SeriesArchiver:
                 seen.add(resolved_key)
 
         return candidates
+
+    def _resolve_session_file_path(
+        self,
+        root: Path,
+        torrent_name: str,
+        relative_path: str,
+        preferred_path: Optional[Path] = None,
+    ) -> Optional[Path]:
+        """Resolve the current on-disk path for a torrent file during recovery."""
+        if preferred_path is not None and preferred_path.exists():
+            return preferred_path
+
+        candidate_match = {
+            'relative_path': relative_path,
+            'torrent_name': torrent_name,
+        }
+        for candidate in self._resolve_session_candidate_paths(root, candidate_match):
+            if candidate.exists():
+                return candidate
+
+        return None
+
+    def _scan_local_valid_piece_indexes(
+        self,
+        torrent_info: Any,
+        match: Dict[str, Any],
+        save_path: Path,
+        failed_path: Path,
+        matched_index: Optional[int],
+        file_piece_spans: List[Tuple[int, int]],
+    ) -> Set[int]:
+        """Hash locally available torrent pieces so status can start from real reusable bytes."""
+        if matched_index is None or not file_piece_spans:
+            return set()
+
+        try:
+            torrent_file_paths = self._get_torrent_file_paths_in_order(str(match['torrent_path']))
+        except Exception:
+            return set()
+
+        if not torrent_file_paths:
+            return set()
+
+        valid_piece_indexes = set()
+        torrent_name = str(match.get('torrent_name', ''))
+        for piece_index, _ in file_piece_spans:
+            try:
+                piece_size = int(torrent_info.piece_size(piece_index))
+                file_slices = torrent_info.map_block(piece_index, 0, piece_size)
+                expected_hash = bytes(torrent_info.hash_for_piece(piece_index))
+            except Exception:
+                continue
+
+            piece_chunks = []
+            piece_complete = True
+            for file_slice in file_slices:
+                try:
+                    file_index = int(file_slice.file_index)
+                    slice_offset = int(file_slice.offset)
+                    slice_size = int(file_slice.size)
+                except Exception:
+                    piece_complete = False
+                    break
+
+                if file_index < 0 or file_index >= len(torrent_file_paths):
+                    piece_complete = False
+                    break
+
+                preferred_path = failed_path if file_index == matched_index else None
+                resolved_path = self._resolve_session_file_path(
+                    save_path,
+                    torrent_name,
+                    torrent_file_paths[file_index],
+                    preferred_path=preferred_path,
+                )
+                if resolved_path is None:
+                    piece_complete = False
+                    break
+
+                try:
+                    with open(resolved_path, 'rb') as source_file:
+                        source_file.seek(slice_offset)
+                        chunk = source_file.read(slice_size)
+                except OSError:
+                    piece_complete = False
+                    break
+
+                if len(chunk) != slice_size:
+                    piece_complete = False
+                    break
+
+                piece_chunks.append(chunk)
+
+            if not piece_complete:
+                continue
+
+            if hashlib.sha1(b''.join(piece_chunks)).digest() == expected_hash:
+                valid_piece_indexes.add(piece_index)
+
+        return valid_piece_indexes
 
     def _attempt_torrent_file_recovery(
         self,
@@ -1108,26 +1369,54 @@ class SeriesArchiver:
             return False, 'Matched torrent metadata was found, but libtorrent is not available.'
 
         failed_path = Path(failed_filepath)
+        local_file_size = 0
+        try:
+            if failed_path.exists():
+                local_file_size = failed_path.stat().st_size
+        except OSError:
+            local_file_size = 0
+        expected_file_size = int(match.get('file_size', 0) or 0)
         save_path = failed_path.parent
+        verification_path = failed_path
 
         try:
             torrent_info = libtorrent.torrent_info(str(match['torrent_path']))
             session = libtorrent.session()
+            matched_index, _ = self._find_matched_torrent_file_index(torrent_info, match)
+            file_piece_spans = _get_libtorrent_file_piece_spans(torrent_info, matched_index, expected_file_size)
+            baseline_valid_piece_indexes = self._scan_local_valid_piece_indexes(
+                torrent_info,
+                match,
+                save_path,
+                failed_path,
+                matched_index,
+                file_piece_spans,
+            )
+            baseline_file_ok_bytes = _get_libtorrent_file_ok_bytes(
+                None,
+                file_piece_spans,
+                expected_file_size,
+                baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+            ) or 0
             try:
                 _call_libtorrent_without_deprecation_warnings(session.listen_on, 6881, 6891)
             except Exception:
                 pass
 
-            add_params = {
-                'ti': torrent_info,
-                'save_path': str(save_path)
-            }
-            handle = _call_libtorrent_without_deprecation_warnings(session.add_torrent, add_params)
+            handle = _call_libtorrent_without_deprecation_warnings(
+                session.add_torrent,
+                {
+                    'ti': torrent_info,
+                    'save_path': str(save_path)
+                }
+            )
 
             try:
                 _call_libtorrent_without_deprecation_warnings(handle.set_sequential_download, True)
             except Exception:
                 pass
+
+            self._configure_matched_torrent_file(handle, torrent_info, match, failed_path)
 
             try:
                 handle.resume()
@@ -1139,23 +1428,31 @@ class SeriesArchiver:
             except Exception:
                 pass
 
-            self._configure_matched_torrent_file(handle, torrent_info, match, failed_path)
-
             timeout_seconds = int(torrent_recovery.get('timeout_seconds') or 120)
             deadline = time.time() + timeout_seconds
             last_status_message = 'Matched torrent metadata was found, but the torrent session did not produce a CRC-valid file before timeout.'
-            last_status_line = 'state=starting, progress=0.00%'
+            last_status_line = 'state=starting'
             last_logged_status_line = None
 
             _safe_console_print(
                 f"    {self._color('[torrent]', Colors.CYAN)} Starting session for "
                 f"{self._color(match['display_name'], Colors.WHITE)}"
             )
+            if expected_file_size > 0:
+                on_disk_ratio = min(local_file_size / expected_file_size, 1.0) if expected_file_size else 0.0
+                baseline_file_ok_ratio = min(baseline_file_ok_bytes / expected_file_size, 1.0) if expected_file_size else 0.0
+                _safe_console_print(
+                    f"    {self._color('[torrent]', Colors.CYAN)} local-file="
+                    f"{_format_byte_size(local_file_size)}/{_format_byte_size(expected_file_size)} "
+                    f"on disk ({on_disk_ratio:.2%}); initial file-ok="
+                    f"{_format_byte_size(baseline_file_ok_bytes)}/{_format_byte_size(expected_file_size)} "
+                    f"({baseline_file_ok_ratio:.2%}) from local torrent-piece hashes"
+                )
 
             while time.time() < deadline:
                 try:
                     is_valid, _, actual_crc = self._verify_file_crc(
-                        str(failed_path),
+                        str(verification_path),
                         expected_crc,
                         show_progress=False
                     )
@@ -1171,8 +1468,13 @@ class SeriesArchiver:
                     return True, f"Recovered in place via torrent session (CRC {actual_crc}; {last_status_line})"
 
                 try:
-                    status = handle.status()
-                    last_status_line = _format_libtorrent_status(status)
+                    status = _get_libtorrent_status(handle)
+                    last_status_line = _format_libtorrent_status(
+                        status,
+                        expected_file_size,
+                        file_piece_spans=file_piece_spans,
+                        baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+                    )
                     if last_status_line != last_logged_status_line:
                         _safe_console_print(
                             f"    {self._color('[torrent]', Colors.CYAN)} {last_status_line}"
@@ -1184,10 +1486,9 @@ class SeriesArchiver:
                         f"Torrent session status: {last_status_line}, "
                         'but no CRC-valid file was recovered.'
                     )
-                    if getattr(status, 'errc', None):
-                        error_text = str(status.errc)
-                        if error_text and error_text != 'system:0':
-                            last_status_message = f'Torrent session error: {error_text} ({last_status_line})'
+                    error_text = _format_libtorrent_error(getattr(status, 'errc', None))
+                    if error_text:
+                        last_status_message = f'Torrent session error: {error_text} ({last_status_line})'
                 except Exception:
                     pass
 
@@ -1205,19 +1506,17 @@ class SeriesArchiver:
     def _find_matched_torrent_file_index(self, torrent_info: Any, match: Dict[str, Any]) -> Tuple[Optional[int], List[int]]:
         """Locate the matched torrent file index and build file priorities."""
         try:
-            file_storage = _call_libtorrent_without_deprecation_warnings(torrent_info.files)
-            file_count = file_storage.num_files()
+            file_paths = self._get_torrent_file_paths_in_order(str(match['torrent_path']))
         except Exception:
+            return None, []
+
+        if not file_paths:
             return None, []
 
         target_relative_path = str(Path(match['relative_path']))
         priorities = []
         matched_index = None
-        for index in range(file_count):
-            try:
-                current_path = file_storage.file_path(index)
-            except Exception:
-                current_path = ''
+        for index, current_path in enumerate(file_paths):
 
             is_match = current_path == target_relative_path or os.path.basename(current_path) == match['display_name']
             priorities.append(7 if is_match else 0)
@@ -1252,6 +1551,13 @@ class SeriesArchiver:
             handle.rename_file(matched_index, failed_path.name)
         except Exception:
             pass
+
+    def _build_matched_torrent_params(self, torrent_info: Any, match: Dict[str, Any], save_path: Path, failed_path: Optional[Path] = None) -> Any:
+        """Create add_torrent_params seeded with matched-file priorities and optional rename mapping."""
+        params = _create_add_torrent_params(torrent_info, save_path)
+        matched_index, priorities = self._find_matched_torrent_file_index(torrent_info, match)
+        _apply_match_to_add_torrent_params(params, matched_index, priorities, failed_path)
+        return params
 
     def _run_torrent_recovery_for_crc_failures(
         self,
