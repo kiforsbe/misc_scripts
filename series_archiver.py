@@ -1,6 +1,5 @@
 import argparse
 import importlib
-import tempfile
 import time
 import json
 import os
@@ -8,11 +7,155 @@ import shutil
 import sys
 import re
 import binascii
+import warnings
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Protocol
 from presentation import Presenter, color_text, get_emoji, Colors
+
+
+def _find_missing_windows_dll_dependencies(binary_path: Path) -> List[str]:
+    """Best-effort dependency scan for Windows extension modules."""
+    if os.name != 'nt' or not binary_path.exists():
+        return []
+
+    try:
+        binary_text = binary_path.read_bytes().decode('latin-1', errors='ignore')
+    except OSError:
+        return []
+
+    dependency_names = {
+        match.group(0).lower()
+        for match in re.finditer(r'[A-Za-z0-9_./-]+\.dll', binary_text)
+    }
+    if not dependency_names:
+        return []
+
+    ignored_names = {
+        'advapi32.dll',
+        'crypt32.dll',
+        'iphlpapi.dll',
+        'kernel32.dll',
+        'msvcp140.dll',
+        'python313.dll',
+        'ucrtbase.dll',
+        'vcruntime140.dll',
+        'vcruntime140_1.dll',
+        'ws2_32.dll',
+        'wsock32.dll',
+    }
+    candidate_names = sorted(
+        name for name in dependency_names
+        if not name.startswith('api-ms-win-') and name not in ignored_names
+    )
+
+    search_dirs = [
+        binary_path.parent,
+        Path(sys.base_prefix),
+        Path(sys.base_prefix) / 'DLLs',
+        Path(r'C:\Windows\System32'),
+    ]
+    path_entries = os.environ.get('PATH', '').split(os.pathsep)
+    for entry in path_entries:
+        if entry:
+            search_dirs.append(Path(entry))
+
+    resolved_search_dirs = []
+    seen_dirs = set()
+    for directory in search_dirs:
+        directory_key = str(directory).lower()
+        if directory_key in seen_dirs:
+            continue
+        seen_dirs.add(directory_key)
+        resolved_search_dirs.append(directory)
+
+    missing_dependencies = []
+    for dependency_name in candidate_names:
+        if any((directory / dependency_name).exists() for directory in resolved_search_dirs):
+            continue
+        missing_dependencies.append(dependency_name)
+
+    return missing_dependencies
+
+
+def _get_libtorrent_extension_path() -> Optional[Path]:
+    """Locate the installed libtorrent extension module for diagnostics."""
+    site_packages_dir = Path(sys.base_prefix) / 'Lib' / 'site-packages' / 'libtorrent'
+    matches = sorted(site_packages_dir.glob('__init__*.pyd'))
+    if matches:
+        return matches[0]
+    return None
+
+
+# Temporary debug filter to jump directly to a known failing CRC case.
+DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS = [
+    'enen no shouboutai - 23 [720p cr web-dl avc eac3][multisub][6697449e].mkv',
+]
+
+
+def _call_libtorrent_without_deprecation_warnings(callback, *args, **kwargs):
+    """Call libtorrent APIs while hiding known deprecation warnings."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        return callback(*args, **kwargs)
+
+
+def _matches_debug_crc_target(filepath: str, filename: str) -> bool:
+    """Return True when the file matches the temporary debug CRC target list."""
+    if not DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS:
+        return True
+
+    candidate_text = f"{filepath} {filename}".lower()
+    return any(substring in candidate_text for substring in DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS)
+
+
+def _format_libtorrent_status(status: Any) -> str:
+    """Create a short human-readable status line for a torrent session."""
+    state_value = getattr(status, 'state', None)
+    state_names = {
+        0: 'queued',
+        1: 'checking',
+        2: 'downloading-metadata',
+        3: 'downloading',
+        4: 'finished',
+        5: 'seeding',
+        6: 'allocating',
+        7: 'checking-fastresume',
+    }
+    if isinstance(state_value, int):
+        state_name = state_names.get(state_value, str(state_value))
+    else:
+        state_name = str(state_value) if state_value is not None else 'unknown'
+
+    try:
+        progress_text = f"{float(getattr(status, 'progress', 0.0) or 0.0):.2%}"
+    except Exception:
+        progress_text = 'unknown'
+
+    try:
+        download_rate = int(getattr(status, 'download_rate', 0) or 0)
+    except Exception:
+        download_rate = 0
+
+    try:
+        num_peers = int(getattr(status, 'num_peers', 0) or 0)
+    except Exception:
+        num_peers = 0
+
+    parts = [f"state={state_name}", f"progress={progress_text}"]
+    if download_rate > 0:
+        parts.append(f"down={download_rate / (1024 * 1024):.2f} MiB/s")
+    if num_peers > 0:
+        parts.append(f"peers={num_peers}")
+
+    error_value = getattr(status, 'errc', None)
+    if error_value:
+        error_text = str(error_value)
+        if error_text and error_text != 'system:0':
+            parts.append(f"error={error_text}")
+
+    return ', '.join(parts)
 
 try:
     from tqdm import tqdm
@@ -23,9 +166,17 @@ except ImportError:
 try:
     libtorrent = importlib.import_module('libtorrent')
     LIBTORRENT_AVAILABLE = True
+    LIBTORRENT_IMPORT_ERROR = None
+    LIBTORRENT_MISSING_DEPENDENCIES: List[str] = []
 except ImportError:
     libtorrent = None
     LIBTORRENT_AVAILABLE = False
+    LIBTORRENT_IMPORT_ERROR = sys.exc_info()[1]
+    libtorrent_extension_path = _get_libtorrent_extension_path()
+    if libtorrent_extension_path is not None:
+        LIBTORRENT_MISSING_DEPENDENCIES = _find_missing_windows_dll_dependencies(libtorrent_extension_path)
+    else:
+        LIBTORRENT_MISSING_DEPENDENCIES = []
 
 try:
     bencodepy = importlib.import_module('bencodepy')
@@ -385,12 +536,36 @@ class SeriesArchiver:
         match = re.search(pattern, filename)
         return match.group(1).upper() if match else None
     
-    def _calculate_file_crc32(self, filepath: str) -> str:
+    def _calculate_file_crc32(self, filepath: str, show_progress: bool = False) -> str:
         """Calculate CRC32 hash of a file."""
         crc = 0
-        with open(filepath, 'rb') as f:
-            while chunk := f.read(8192):
-                crc = binascii.crc32(chunk, crc)
+        file_progress = None
+        try:
+            if show_progress and TQDM_AVAILABLE and self.verbose >= 1:
+                file_size = os.path.getsize(filepath)
+                display_name = os.path.basename(filepath)
+                if len(display_name) > 36:
+                    display_name = display_name[:33] + '...'
+                file_progress = tqdm(
+                    total=file_size,
+                    desc=f"CRC {display_name}",
+                    unit='B',
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    leave=False,
+                    disable=False,
+                    position=1
+                )
+
+            with open(filepath, 'rb') as f:
+                while chunk := f.read(8192):
+                    crc = binascii.crc32(chunk, crc)
+                    if file_progress is not None:
+                        file_progress.update(len(chunk))
+        finally:
+            if file_progress is not None:
+                file_progress.close()
+
         return f"{crc & 0xffffffff:08X}"
     
     def _format_episode_ranges(self, episodes: List[int]) -> str:
@@ -486,7 +661,8 @@ class SeriesArchiver:
         self,
         filepath: str,
         expected_crc: Optional[str] = None,
-        torrent_recovery: Optional[Dict[str, Any]] = None
+        torrent_recovery: Optional[Dict[str, Any]] = None,
+        show_progress: bool = True
     ) -> Tuple[bool, str, str]:
         """
         Verify CRC32 of a file against expected CRC from filename or provided CRC.
@@ -505,7 +681,7 @@ class SeriesArchiver:
             return False, "N/A", "N/A"
         
         try:
-            actual_crc = self._calculate_file_crc32(filepath)
+            actual_crc = self._calculate_file_crc32(filepath, show_progress=show_progress)
             return expected_crc.upper() == actual_crc.upper(), expected_crc.upper(), actual_crc.upper()
         except Exception as e:
             self._log(f"Error calculating CRC for {filename}: {e}", 1)
@@ -516,7 +692,6 @@ class SeriesArchiver:
         filepath: str,
         torrent_recovery: Dict[str, Any]
     ) -> Tuple[bool, str, str]:
-        """Use a matched torrent as the source of truth when no CRC is present in the filename."""
         failed_result = {
             'filename': os.path.basename(filepath)
         }
@@ -529,7 +704,7 @@ class SeriesArchiver:
             return False, 'N/A', 'N/A'
 
         try:
-            actual_crc = self._calculate_file_crc32(filepath)
+            actual_crc = self._calculate_file_crc32(filepath, show_progress=True)
         except Exception as exc:
             self._log(f"Error calculating CRC for {os.path.basename(filepath)}: {exc}", 1)
             return False, 'TORRENT', 'ERROR'
@@ -552,41 +727,25 @@ class SeriesArchiver:
         torrent_recovery: Dict[str, Any]
     ) -> Tuple[bool, str]:
         """Derive an expected CRC from torrent-backed content for a matched file."""
-        candidate_paths = self._resolve_recovery_source_paths(filepath, match, torrent_recovery)
-        for candidate_path in candidate_paths:
-            if not candidate_path.exists() or not candidate_path.is_file():
-                continue
-            try:
-                candidate_crc = self._calculate_file_crc32(str(candidate_path))
-            except Exception:
-                continue
-            return candidate_crc == actual_crc, candidate_crc
-
         if not LIBTORRENT_AVAILABLE:
             return False, 'N/A'
 
         temporary_root = Path(filepath).parent / '.torrent_verify'
         try:
             temporary_root.mkdir(parents=True, exist_ok=True)
-            seeded_paths = self._prepare_libtorrent_seed_paths(
-                filepath,
-                temporary_root,
-                match,
-                torrent_recovery
-            )
             torrent_info = libtorrent.torrent_info(str(match['torrent_path']))
             session = libtorrent.session()
             try:
-                session.listen_on(6881, 6891)
+                _call_libtorrent_without_deprecation_warnings(session.listen_on, 6881, 6891)
             except Exception:
                 pass
 
-            handle = session.add_torrent({
+            handle = _call_libtorrent_without_deprecation_warnings(session.add_torrent, {
                 'ti': torrent_info,
                 'save_path': str(temporary_root)
             })
             try:
-                handle.set_sequential_download(True)
+                _call_libtorrent_without_deprecation_warnings(handle.set_sequential_download, True)
             except Exception:
                 pass
             try:
@@ -601,14 +760,7 @@ class SeriesArchiver:
 
             timeout_seconds = int(torrent_recovery.get('timeout_seconds') or 120)
             deadline = time.time() + timeout_seconds
-            verification_paths = seeded_paths + self._resolve_recovery_source_paths(
-                filepath,
-                match,
-                {
-                    **torrent_recovery,
-                    'torrent_library_path': str(temporary_root)
-                }
-            )
+            verification_paths = self._resolve_session_candidate_paths(temporary_root, match)
 
             while time.time() < deadline:
                 for candidate_path in verification_paths:
@@ -728,7 +880,7 @@ class SeriesArchiver:
         try:
             torrent_info = libtorrent.torrent_info(str(torrent_path))
             torrent_name = torrent_info.name()
-            file_storage = torrent_info.files()
+            file_storage = _call_libtorrent_without_deprecation_warnings(torrent_info.files)
             file_count = file_storage.num_files()
             files = []
 
@@ -899,38 +1051,23 @@ class SeriesArchiver:
             return best_match, inspected_count
         return None, inspected_count
 
-    def _resolve_recovery_source_paths(
-        self,
-        failed_filepath: str,
-        match: Dict[str, Any],
-        torrent_recovery: Dict[str, Any]
-    ) -> List[Path]:
-        """Resolve likely filesystem locations for the matched torrent payload file."""
+    def _resolve_session_candidate_paths(self, root: Path, match: Dict[str, Any]) -> List[Path]:
+        """Resolve likely filesystem locations for a matched file under a torrent session root."""
         relative_path = Path(match['relative_path'])
         torrent_name = Path(match['torrent_name'])
-        torrent_parent = Path(match['torrent_path']).parent
-        roots = []
-
-        library_path = torrent_recovery.get('torrent_library_path')
-        if library_path:
-            roots.append(Path(library_path))
-
-        roots.append(torrent_parent)
-        roots.append(Path(failed_filepath).parent)
 
         candidates = []
         seen = set()
-        for root in roots:
-            for candidate in (
-                root / relative_path,
-                root / torrent_name / relative_path,
-                root / torrent_name.name / relative_path,
-                root / relative_path.name
-            ):
-                resolved_key = str(candidate)
-                if resolved_key not in seen:
-                    candidates.append(candidate)
-                    seen.add(resolved_key)
+        for candidate in (
+            root / relative_path,
+            root / torrent_name / relative_path,
+            root / torrent_name.name / relative_path,
+            root / relative_path.name
+        ):
+            resolved_key = str(candidate)
+            if resolved_key not in seen:
+                candidates.append(candidate)
+                seen.add(resolved_key)
 
         return candidates
 
@@ -946,14 +1083,6 @@ class SeriesArchiver:
         if not expected_crc or expected_crc == 'N/A':
             return False, 'Expected CRC is not available for recovery.'
 
-        recovered, message = self._recover_from_candidate_paths(
-            failed_filepath,
-            expected_crc,
-            self._resolve_recovery_source_paths(failed_filepath, match, torrent_recovery)
-        )
-        if recovered:
-            return recovered, message
-
         libtorrent_recovered, libtorrent_message = self._attempt_libtorrent_session_recovery(
             failed_filepath,
             expected_crc,
@@ -963,46 +1092,9 @@ class SeriesArchiver:
         if libtorrent_recovered:
             return libtorrent_recovered, libtorrent_message
 
-        return False, message if message else libtorrent_message
-
-    def _recover_from_candidate_paths(
-        self,
-        failed_filepath: str,
-        expected_crc: str,
-        candidate_paths: List[Path]
-    ) -> Tuple[bool, str]:
-        """Try candidate paths and replace the failed file with the first CRC-valid match."""
-        failed_path = Path(failed_filepath)
-
-        for candidate_path in candidate_paths:
-            if not candidate_path.exists() or not candidate_path.is_file():
-                continue
-
-            try:
-                if candidate_path.resolve() == failed_path.resolve():
-                    continue
-            except OSError:
-                pass
-
-            temp_recovery_path = None
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=failed_path.suffix, dir=str(failed_path.parent)) as temp_file:
-                    temp_recovery_path = Path(temp_file.name)
-
-                shutil.copy2(str(candidate_path), str(temp_recovery_path))
-                is_valid, _, actual_crc = self._verify_file_crc(str(temp_recovery_path), expected_crc)
-                if not is_valid:
-                    temp_recovery_path.unlink(missing_ok=True)
-                    continue
-
-                os.replace(str(temp_recovery_path), failed_filepath)
-                return True, f"Recovered from {candidate_path} (CRC {actual_crc})"
-            except Exception as exc:
-                if temp_recovery_path and temp_recovery_path.exists():
-                    temp_recovery_path.unlink(missing_ok=True)
-                self._log(f"Recovery attempt failed for {failed_filepath} using {candidate_path}: {exc}", 1)
-
-        return False, 'No matching readable file was found in the torrent library/content paths.'
+        if libtorrent_message:
+            return False, libtorrent_message
+        return False, 'Matched torrent metadata was found, but no CRC-valid file was recovered.'
 
     def _attempt_libtorrent_session_recovery(
         self,
@@ -1013,31 +1105,16 @@ class SeriesArchiver:
     ) -> Tuple[bool, str]:
         """Best-effort torrent session recovery using libtorrent when local files are unavailable."""
         if not LIBTORRENT_AVAILABLE:
-            return False, 'No matching readable file was found in the torrent library/content paths.'
+            return False, 'Matched torrent metadata was found, but libtorrent is not available.'
 
-        save_root = torrent_recovery.get('torrent_library_path')
-        use_temporary_save_root = not bool(save_root)
-        if save_root:
-            save_path = Path(save_root)
-        else:
-            save_path = Path(failed_filepath).parent / '.torrent_recovery'
+        failed_path = Path(failed_filepath)
+        save_path = failed_path.parent
 
         try:
-            save_path.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            return False, f'Could not prepare torrent recovery path: {exc}'
-
-        try:
-            seeded_candidate_paths = self._prepare_libtorrent_seed_paths(
-                failed_filepath,
-                save_path,
-                match,
-                torrent_recovery
-            )
             torrent_info = libtorrent.torrent_info(str(match['torrent_path']))
             session = libtorrent.session()
             try:
-                session.listen_on(6881, 6891)
+                _call_libtorrent_without_deprecation_warnings(session.listen_on, 6881, 6891)
             except Exception:
                 pass
 
@@ -1045,10 +1122,10 @@ class SeriesArchiver:
                 'ti': torrent_info,
                 'save_path': str(save_path)
             }
-            handle = session.add_torrent(add_params)
+            handle = _call_libtorrent_without_deprecation_warnings(session.add_torrent, add_params)
 
             try:
-                handle.set_sequential_download(True)
+                _call_libtorrent_without_deprecation_warnings(handle.set_sequential_download, True)
             except Exception:
                 pass
 
@@ -1062,47 +1139,55 @@ class SeriesArchiver:
             except Exception:
                 pass
 
-            self._prioritize_matched_torrent_file(handle, torrent_info, match)
+            self._configure_matched_torrent_file(handle, torrent_info, match, failed_path)
 
             timeout_seconds = int(torrent_recovery.get('timeout_seconds') or 120)
             deadline = time.time() + timeout_seconds
-            last_status_message = 'Torrent session did not produce a CRC-valid file before timeout.'
-            session_candidate_paths = seeded_candidate_paths + self._resolve_recovery_source_paths(
-                failed_filepath,
-                match,
-                {
-                    **torrent_recovery,
-                    'torrent_library_path': str(save_path)
-                }
+            last_status_message = 'Matched torrent metadata was found, but the torrent session did not produce a CRC-valid file before timeout.'
+            last_status_line = 'state=starting, progress=0.00%'
+            last_logged_status_line = None
+
+            _safe_console_print(
+                f"    {self._color('[torrent]', Colors.CYAN)} Starting session for "
+                f"{self._color(match['display_name'], Colors.WHITE)}"
             )
 
             while time.time() < deadline:
-                recovered, message = self._recover_from_candidate_paths(
-                    failed_filepath,
-                    expected_crc,
-                    session_candidate_paths
-                )
-                if recovered:
+                try:
+                    is_valid, _, actual_crc = self._verify_file_crc(
+                        str(failed_path),
+                        expected_crc,
+                        show_progress=False
+                    )
+                except Exception:
+                    is_valid = False
+                    actual_crc = 'ERROR'
+
+                if is_valid:
                     try:
                         session.remove_torrent(handle)
                     except Exception:
                         pass
-                    if use_temporary_save_root:
-                        self._cleanup_temporary_recovery_root(save_path)
-                    return True, message
+                    return True, f"Recovered in place via torrent session (CRC {actual_crc}; {last_status_line})"
 
                 try:
                     status = handle.status()
-                    state_name = getattr(status, 'state', None)
+                    last_status_line = _format_libtorrent_status(status)
+                    if last_status_line != last_logged_status_line:
+                        _safe_console_print(
+                            f"    {self._color('[torrent]', Colors.CYAN)} {last_status_line}"
+                        )
+                        last_logged_status_line = last_status_line
+
                     progress = getattr(status, 'progress', 0.0)
                     last_status_message = (
-                        f"Torrent session reached state {state_name} with progress {progress:.2%}, "
+                        f"Torrent session status: {last_status_line}, "
                         'but no CRC-valid file was recovered.'
                     )
                     if getattr(status, 'errc', None):
                         error_text = str(status.errc)
                         if error_text and error_text != 'system:0':
-                            last_status_message = f'Torrent session error: {error_text}'
+                            last_status_message = f'Torrent session error: {error_text} ({last_status_line})'
                 except Exception:
                     pass
 
@@ -1112,83 +1197,18 @@ class SeriesArchiver:
                 session.remove_torrent(handle)
             except Exception:
                 pass
-            if use_temporary_save_root:
-                self._cleanup_temporary_recovery_root(save_path)
             return False, last_status_message
         except Exception as exc:
             self._log(f"libtorrent recovery failed for {failed_filepath}: {exc}", 1)
-            if use_temporary_save_root:
-                self._cleanup_temporary_recovery_root(save_path)
             return False, f'libtorrent recovery failed: {exc}'
 
-    def _prepare_libtorrent_seed_paths(
-        self,
-        failed_filepath: str,
-        save_path: Path,
-        match: Dict[str, Any],
-        torrent_recovery: Dict[str, Any]
-    ) -> List[Path]:
-        """Place the corrupt file where the torrent expects it so recheck/download can repair it."""
-        failed_path = Path(failed_filepath)
-        relative_path = Path(match['relative_path'])
-        seeded_paths = []
-
-        primary_seed_path = save_path / relative_path
-        primary_seed_path.parent.mkdir(parents=True, exist_ok=True)
-
+    def _find_matched_torrent_file_index(self, torrent_info: Any, match: Dict[str, Any]) -> Tuple[Optional[int], List[int]]:
+        """Locate the matched torrent file index and build file priorities."""
         try:
-            if not primary_seed_path.exists():
-                shutil.copy2(str(failed_path), str(primary_seed_path))
-            seeded_paths.append(primary_seed_path)
-        except Exception as exc:
-            self._log(f"Could not seed torrent recovery file at {primary_seed_path}: {exc}", 1)
-
-        torrent_name = Path(match['torrent_name'])
-        alternate_seed_path = save_path / torrent_name / relative_path
-        try:
-            alternate_seed_path.parent.mkdir(parents=True, exist_ok=True)
-            if not alternate_seed_path.exists():
-                shutil.copy2(str(failed_path), str(alternate_seed_path))
-            seeded_paths.append(alternate_seed_path)
-        except Exception:
-            pass
-
-        # Also consider any existing resolved paths under the chosen save root.
-        seeded_paths.extend(
-            self._resolve_recovery_source_paths(
-                failed_filepath,
-                match,
-                {
-                    **torrent_recovery,
-                    'torrent_library_path': str(save_path)
-                }
-            )
-        )
-
-        unique_paths = []
-        seen = set()
-        for candidate in seeded_paths:
-            key = str(candidate)
-            if key not in seen:
-                unique_paths.append(candidate)
-                seen.add(key)
-        return unique_paths
-
-    def _cleanup_temporary_recovery_root(self, save_path: Path) -> None:
-        """Remove an implicit torrent recovery workspace after the attempt finishes."""
-        try:
-            if save_path.exists() and save_path.name == '.torrent_recovery':
-                shutil.rmtree(save_path, ignore_errors=True)
-        except Exception as exc:
-            self._log(f"Could not clean temporary torrent recovery path {save_path}: {exc}", 2)
-
-    def _prioritize_matched_torrent_file(self, handle: Any, torrent_info: Any, match: Dict[str, Any]) -> None:
-        """Bias libtorrent toward the matched file when file priorities are supported."""
-        try:
-            file_storage = torrent_info.files()
+            file_storage = _call_libtorrent_without_deprecation_warnings(torrent_info.files)
             file_count = file_storage.num_files()
         except Exception:
-            return
+            return None, []
 
         target_relative_path = str(Path(match['relative_path']))
         priorities = []
@@ -1204,11 +1224,32 @@ class SeriesArchiver:
             if is_match and matched_index is None:
                 matched_index = index
 
+        return matched_index, priorities
+
+    def _prioritize_matched_torrent_file(self, handle: Any, torrent_info: Any, match: Dict[str, Any]) -> None:
+        """Bias libtorrent toward the matched file when file priorities are supported."""
+        matched_index, priorities = self._find_matched_torrent_file_index(torrent_info, match)
         if matched_index is None:
             return
 
         try:
             handle.prioritize_files(priorities)
+        except Exception:
+            pass
+
+    def _configure_matched_torrent_file(self, handle: Any, torrent_info: Any, match: Dict[str, Any], failed_path: Path) -> None:
+        """Bias libtorrent toward the matched file and map it to the broken file in place."""
+        matched_index, priorities = self._find_matched_torrent_file_index(torrent_info, match)
+        if matched_index is None:
+            return
+
+        try:
+            handle.prioritize_files(priorities)
+        except Exception:
+            pass
+
+        try:
+            handle.rename_file(matched_index, failed_path.name)
         except Exception:
             pass
 
@@ -1244,13 +1285,7 @@ class SeriesArchiver:
 
         _safe_console_print(f"\n{self._color('=== TORRENT RECOVERY REQUESTED ===', Colors.CYAN + Colors.BOLD)}")
         _safe_console_print(f"  Failed files queued: {self._color(str(len(failed_files)), Colors.WHITE)}")
-        _safe_console_print(f"  Torrent files path: {self._color(str(torrent_recovery.get('torrent_files_path')), Colors.WHITE)}")
-
-        torrent_library_path = torrent_recovery.get('torrent_library_path')
-        if torrent_library_path:
-            _safe_console_print(f"  Torrent library path: {self._color(str(torrent_library_path), Colors.WHITE)}")
-        else:
-            _safe_console_print(f"  Torrent library path: {self._color('Not provided', Colors.YELLOW)}")
+        _safe_console_print(f"  Torrent metadata path: {self._color(str(torrent_recovery.get('torrent_files_path')), Colors.WHITE)}")
 
         recovered_count = 0
         matched_count = 0
@@ -1345,6 +1380,23 @@ class SeriesArchiver:
         
         if not files_to_check:
             return results
+
+        if DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS:
+            original_count = len(files_to_check)
+            files_to_check = [
+                file_info for file_info in files_to_check
+                if _matches_debug_crc_target(file_info['filepath'], file_info['filename'])
+            ]
+            skipped_count = original_count - len(files_to_check)
+            if skipped_count > 0:
+                self._log(
+                    f"Debug CRC filter skipped {skipped_count} known-good files and kept {len(files_to_check)} target file(s).",
+                    1
+                )
+
+        if not files_to_check:
+            self._log('Debug CRC filter excluded all files from this run.', 1)
+            return results
         
         valid_count = 0
         invalid_count = 0
@@ -1352,13 +1404,11 @@ class SeriesArchiver:
         
         # Check CRC with progress
         desc = "Checking file CRC32"
-        with tqdm(files_to_check, desc=desc, unit="file", disable=self.verbose == 0) as pbar:
-            for file_info in pbar:
+        total_files = len(files_to_check)
+        with tqdm(total=total_files, desc=desc, unit="file", disable=self.verbose == 0, position=0) as pbar:
+            for index, file_info in enumerate(files_to_check, start=1):
                 filepath = file_info['filepath']
                 filename = file_info['filename']
-                
-                if self.verbose >= 1:
-                    pbar.set_postfix_str(filename[:40] + "..." if len(filename) > 40 else filename)
                 
                 is_valid, expected_crc, actual_crc = self._verify_file_crc(filepath, expected_crc=None, torrent_recovery=torrent_recovery)
                 
@@ -1382,6 +1432,11 @@ class SeriesArchiver:
                     'actual_crc': actual_crc,
                     'is_valid': is_valid
                 }
+
+                if self.verbose >= 1:
+                    short_filename = filename[:32] + "..." if len(filename) > 35 else filename
+                    pbar.set_postfix_str(f"{status}: {short_filename}")
+                pbar.update(1)
                 
                 # Log issues
                 if status == "invalid":
@@ -1390,7 +1445,6 @@ class SeriesArchiver:
                     self._log(f"No CRC in filename: {filename}", 2)
         
         # Print summary
-        total_files = len(files_to_check)
         _safe_console_print(f"\n{self._color('CRC Check Summary:', Colors.CYAN + Colors.BOLD)}")
         _safe_console_print(f"  Total files: {self._color(str(total_files), Colors.WHITE)}")
         _safe_console_print(f"  Valid CRC: {self._color(str(valid_count), Colors.GREEN)}")
@@ -1772,8 +1826,6 @@ def _add_torrent_recovery_arguments(parser) -> None:
                        help='Repair failed files without prompting when torrent recovery is enabled')
     parser.add_argument('--torrent-files-path', metavar='DIR',
                        help='Directory containing .torrent files to search for recovery matches')
-    parser.add_argument('--torrent-library-path', metavar='DIR',
-                       help='Optional path to the torrent content/library used for recovery')
     parser.add_argument('--torrent-recovery-timeout', metavar='SECONDS', type=int, default=120,
                        help='Maximum time to wait for torrent-session recovery before giving up (default: 120)')
 
@@ -1783,16 +1835,30 @@ def _get_torrent_recovery_options(args, require_verify_crc: bool = False) -> Opt
     recover_by_torrent = bool(getattr(args, 'recover_by_torrent', False))
     auto_repair_by_torrent = bool(getattr(args, 'auto_repair_by_torrent', False))
     torrent_files_path = getattr(args, 'torrent_files_path', None)
-    torrent_library_path = getattr(args, 'torrent_library_path', None)
     torrent_recovery_timeout = getattr(args, 'torrent_recovery_timeout', 120)
 
-    if not recover_by_torrent and (auto_repair_by_torrent or torrent_files_path or torrent_library_path):
+    if not recover_by_torrent and (auto_repair_by_torrent or torrent_files_path):
         raise ValueError(
             'Torrent recovery options require --recover-by-torrent.'
         )
 
     if not recover_by_torrent:
         return None
+
+    if not LIBTORRENT_AVAILABLE:
+        import_error_details = ''
+        if LIBTORRENT_IMPORT_ERROR is not None:
+            import_error_details = f' Import failed with: {type(LIBTORRENT_IMPORT_ERROR).__name__}: {LIBTORRENT_IMPORT_ERROR}'
+        missing_dependency_details = ''
+        if LIBTORRENT_MISSING_DEPENDENCIES:
+            missing_dependency_details = (
+                ' Missing dependent DLLs: ' + ', '.join(LIBTORRENT_MISSING_DEPENDENCIES) + '.'
+            )
+        raise ValueError(
+            '--recover-by-torrent requires the optional libtorrent package, but it could not be imported in the current Python environment.'
+            + import_error_details
+            + missing_dependency_details
+        )
 
     if require_verify_crc and not getattr(args, 'verify_crc', False):
         raise ValueError(
@@ -1814,16 +1880,10 @@ def _get_torrent_recovery_options(args, require_verify_crc: bool = False) -> Opt
             '--torrent-recovery-timeout must be a positive integer.'
         )
 
-    if torrent_library_path and not Path(torrent_library_path).exists():
-        raise ValueError(
-            f"Torrent library path not found: {torrent_library_path}"
-        )
-
     return {
         'enabled': True,
         'auto_repair': auto_repair_by_torrent,
         'torrent_files_path': torrent_files_path,
-        'torrent_library_path': torrent_library_path,
         'timeout_seconds': torrent_recovery_timeout
     }
 
