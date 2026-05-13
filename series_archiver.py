@@ -89,12 +89,6 @@ def _get_libtorrent_extension_path() -> Optional[Path]:
     return None
 
 
-# Temporary debug filter to jump directly to a known failing CRC case.
-DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS = [
-    'enen no shouboutai - 23 [720p cr web-dl avc eac3][multisub][6697449e].mkv',
-]
-
-
 def _format_byte_size(size_bytes: int) -> str:
     """Return a compact human-readable byte size string."""
     size_value = float(size_bytes)
@@ -298,15 +292,6 @@ def _enable_sequential_download(handle: Any) -> None:
         handle.set_flags(libtorrent.torrent_flags.sequential_download)
     else:
         raise RuntimeError('Current libtorrent flags API is unavailable; sequential download cannot be enabled without deprecated APIs.')
-
-
-def _matches_debug_crc_target(filepath: str, filename: str) -> bool:
-    """Return True when the file matches the temporary debug CRC target list."""
-    if not DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS:
-        return True
-
-    candidate_text = f"{filepath} {filename}".lower()
-    return any(substring in candidate_text for substring in DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS)
 
 
 def _format_libtorrent_status(
@@ -1841,23 +1826,6 @@ class SeriesArchiver:
                     })
         
         if not files_to_check:
-            return results
-
-        if DEBUG_CRC_ONLY_FILENAME_SUBSTRINGS:
-            original_count = len(files_to_check)
-            files_to_check = [
-                file_info for file_info in files_to_check
-                if _matches_debug_crc_target(file_info['filepath'], file_info['filename'])
-            ]
-            skipped_count = original_count - len(files_to_check)
-            if skipped_count > 0:
-                self._log(
-                    f"Debug CRC filter skipped {skipped_count} known-good files and kept {len(files_to_check)} target file(s).",
-                    1
-                )
-
-        if not files_to_check:
-            self._log('Debug CRC filter excluded all files from this run.', 1)
             return results
         
         valid_count = 0
