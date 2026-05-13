@@ -4,6 +4,7 @@ import importlib
 import time
 import json
 import os
+import uuid
 import shutil
 import sys
 import re
@@ -94,6 +95,20 @@ def _enable_sequential_download(handle: Any) -> None:
         handle.set_flags(libtorrent.torrent_flags.sequential_download)
         return
     raise RuntimeError('Current libtorrent flags API is unavailable; sequential download cannot be enabled without deprecated APIs.')
+
+
+def _prioritize_missing_torrent_pieces(handle: Any, piece_indexes: Set[int]) -> None:
+    """Force libtorrent to request specific unresolved pieces for focused repair."""
+    for piece_index in sorted(piece_indexes):
+        try:
+            handle.piece_priority(piece_index, 7)
+        except Exception:
+            pass
+
+        try:
+            handle.set_piece_deadline(piece_index, 0)
+        except Exception:
+            pass
 
 
 def _format_byte_size(size_bytes: int) -> str:
@@ -827,7 +842,8 @@ class SeriesArchiver:
         self,
         filepath: str,
         match: Dict[str, Any],
-        torrent_recovery: Dict[str, Any]
+        torrent_recovery: Dict[str, Any],
+        extra_roots: Optional[List[Path]] = None,
     ) -> Tuple[bool, str]:
         """Verify file integrity by hashing the matched file's torrent pieces directly from disk."""
         if not LIBTORRENT_AVAILABLE:
@@ -857,6 +873,7 @@ class SeriesArchiver:
                     failed_path,
                     matched_index,
                     [(piece_index, overlap_bytes)],
+                    extra_roots=extra_roots,
                 )
                 if piece_index in single_piece_valid:
                     valid_piece_indexes.add(piece_index)
@@ -1035,6 +1052,27 @@ class SeriesArchiver:
                 shutil.rmtree(save_path, ignore_errors=True)
         except Exception as exc:
             self._log(f"Could not clean temporary torrent verification path {save_path}: {exc}", 2)
+
+    def _create_repair_scratch_root(self, failed_path: Path) -> Path:
+        """Create a temporary workspace for non-target boundary files during repair."""
+        scratch_root = failed_path.parent / '.torrent_repair_parts' / f"{failed_path.stem}_{uuid.uuid4().hex[:8]}"
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        return scratch_root
+
+    def _cleanup_repair_scratch_root(self, scratch_root: Optional[Path]) -> None:
+        """Remove the temporary repair scratch workspace."""
+        if scratch_root is None:
+            return
+
+        try:
+            if scratch_root.exists() and scratch_root.parent.name == '.torrent_repair_parts':
+                shutil.rmtree(scratch_root, ignore_errors=True)
+                try:
+                    scratch_root.parent.rmdir()
+                except OSError:
+                    pass
+        except Exception as exc:
+            self._log(f"Could not clean temporary torrent repair path {scratch_root}: {exc}", 2)
 
     def _normalize_match_name(self, value: str) -> str:
         """Normalize torrent and media names for filename similarity matching."""
@@ -1288,6 +1326,7 @@ class SeriesArchiver:
         torrent_name: str,
         relative_path: str,
         preferred_path: Optional[Path] = None,
+        extra_roots: Optional[List[Path]] = None,
     ) -> Optional[Path]:
         """Resolve the current on-disk path for a torrent file during recovery."""
         if preferred_path is not None and preferred_path.exists():
@@ -1297,9 +1336,14 @@ class SeriesArchiver:
             'relative_path': relative_path,
             'torrent_name': torrent_name,
         }
-        for candidate in self._resolve_session_candidate_paths(root, candidate_match):
-            if candidate.exists():
-                return candidate
+        search_roots = [root]
+        if extra_roots:
+            search_roots.extend(extra_roots)
+
+        for search_root in search_roots:
+            for candidate in self._resolve_session_candidate_paths(search_root, candidate_match):
+                if candidate.exists():
+                    return candidate
 
         return None
 
@@ -1334,6 +1378,7 @@ class SeriesArchiver:
         failed_path: Path,
         matched_index: Optional[int],
         file_piece_spans: List[Tuple[int, int]],
+        extra_roots: Optional[List[Path]] = None,
     ) -> Set[int]:
         """Hash locally available torrent pieces so repair can reuse already valid file data."""
         if matched_index is None or not file_piece_spans:
@@ -1378,6 +1423,7 @@ class SeriesArchiver:
                     torrent_name,
                     torrent_file_paths[file_index],
                     preferred_path=preferred_path,
+                    extra_roots=extra_roots,
                 )
                 if resolved_path is None:
                     piece_complete = False
@@ -1390,6 +1436,7 @@ class SeriesArchiver:
                 except OSError:
                     piece_complete = False
                     break
+
 
                 if len(chunk) != slice_size:
                     piece_complete = False
@@ -1457,6 +1504,7 @@ class SeriesArchiver:
 
         expected_size = int(match.get('size', 0) or 0)
         repair_progress = None
+        repair_scratch_root = None
 
         try:
             torrent_info = libtorrent.torrent_info(str(match['torrent_path']))
@@ -1482,8 +1530,17 @@ class SeriesArchiver:
                 file_piece_spans,
                 baseline_valid_piece_indexes,
             )
+            missing_piece_indexes = {
+                piece_index
+                for piece_index, _ in file_piece_spans
+                if piece_index not in baseline_valid_piece_indexes
+            }
             if expected_size > 0 and baseline_file_ok_bytes >= expected_size:
-                verified, verify_status = self._verify_file_against_torrent_source(failed_filepath, match, torrent_recovery)
+                verified, verify_status = self._verify_file_against_torrent_source(
+                    failed_filepath,
+                    match,
+                    torrent_recovery,
+                )
                 if verified:
                     return True, 'File already fully backed by valid torrent pieces'
             try:
@@ -1491,7 +1548,14 @@ class SeriesArchiver:
             except Exception:
                 pass
 
-            params = self._build_matched_torrent_params(torrent_info, match, failed_path.parent, failed_path)
+            repair_scratch_root = self._create_repair_scratch_root(failed_path)
+            params = self._build_matched_torrent_params(
+                torrent_info,
+                match,
+                failed_path.parent,
+                failed_path,
+                scratch_root=repair_scratch_root,
+            )
             if baseline_valid_piece_indexes:
                 piece_bitfield = _build_libtorrent_piece_bitfield(int(torrent_info.num_pieces()), baseline_valid_piece_indexes)
                 if piece_bitfield:
@@ -1521,7 +1585,15 @@ class SeriesArchiver:
             except Exception:
                 pass
 
-            self._configure_matched_torrent_file(handle, torrent_info, match, failed_path)
+            self._configure_matched_torrent_file(
+                handle,
+                torrent_info,
+                match,
+                failed_path,
+                scratch_root=repair_scratch_root,
+            )
+            if missing_piece_indexes:
+                _prioritize_missing_torrent_pieces(handle, missing_piece_indexes)
 
             timeout_seconds = int(torrent_recovery.get('timeout_seconds') or 120)
             deadline = time.time() + timeout_seconds
@@ -1529,6 +1601,7 @@ class SeriesArchiver:
             repair_progress = self._create_crc_progress_bar(failed_filepath, progress_total, label='Repair')
             last_status_message = 'Torrent repair timed out before the file reached a verified complete state.'
             next_verification_attempt_at = 0.0
+            next_disk_piece_check_at = 0.0
 
             if expected_size > 0 and self.verbose >= 1:
                 on_disk_ratio = min(local_file_size / expected_size, 1.0) if expected_size else 0.0
@@ -1549,6 +1622,10 @@ class SeriesArchiver:
                 status = _get_libtorrent_status(handle)
                 progress, completed_bytes, total_bytes, error_text = self._extract_torrent_status_progress(status, expected_size)
                 error_text = error_text or _format_libtorrent_error(getattr(status, 'errc', None))
+                try:
+                    payload_downloaded = int(getattr(status, 'total_payload_download', 0) or 0)
+                except Exception:
+                    payload_downloaded = completed_bytes
 
                 file_ok_bytes = _get_libtorrent_file_ok_bytes(
                     status,
@@ -1561,10 +1638,6 @@ class SeriesArchiver:
                     progress_value = completed_bytes
                     progress_limit = progress_total
                     if estimated_repair_bytes > 0:
-                        try:
-                            payload_downloaded = int(getattr(status, 'total_payload_download', 0) or 0)
-                        except Exception:
-                            payload_downloaded = completed_bytes
                         progress_value = payload_downloaded
                     elif file_ok_bytes is not None:
                         progress_value = file_ok_bytes
@@ -1594,12 +1667,43 @@ class SeriesArchiver:
                     last_status_message = f'Torrent session error: {error_text}'
                     break
 
+                should_recheck_disk = False
+                if estimated_repair_bytes > 0 and payload_downloaded >= estimated_repair_bytes:
+                    should_recheck_disk = True
+                elif file_ok_bytes is not None and baseline_file_ok_bytes is not None and file_ok_bytes <= baseline_file_ok_bytes:
+                    should_recheck_disk = time.time() >= next_disk_piece_check_at
+
+                if should_recheck_disk:
+                    rescanned_valid_piece_indexes = self._scan_local_valid_piece_indexes(
+                        torrent_info,
+                        match,
+                        failed_path.parent,
+                        failed_path,
+                        matched_index,
+                        file_piece_spans,
+                        extra_roots=[repair_scratch_root] if repair_scratch_root is not None else None,
+                    )
+                    if rescanned_valid_piece_indexes:
+                        baseline_valid_piece_indexes = rescanned_valid_piece_indexes
+                        file_ok_bytes = _get_libtorrent_file_ok_bytes(
+                            None,
+                            file_piece_spans,
+                            expected_size,
+                            baseline_valid_piece_indexes=baseline_valid_piece_indexes,
+                        )
+                    next_disk_piece_check_at = time.time() + 1.0
+
                 verification_threshold_reached = (
                     (file_ok_bytes is not None and expected_size > 0 and file_ok_bytes >= expected_size)
                     or progress >= 0.999
                 )
                 if verification_threshold_reached and time.time() >= next_verification_attempt_at:
-                    verified, verify_status = self._verify_file_against_torrent_source(failed_filepath, match, torrent_recovery)
+                    verified, verify_status = self._verify_file_against_torrent_source(
+                        failed_filepath,
+                        match,
+                        torrent_recovery,
+                        extra_roots=[repair_scratch_root] if repair_scratch_root is not None else None,
+                    )
                     if verified:
                         try:
                             session.remove_torrent(handle)
@@ -1633,6 +1737,7 @@ class SeriesArchiver:
         finally:
             if repair_progress is not None:
                 repair_progress.close()
+            self._cleanup_repair_scratch_root(repair_scratch_root)
 
     def _attempt_libtorrent_session_recovery(
         self,
@@ -1647,6 +1752,7 @@ class SeriesArchiver:
 
         failed_path = Path(failed_filepath)
         save_path = failed_path.parent
+        repair_scratch_root = None
 
         try:
             torrent_info = libtorrent.torrent_info(str(match['torrent_path']))
@@ -1656,8 +1762,16 @@ class SeriesArchiver:
             except Exception:
                 pass
 
+            repair_scratch_root = self._create_repair_scratch_root(failed_path)
+
             handle = session.add_torrent(
-                self._build_matched_torrent_params(torrent_info, match, save_path, failed_path)
+                self._build_matched_torrent_params(
+                    torrent_info,
+                    match,
+                    save_path,
+                    failed_path,
+                    scratch_root=repair_scratch_root,
+                )
             )
 
             try:
@@ -1675,7 +1789,13 @@ class SeriesArchiver:
             except Exception:
                 pass
 
-            self._configure_matched_torrent_file(handle, torrent_info, match, failed_path)
+            self._configure_matched_torrent_file(
+                handle,
+                torrent_info,
+                match,
+                failed_path,
+                scratch_root=repair_scratch_root,
+            )
 
             timeout_seconds = int(torrent_recovery.get('timeout_seconds') or 120)
             deadline = time.time() + timeout_seconds
@@ -1720,6 +1840,8 @@ class SeriesArchiver:
         except Exception as exc:
             self._log(f"libtorrent recovery failed for {failed_filepath}: {exc}", 1)
             return False, f'libtorrent recovery failed: {exc}'
+        finally:
+            self._cleanup_repair_scratch_root(repair_scratch_root)
 
     def _find_matched_torrent_file_index(self, torrent_info: Any, match: Dict[str, Any]) -> Tuple[Optional[int], List[int]]:
         """Locate the matched torrent file index and build file priorities.
@@ -1765,7 +1887,7 @@ class SeriesArchiver:
             if index == matched_index:
                 priorities.append(7)
             elif index in piece_sharing_indexes:
-                priorities.append(1)
+                priorities.append(7)
             else:
                 priorities.append(0)
 
@@ -1782,7 +1904,14 @@ class SeriesArchiver:
         except Exception:
             pass
 
-    def _configure_matched_torrent_file(self, handle: Any, torrent_info: Any, match: Dict[str, Any], failed_path: Path) -> None:
+    def _configure_matched_torrent_file(
+        self,
+        handle: Any,
+        torrent_info: Any,
+        match: Dict[str, Any],
+        failed_path: Path,
+        scratch_root: Optional[Path] = None,
+    ) -> None:
         """Bias libtorrent toward the matched file and map it to the broken file in place."""
         matched_index, priorities = self._find_matched_torrent_file_index(torrent_info, match)
         if matched_index is None:
@@ -1795,6 +1924,7 @@ class SeriesArchiver:
             failed_path,
             matched_index,
             priorities,
+            scratch_root=scratch_root,
         )
 
         try:
@@ -1816,6 +1946,7 @@ class SeriesArchiver:
         failed_path: Path,
         matched_index: int,
         priorities: List[int],
+        scratch_root: Optional[Path] = None,
     ) -> Tuple[List[int], Dict[int, str]]:
         """Map enabled torrent files onto real local paths and disable helper files with no in-place target."""
         adjusted_priorities = list(priorities)
@@ -1827,21 +1958,32 @@ class SeriesArchiver:
             file_paths = []
 
         torrent_name = str(match.get('torrent_name') or '')
-        try:
-            rename_targets[matched_index] = str(failed_path.resolve())
-        except Exception:
-            rename_targets[matched_index] = str(failed_path)
+        local_target_paths = self._collect_local_torrent_target_paths(
+            save_path,
+            torrent_name,
+            file_paths,
+            failed_path,
+            matched_index,
+        )
+
+        for file_index, target_path in local_target_paths.items():
+            try:
+                rename_targets[file_index] = str(target_path.resolve())
+            except Exception:
+                rename_targets[file_index] = str(target_path)
 
         for file_index, priority in enumerate(adjusted_priorities):
             if priority <= 0 or file_index == matched_index:
                 continue
 
-            relative_path = file_paths[file_index] if file_index < len(file_paths) else ''
-            resolved_path = self._resolve_in_place_target_path(
-                save_path,
-                torrent_name,
-                relative_path,
-            )
+            resolved_path = local_target_paths.get(file_index)
+            if resolved_path is None:
+                relative_path = file_paths[file_index] if file_index < len(file_paths) else ''
+                resolved_path = self._resolve_in_place_target_path(
+                    save_path,
+                    torrent_name,
+                    relative_path,
+                )
             if resolved_path == failed_path:
                 adjusted_priorities[file_index] = 0
                 continue
@@ -1851,14 +1993,58 @@ class SeriesArchiver:
             except Exception:
                 rename_targets[file_index] = str(resolved_path)
 
+        for file_index in local_target_paths:
+            if file_index != matched_index and 0 <= file_index < len(adjusted_priorities):
+                adjusted_priorities[file_index] = max(adjusted_priorities[file_index], 1)
+
+        if scratch_root is not None:
+            for file_index, priority in enumerate(adjusted_priorities):
+                if priority <= 0 or file_index == matched_index:
+                    continue
+
+                relative_path = file_paths[file_index] if file_index < len(file_paths) else f'file_{file_index}'
+                scratch_target = scratch_root / Path(relative_path)
+                try:
+                    scratch_target.parent.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                rename_targets[file_index] = str(scratch_target)
+
         return adjusted_priorities, rename_targets
+
+    def _collect_local_torrent_target_paths(
+        self,
+        save_path: Path,
+        torrent_name: str,
+        file_paths: List[str],
+        failed_path: Path,
+        matched_index: int,
+    ) -> Dict[int, Path]:
+        """Collect all torrent files that already exist locally so recovery can reuse sibling files in place."""
+        target_paths: Dict[int, Path] = {matched_index: failed_path}
+
+        for file_index, relative_path in enumerate(file_paths):
+            if file_index == matched_index:
+                continue
+
+            resolved_path = self._resolve_session_file_path(save_path, torrent_name, relative_path)
+            if resolved_path is None or not resolved_path.exists() or not resolved_path.is_file():
+                continue
+
+            if resolved_path == failed_path:
+                continue
+
+            target_paths[file_index] = resolved_path
+
+        return target_paths
 
     def _build_matched_torrent_params(
         self,
         torrent_info: Any,
         match: Dict[str, Any],
         save_path: Path,
-        failed_path: Optional[Path] = None
+        failed_path: Optional[Path] = None,
+        scratch_root: Optional[Path] = None,
     ) -> Any:
         """Create add_torrent_params seeded with matched-file priorities and optional rename mapping."""
         params = _create_add_torrent_params(torrent_info, save_path)
@@ -1872,6 +2058,7 @@ class SeriesArchiver:
                 failed_path,
                 matched_index,
                 priorities,
+                scratch_root=scratch_root,
             )
         _apply_match_to_add_torrent_params(params, priorities, rename_targets)
         return params
