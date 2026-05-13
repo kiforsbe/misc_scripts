@@ -1039,7 +1039,7 @@ python series_completeness_checker.py /path/to/series --webapp-export series.htm
 ### series_archiver.py
 A script that archives anime series files based on series completeness checker output. It organizes files into structured folders with standardized naming patterns and provides both command-line interface and programmatic access for integration with other tools.
 
-The script processes JSON output from series_completeness_checker.py and allows users to select specific series groups for archiving. It creates organized folder structures following the pattern `[release_group] show_name (start_ep-last_ep) (resolution)` and can either copy or move files to the destination.
+The script processes JSON output from series_completeness_checker.py and allows users to select specific series groups for archiving. It creates organized folder structures following the pattern `[release_group] show_name (start_ep-last_ep) (resolution)` and can either copy or move files to the destination. It also includes a standalone integrity-check workflow for validating archived or source files.
 
 Enhanced with **MyAnimeList** integration as the primary source for anime information, providing accurate series metadata, episode counts, and watch status data. Supports public MyAnimeList lists and exported lists for comprehensive watch status tracking during the archiving process.
 
@@ -1050,6 +1050,9 @@ Enhanced with **MyAnimeList** integration as the primary source for anime inform
 - Intelligent Organization: Creates standardized folder names based on series metadata
 - Flexible Selection: Archive specific series or all series with simple selection syntax
 - Safe Operations: Dry-run mode to preview changes before execution
+- Integrity Validation: `check-crc` command and archive-time `--verify-crc` support for validating files by filename CRC or torrent-backed piece verification
+- Torrent-Backed Recovery: Optional in-situ torrent-piece repair workflow for damaged files without filename CRCs when matching `.torrent` metadata is available
+- Shared Progress Reporting: Tqdm-aware status output for file operations, integrity checks, torrent verification, and torrent repair
 - Comprehensive Logging: Multiple verbosity levels for detailed operation tracking
 - File Operations: Support for both copying and moving files with progress feedback
 - Error Handling: Robust error reporting and validation of source files and destinations
@@ -1059,25 +1062,37 @@ Enhanced with **MyAnimeList** integration as the primary source for anime inform
 # Get help for specific commands
 python series_archiver.py list --help
 python series_archiver.py archive --help
+python series_archiver.py check-crc --help
 
 # List available series (basic)
-python series_archiver.py list files.json
+python series_archiver.py list --input-json files.json
 
 # List series with detailed information
-python series_archiver.py -v list files.json
-python series_archiver.py -vv list files.json
+python series_archiver.py -v list --input-json files.json
 
 # Archive specific series (move files)
-python series_archiver.py archive files.json /dest/path --select "1,3,5"
+python series_archiver.py archive --input-json files.json --destination /dest/path --select "1,3,5"
 
 # Archive all series (copy instead of move)
-python series_archiver.py archive files.json /dest/path --select "all" --copy
+python series_archiver.py archive --input-json files.json --destination --select "all" --copy
 
 # Preview what would happen (dry run)
-python series_archiver.py archive files.json /dest/path --select "1,2" --dry-run
+python series_archiver.py archive --input-json files.json --destination --select "1,2" --dry-run
 
-# Verbose archiving with copy and dry run
-python series_archiver.py -vv archive files.json /dest/path --select "all" --copy --dry-run
+# Verify files after archiving and enable torrent-backed repair for failures
+python series_archiver.py -v archive files.json /dest/path --select "all" --verify-crc --recover-by-torrent --torrent-files-path /path/to/torrents
+
+# Check integrity for groups from JSON
+python series_archiver.py check-crc --input-json files.json --select "185"
+
+# Check integrity for individual files
+python series_archiver.py check-crc --files episode01.mkv episode02.mkv
+
+# Check integrity and allow torrent-backed repair after the scan completes
+python series_archiver.py -v check-crc --input-json files.json --select "185" --recover-by-torrent --torrent-files-path /path/to/torrents
+
+# Skip the repair confirmation prompt
+python series_archiver.py check-crc --input-json files.json --select "185" --recover-by-torrent --auto-repair-by-torrent --torrent-files-path /path/to/torrents
 ```
 
 #### Programmatic Usage
@@ -1098,24 +1113,53 @@ results = archiver.archive_groups(
     selected_groups=['group1', 'group2'], 
     destination_root='/dest/path',
     copy_files=True,
-    dry_run=True
+    dry_run=True,
+    verify_crc=True,
+    torrent_recovery={
+        'enabled': True,
+        'auto_repair': False,
+        'torrent_files_path': '/path/to/torrents',
+        'timeout_seconds': 120,
+    },
 )
+
+# Or run a standalone integrity check
+crc_results = archiver.check_files_crc(['/path/to/file1.mkv', '/path/to/file2.mkv'])
 ```
 
 #### Commands
 - **list/ls**: Display available series groups with episode counts and completion status
 - **archive**: Archive selected series groups to organized destination folders
+- **check-crc/crc**: Validate files by filename CRC when present, otherwise by matching torrent piece data when torrent recovery metadata is enabled
 
 #### Options
 - **-v, --verbose**: Increase verbosity level (use -v, -vv, or -vvv for different detail levels)
-- **--select**: Specify which series to archive using comma-separated numbers or "all"
-- **--copy**: Copy files instead of moving them (preserves originals)
-- **--dry-run**: Show what would be done without actually performing file operations
+- **archive --select**: Specify which series to archive using comma-separated numbers or `all`
+- **archive --copy**: Copy files instead of moving them (preserves originals)
+- **archive --dry-run**: Show what would be done without actually performing file operations
+- **archive --verify-crc**: Validate processed destination files after archiving
+- **check-crc --input-json / --files**: Choose whether integrity checks operate on grouped JSON input or explicit file paths
+- **check-crc --select**: Restrict JSON-backed integrity checks to selected group numbers or `all`
+- **--recover-by-torrent**: Enable torrent-backed verification/recovery flows
+- **--auto-repair-by-torrent**: Skip the confirmation prompt before modifying failed files
+- **--torrent-files-path DIR**: Directory containing `.torrent` files used for matching and repair
+- **--torrent-recovery-timeout SECONDS**: Maximum time to wait for torrent-backed verification or repair
+
+#### Notes
+- `--recover-by-torrent` requires `--torrent-files-path` and the optional `libtorrent` package.
+- On the `archive` command, `--recover-by-torrent` also requires `--verify-crc`.
+- Torrent-backed checks follow a two-step flow: first the scan validates integrity, then repair is offered only after the scan completes.
+- Torrent-backed verification and repair are piece-based and can reuse already valid local torrent pieces during in-situ repair.
 
 #### Requires
 - pathlib
 - shutil
 - json
+- tqdm (for progress bars)
+
+#### Optional Dependencies
+- libtorrent (required for `--recover-by-torrent`)
+- bencodepy (optional torrent metadata parser fallback)
 
 ### series_bundler.py
 A script that groups series files and creates organized folder structures for archiving. It analyzes video files using guessit to extract metadata, groups them by series, release group, and resolution, then creates standardized folder names following the pattern `[Release Group] Series Name (YYYY) (xx-yy) (Resolution)`.
