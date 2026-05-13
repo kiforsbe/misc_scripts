@@ -73,9 +73,8 @@ def _create_add_torrent_params(torrent_info: Any, save_path: Path) -> Any:
 
 def _apply_match_to_add_torrent_params(
     params: Any,
-    matched_index: Optional[int],
     priorities: List[int],
-    failed_path: Optional[Path] = None
+    rename_targets: Optional[Dict[int, str]] = None,
 ) -> None:
     """Preconfigure matched-file priorities and rename mapping before add_torrent()."""
     if hasattr(libtorrent, 'torrent_flags') and hasattr(params, 'flags'):
@@ -84,8 +83,9 @@ def _apply_match_to_add_torrent_params(
     if priorities:
         params.file_priorities = priorities
 
-    if matched_index is not None and failed_path is not None:
-        params.renamed_files[matched_index] = failed_path.name
+    if rename_targets:
+        for file_index, target_path in rename_targets.items():
+            params.renamed_files[file_index] = target_path
 
 
 def _enable_sequential_download(handle: Any) -> None:
@@ -1303,6 +1303,29 @@ class SeriesArchiver:
 
         return None
 
+    def _resolve_in_place_target_path(
+        self,
+        root: Path,
+        torrent_name: str,
+        relative_path: str,
+        preferred_path: Optional[Path] = None,
+    ) -> Path:
+        """Resolve a stable in-place path for a torrent file without recreating the torrent root layout."""
+        existing_path = self._resolve_session_file_path(
+            root,
+            torrent_name,
+            relative_path,
+            preferred_path=preferred_path,
+        )
+        if existing_path is not None:
+            return existing_path
+
+        if preferred_path is not None:
+            return preferred_path
+
+        relative_name = Path(relative_path).name
+        return root / relative_name
+
     def _scan_local_valid_piece_indexes(
         self,
         torrent_info: Any,
@@ -1765,15 +1788,70 @@ class SeriesArchiver:
         if matched_index is None:
             return
 
+        priorities, rename_targets = self._prepare_in_place_torrent_targets(
+            torrent_info,
+            match,
+            failed_path.parent,
+            failed_path,
+            matched_index,
+            priorities,
+        )
+
         try:
             handle.prioritize_files(priorities)
         except Exception:
             pass
 
+        for file_index, target_path in rename_targets.items():
+            try:
+                handle.rename_file(file_index, target_path)
+            except Exception:
+                pass
+
+    def _prepare_in_place_torrent_targets(
+        self,
+        torrent_info: Any,
+        match: Dict[str, Any],
+        save_path: Path,
+        failed_path: Path,
+        matched_index: int,
+        priorities: List[int],
+    ) -> Tuple[List[int], Dict[int, str]]:
+        """Map enabled torrent files onto real local paths and disable helper files with no in-place target."""
+        adjusted_priorities = list(priorities)
+        rename_targets: Dict[int, str] = {}
+
         try:
-            handle.rename_file(matched_index, failed_path.name)
+            file_paths = self._get_torrent_file_paths_in_order(str(match['torrent_path']))
         except Exception:
-            pass
+            file_paths = []
+
+        torrent_name = str(match.get('torrent_name') or '')
+        try:
+            rename_targets[matched_index] = str(failed_path.resolve())
+        except Exception:
+            rename_targets[matched_index] = str(failed_path)
+
+        for file_index, priority in enumerate(adjusted_priorities):
+            if priority <= 0 or file_index == matched_index:
+                continue
+
+            relative_path = file_paths[file_index] if file_index < len(file_paths) else ''
+            resolved_path = self._resolve_in_place_target_path(
+                save_path,
+                torrent_name,
+                relative_path,
+            )
+            if resolved_path == failed_path:
+                adjusted_priorities[file_index] = 0
+                continue
+
+            try:
+                rename_targets[file_index] = str(resolved_path.resolve())
+            except Exception:
+                rename_targets[file_index] = str(resolved_path)
+
+        return adjusted_priorities, rename_targets
 
     def _build_matched_torrent_params(
         self,
@@ -1785,7 +1863,17 @@ class SeriesArchiver:
         """Create add_torrent_params seeded with matched-file priorities and optional rename mapping."""
         params = _create_add_torrent_params(torrent_info, save_path)
         matched_index, priorities = self._find_matched_torrent_file_index(torrent_info, match)
-        _apply_match_to_add_torrent_params(params, matched_index, priorities, failed_path)
+        rename_targets: Dict[int, str] = {}
+        if matched_index is not None and failed_path is not None:
+            priorities, rename_targets = self._prepare_in_place_torrent_targets(
+                torrent_info,
+                match,
+                save_path,
+                failed_path,
+                matched_index,
+                priorities,
+            )
+        _apply_match_to_add_torrent_params(params, priorities, rename_targets)
         return params
 
     def _run_torrent_recovery_for_crc_failures(
