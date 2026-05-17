@@ -1165,6 +1165,11 @@ body.mobile-search-active .main-container {
   box-shadow: 0 12px 28px rgba(12, 29, 46, 0.16);
   display: flex;
   align-items: center;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
 }
 
 .series-group-header::after {
