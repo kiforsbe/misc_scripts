@@ -8,7 +8,7 @@
 // - Automatic scrolling to selected episodes
 // - Filter state preservation in URLs
 //
-// URL Format: ?series=SeriesName&season=1&episode=5&version=2&search=term&watchStatus=watched
+// URL Format: ?series=SeriesName&season=1&episode=5&version=2&search=term&watchStatus=watched&showRating=gte_8
 // Legacy Hash Format: #episode:SeriesName:1:5
 
 const ENABLE_EPISODE_NAME_SEARCH = false;
@@ -26,6 +26,7 @@ class LatestEpisodesApp {
         this.searchTerm = '';
         this.watchStatusFilter = 'all';
         this.malStatusFilter = 'all';
+        this.showRatingFilter = 'all';
         this.seriesFilter = 'all';
         this.groupBy = 'none';
         this.combinedQuery = '';
@@ -418,11 +419,13 @@ class LatestEpisodesApp {
                 this.setCombinedQuery('');
                 this.watchStatusFilter = 'all';
                 this.malStatusFilter = 'all';
+                this.showRatingFilter = 'all';
                 
                 // Update UI
                 document.getElementById('search-input').value = '';
                 document.getElementById('watch-status-filter').value = 'all';
                 document.getElementById('mal-status-filter').value = 'all';
+                document.getElementById('show-rating-filter').value = 'all';
                 
                 // Re-filter and find the episode
                 this.filterAndDisplayEpisodes();
@@ -635,6 +638,13 @@ class LatestEpisodesApp {
         const malStatusFilter = document.getElementById('mal-status-filter');
         malStatusFilter.addEventListener('change', (e) => {
             this.malStatusFilter = e.target.value;
+            this.filterAndDisplayEpisodes();
+        });
+
+        // Show rating filter
+        const showRatingFilter = document.getElementById('show-rating-filter');
+        showRatingFilter.addEventListener('change', (e) => {
+            this.showRatingFilter = e.target.value;
             this.filterAndDisplayEpisodes();
         });
         
@@ -1482,6 +1492,11 @@ class LatestEpisodesApp {
                     return false;
                 }
             }
+
+            // Show rating filter
+            if (!this.matchesShowRatingFilter(episode)) {
+                return false;
+            }
             
             // Series filter
             if (this.seriesFilter !== 'all') {
@@ -1544,6 +1559,42 @@ class LatestEpisodesApp {
         return malStatus;
     }
 
+    getSeriesRatingValue(episode) {
+        const rating = Number(episode?.series_metadata?.rating);
+        return Number.isFinite(rating) && rating > 0 ? rating : null;
+    }
+
+    matchesShowRatingFilter(episode) {
+        if (this.showRatingFilter === 'all') {
+            return true;
+        }
+
+        const rating = this.getSeriesRatingValue(episode);
+
+        if (this.showRatingFilter === 'unrated') {
+            return rating == null;
+        }
+
+        if (rating == null) {
+            return false;
+        }
+
+        switch (this.showRatingFilter) {
+            case 'gte_9':
+                return rating >= 9;
+            case 'gte_8':
+                return rating >= 8;
+            case 'gte_7':
+                return rating >= 7;
+            case 'gte_6':
+                return rating >= 6;
+            case 'lt_6':
+                return rating < 6;
+            default:
+                return true;
+        }
+    }
+
     getSeriesMalStatus(episodes) {
         for (const episode of episodes) {
             const status = this.getEpisodeMalStatus(episode);
@@ -1599,6 +1650,7 @@ class LatestEpisodesApp {
             this.searchTerm,
             this.watchStatusFilter,
             this.malStatusFilter,
+            this.showRatingFilter,
             this.seriesFilter,
             (hash >>> 0).toString(16)
         ].join('|');
@@ -2305,6 +2357,7 @@ class LatestEpisodesApp {
         if (this.combinedQuery) urlParams.set('search', this.combinedQuery);
         if (this.watchStatusFilter !== 'all') urlParams.set('watchStatus', this.watchStatusFilter);
         if (this.malStatusFilter !== 'all') urlParams.set('malStatus', this.malStatusFilter);
+        if (this.showRatingFilter !== 'all') urlParams.set('showRating', this.showRatingFilter);
         if (this.seriesFilter !== 'all') urlParams.set('seriesFilter', this.seriesFilter);
         if (this.groupBy !== 'none') urlParams.set('groupBy', this.groupBy);
         
@@ -2319,6 +2372,7 @@ class LatestEpisodesApp {
                 search: this.combinedQuery,
                 watchStatus: this.watchStatusFilter,
                 malStatus: this.malStatusFilter,
+                showRating: this.showRatingFilter,
                 seriesFilter: this.seriesFilter,
                 groupBy: this.groupBy
             }
@@ -2343,6 +2397,7 @@ class LatestEpisodesApp {
         if (this.combinedQuery) urlParams.set('search', this.combinedQuery);
         if (this.watchStatusFilter !== 'all') urlParams.set('watchStatus', this.watchStatusFilter);
         if (this.malStatusFilter !== 'all') urlParams.set('malStatus', this.malStatusFilter);
+        if (this.showRatingFilter !== 'all') urlParams.set('showRating', this.showRatingFilter);
         if (this.seriesFilter !== 'all') urlParams.set('seriesFilter', this.seriesFilter);
         if (this.groupBy !== 'none') urlParams.set('groupBy', this.groupBy);
 
@@ -2357,6 +2412,7 @@ class LatestEpisodesApp {
                 search: this.combinedQuery,
                 watchStatus: this.watchStatusFilter,
                 malStatus: this.malStatusFilter,
+                showRating: this.showRatingFilter,
                 seriesFilter: this.seriesFilter,
                 groupBy: this.groupBy
             }
@@ -2508,6 +2564,10 @@ class LatestEpisodesApp {
             this.malStatusFilter = urlParams.get('malStatus');
             document.getElementById('mal-status-filter').value = this.malStatusFilter;
         }
+        if (urlParams.has('showRating')) {
+            this.showRatingFilter = urlParams.get('showRating');
+            document.getElementById('show-rating-filter').value = this.showRatingFilter;
+        }
         if (urlParams.has('groupBy')) {
             this.groupBy = urlParams.get('groupBy');
             document.getElementById('group-by-select').value = this.groupBy;
@@ -2528,6 +2588,7 @@ class LatestEpisodesApp {
         }
         this.watchStatusFilter = filters.watchStatus || 'all';
         this.malStatusFilter = filters.malStatus || 'all';
+        this.showRatingFilter = filters.showRating || 'all';
         this.groupBy = filters.groupBy || 'none';
         
         // Update UI controls
@@ -2536,6 +2597,7 @@ class LatestEpisodesApp {
         this.updateSearchIndicator(this.combinedQuery);
         document.getElementById('watch-status-filter').value = this.watchStatusFilter;
         document.getElementById('mal-status-filter').value = this.malStatusFilter;
+        document.getElementById('show-rating-filter').value = this.showRatingFilter;
         document.getElementById('group-by-select').value = this.groupBy;
         
         // Re-filter episodes
@@ -2666,12 +2728,14 @@ class LatestEpisodesApp {
         this.setCombinedQuery('');
         this.watchStatusFilter = 'all';
         this.malStatusFilter = 'all';
+        this.showRatingFilter = 'all';
         this.groupBy = 'none';
         
         // Update UI
         document.getElementById('search-input').value = '';
         document.getElementById('watch-status-filter').value = 'all';
         document.getElementById('mal-status-filter').value = 'all';
+        document.getElementById('show-rating-filter').value = 'all';
         document.getElementById('group-by-select').value = 'none';
         this.hideSeriesSuggestions();
         this.updateSearchIndicator('');
