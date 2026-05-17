@@ -23,6 +23,7 @@ class LatestEpisodesApp {
         this.episodeIndexToRowIndex = new Map();
         this.episodeListVirtualizer = null;
         this.selectedEpisode = null;
+        this.collapsedSeriesGroups = new Set();
         this.searchTerm = '';
         this.watchStatusFilter = 'all';
         this.malStatusFilter = 'all';
@@ -42,6 +43,10 @@ class LatestEpisodesApp {
         this.popupTimeout = null;
         this.hideTimeout = null;
         this.currentPopupIndex = -1;
+        this.groupHeaderHoldDelayMs = 500;
+        this.groupHeaderHoldTimer = null;
+        this.groupHeaderHoldTarget = null;
+        this.didHandleGroupHeaderHold = false;
         this.isNavigating = false; // Flag to prevent infinite loops during navigation
         this.mobileBreakpoint = 768;
         this.useVirtualizedEpisodeList = true;
@@ -794,6 +799,12 @@ class LatestEpisodesApp {
 
         const episodesList = document.getElementById('episodes-list');
         if (episodesList) {
+            episodesList.addEventListener('mousedown', (e) => {
+                this.handleEpisodeListPressStart(e);
+            });
+            episodesList.addEventListener('touchstart', (e) => {
+                this.handleEpisodeListPressStart(e);
+            }, { passive: true });
             episodesList.addEventListener('click', (e) => {
                 this.handleEpisodeListClick(e);
             });
@@ -810,6 +821,16 @@ class LatestEpisodesApp {
                 });
             }
         }
+
+        window.addEventListener('mouseup', () => {
+            this.cancelGroupHeaderHold();
+        });
+        window.addEventListener('touchend', () => {
+            this.cancelGroupHeaderHold();
+        }, { passive: true });
+        window.addEventListener('touchcancel', () => {
+            this.cancelGroupHeaderHold();
+        }, { passive: true });
     }
 
     initializeEpisodeListVirtualizer() {
@@ -853,6 +874,20 @@ class LatestEpisodesApp {
             event.preventDefault();
             event.stopPropagation();
             this.toggleGroupHeaderTagsPopup(moreButton);
+            return;
+        }
+
+        const groupHeader = event.target.closest('.series-group-header[data-series-title]');
+        if (groupHeader) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (this.didHandleGroupHeaderHold) {
+                this.didHandleGroupHeaderHold = false;
+                return;
+            }
+
+            this.toggleSeriesGroup(groupHeader.getAttribute('data-series-title') || '');
             return;
         }
 
@@ -908,6 +943,98 @@ class LatestEpisodesApp {
         }
 
         this.hideEpisodePopup();
+    }
+
+    handleEpisodeListPressStart(event) {
+        if (event.button != null && event.button !== 0) {
+            return;
+        }
+
+        if (event.target.closest('.series-tag[data-tag], .series-tag-more[data-hidden-tags]')) {
+            return;
+        }
+
+        const groupHeader = event.target.closest('.series-group-header[data-series-title]');
+        if (!groupHeader) {
+            return;
+        }
+
+        this.cancelGroupHeaderHold();
+        this.groupHeaderHoldTarget = groupHeader;
+        this.didHandleGroupHeaderHold = false;
+
+        const seriesTitle = groupHeader.getAttribute('data-series-title') || '';
+        const shouldCollapse = !this.isSeriesGroupCollapsed(seriesTitle);
+
+        this.groupHeaderHoldTimer = setTimeout(() => {
+            if (this.groupHeaderHoldTarget !== groupHeader) {
+                return;
+            }
+
+            this.didHandleGroupHeaderHold = true;
+            this.toggleAllSeriesGroups(shouldCollapse);
+            this.groupHeaderHoldTimer = null;
+        }, this.groupHeaderHoldDelayMs);
+    }
+
+    cancelGroupHeaderHold() {
+        if (this.groupHeaderHoldTimer) {
+            clearTimeout(this.groupHeaderHoldTimer);
+            this.groupHeaderHoldTimer = null;
+        }
+
+        this.groupHeaderHoldTarget = null;
+    }
+
+    isSeriesGroupCollapsed(seriesTitle) {
+        return Boolean(seriesTitle) && this.collapsedSeriesGroups.has(seriesTitle);
+    }
+
+    setSeriesGroupCollapsed(seriesTitle, shouldCollapse) {
+        if (!seriesTitle) {
+            return;
+        }
+
+        if (shouldCollapse) {
+            this.collapsedSeriesGroups.add(seriesTitle);
+        } else {
+            this.collapsedSeriesGroups.delete(seriesTitle);
+        }
+    }
+
+    toggleSeriesGroup(seriesTitle) {
+        if (!seriesTitle || this.groupBy !== 'series') {
+            return;
+        }
+
+        this.setSeriesGroupCollapsed(seriesTitle, !this.isSeriesGroupCollapsed(seriesTitle));
+        this.renderEpisodesList();
+    }
+
+    toggleAllSeriesGroups(shouldCollapse) {
+        if (this.groupBy !== 'series') {
+            return;
+        }
+
+        const visibleSeriesTitles = new Set(
+            this.filteredEpisodes.map((episode) => episode?.metadata?.title).filter(Boolean)
+        );
+
+        visibleSeriesTitles.forEach((seriesTitle) => {
+            this.setSeriesGroupCollapsed(seriesTitle, shouldCollapse);
+        });
+
+        this.renderEpisodesList();
+    }
+
+    expandSeriesGroupForEpisode(episode) {
+        const seriesTitle = episode?.metadata?.title;
+        if (!seriesTitle || this.groupBy !== 'series' || !this.isSeriesGroupCollapsed(seriesTitle)) {
+            return false;
+        }
+
+        this.collapsedSeriesGroups.delete(seriesTitle);
+        return true;
     }
 
     clearPendingSearchDebounce() {
@@ -1652,6 +1779,7 @@ class LatestEpisodesApp {
             this.malStatusFilter,
             this.showRatingFilter,
             this.seriesFilter,
+            this.groupBy === 'series' ? Array.from(this.collapsedSeriesGroups).sort().join('||') : '',
             (hash >>> 0).toString(16)
         ].join('|');
     }
@@ -1689,6 +1817,12 @@ class LatestEpisodesApp {
         sortedSeries.forEach(seriesTitle => {
             const episodes = groupedEpisodes[seriesTitle];
             const firstEpisode = episodes[0].episode;
+            const isCollapsed = this.isSeriesGroupCollapsed(seriesTitle);
+            const firstSeriesEpisode = this.getSeriesEpisodes(seriesTitle)[0] || firstEpisode;
+            const headerThumbnail = this.getThumbnailData(firstSeriesEpisode);
+            const headerStaticThumbnailUrl = headerThumbnail?.static_thumbnail
+                ? this.buildUrl(headerThumbnail.static_thumbnail.replace(/\\/g, '/'))
+                : '';
             const seriesRating = this.getSeriesGroupRating(firstEpisode);
             const seriesMalStatus = this.getSeriesMalStatus(episodes.map(item => item.episode));
             const seriesMalStatusClass = seriesMalStatus === 'no_mal_data' ? '' : this.toStatusClass(seriesMalStatus);
@@ -1702,10 +1836,16 @@ class LatestEpisodesApp {
                 isFirstGroup: rows.length === 0,
                 seriesTitle,
                 seriesMalStatusClass,
+                isCollapsed,
+                headerStaticThumbnailUrl,
                 seriesRating,
                 episodeCountText,
                 seriesTags
             });
+
+            if (isCollapsed) {
+                return;
+            }
 
             episodes.forEach(({ episode, index }) => {
                 rows.push({
@@ -1766,9 +1906,14 @@ class LatestEpisodesApp {
     }
 
     renderSeriesGroupHeader(row) {
+        const backgroundUrl = row.headerStaticThumbnailUrl
+            ? row.headerStaticThumbnailUrl.replace(/'/g, '\\$&')
+            : '';
+
         return `
-            <div class="series-group-row ${row.isFirstGroup ? 'first-group' : ''} ${row.seriesMalStatusClass ? `mal-${row.seriesMalStatusClass}` : ''}">
-                <div class="series-group-header">
+            <div class="series-group-row ${row.isFirstGroup ? 'first-group' : ''} ${row.isCollapsed ? 'collapsed' : ''} ${row.seriesMalStatusClass ? `mal-${row.seriesMalStatusClass}` : ''}">
+                <div class="series-group-header" data-series-title="${this.escapeHtml(row.seriesTitle)}" aria-expanded="${row.isCollapsed ? 'false' : 'true'}">
+                    ${backgroundUrl ? `<div class="series-group-background" style="background-image: url('${backgroundUrl}');"></div>` : ''}
                     <div class="series-group-main">
                         <div class="series-group-heading">
                             <div class="series-group-title">
@@ -1864,6 +2009,10 @@ class LatestEpisodesApp {
 
         if (!clickedEpisode) {
             return;
+        }
+
+        if (this.expandSeriesGroupForEpisode(clickedEpisode)) {
+            this.renderEpisodesList();
         }
 
         this.selectedEpisode = clickedEpisode;
