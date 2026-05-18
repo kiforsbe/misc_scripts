@@ -163,6 +163,14 @@ def register(subparsers: _SubParsersAction) -> None:
         ),
     )
     parser.add_argument(
+        "--restore-removed-playlist-items",
+        action="store_true",
+        help=(
+            "Restore items that are missing from an existing synced playlist even when they appear to have been "
+            "removed locally in Plex. By default those local removals are preserved."
+        ),
+    )
+    parser.add_argument(
         "--status-filter",
         metavar="FILTERS",
         help=(
@@ -291,6 +299,7 @@ def run(args: Namespace) -> int:
             args.include_empty_playlists,
             args.include_earlier_episodes,
             args.restore_removed_playlists,
+            args.restore_removed_playlist_items,
             deleted_metadata_playlists,
             args.playlist_prefix,
             args.playlist_status_prefix,
@@ -943,6 +952,7 @@ def plan_group_playlists(
     include_empty_playlists: bool,
     include_earlier_episodes: bool,
     restore_removed_playlists: bool,
+    restore_removed_playlist_items: bool,
     deleted_metadata_playlists: Sequence[PlexPlaylist],
     playlist_prefix: str,
     playlist_status_prefix: bool,
@@ -994,6 +1004,16 @@ def plan_group_playlists(
         if existing_playlist is not None and not include_earlier_episodes:
             sync_records, skipped_earlier_records = filter_earlier_sync_records(existing_playlist, matched_records)
 
+        existing_ids_ordered: List[int] = []
+        append_records: List[MediaRecord] = []
+        locally_removed_records: List[MediaRecord] = []
+        if existing_playlist is not None:
+            existing_ids_ordered = playlist_media_ids(existing_playlist)
+            sync_records, append_records, locally_removed_records = plan_playlist_item_updates(
+                existing_playlist,
+                sync_records,
+                restore_removed_playlist_items,
+            )
         metadata_ids = [record.metadata_item_id for record in sync_records]
 
         for stale_playlist in stale_playlists:
@@ -1024,6 +1044,12 @@ def plan_group_playlists(
             notes.append(f"unmatched files: {len(unmatched_files)}")
         if skipped_earlier_records:
             notes.append(f"skipped earlier episodes: {format_media_record_labels(skipped_earlier_records)}")
+        if locally_removed_records:
+            notes.append(
+                "local db removals preserved: "
+                + format_media_record_labels(locally_removed_records)
+                + " (pass --restore-removed-playlist-items to restore them)"
+            )
         if stale_playlists:
             notes.append(f"stale null-account duplicates: {len(stale_playlists)}")
 
@@ -1105,12 +1131,7 @@ def plan_group_playlists(
             status = "ready_unique"
             action = "create_unique"
         elif conflict_policy == "merge":
-            existing_ids = {
-                item.media.metadata_item_id
-                for item in existing_playlist.items
-                if item.media is not None
-            }
-            added_records = [record for record in sync_records if record.metadata_item_id not in existing_ids]
+            added_records = list(append_records)
             new_ids = [record.metadata_item_id for record in added_records]
             if new_ids:
                 mutations.append(
@@ -1130,31 +1151,56 @@ def plan_group_playlists(
                 status = "ready_merge"
                 action = "merge_existing"
             else:
-                status = "already_synced"
-                action = "no_change"
+                if locally_removed_records:
+                    status = "local_change_noop"
+                    action = "no_change_local"
+                else:
+                    status = "already_synced"
+                    action = "no_change"
         else:
-            existing_ids = {
-                item.media.metadata_item_id
-                for item in existing_playlist.items
-                if item.media is not None
-            }
-            added_records = [record for record in sync_records if record.metadata_item_id not in existing_ids]
-            mutations.append(
-                PlannedMutation(
-                    action="replace_playlist_items",
-                    target_guid=f"playlist:{existing_playlist.name}:{existing_playlist.id}",
-                    details={
-                        "playlist_id": existing_playlist.id,
-                        "play_queue_id": existing_playlist.play_queue_id,
-                        "storage_model": existing_playlist.storage_model,
-                        "added_at": added_at,
-                        "metadata_item_ids": metadata_ids,
-                        **mutation_annotations,
-                    },
+            added_records = list(append_records)
+            if existing_ids_ordered == metadata_ids:
+                if locally_removed_records:
+                    status = "local_change_noop"
+                    action = "no_change_local"
+                else:
+                    status = "already_synced"
+                    action = "no_change"
+            elif is_append_only_update(existing_ids_ordered, metadata_ids):
+                new_ids = [record.metadata_item_id for record in added_records]
+                mutations.append(
+                    PlannedMutation(
+                        action="merge_playlist_items",
+                        target_guid=f"playlist:{existing_playlist.name}:{existing_playlist.id}",
+                        details={
+                            "playlist_id": existing_playlist.id,
+                            "play_queue_id": existing_playlist.play_queue_id,
+                            "storage_model": existing_playlist.storage_model,
+                            "metadata_item_ids": new_ids,
+                            **mutation_annotations,
+                        },
+                    )
                 )
-            )
-            status = "ready_replace"
-            action = "replace_existing"
+                notes.append(f"new playlist items: {len(new_ids)}")
+                status = "ready_merge"
+                action = "append_existing"
+            else:
+                mutations.append(
+                    PlannedMutation(
+                        action="replace_playlist_items",
+                        target_guid=f"playlist:{existing_playlist.name}:{existing_playlist.id}",
+                        details={
+                            "playlist_id": existing_playlist.id,
+                            "play_queue_id": existing_playlist.play_queue_id,
+                            "storage_model": existing_playlist.storage_model,
+                            "added_at": added_at,
+                            "metadata_item_ids": metadata_ids,
+                            **mutation_annotations,
+                        },
+                    )
+                )
+                status = "ready_replace"
+                action = "replace_existing"
 
         plans.append(
             {
@@ -1465,6 +1511,14 @@ def format_unmatched_items(unmatched_files: Sequence[str]) -> str:
     return unmatched_labels
 
 
+def playlist_media_ids(playlist: PlexPlaylist) -> List[int]:
+    return [
+        item.media.metadata_item_id
+        for item in playlist.items
+        if item.media is not None
+    ]
+
+
 def media_record_episode_key(record: MediaRecord) -> Optional[Tuple[int, int, str]]:
     season = record.parent_index
     if season is None:
@@ -1500,6 +1554,49 @@ def filter_earlier_sync_records(
             continue
         kept_records.append(record)
     return kept_records, skipped_records
+
+
+def plan_playlist_item_updates(
+    existing_playlist: PlexPlaylist,
+    sync_records: Sequence[MediaRecord],
+    restore_removed_playlist_items: bool,
+) -> Tuple[List[MediaRecord], List[MediaRecord], List[MediaRecord]]:
+    existing_ids = playlist_media_ids(existing_playlist)
+    existing_id_set = set(existing_ids)
+    if not existing_ids:
+        return list(sync_records), list(sync_records), []
+    if restore_removed_playlist_items:
+        append_records = [record for record in sync_records if record.metadata_item_id not in existing_id_set]
+        return list(sync_records), append_records, []
+
+    desired_indices_for_existing = [
+        index
+        for index, record in enumerate(sync_records)
+        if record.metadata_item_id in existing_id_set
+    ]
+    if not desired_indices_for_existing:
+        return list(sync_records), list(sync_records), []
+
+    max_existing_index = max(desired_indices_for_existing)
+    kept_records: List[MediaRecord] = []
+    append_records: List[MediaRecord] = []
+    locally_removed_records: List[MediaRecord] = []
+    for index, record in enumerate(sync_records):
+        if record.metadata_item_id in existing_id_set:
+            kept_records.append(record)
+            continue
+        if index <= max_existing_index:
+            locally_removed_records.append(record)
+            continue
+        kept_records.append(record)
+        append_records.append(record)
+    return kept_records, append_records, locally_removed_records
+
+
+def is_append_only_update(existing_ids: Sequence[int], desired_ids: Sequence[int]) -> bool:
+    if len(existing_ids) > len(desired_ids):
+        return False
+    return list(desired_ids[: len(existing_ids)]) == list(existing_ids)
 
 
 def format_media_record_label(record: MediaRecord) -> str:
