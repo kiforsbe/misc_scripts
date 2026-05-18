@@ -28,6 +28,7 @@ SYNC_ROW_COLUMNS = (
     "source_item_count",
     "matched_item_count",
     "transfer_item_count",
+    "added_items",
     "existing_item_count",
     "unmatched_item_count",
     "notes",
@@ -37,6 +38,7 @@ SYNC_TABLE_DEFAULT_COLUMNS = (
     "target_playlist",
     "status",
     "action",
+    "added_items",
     "matched_item_count",
     "unmatched_item_count",
     "notes",
@@ -62,6 +64,7 @@ SYNC_TABLE_COLUMN_WIDTHS = {
     "source_item_count": 10,
     "matched_item_count": 10,
     "transfer_item_count": 10,
+    "added_items": 56,
     "existing_item_count": 10,
     "unmatched_item_count": 10,
     "notes": 48,
@@ -142,6 +145,14 @@ def register(subparsers: _SubParsersAction) -> None:
         "--include-empty-playlists",
         action="store_true",
         help="Create or update playlists even when no group files match the selected target library.",
+    )
+    parser.add_argument(
+        "--include-earlier-episodes",
+        action="store_true",
+        help=(
+            "Allow updates to add episodes earlier than the first episode already present in an existing playlist. "
+            "By default those earlier episodes are skipped."
+        ),
     )
     parser.add_argument(
         "--status-filter",
@@ -269,6 +280,7 @@ def run(args: Namespace) -> int:
             target_account_id,
             args.playlist_conflict_policy,
             args.include_empty_playlists,
+            args.include_earlier_episodes,
             args.playlist_prefix,
             args.playlist_status_prefix,
             args.playlist_suffix,
@@ -888,6 +900,7 @@ def plan_group_playlists(
     target_account_id: int,
     conflict_policy: str,
     include_empty_playlists: bool,
+    include_earlier_episodes: bool,
     playlist_prefix: str,
     playlist_status_prefix: bool,
     playlist_suffix: str,
@@ -926,7 +939,14 @@ def plan_group_playlists(
         ):
             playlist_name = PlexPlaylistPlanner.resolve_unique_name(reserved_names, desired_name)
 
-        metadata_ids, unmatched_files = resolve_group_metadata_item_ids(group, target_indexes, path_index, matcher)
+        matched_records, unmatched_files = resolve_group_metadata_item_ids(group, target_indexes, path_index, matcher)
+
+        skipped_earlier_records: List[MediaRecord] = []
+        sync_records = list(matched_records)
+        if existing_playlist is not None and not include_earlier_episodes:
+            sync_records, skipped_earlier_records = filter_earlier_sync_records(existing_playlist, matched_records)
+
+        metadata_ids = [record.metadata_item_id for record in sync_records]
 
         for stale_playlist in stale_playlists:
             mutations.append(
@@ -947,11 +967,14 @@ def plan_group_playlists(
         action = "create_new"
         notes: List[str] = []
         existing_item_count = len(existing_playlist.items) if existing_playlist else 0
+        added_records: List[MediaRecord] = []
         group_count = safe_int((group.get("group_data") or {}).get("group_count")) or 0
         if group_count > 1:
             notes.append(f"combined groups: {group_count}")
         if unmatched_files:
             notes.append(f"unmatched files: {len(unmatched_files)}")
+        if skipped_earlier_records:
+            notes.append(f"skipped earlier episodes: {format_media_record_labels(skipped_earlier_records)}")
         if stale_playlists:
             notes.append(f"stale null-account duplicates: {len(stale_playlists)}")
 
@@ -986,6 +1009,7 @@ def plan_group_playlists(
             status = "no_transferable_items"
             action = "skip_unmatched"
         elif existing_playlist is None:
+            added_records = list(sync_records)
             mutations.append(
                 PlannedMutation(
                     action="create_playlist",
@@ -1004,6 +1028,7 @@ def plan_group_playlists(
             status = "skipped_conflict"
             action = "skip_existing"
         elif conflict_policy == "unique":
+            added_records = list(sync_records)
             mutations.append(
                 PlannedMutation(
                     action="create_playlist",
@@ -1026,7 +1051,8 @@ def plan_group_playlists(
                 for item in existing_playlist.items
                 if item.media is not None
             }
-            new_ids = [metadata_id for metadata_id in metadata_ids if metadata_id not in existing_ids]
+            added_records = [record for record in sync_records if record.metadata_item_id not in existing_ids]
+            new_ids = [record.metadata_item_id for record in added_records]
             if new_ids:
                 mutations.append(
                     PlannedMutation(
@@ -1047,6 +1073,12 @@ def plan_group_playlists(
                 status = "already_synced"
                 action = "no_change"
         else:
+            existing_ids = {
+                item.media.metadata_item_id
+                for item in existing_playlist.items
+                if item.media is not None
+            }
+            added_records = [record for record in sync_records if record.metadata_item_id not in existing_ids]
             mutations.append(
                 PlannedMutation(
                     action="replace_playlist_items",
@@ -1079,6 +1111,8 @@ def plan_group_playlists(
                 "source_item_count": len(group["files"]),
                 "matched_item_count": len(metadata_ids),
                 "transfer_item_count": len(metadata_ids),
+                "added_items": format_media_record_labels(added_records),
+                "added_item_labels": list_media_record_labels(added_records),
                 "existing_item_count": existing_item_count,
                 "source_file_count": len(group["files"]),
                 "unmatched_file_count": len(unmatched_files),
@@ -1121,6 +1155,8 @@ def plan_group_playlists(
                 "source_item_count": 0,
                 "matched_item_count": 0,
                 "transfer_item_count": 0,
+                "added_items": "",
+                "added_item_labels": [],
                 "existing_item_count": len(removed_playlist.items),
                 "source_file_count": 0,
                 "unmatched_file_count": 0,
@@ -1345,6 +1381,74 @@ def format_unmatched_items(unmatched_files: Sequence[str]) -> str:
     return unmatched_labels
 
 
+def media_record_episode_key(record: MediaRecord) -> Optional[Tuple[int, int, str]]:
+    season = record.parent_index
+    if season is None:
+        season = record.parsed_identity.season
+    episode = record.item_index
+    if episode is None:
+        episode = record.parsed_identity.episode
+    if episode is None:
+        return None
+    return (season or 0, episode, normalize_path_key(record.file_path))
+
+
+def filter_earlier_sync_records(
+    existing_playlist: PlexPlaylist,
+    matched_records: Sequence[MediaRecord],
+) -> Tuple[List[MediaRecord], List[MediaRecord]]:
+    existing_keys = [
+        media_record_episode_key(item.media)
+        for item in existing_playlist.items
+        if item.media is not None
+    ]
+    comparable_existing_keys = [key for key in existing_keys if key is not None]
+    if not comparable_existing_keys:
+        return list(matched_records), []
+
+    earliest_existing_key = min(comparable_existing_keys)
+    kept_records: List[MediaRecord] = []
+    skipped_records: List[MediaRecord] = []
+    for record in matched_records:
+        record_key = media_record_episode_key(record)
+        if record_key is not None and record_key < earliest_existing_key:
+            skipped_records.append(record)
+            continue
+        kept_records.append(record)
+    return kept_records, skipped_records
+
+
+def format_media_record_label(record: MediaRecord) -> str:
+    season = record.parent_index
+    if season is None:
+        season = record.parsed_identity.season
+    episode = record.item_index
+    if episode is None:
+        episode = record.parsed_identity.episode
+    if episode is not None:
+        if season is not None:
+            prefix = f"S{season:02d}E{episode:02d}"
+        else:
+            prefix = f"E{episode:02d}"
+        title = record.title or record.basename
+        return f"{prefix} {title}" if title else prefix
+    return record.basename or record.title or f"metadata:{record.metadata_item_id}"
+
+
+def list_media_record_labels(records: Sequence[MediaRecord]) -> List[str]:
+    return [format_media_record_label(record) for record in records]
+
+
+def format_media_record_labels(records: Sequence[MediaRecord]) -> str:
+    labels = list_media_record_labels(records)
+    if not labels:
+        return ""
+    rendered = "; ".join(labels[:5])
+    if len(labels) > 5:
+        rendered += f"; +{len(labels) - 5} more"
+    return rendered
+
+
 def build_path_index(inventory: Sequence[MediaRecord]) -> Dict[str, List[MediaRecord]]:
     index: Dict[str, List[MediaRecord]] = {}
     for record in inventory:
@@ -1362,8 +1466,8 @@ def resolve_group_metadata_item_ids(
     target_indexes: Dict[str, List[MediaRecord]],
     path_index: Dict[str, List[MediaRecord]],
     matcher: PlexMatcher,
-) -> Tuple[List[int], List[str]]:
-    metadata_ids: List[int] = []
+) -> Tuple[List[MediaRecord], List[str]]:
+    matched_records: List[MediaRecord] = []
     unmatched_files: List[str] = []
     seen_ids: Set[int] = set()
 
@@ -1375,9 +1479,9 @@ def resolve_group_metadata_item_ids(
         if matched_record.metadata_item_id in seen_ids:
             continue
         seen_ids.add(matched_record.metadata_item_id)
-        metadata_ids.append(matched_record.metadata_item_id)
+        matched_records.append(matched_record)
 
-    return metadata_ids, unmatched_files
+    return matched_records, unmatched_files
 
 
 def resolve_file_record(
@@ -1471,6 +1575,7 @@ def build_sync_payload(plans: Sequence[Dict[str, Any]], mutations: Sequence[Plan
                 "source_item_count": plan.get("source_item_count"),
                 "matched_item_count": plan.get("matched_item_count"),
                 "transfer_item_count": plan.get("transfer_item_count"),
+                "added_items": list(plan.get("added_item_labels", [])),
                 "existing_item_count": plan.get("existing_item_count"),
                 "unmatched_item_count": plan.get("unmatched_item_count"),
                 "notes": plan.get("notes", []),
