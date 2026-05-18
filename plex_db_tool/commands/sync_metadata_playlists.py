@@ -155,6 +155,14 @@ def register(subparsers: _SubParsersAction) -> None:
         ),
     )
     parser.add_argument(
+        "--restore-removed-playlists",
+        action="store_true",
+        help=(
+            "Restore playlists that were previously created by sync-metadata-playlists and later removed. "
+            "By default those removed playlists are not recreated."
+        ),
+    )
+    parser.add_argument(
         "--status-filter",
         metavar="FILTERS",
         help=(
@@ -267,6 +275,7 @@ def run(args: Namespace) -> int:
         target_inventory = database.build_media_inventory(schema, args.target_library)
         target_inventory_all = target_inventory if not args.target_library else database.build_media_inventory(schema, [])
         target_playlists = database.list_playlists(schema, target_inventory, target_inventory_all)
+        deleted_metadata_playlists = database.list_deleted_metadata_playlists()
         target_account_id = args.target_account_id
         if target_account_id is None:
             raise RuntimeError(
@@ -281,6 +290,8 @@ def run(args: Namespace) -> int:
             args.playlist_conflict_policy,
             args.include_empty_playlists,
             args.include_earlier_episodes,
+            args.restore_removed_playlists,
+            deleted_metadata_playlists,
             args.playlist_prefix,
             args.playlist_status_prefix,
             args.playlist_suffix,
@@ -901,6 +912,8 @@ def plan_group_playlists(
     conflict_policy: str,
     include_empty_playlists: bool,
     include_earlier_episodes: bool,
+    restore_removed_playlists: bool,
+    deleted_metadata_playlists: Sequence[PlexPlaylist],
     playlist_prefix: str,
     playlist_status_prefix: bool,
     playlist_suffix: str,
@@ -911,6 +924,11 @@ def plan_group_playlists(
     target_indexes = matcher.index_target_inventory(target_inventory)
     path_index = build_path_index(target_inventory)
     reserved_names = [playlist.name for playlist in target_playlists]
+    deleted_sync_group_keys = {
+        group_key
+        for group_key in (extract_sync_group_key(playlist.description) for playlist in deleted_metadata_playlists)
+        if group_key
+    }
     plans: List[Dict[str, Any]] = []
     mutations: List[PlannedMutation] = []
 
@@ -982,6 +1000,10 @@ def plan_group_playlists(
         if rename_note is not None:
             notes.append(rename_note)
 
+        deleted_sync_playlist = existing_playlist is None and group["group_key"] in deleted_sync_group_keys
+        if deleted_sync_playlist and not restore_removed_playlists:
+            notes.append("playlist was previously removed; pass --restore-removed-playlists to recreate it")
+
         if existing_playlist is not None and should_update_existing_playlist_metadata(existing_playlist, playlist_name, description):
             resolved_playlist_name = resolve_updated_playlist_name(
                 target_playlists,
@@ -1008,6 +1030,9 @@ def plan_group_playlists(
         if not metadata_ids and not include_empty_playlists:
             status = "no_transferable_items"
             action = "skip_unmatched"
+        elif deleted_sync_playlist and not restore_removed_playlists:
+            status = "skipped_removed"
+            action = "skip_removed"
         elif existing_playlist is None:
             added_records = list(sync_records)
             mutations.append(

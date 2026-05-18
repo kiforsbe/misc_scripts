@@ -468,6 +468,33 @@ class PlexDatabase:
                 return playlist
         return None
 
+    def list_deleted_metadata_playlists(self) -> List[PlexPlaylist]:
+        query = """
+        SELECT
+            playlist.id AS playlist_id,
+            playlist.title AS playlist_name,
+            playlist.summary AS playlist_description,
+            playlist.added_at AS playlist_added_at,
+            playlist.deleted_at AS playlist_deleted_at
+        FROM metadata_items playlist
+        WHERE playlist.metadata_type = 15
+          AND playlist.deleted_at IS NOT NULL
+        ORDER BY playlist.deleted_at DESC, playlist.id DESC
+        """
+        return [
+            PlexPlaylist(
+                id=int(row["playlist_id"]),
+                name=str(row["playlist_name"] or ""),
+                description=row["playlist_description"],
+                added_at=PlexFilenameParser.safe_int(row["playlist_added_at"]),
+                play_queue_id=None,
+                account_id=None,
+                items=[],
+                storage_model="metadata",
+            )
+            for row in self.connection.execute(query)
+        ]
+
     def infer_preferred_account_id(self) -> Optional[int]:
         discovered_ids = {
             int(row[0])
