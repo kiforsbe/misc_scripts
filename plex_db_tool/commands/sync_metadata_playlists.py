@@ -485,7 +485,11 @@ def collapse_one_of_one_groups(groups: Sequence[Dict[str, Any]], playlist_name: 
 
 
 def is_one_of_one_group(group: Dict[str, Any]) -> bool:
-    return (safe_int(group.get("raw_episodes_expected")) or 0) == 1
+    if (safe_int(group.get("raw_episodes_expected")) or 0) != 1:
+        return False
+    if (safe_int(group.get("episodes_found")) or 0) != 1:
+        return False
+    return not group_has_episode_markers(group)
 
 
 def build_one_of_one_collection_group(groups: Sequence[Dict[str, Any]], playlist_name: str) -> Dict[str, Any]:
@@ -540,6 +544,32 @@ def build_one_of_one_collection_group(groups: Sequence[Dict[str, Any]], playlist
         "watch_status": watch_status,
         "modified_at": max(modified_candidates) if modified_candidates else None,
     }
+
+
+def group_has_episode_markers(group: Dict[str, Any]) -> bool:
+    if safe_int(group.get("season")) is not None:
+        return True
+
+    group_data = group.get("group_data") or {}
+    if safe_int(group_data.get("season")) is not None:
+        return True
+
+    for file_info in group.get("files", []):
+        if safe_int(file_info.get("season")) is not None:
+            return True
+
+        episode_value = file_info.get("episode")
+        if isinstance(episode_value, list):
+            if any(safe_int(value) is not None for value in episode_value):
+                return True
+        elif safe_int(episode_value) is not None:
+            return True
+
+        file_type = str(file_info.get("type") or "").casefold()
+        if file_type in {"episode", "tv episode"}:
+            return True
+
+    return False
 
 
 def count_episode_like_files(files: Sequence[Dict[str, Any]]) -> int:
@@ -981,6 +1011,7 @@ def plan_group_playlists(
 
         added_at = int(group["modified_at"].timestamp()) if group["modified_at"] is not None else None
         description = build_playlist_description(group)
+        mutation_annotations = build_sync_mutation_annotations(group)
         status = "ready_create"
         action = "create_new"
         notes: List[str] = []
@@ -1023,6 +1054,7 @@ def plan_group_playlists(
                             "storage_model": existing_playlist.storage_model,
                             "name": playlist_name,
                             "description": description,
+                            **mutation_annotations,
                         },
                     )
                 )
@@ -1046,6 +1078,7 @@ def plan_group_playlists(
                         "account_id": target_account_id,
                         "metadata_item_ids": metadata_ids,
                         "storage_model": "metadata",
+                        **mutation_annotations,
                     },
                 )
             )
@@ -1065,6 +1098,7 @@ def plan_group_playlists(
                         "account_id": target_account_id,
                         "metadata_item_ids": metadata_ids,
                         "storage_model": "metadata",
+                        **mutation_annotations,
                     },
                 )
             )
@@ -1088,6 +1122,7 @@ def plan_group_playlists(
                             "play_queue_id": existing_playlist.play_queue_id,
                             "storage_model": existing_playlist.storage_model,
                             "metadata_item_ids": new_ids,
+                            **mutation_annotations,
                         },
                     )
                 )
@@ -1114,6 +1149,7 @@ def plan_group_playlists(
                         "storage_model": existing_playlist.storage_model,
                         "added_at": added_at,
                         "metadata_item_ids": metadata_ids,
+                        **mutation_annotations,
                     },
                 )
             )
@@ -1207,6 +1243,29 @@ def build_playlist_description(group: Dict[str, Any]) -> str:
         pieces.append(f"combined_groups={group_count}")
     pieces.append(f"group_key={group['group_key']}")
     return "Generated from metadata JSON: " + ", ".join(pieces)
+
+
+def build_sync_mutation_annotations(group: Dict[str, Any]) -> Dict[str, Any]:
+    group_data = group.get("group_data") or {}
+    source_group_keys = [
+        str(value)
+        for value in group_data.get("source_group_keys", [])
+        if str(value or "").strip()
+    ]
+    source_playlists = [
+        str(value)
+        for value in group_data.get("source_playlists", [])
+        if str(value or "").strip()
+    ]
+    if not source_group_keys and not source_playlists:
+        return {}
+
+    annotations: Dict[str, Any] = {}
+    if source_group_keys:
+        annotations["source_group_keys"] = source_group_keys
+    if source_playlists:
+        annotations["source_playlists"] = source_playlists
+    return annotations
 
 
 def build_playlist_name(
