@@ -135,7 +135,7 @@ def run(args: Namespace) -> int:
         target_inventory_all = target_inventory if not args.target_library else target_database.build_media_inventory(target_schema, [])
 
         source_playlists = source_database.list_playlists(source_schema, source_inventory, source_inventory_all)
-        selected_playlists = resolve_playlist_selection(
+        selected_playlists = PlexCliSupport.resolve_playlist_selection(
             source_playlists,
             args.playlist,
             args.include_empty_playlists,
@@ -414,7 +414,7 @@ def populate_missing_playlist_transfer_args(args: Namespace) -> bool:
         args.include_empty_playlists,
     )
 
-    selected_playlists = resolve_playlist_selection(
+    selected_playlists = PlexCliSupport.resolve_playlist_selection(
         playlists,
         args.playlist,
         args.include_empty_playlists,
@@ -433,28 +433,3 @@ def populate_missing_playlist_transfer_args(args: Namespace) -> bool:
     return True
 
 
-def resolve_playlist_selection(
-    playlists: Sequence[PlexPlaylist],
-    selectors: Sequence[str],
-    include_empty_playlists: bool,
-) -> List[PlexPlaylist]:
-    playlist_by_id = {str(playlist.id): playlist for playlist in playlists}
-    playlist_by_name = {playlist.name.casefold(): playlist for playlist in playlists}
-
-    if not selectors:
-        selected = list(playlists)
-    else:
-        selected = []
-        seen = set()
-        for selector in selectors:
-            playlist = playlist_by_id.get(str(selector)) or playlist_by_name.get(str(selector).casefold())
-            if playlist is None:
-                raise RuntimeError(f"Playlist not found in source DB selection: {selector}")
-            if playlist.id in seen:
-                continue
-            seen.add(playlist.id)
-            selected.append(playlist)
-
-    if include_empty_playlists:
-        return selected
-    return [playlist for playlist in selected if not playlist.is_empty_in_scope]

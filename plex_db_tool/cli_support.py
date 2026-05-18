@@ -372,6 +372,8 @@ class PlexCliSupport:
         playlists: Sequence[PlexPlaylist],
         default_selectors: Sequence[str],
         include_empty_playlists: bool,
+        select_all_by_default: bool = True,
+        allow_empty_selection: bool = True,
     ) -> List[str]:
         playlist_by_id = {str(playlist.id): playlist for playlist in playlists}
         playlist_by_name = {playlist.name.casefold(): playlist for playlist in playlists}
@@ -379,7 +381,7 @@ class PlexCliSupport:
         default_values: List[str] = []
         if default_selectors:
             default_values = list(default_selectors)
-        else:
+        elif select_all_by_default:
             default_values = [
                 str(playlist.id)
                 for playlist in playlists
@@ -400,7 +402,11 @@ class PlexCliSupport:
                         checked=str(playlist.id) in default_value_set,
                     )
                 )
-            return cls.prompt_questionary_checkbox(prompt, choices, selection_prompt="Playlists")
+            while True:
+                selections = cls.prompt_questionary_checkbox(prompt, choices, selection_prompt="Playlists")
+                if selections or allow_empty_selection:
+                    return selections
+                print("Select at least one playlist.")
 
         cls.maybe_warn_questionary_unavailable()
 
@@ -415,7 +421,10 @@ class PlexCliSupport:
                 f"Choose playlist ids or exact names (comma-separated, Enter for default selection) [{default_label}]: "
             ).strip()
             if not raw_value:
-                return list(default_values)
+                if default_values or allow_empty_selection:
+                    return list(default_values)
+                print("Select at least one playlist.")
+                continue
 
             selections: List[str] = []
             seen = set()
@@ -433,7 +442,37 @@ class PlexCliSupport:
                     seen.add(playlist_id)
                     selections.append(playlist_id)
             if valid:
+                if not selections and not allow_empty_selection:
+                    print("Select at least one playlist.")
+                    continue
                 return selections
+
+    @staticmethod
+    def resolve_playlist_selection(
+        playlists: Sequence[PlexPlaylist],
+        selectors: Sequence[str],
+        include_empty_playlists: bool,
+    ) -> List[PlexPlaylist]:
+        playlist_by_id = {str(playlist.id): playlist for playlist in playlists}
+        playlist_by_name = {playlist.name.casefold(): playlist for playlist in playlists}
+
+        if not selectors:
+            selected = list(playlists)
+        else:
+            selected = []
+            seen = set()
+            for selector in selectors:
+                playlist = playlist_by_id.get(str(selector)) or playlist_by_name.get(str(selector).casefold())
+                if playlist is None:
+                    raise RuntimeError(f"Playlist not found in source DB selection: {selector}")
+                if playlist.id in seen:
+                    continue
+                seen.add(playlist.id)
+                selected.append(playlist)
+
+        if include_empty_playlists:
+            return selected
+        return [playlist for playlist in selected if not playlist.is_empty_in_scope]
 
     @staticmethod
     def apply_planned_mutations(target_db_path: Path, mutations: Sequence[PlannedMutation]) -> None:

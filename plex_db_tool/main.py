@@ -22,6 +22,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "transfer-playlists",
         "sync-metadata-playlists",
         "list-playlists",
+        "remove-playlists",
         "list-libraries",
         "list-accounts",
     }

@@ -450,6 +450,7 @@ class PlexDatabase:
             LEFT JOIN metadata_items md ON md.id = generator.metadata_item_id
             LEFT JOIN library_sections ls ON ls.id = md.library_section_id
             WHERE playlist.metadata_type = 15
+                            AND playlist.deleted_at IS NULL
             ORDER BY playlist.title COLLATE NOCASE, playlist.id, generator."order", generator.id
             """
             playlists.extend(collect_playlists(metadata_query, "metadata"))
@@ -747,6 +748,7 @@ class PlexDatabase:
                 details = mutation.details
                 if details.get("storage_model") == "metadata":
                     playlist_id = int(details["playlist_id"])
+                    now = int(datetime.now().timestamp())
                     with self.temporarily_disable_metadata_fts_triggers():
                         self.connection.execute(
                             "DELETE FROM play_queue_generators WHERE playlist_id = ?",
@@ -761,8 +763,15 @@ class PlexDatabase:
                             (playlist_id,),
                         )
                         self.connection.execute(
-                            "DELETE FROM metadata_items WHERE id = ?",
-                            (playlist_id,),
+                            """
+                            UPDATE metadata_items
+                            SET deleted_at = ?,
+                                updated_at = ?,
+                                changed_at = ?,
+                                resources_changed_at = ?
+                            WHERE id = ?
+                            """,
+                            (now, now, now, now, playlist_id),
                         )
                 else:
                     playlist_id = int(details["playlist_id"])
