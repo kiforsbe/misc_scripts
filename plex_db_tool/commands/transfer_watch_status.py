@@ -12,11 +12,11 @@ from ..reporting import PlexReportWriter
 
 def register(subparsers: _SubParsersAction) -> None:
     parser = subparsers.add_parser(
-        "transfer_watch_status",
+        "transfer-watch-status",
         help="Transfer Plex watch history between two Plex library databases.",
         description="Transfer Plex watch history between two Plex SQLite library databases using exact basename matching without path dependence.",
     )
-    parser.set_defaults(command="transfer_watch_status", command_handler=run)
+    parser.set_defaults(command="transfer-watch-status", command_handler=run)
     parser.add_argument(
         "--source-path",
         default=None,

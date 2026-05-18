@@ -178,13 +178,13 @@ python imdb_title_query.py --show-schema title.episode
 #### Requires
 - No external dependencies required (uses only Python standard libraries)
 
-### plex_watch_status_transfer.py
-A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. The user provides source and target locations, and the script discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then performs watch-history or playlist operations without relying on media paths.
+### plex_db_tool.py
+A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. The user provides source and target locations, and the tool discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then performs watch-history or playlist operations without relying on media paths.
 
-The implementation package for the tool is `plex_db_tool`, and the root script `plex_watch_status_transfer.py` remains available as the main entrypoint.
+The main entrypoint is the root shim `plex_db_tool.py`, which forwards into the `plex_db_tool` package. You can also run the package directly with `python -m plex_db_tool`. The older root script `plex_watch_status_transfer.py` is still available as a compatibility alias.
 
 #### Features
-- `transfer_watch_status`, `transfer-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
+- `transfer-watch-status`, `transfer-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
 - Accepts source and target locations instead of requiring the full DB filename path
 - Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
 - Exact basename matching only; no partial filename matching
@@ -208,33 +208,39 @@ The implementation package for the tool is `plex_db_tool`, and the root script `
 
 #### Usage Examples
 ```bash
+# Show top-level help through the main root shim
+python plex_db_tool.py --help
+
 # Preview transfer results without writing changes
-python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.json
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.json
 
 # Restrict transfer to named libraries and apply changes
-python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --source-account-id 1 --target-account-id 1 --apply
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --source-account-id 1 --target-account-id 1 --apply
 
 # Show a compact console table during dry-run
-python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --console-format table --columns status,dry_run_status,source_watch_count,target_watch_count,source_filename,target_filename
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --console-format table --columns status,dry_run_status,source_watch_count,target_watch_count,source_filename,target_filename
 
 # Export a CSV review report
-python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.csv
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.csv
 
 # Inspect available libraries and accounts before transferring
-python plex_watch_status_transfer.py list-libraries --path "C:\Users\you\AppData\Local\Plex Media Server"
-python plex_watch_status_transfer.py list-accounts --path "C:\Users\you\AppData\Local\Plex Media Server"
+python plex_db_tool.py list-libraries --path "C:\Users\you\AppData\Local\Plex Media Server"
+python plex_db_tool.py list-accounts --path "C:\Users\you\AppData\Local\Plex Media Server"
 
 # List playlists in a DB and show owner account ids when available
-python plex_watch_status_transfer.py list-playlists --path "C:\Users\you\AppData\Local\Plex Media Server" --library TV --console-format table
+python plex_db_tool.py list-playlists --path "C:\Users\you\AppData\Local\Plex Media Server" --library TV --console-format table
 
 # Preview transferring selected playlists into a target account
-python plex_watch_status_transfer.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
+python plex_db_tool.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
 
 # Omit required transfer values to use the interactive workflow
-python plex_watch_status_transfer.py transfer_watch_status
+python plex_db_tool.py transfer-watch-status
 
 # Or run the package directly
 python -m plex_db_tool --help
+
+# Or use the older compatibility script name
+python plex_watch_status_transfer.py --help
 ```
 
 #### Notes
@@ -242,6 +248,7 @@ python -m plex_db_tool --help
 - Dry-run mode can be used while Plex is still running, but copied DBs are still safer.
 - If the provided location contains multiple matching DB files, the script refuses to guess and asks for a narrower path.
 - If multiple target records share the same basename, the tool uses secondary metadata to decide whether the match is safe enough to apply.
+- If you omit the subcommand entirely, the CLI defaults to `transfer-watch-status`.
 - Interactive transfer mode first performs a dry-run, shows only rows with planned mutations by default, and then asks whether to apply the changes.
 - By default, rows that are already in sync or where the target is already ahead do not produce planned mutations.
 - Depending on the Plex schema version, source and target account ids may be required for account-scoped reads and writes.
