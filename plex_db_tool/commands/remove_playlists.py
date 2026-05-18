@@ -1,6 +1,6 @@
 import json
 import sys
-from argparse import Namespace, _SubParsersAction
+from argparse import BooleanOptionalAction, Namespace, _SubParsersAction
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, TextIO
 
@@ -57,8 +57,12 @@ def register(subparsers: _SubParsersAction) -> None:
     )
     parser.add_argument(
         "--include-empty-playlists",
-        action="store_true",
-        help="Include playlists that are empty after applying the selected library scope.",
+        action=BooleanOptionalAction,
+        default=True,
+        help=(
+            "Include playlists that are empty after applying the selected library scope. "
+            "Enabled by default; pass --no-include-empty-playlists to exclude them."
+        ),
     )
     parser.add_argument(
         "--console-format",
@@ -188,7 +192,7 @@ def populate_missing_remove_args(args: Namespace) -> bool:
         raise RuntimeError("No playlists are available for removal in the selected library scope.")
 
     if not args.include_empty_playlists:
-        print("Empty playlists are excluded by default. Use --include-empty-playlists to include them.")
+        print("Empty playlists are excluded for this run because --no-include-empty-playlists was used.")
 
     args.playlist = PlexCliSupport.prompt_playlist_filters(
         "Select playlists to remove:",
