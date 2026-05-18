@@ -181,8 +181,10 @@ python imdb_title_query.py --show-schema title.episode
 ### plex_watch_status_transfer.py
 A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. The user provides source and target locations, and the script discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then performs watch-history or playlist operations without relying on media paths.
 
+The implementation package for the tool is `plex_db_tool`, and the root script `plex_watch_status_transfer.py` remains available as the main entrypoint.
+
 #### Features
-- `transfer`, `transfer-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
+- `transfer_watch_status`, `transfer-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
 - Accepts source and target locations instead of requiring the full DB filename path
 - Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
 - Exact basename matching only; no partial filename matching
@@ -207,16 +209,16 @@ A CLI for transferring Plex watch history and playlists between Plex library dat
 #### Usage Examples
 ```bash
 # Preview transfer results without writing changes
-python plex_watch_status_transfer.py transfer --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.json
+python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.json
 
 # Restrict transfer to named libraries and apply changes
-python plex_watch_status_transfer.py transfer --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --source-account-id 1 --target-account-id 1 --apply
+python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --source-account-id 1 --target-account-id 1 --apply
 
 # Show a compact console table during dry-run
-python plex_watch_status_transfer.py transfer --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --console-format table --columns status,dry_run_status,source_watch_count,target_watch_count,source_filename,target_filename
+python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --console-format table --columns status,dry_run_status,source_watch_count,target_watch_count,source_filename,target_filename
 
 # Export a CSV review report
-python plex_watch_status_transfer.py transfer --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.csv
+python plex_watch_status_transfer.py transfer_watch_status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.csv
 
 # Inspect available libraries and accounts before transferring
 python plex_watch_status_transfer.py list-libraries --path "C:\Users\you\AppData\Local\Plex Media Server"
@@ -229,7 +231,10 @@ python plex_watch_status_transfer.py list-playlists --path "C:\Users\you\AppData
 python plex_watch_status_transfer.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
 
 # Omit required transfer values to use the interactive workflow
-python plex_watch_status_transfer.py transfer
+python plex_watch_status_transfer.py transfer_watch_status
+
+# Or run the package directly
+python -m plex_db_tool --help
 ```
 
 #### Notes
