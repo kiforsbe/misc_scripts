@@ -285,6 +285,7 @@ python plex_watch_status_transfer.py --help
 - `transfer-playlists` excludes empty playlists by default and prints a notice explaining how to include them.
 - `transfer-playlists` requires `--target-account-id` in non-interactive mode; interactive mode can prompt for it.
 - `sync-metadata-playlists` defaults `--playlist-conflict-policy` to `replace`, so rerunning it refreshes existing playlists from the current JSON selection.
+- `sync-metadata-playlists` also removes previously synced playlists when their stored `group_key` is no longer present in the current metadata selection for the chosen target account and library scope.
 - `sync-metadata-playlists` uses the standard `%LOCALAPPDATA%\Plex Media Server` folder as the target when `--target-path` is omitted.
 - `sync-metadata-playlists` requires `--target-library` and `--target-account-id` in non-interactive mode; if you omit them in an interactive terminal session, the command prompts you to choose them.
 - `sync-metadata-playlists` table output supports `--columns` with `column` or `column:width` entries; mandatory columns are `status` and `target_playlist`.

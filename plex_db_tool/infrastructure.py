@@ -425,7 +425,7 @@ class PlexDatabase:
             SELECT
                 playlist.id AS playlist_id,
                 playlist.title AS playlist_name,
-                NULL AS playlist_description,
+                playlist.summary AS playlist_description,
                 playlist.added_at AS playlist_added_at,
                 latest_queue.play_queue_id AS play_queue_id,
                 COALESCE(latest_queue.account_id, mia.account_id) AS account_id,
@@ -747,22 +747,23 @@ class PlexDatabase:
                 details = mutation.details
                 if details.get("storage_model") == "metadata":
                     playlist_id = int(details["playlist_id"])
-                    self.connection.execute(
-                        "DELETE FROM play_queue_generators WHERE playlist_id = ?",
-                        (playlist_id,),
-                    )
-                    self.connection.execute(
-                        "DELETE FROM play_queues WHERE playlist_id = ?",
-                        (playlist_id,),
-                    )
-                    self.connection.execute(
-                        "DELETE FROM metadata_item_accounts WHERE metadata_item_id = ?",
-                        (playlist_id,),
-                    )
-                    self.connection.execute(
-                        "DELETE FROM metadata_items WHERE id = ?",
-                        (playlist_id,),
-                    )
+                    with self.temporarily_disable_metadata_fts_triggers():
+                        self.connection.execute(
+                            "DELETE FROM play_queue_generators WHERE playlist_id = ?",
+                            (playlist_id,),
+                        )
+                        self.connection.execute(
+                            "DELETE FROM play_queues WHERE playlist_id = ?",
+                            (playlist_id,),
+                        )
+                        self.connection.execute(
+                            "DELETE FROM metadata_item_accounts WHERE metadata_item_id = ?",
+                            (playlist_id,),
+                        )
+                        self.connection.execute(
+                            "DELETE FROM metadata_items WHERE id = ?",
+                            (playlist_id,),
+                        )
                 else:
                     playlist_id = int(details["playlist_id"])
                     play_queue_ids = [

@@ -1091,6 +1091,47 @@ def plan_group_playlists(
         )
         reserved_names.append(playlist_name)
 
+    removed_playlists = find_removed_sync_playlists(target_playlists, groups, target_account_id)
+    for removed_playlist in removed_playlists:
+        group_key = extract_sync_group_key(removed_playlist.description)
+        mutations.append(
+            PlannedMutation(
+                action="delete_playlist",
+                target_guid=f"playlist:{removed_playlist.name}:{removed_playlist.id}",
+                details={
+                    "playlist_id": removed_playlist.id,
+                    "play_queue_id": removed_playlist.play_queue_id,
+                    "storage_model": removed_playlist.storage_model,
+                },
+            )
+        )
+        plans.append(
+            {
+                "playlist_id": removed_playlist.id,
+                "playlist_name": removed_playlist.name,
+                "desired_name": removed_playlist.name,
+                "group_key": group_key,
+                "source_playlist": removed_playlist.name,
+                "target_playlist": removed_playlist.name,
+                "target_account_id": removed_playlist.account_id,
+                "source_added_at": "",
+                "target_added_at": format_unix_timestamp(removed_playlist.added_at),
+                "status": "ready_delete",
+                "action": "delete_missing",
+                "source_item_count": 0,
+                "matched_item_count": 0,
+                "transfer_item_count": 0,
+                "existing_item_count": len(removed_playlist.items),
+                "source_file_count": 0,
+                "unmatched_file_count": 0,
+                "unmatched_item_count": 0,
+                "unmatched_files": [],
+                "unmatched_items": "",
+                "existing_playlist_id": removed_playlist.id,
+                "notes": ["group removed from current metadata selection"],
+            }
+        )
+
     return plans, mutations
 
 
@@ -1200,6 +1241,31 @@ def choose_playlist_candidate(
     )
     stale_candidates = [playlist for playlist in candidates if playlist.id != selected.id and playlist.account_id is None]
     return selected, stale_candidates
+
+
+def find_removed_sync_playlists(
+    playlists: Sequence[PlexPlaylist],
+    groups: Sequence[Dict[str, Any]],
+    target_account_id: Optional[int],
+) -> List[PlexPlaylist]:
+    active_group_keys = {str(group.get("group_key") or "") for group in groups}
+    removed: List[PlexPlaylist] = []
+    seen_playlist_ids: Set[int] = set()
+
+    for playlist in playlists:
+        group_key = extract_sync_group_key(playlist.description)
+        if not group_key or group_key in active_group_keys:
+            continue
+        if target_account_id is not None and playlist.account_id not in {target_account_id, None}:
+            continue
+        if playlist.id in seen_playlist_ids:
+            continue
+        if playlist.items and playlist.is_empty_in_scope:
+            continue
+        seen_playlist_ids.add(playlist.id)
+        removed.append(playlist)
+
+    return removed
 
 
 def should_update_existing_playlist_metadata(existing_playlist: PlexPlaylist, playlist_name: str, description: str) -> bool:
