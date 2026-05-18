@@ -17,11 +17,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
-    subcommands = {"transfer_watch_status", "transfer-playlists", "list-playlists", "list-libraries", "list-accounts"}
+    subcommands = {
+        "transfer-watch-status",
+        "transfer-playlists",
+        "sync-metadata-playlists",
+        "list-playlists",
+        "list-libraries",
+        "list-accounts",
+    }
     if raw_argv and not raw_argv[0].startswith("-") and raw_argv[0] not in subcommands:
-        raw_argv = ["transfer_watch_status", *raw_argv]
+        raw_argv = ["transfer-watch-status", *raw_argv]
     if raw_argv and raw_argv[0].startswith("-") and raw_argv[0] not in {"-h", "--help"}:
-        raw_argv = ["transfer_watch_status", *raw_argv]
+        raw_argv = ["transfer-watch-status", *raw_argv]
     return build_parser().parse_args(raw_argv)
 
 

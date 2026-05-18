@@ -729,6 +729,20 @@ class PlexDatabase:
                         play_queue_id,
                         PlexFilenameParser.safe_int(details.get("added_at")),
                     )
+            elif mutation.action == "update_playlist_metadata":
+                details = mutation.details
+                if details.get("storage_model") == "metadata":
+                    self.update_metadata_playlist_details(
+                        int(details["playlist_id"]),
+                        str(details["name"]),
+                        details.get("description"),
+                    )
+                else:
+                    self.update_custom_playlist_details(
+                        int(details["playlist_id"]),
+                        str(details["name"]),
+                        details.get("description"),
+                    )
             elif mutation.action == "delete_playlist":
                 details = mutation.details
                 if details.get("storage_model") == "metadata":
@@ -1023,6 +1037,23 @@ class PlexDatabase:
                 (added_at, playlist_id),
             )
 
+    def update_metadata_playlist_details(self, playlist_id: int, name: str, description: Optional[str]) -> None:
+        now = int(datetime.now().timestamp())
+        with self.temporarily_disable_metadata_fts_triggers():
+            self.connection.execute(
+                """
+                UPDATE metadata_items
+                SET title = ?,
+                    title_sort = ?,
+                    summary = ?,
+                    updated_at = ?,
+                    changed_at = ?,
+                    resources_changed_at = ?
+                WHERE id = ?
+                """,
+                (name, name, description or "", now, now, now, playlist_id),
+            )
+
     def next_playlist_order(self, play_queue_id: int) -> float:
         row = self.connection.execute(
             'SELECT MAX("order") AS max_order FROM play_queue_items WHERE play_queue_id = ?',
@@ -1078,6 +1109,12 @@ class PlexDatabase:
         self.connection.execute(
             "UPDATE play_queues SET created_at = ? WHERE id = ?",
             (added_at, play_queue_id),
+        )
+
+    def update_custom_playlist_details(self, playlist_id: int, name: str, description: Optional[str]) -> None:
+        self.connection.execute(
+            "UPDATE custom_channels SET name = ?, description = ? WHERE id = ?",
+            (name, description, playlist_id),
         )
 
     def begin_immediate(self) -> None:

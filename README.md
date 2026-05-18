@@ -184,7 +184,7 @@ A CLI for transferring Plex watch history and playlists between Plex library dat
 The main entrypoint is the root shim `plex_db_tool.py`, which forwards into the `plex_db_tool` package. You can also run the package directly with `python -m plex_db_tool`. The older root script `plex_watch_status_transfer.py` is still available as a compatibility alias.
 
 #### Features
-- `transfer-watch-status`, `transfer-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
+- `transfer-watch-status`, `transfer-playlists`, `sync-metadata-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
 - Accepts source and target locations instead of requiring the full DB filename path
 - Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
 - Exact basename matching only; no partial filename matching
@@ -202,6 +202,14 @@ The main entrypoint is the root shim `plex_db_tool.py`, which forwards into the 
 - Playlist listing supports library scoping, optional inclusion of empty playlists, and shows playlist ownership via `account_id` when available
 - Playlist transfer uses the same filename-based matching strategy as watch transfer for playlist members
 - Playlist transfer supports selecting specific playlists by id or exact name and conflict handling via `unique`, `merge`, `replace`, or `skip`
+- Metadata-playlist sync creates or updates one Plex playlist per selected JSON group from grouped metadata exports such as `series_completeness_checker.py`
+- Metadata-playlist sync supports the same `--status-filter`, `--modified`, `--episodes-found`, `--episodes-expected`, and `--sort` group filters used by `series_archiver.py`
+- Metadata-playlist sync supports `--playlist-prefix` and `--playlist-suffix` so generated playlists can be namespaced without changing the source JSON
+- Metadata-playlist sync supports `--playlist-status-prefix` to derive prefixes automatically from each group's status, such as `[Incomplete]` or `[Complete]`
+- Metadata-playlist sync supports `--playlist-status-suffix` to derive suffixes automatically from each group's status instead of putting the status at the front
+- Metadata-playlist sync also supports `--playlist-complete-suffix` so playlists can be labeled differently when all expected episodes are available for the season
+- Metadata-playlist sync supports JSON, CSV, and table console output plus matching JSON, CSV, or table report files
+- Metadata-playlist sync tracks previously generated playlists by the stored source `group_key`, so changing or removing a prefix/suffix updates the same playlist instead of creating a duplicate when the group identity still matches
 - Empty playlists are excluded by default for both `list-playlists` and `transfer-playlists` unless `--include-empty-playlists` is used
 - Playlist transfer requires an explicit `--target-account-id` in non-interactive mode so created or updated target playlists are assigned to the intended Plex account
 - Apply mode blocks until Plex Media Server is no longer running
@@ -233,6 +241,27 @@ python plex_db_tool.py list-playlists --path "C:\Users\you\AppData\Local\Plex Me
 # Preview transferring selected playlists into a target account
 python plex_db_tool.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
 
+# Build or refresh one Plex playlist per filtered JSON group
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --target-path "C:\Users\you\AppData\Local\Plex Media Server" --target-library "TV Shows" --target-account-id 1 --status-filter "+incomplete +watched_partial" --episodes-found ">=2" --sort
+
+# Namespace generated playlist names and write a JSON review report
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Incomplete] " --playlist-suffix " [Review]" --console-format json --report .\sync-playlists.json
+
+# Automatically prefix playlist names from each group's status
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-prefix
+
+# Automatically suffix playlist names from each group's status
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-suffix
+
+# Append an extra suffix only when a season is complete
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Anime] " --playlist-complete-suffix " [Complete]"
+
+# Combine every selected episodes_expected=1 group into one playlist
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --one-of-one-playlist "[A] One Of One"
+
+# Export a compact table report with custom columns
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --console-format table --columns target_playlist,status,matched_item_count,unmatched_item_count,notes --report .\sync-playlists.txt --report-format table
+
 # Omit required transfer values to use the interactive workflow
 python plex_db_tool.py transfer-watch-status
 
@@ -255,6 +284,16 @@ python plex_watch_status_transfer.py --help
 - Playlist discovery can read both legacy/custom playlist rows and metadata-backed Plex playlists.
 - `transfer-playlists` excludes empty playlists by default and prints a notice explaining how to include them.
 - `transfer-playlists` requires `--target-account-id` in non-interactive mode; interactive mode can prompt for it.
+- `sync-metadata-playlists` defaults `--playlist-conflict-policy` to `replace`, so rerunning it refreshes existing playlists from the current JSON selection.
+- `sync-metadata-playlists` uses the standard `%LOCALAPPDATA%\Plex Media Server` folder as the target when `--target-path` is omitted.
+- `sync-metadata-playlists` requires `--target-library` and `--target-account-id` in non-interactive mode; if you omit them in an interactive terminal session, the command prompts you to choose them.
+- `sync-metadata-playlists` table output supports `--columns` with `column` or `column:width` entries; mandatory columns are `status` and `target_playlist`.
+- `--one-of-one-playlist` collapses all selected groups whose original metadata reports `episodes_expected=1` into one synthetic playlist, which is useful when movie-like metadata should still be synced as a single mixed collection.
+- If a playlist was previously created with a prefix or suffix, later syncs can rename it to the new configured name as long as the stored metadata `group_key` still identifies the same JSON group.
+- `--playlist-status-prefix` turns a group's stored status value into a prefix automatically, so `incomplete` becomes `[Incomplete]` and `complete_with_extras` becomes `[Complete With Extras]`.
+- `--playlist-status-suffix` does the same at the end of the playlist name instead of the beginning.
+- Prefix options are mutually exclusive with each other, and suffix options are mutually exclusive with each other, so each sync run can use at most one prefix mode and one suffix mode.
+- `--playlist-complete-suffix` is applied when `episodes_found >= episodes_expected` for groups with a known expected count; if no expected count is present, `complete` and `complete_with_extras` statuses are treated as complete.
 
 ### media-to-mp3.py
 Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.
