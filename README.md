@@ -1,6 +1,61 @@
 # misc_scripts
 Miscellaneous scripts to automate common tasks.
 
+## Table of Contents
+- [User Scripts](#user-scripts): Tampermonkey userscripts that enhance supported sites with faster actions and metadata helpers.
+  - [plex-playlist-watch-status.user.js](#plex-playlist-watch-statususerjs): Shows Plex playlist watch status with simple triangle indicators.
+  - [myanimelist-addtolist-improved.user-script.js](#myanimelist-addtolist-improveduser-scriptjs): Adds quick MyAnimeList watch-status dropdowns directly to anime pages.
+- [Libraries](#libraries): Reusable helper modules shared by multiple scripts in this repository.
+  - [browser_utils.py](#browser_utilspy): Cross-platform browser launcher with popup, new-window, and maximized modes.
+- [Projects](#projects): Larger multi-file tools with dedicated packages, helpers, tests, or service components.
+  - [plex_db_tool](#plex_db_tool): Package-backed Plex database transfer and playlist sync CLI with root shim.
+  - [video-optimizer-v2](#video-optimizer-v2): Multi-file video transcoder with metadata providers, cache tooling, and tests.
+  - [youtube-video-downloader](#youtube-video-downloader): Bundle of CLI, TUI, web, userscript, and helper download tools.
+  - [mini-dlna-server](#mini-dlna-server): Experimental DLNA server project with multiple networking and service modules.
+- [Scripts](#scripts): Standalone utilities for media, metadata, downloads, reports, and local tooling.
+  - Media Conversion & Transcription
+    - [cbr_to_cbz_converter.py](#cbr_to_cbz_converterpy): Converts CBR archives to CBZ files using parallel in-memory processing.
+    - [media-to-mp3.py](#media-to-mp3py): Converts media files to MP3 using each file's first audio track.
+    - [srt_to_transcript.py](#srt_to_transcriptpy): Extracts plain-text transcripts from SRT subtitle files.
+    - [transcribe_to_srt.py](#transcribe_to_srtpy): Transcribes media files into SRT subtitles using SubsAI models.
+    - [transcribe_audio.py](#transcribe_audiopy): Transcribes audio with diarization and exports SRT, VTT, JSON, and TXT.
+    - [insanely-fast-whisper.py](#insanely-fast-whisperpy): Minimal Whisper transcription script for fast speech-to-text generation.
+    - [mp4-to-mp3-converter-with-origin.py](#mp4-to-mp3-converter-with-originpy): Converts MP4 files to tagged MP3s with thumbnail and source metadata.
+    - [merge-audio-files-to-one-output.py](#merge-audio-files-to-one-outputpy): Interactive tool for merging multiple audio files into one output.
+    - [music_style_classifier.py](#music_style_classifierpy): Classifies music genre from audio or video files.
+  - Metadata, Cataloging & Reports
+    - [compare_package_versions.py](#compare_package_versionspy): Compares proposed package versions against installed ones, highlighting upgrades and downgrades.
+    - [imdb_title_query.py](#imdb_title_querypy): Queries IMDb TSV datasets with filtering, column selection, and downloads.
+    - [smartls.py](#smartlspy): Metadata-aware directory explorer with rich filtering, sorting, and report exports.
+    - [series_info_tool.py](#series_info_toolpy): Groups video files and fetches series metadata with MyAnimeList integration.
+    - [netflix_watch_status.py](#netflix_watch_statuspy): Builds Netflix viewing history reports with metadata and standalone HTML output.
+    - [file_metadata_scanner.py](#file_metadata_scannerpy): Scans files for metadata and exports CSV, JSON, and HTML bundles.
+    - [gog_galaxy_exporter.py](#gog_galaxy_exporterpy): Exports GOG Galaxy library data to CSV, JSON, and Excel.
+    - [gog_csv_to_html.py](#gog_csv_to_htmlpy): Builds an interactive HTML game library viewer from GOG exports.
+    - [file_grouper.py](#file_grouperpy): Groups related files by filename patterns and series metadata.
+    - [series_completeness_checker.py](#series_completeness_checkerpy): Analyzes series collections for missing episodes, gaps, and completeness.
+    - [series_archiver.py](#series_archiverpy): Archives series into organized folders with optional integrity checks.
+    - [series_bundler.py](#series_bundlerpy): Bundles episodes into standardized archive folders using parsed filename metadata.
+    - [latest_episodes_viewer.py](#latest_episodes_viewerpy): Generates an HTML page listing the latest episodes in a collection.
+  - Web Services, Networking & Downloads
+    - [simple_scraper_proxy.py](#simple_scraper_proxypy): Fetches pages with YAML selectors and returns scraped RSS feeds.
+    - [m3u8-to-mp4-flask-webservice.py](#m3u8-to-mp4-flask-webservicepy): Flask service that inspects and converts M3U8 streams to MP4.
+    - [m3u8-to-mp4-flask-webservice-simple.py](#m3u8-to-mp4-flask-webservice-simplepy): Simplified Flask service that streams M3U8 inputs directly into MP4 files.
+    - [udio-flask-webservice.py](#udio-flask-webservicepy-udio-download_ext-buttonuserjs): Downloads songs with embedded metadata, cover art, and optional enrichment.
+    - [rss-feed-downloader.py](#rss-feed-downloaderpy): Downloads selected RSS enclosures with terminal-based selection and progress.
+    - [simple_http_proxy.py](#simple_http_proxypy): Serves remote resources through simple URL-based local proxying.
+    - [socks5_http_tunneler.py](#socks5_http_tunnelerpy): Local HTTP tunnel that forwards upstream traffic through SOCKS5.
+    - [radio_station_checker.py](#radio_station_checkerpy): Checks radio stream availability with a high-performance terminal interface.
+    - [serve_local.py](#serve_localpy): Serves local files or folders with optional live-reload and file proxy.
+  - File, Clipboard & Document Utilities
+    - [clipboard-monitor.py](#clipboard-monitorpy): Monitors clipboard changes and appends captured content to CSV.
+    - [file-renamer-script.py](#file-renamer-scriptpy): Builds CSV-based rename mappings from clipboard IDs before applying changes.
+    - [md_to_docx.py](#md_to_docxpy): Converts Markdown documents into formatted DOCX files.
+- [Bash Scripts](#bash-scripts): Shell utilities for platform-specific maintenance tasks.
+  - [macos-uninstall-python3.10.sh](#macos-uninstall-python310sh): Safely removes python.org Python 3.10 installations from macOS.
+- [Experimental](#experimental): Early-stage ideas and prototypes that are not yet stable.
+  - [lyrics-timing-generator.py](#lyrics-timing-generatorpy): Experimental timed-lyrics generator built from transcription and LLM formatting.
+
 ## User Scripts
 These user scripts enhance the webservice functionality by integrating download buttons directly into the respective web interfaces. They automatically capture song metadata and cover art, then send this information to the webservice for processing, making the download process seamless and efficient. They have been tested with Tampermonkey on Chrome.
 - `udio-download_ext-button.user.js`: Adds a "Download with metadata" button to Udio song pages
@@ -54,6 +109,259 @@ A cross-platform browser launcher library with support for different window mode
 
 #### Requires
 - Platform-specific: winreg (Windows), ctypes (Windows)
+
+## Projects
+Larger tools in this repository that have their own subfolders, packages, helpers, or tests.
+
+### plex_db_tool
+A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. The user provides source and target locations, and the tool discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then performs watch-history or playlist operations without relying on media paths.
+
+The main entrypoint is the root shim `plex_db_tool.py`, which forwards into the `plex_db_tool` package. You can also run the package directly with `python -m plex_db_tool`. The older root script `plex_watch_status_transfer.py` is still available as a compatibility alias.
+
+#### Features
+- `transfer-watch-status`, `transfer-playlists`, `sync-metadata-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
+- Accepts source and target locations instead of requiring the full DB filename path
+- Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
+- Exact basename matching only; no partial filename matching
+- Optional source and target library section filters by library name
+- Separate source and target account ids for account-scoped read and write operations
+- Interactive mode when required transfer inputs are omitted, including library, account, and playlist selection from the discovered source and target DB contents
+- Smart interactive defaults for shared named accounts and existing CLI-provided values
+- Dry-run by default with table, CSV, or JSON console output and JSON, CSV, or table report output
+- Configurable table columns with compact labels, right-aligned numeric columns, truncation, and optional `column:width` overrides
+- Dry-run filters for `all`, `warnings`, and `errors`
+- Conservative merge behavior for existing target history with optional overwrite or skip policies
+- Planned mutations are only created when the target actually needs to change; in-sync and target-ahead rows are left untouched unless conflict policy explicitly allows overwrite behavior
+- Guarded write path that inspects the target `metadata_item_views` schema before inserting history rows
+- Updates Plex account-scoped watch state in both `metadata_item_views` and `metadata_item_settings` when supported by the target schema
+- Playlist listing supports library scoping, optional inclusion of empty playlists, and shows playlist ownership via `account_id` when available
+- Playlist transfer uses the same filename-based matching strategy as watch transfer for playlist members
+- Playlist transfer supports selecting specific playlists by id or exact name and conflict handling via `unique`, `merge`, `replace`, or `skip`
+- Metadata-playlist sync creates or updates one Plex playlist per selected JSON group from grouped metadata exports such as `series_completeness_checker.py`
+- Metadata-playlist sync supports the same `--status-filter`, `--modified`, `--episodes-found`, `--episodes-expected`, and `--sort` group filters used by `series_archiver.py`
+- Metadata-playlist sync supports `--playlist-prefix` and `--playlist-suffix` so generated playlists can be namespaced without changing the source JSON
+- Metadata-playlist sync supports `--playlist-status-prefix` to derive prefixes automatically from each group's status, such as `[Incomplete]` or `[Complete]`
+- Metadata-playlist sync supports `--playlist-status-suffix` to derive suffixes automatically from each group's status instead of putting the status at the front
+- Metadata-playlist sync also supports `--playlist-complete-suffix` so playlists can be labeled differently when all expected episodes are available for the season
+- Metadata-playlist sync supports JSON, CSV, and table console output plus matching JSON, CSV, or table report files
+- Metadata-playlist sync tracks previously generated playlists by the stored source `group_key`, so changing or removing a prefix/suffix updates the same playlist instead of creating a duplicate when the group identity still matches
+- Empty playlists are excluded by default for both `list-playlists` and `transfer-playlists` unless `--include-empty-playlists` is used
+- Playlist transfer requires an explicit `--target-account-id` in non-interactive mode so created or updated target playlists are assigned to the intended Plex account
+- Apply mode blocks until Plex Media Server is no longer running
+
+#### Usage Examples
+```bash
+# Show top-level help through the main root shim
+python plex_db_tool.py --help
+
+# Preview transfer results without writing changes
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.json
+
+# Restrict transfer to named libraries and apply changes
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --source-account-id 1 --target-account-id 1 --apply
+
+# Show a compact console table during dry-run
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --console-format table --columns status,dry_run_status,source_watch_count,target_watch_count,source_filename,target_filename
+
+# Export a CSV review report
+python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.csv
+
+# Inspect available libraries and accounts before transferring
+python plex_db_tool.py list-libraries --path "C:\Users\you\AppData\Local\Plex Media Server"
+python plex_db_tool.py list-accounts --path "C:\Users\you\AppData\Local\Plex Media Server"
+
+# List playlists in a DB and show owner account ids when available
+python plex_db_tool.py list-playlists --path "C:\Users\you\AppData\Local\Plex Media Server" --library TV --console-format table
+
+# Preview transferring selected playlists into a target account
+python plex_db_tool.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
+
+# Build or refresh one Plex playlist per filtered JSON group
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --target-path "C:\Users\you\AppData\Local\Plex Media Server" --target-library "TV Shows" --target-account-id 1 --status-filter "+incomplete +watched_partial" --episodes-found ">=2" --sort
+
+# Namespace generated playlist names and write a JSON review report
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Incomplete] " --playlist-suffix " [Review]" --console-format json --report .\sync-playlists.json
+
+# Automatically prefix playlist names from each group's status
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-prefix
+
+# Automatically suffix playlist names from each group's status
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-suffix
+
+# Append an extra suffix only when a season is complete
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Anime] " --playlist-complete-suffix " [Complete]"
+
+# Combine every selected episodes_expected=1 group into one playlist
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --one-of-one-playlist "[A] One Of One"
+
+# Export a compact table report with custom columns
+python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --console-format table --columns target_playlist,status,matched_item_count,unmatched_item_count,notes --report .\sync-playlists.txt --report-format table
+
+# Omit required transfer values to use the interactive workflow
+python plex_db_tool.py transfer-watch-status
+
+# Or run the package directly
+python -m plex_db_tool --help
+
+# Or use the older compatibility script name
+python plex_watch_status_transfer.py --help
+```
+
+#### Notes
+- In apply mode the script waits until Plex Media Server has fully stopped before it starts writing.
+- Dry-run mode can be used while Plex is still running, but copied DBs are still safer.
+- If the provided location contains multiple matching DB files, the script refuses to guess and asks for a narrower path.
+- If multiple target records share the same basename, the tool uses secondary metadata to decide whether the match is safe enough to apply.
+- If you omit the subcommand entirely, the CLI defaults to `transfer-watch-status`.
+- Interactive transfer mode first performs a dry-run, shows only rows with planned mutations by default, and then asks whether to apply the changes.
+- By default, rows that are already in sync or where the target is already ahead do not produce planned mutations.
+- Depending on the Plex schema version, source and target account ids may be required for account-scoped reads and writes.
+- Playlist discovery can read both legacy/custom playlist rows and metadata-backed Plex playlists.
+- `transfer-playlists` excludes empty playlists by default and prints a notice explaining how to include them.
+- `transfer-playlists` requires `--target-account-id` in non-interactive mode; interactive mode can prompt for it.
+- `sync-metadata-playlists` defaults `--playlist-conflict-policy` to `replace`, so rerunning it refreshes existing playlists from the current JSON selection.
+- `sync-metadata-playlists` also removes previously synced playlists when their stored `group_key` is no longer present in the current metadata selection for the chosen target account and library scope.
+- `sync-metadata-playlists` uses the standard `%LOCALAPPDATA%\Plex Media Server` folder as the target when `--target-path` is omitted.
+- `sync-metadata-playlists` requires `--target-library` and `--target-account-id` in non-interactive mode; if you omit them in an interactive terminal session, the command prompts you to choose them.
+- `sync-metadata-playlists` table output supports `--columns` with `column` or `column:width` entries; mandatory columns are `status` and `target_playlist`.
+- `--one-of-one-playlist` collapses all selected groups whose original metadata reports `episodes_expected=1` into one synthetic playlist, which is useful when movie-like metadata should still be synced as a single mixed collection.
+- If a playlist was previously created with a prefix or suffix, later syncs can rename it to the new configured name as long as the stored metadata `group_key` still identifies the same JSON group.
+- `--playlist-status-prefix` turns a group's stored status value into a prefix automatically, so `incomplete` becomes `[Incomplete]` and `complete_with_extras` becomes `[Complete With Extras]`.
+- `--playlist-status-suffix` does the same at the end of the playlist name instead of the beginning.
+- Prefix options are mutually exclusive with each other, and suffix options are mutually exclusive with each other, so each sync run can use at most one prefix mode and one suffix mode.
+- `--playlist-complete-suffix` is applied when `episodes_found >= episodes_expected` for groups with a known expected count; if no expected count is present, `complete` and `complete_with_extras` statuses are treated as complete.
+
+### video-optimizer-v2
+A script that allows for quick and easy optimization of videos. Just supply a list of videos on the command line or drag and drop them onto the script. You get a list of choices based on the contents of the videos such as which subtitles to make default, and which audio to make default along with target quality and resolution.
+
+It is made specifically for transcoding for example tv-shows from your legacy media in a quick and simple way. Just drag a whole season onto the script and easily convert it for use on your phone.
+
+It now also supports lookup of meta data from common anime databases and imdb. It will automatically download the metadata and add it to the video.
+
+Check out branch mediaoptimizer_v1 for the old version.
+
+#### Project Files
+##### metadata_cache_manager.py
+CLI helper for the video-optimizer providers to inspect and control cache TTLs. Supports `status`, `refresh`, `invalidate`, and `set-expiry` (accepts long form like "3 days" or short form like `2m7d`). TTL is persisted per provider (IMDb, Anime) and `invalidate` forces TTL to 0 so cache refreshes on next access. Optional `--no-color` disables colored output.
+
+##### metadata_provider.py
+Base metadata provider class that defines the interface for metadata retrieval services. This abstract class provides a common structure for implementing different metadata sources, handling search functionality, and managing metadata formatting for video files.
+
+##### anime_metadata.py
+Implements metadata retrieval from anime databases such as AniList and MyAnimeList. Provides specialized handling for anime series metadata including episode information, season data, air dates, and anime-specific details like studio information and Japanese titles.
+
+##### imdb_metadata.py
+Implements metadata retrieval from the Internet Movie Database (IMDb). Handles both movies and TV series metadata including cast information, directors, release dates, ratings, and plot summaries. Integrates with IMDb's API or web scraping for comprehensive movie and TV show information.
+
+##### plex_metadata.py
+Implements metadata retrieval from Plex Media Server. Connects to a local or remote Plex server to fetch metadata for movies and TV shows stored in the Plex library. Retrieves details such as titles, descriptions, genres, ratings, and artwork associated with the media files.
+
+##### myanimelist_watch_status.py
+Reads MyAnimeList watch-status data for the optimizer's metadata and tagging workflows.
+
+#### Requires
+Use the video-optimizer-v2/requirements.txt file to install the requirements.
+- ffmpeg-python
+- requests
+- pandas
+- tqdm
+- rapidfuzz
+- inquirer
+- mutagen
+
+### youtube-video-downloader
+A collection of youtube download scripts using the `ytdl_helper` library.
+It includes a command-line interface and a text-based user interface (TUI) for downloading YouTube videos and audio. It also includes a Flask web service for downloading YouTube videos and audio via a web interface, and a user script for adding a download button to YouTube pages.
+Now integrates with `music_style_classifier.py` to classify the music style of downloaded audio files.
+
+#### Project Files
+##### ytdl_helper library
+This library provides functionalities for downloading YouTube videos and audio efficiently. Users can fetch video information (metadata, available formats) and download content directly. The library supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
+It is used by both the command-line and TUI scripts.
+
+##### youtube-video-downloader-cli.py
+A command-line tool for downloading YouTube videos and audio using the `ytdl_helper` library. It allows fetching video information (metadata, available formats) as JSON or downloading content directly. Users can specify desired resolution, audio bitrate, output format (e.g., mp4, mp3), and target directory via command-line arguments. Download progress is displayed using `tqdm` progress bars.
+
+###### Usage (Examples)
+```bash
+# Get video info as JSON
+python youtube-video-downloader-cli.py info "VIDEO_URL"
+
+# Download best available video+audio (defaults to mp4)
+python youtube-video-downloader-cli.py download "VIDEO_URL"
+
+# Download audio only as mp3 to a specific directory
+python youtube-video-downloader-cli.py download "VIDEO_URL" -a --format mp3 -o ./downloads
+
+# Download 720p video (closest) with 192k audio (closest) as mkv
+python youtube-video-downloader-cli.py download "VIDEO_URL" -r 720p -b 192k -f mkv
+```
+###### Requires
+- ytdl_helper (and its dependencies, likely yt-dlp)
+- tqdm
+- ffmpeg (must be installed and in the system PATH)
+- music_style_classifier.py
+
+##### youtube-video-downloader-gui.py
+A Text-based User Interface (TUI) built with urwid for downloading YouTube videos. It takes video URLs as command-line arguments, fetches their information asynchronously using ytdl_helper, and displays them in an interactive list. Users can select items, choose specific video and audio formats via a detailed dialog, and initiate downloads. The TUI shows status updates and progress bars for each item. Batch pre-selection of best audio or video is possible via command-line flags (--audio-only, --video).
+
+###### Features
+- Interactive TUI powered by urwid.
+- Handles multiple URLs provided via command line.
+- Displays video title, duration, status, and progress.
+- Item selection using +/- keys.
+- Detailed format selection dialog (Enter key) allowing choice of:
+- Mode (Video+Audio, Video Only, Audio Only).
+- Specific video streams (resolution, codec, etc.).
+- Specific audio streams (bitrate, codec, etc.).
+- Initiates downloads for selected items (d key).
+- Real-time status and progress updates.
+- Batch mode flags (--audio-only, --video) for quick downloads.
+- Logs activity to logs/youtube_downloader.log.
+
+###### Requires
+- ytdl_helper (and its dependencies, likely yt-dlp)
+- urwid
+- ffmpeg (must be installed and in the system PATH)
+- music_style_classifier.py
+- **Note! (Windows specific):** ctypes (standard library, used for console setup)
+
+##### youtube-video-downloader-flask-ws.py & youtube-video-downloader.user-script.js
+A Flask web service that allows downloading YouTube videos and audio via a web interface. It accepts video URLs via POST requests, fetches metadata, and downloads the content. The service supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory. It returns download progress and status updates in JSON format. To use it, run the Flask web service and send POST requests with the video URL and desired parameters. The web service can be accessed via a user script (e.g., Tampermonkey) that adds a button to download videos directly from YouTube pages.
+The user script can be installed in a browser extension like Tampermonkey, which allows users to add custom scripts to web pages. The script adds a button to YouTube video pages, enabling users to download videos directly from the page.
+
+###### Usage (Examples)
+```bash
+# Start the Flask web service
+python youtube-video-downloader-flask-ws.py
+
+# Send a POST request to download a video
+curl -X POST -H "Content-Type: application/json" -d '{"url": "VIDEO_URL", "format": "mp4", "resolution": "720p", "audio_bitrate": "192k", "output_dir": "./downloads"}' http://localhost:5000/download
+```
+
+###### Features
+- Accepts video URLs via POST requests.
+- Fetches metadata and downloads content in various formats.
+- Provides download progress and status updates in JSON format.
+- Supports output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
+- Returns download progress and status updates in JSON format.
+- Logs activity to logs/youtube_downloader.log.
+
+###### Requires
+- Flask
+- ytdl_helper (and its dependencies, likely yt-dlp)
+- ffmpeg (must be installed and in the system PATH)
+- music_style_classifier.py
+
+### mini-dlna-server
+A script that runs a local dlna server instance on the computer, taking as input a command line argument pointing out the folder to serve to clients.
+
+It is intended if I get time to do it, to stabilize it to properly handle conenctions, work better with Windows 11, and transcode media to the client using ffmpeg.
+
+**Note!** Currently it is extremely unstable and mostly doesn't work. If anyone wants to refactor it and fix some of the remaining issues that would be cool. :)
+
+#### Requires
+- mutagen
 
 ## Scripts
 
@@ -177,124 +485,6 @@ python imdb_title_query.py --show-schema title.episode
 
 #### Requires
 - No external dependencies required (uses only Python standard libraries)
-
-### plex_db_tool.py
-A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. The user provides source and target locations, and the tool discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then performs watch-history or playlist operations without relying on media paths.
-
-The main entrypoint is the root shim `plex_db_tool.py`, which forwards into the `plex_db_tool` package. You can also run the package directly with `python -m plex_db_tool`. The older root script `plex_watch_status_transfer.py` is still available as a compatibility alias.
-
-#### Features
-- `transfer-watch-status`, `transfer-playlists`, `sync-metadata-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
-- Accepts source and target locations instead of requiring the full DB filename path
-- Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
-- Exact basename matching only; no partial filename matching
-- Optional source and target library section filters by library name
-- Separate source and target account ids for account-scoped read and write operations
-- Interactive mode when required transfer inputs are omitted, including library, account, and playlist selection from the discovered source and target DB contents
-- Smart interactive defaults for shared named accounts and existing CLI-provided values
-- Dry-run by default with table, CSV, or JSON console output and JSON, CSV, or table report output
-- Configurable table columns with compact labels, right-aligned numeric columns, truncation, and optional `column:width` overrides
-- Dry-run filters for `all`, `warnings`, and `errors`
-- Conservative merge behavior for existing target history with optional overwrite or skip policies
-- Planned mutations are only created when the target actually needs to change; in-sync and target-ahead rows are left untouched unless conflict policy explicitly allows overwrite behavior
-- Guarded write path that inspects the target `metadata_item_views` schema before inserting history rows
-- Updates Plex account-scoped watch state in both `metadata_item_views` and `metadata_item_settings` when supported by the target schema
-- Playlist listing supports library scoping, optional inclusion of empty playlists, and shows playlist ownership via `account_id` when available
-- Playlist transfer uses the same filename-based matching strategy as watch transfer for playlist members
-- Playlist transfer supports selecting specific playlists by id or exact name and conflict handling via `unique`, `merge`, `replace`, or `skip`
-- Metadata-playlist sync creates or updates one Plex playlist per selected JSON group from grouped metadata exports such as `series_completeness_checker.py`
-- Metadata-playlist sync supports the same `--status-filter`, `--modified`, `--episodes-found`, `--episodes-expected`, and `--sort` group filters used by `series_archiver.py`
-- Metadata-playlist sync supports `--playlist-prefix` and `--playlist-suffix` so generated playlists can be namespaced without changing the source JSON
-- Metadata-playlist sync supports `--playlist-status-prefix` to derive prefixes automatically from each group's status, such as `[Incomplete]` or `[Complete]`
-- Metadata-playlist sync supports `--playlist-status-suffix` to derive suffixes automatically from each group's status instead of putting the status at the front
-- Metadata-playlist sync also supports `--playlist-complete-suffix` so playlists can be labeled differently when all expected episodes are available for the season
-- Metadata-playlist sync supports JSON, CSV, and table console output plus matching JSON, CSV, or table report files
-- Metadata-playlist sync tracks previously generated playlists by the stored source `group_key`, so changing or removing a prefix/suffix updates the same playlist instead of creating a duplicate when the group identity still matches
-- Empty playlists are excluded by default for both `list-playlists` and `transfer-playlists` unless `--include-empty-playlists` is used
-- Playlist transfer requires an explicit `--target-account-id` in non-interactive mode so created or updated target playlists are assigned to the intended Plex account
-- Apply mode blocks until Plex Media Server is no longer running
-
-#### Usage Examples
-```bash
-# Show top-level help through the main root shim
-python plex_db_tool.py --help
-
-# Preview transfer results without writing changes
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.json
-
-# Restrict transfer to named libraries and apply changes
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --source-account-id 1 --target-account-id 1 --apply
-
-# Show a compact console table during dry-run
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --console-format table --columns status,dry_run_status,source_watch_count,target_watch_count,source_filename,target_filename
-
-# Export a CSV review report
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.csv
-
-# Inspect available libraries and accounts before transferring
-python plex_db_tool.py list-libraries --path "C:\Users\you\AppData\Local\Plex Media Server"
-python plex_db_tool.py list-accounts --path "C:\Users\you\AppData\Local\Plex Media Server"
-
-# List playlists in a DB and show owner account ids when available
-python plex_db_tool.py list-playlists --path "C:\Users\you\AppData\Local\Plex Media Server" --library TV --console-format table
-
-# Preview transferring selected playlists into a target account
-python plex_db_tool.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
-
-# Build or refresh one Plex playlist per filtered JSON group
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --target-path "C:\Users\you\AppData\Local\Plex Media Server" --target-library "TV Shows" --target-account-id 1 --status-filter "+incomplete +watched_partial" --episodes-found ">=2" --sort
-
-# Namespace generated playlist names and write a JSON review report
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Incomplete] " --playlist-suffix " [Review]" --console-format json --report .\sync-playlists.json
-
-# Automatically prefix playlist names from each group's status
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-prefix
-
-# Automatically suffix playlist names from each group's status
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-suffix
-
-# Append an extra suffix only when a season is complete
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Anime] " --playlist-complete-suffix " [Complete]"
-
-# Combine every selected episodes_expected=1 group into one playlist
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --one-of-one-playlist "[A] One Of One"
-
-# Export a compact table report with custom columns
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --console-format table --columns target_playlist,status,matched_item_count,unmatched_item_count,notes --report .\sync-playlists.txt --report-format table
-
-# Omit required transfer values to use the interactive workflow
-python plex_db_tool.py transfer-watch-status
-
-# Or run the package directly
-python -m plex_db_tool --help
-
-# Or use the older compatibility script name
-python plex_watch_status_transfer.py --help
-```
-
-#### Notes
-- In apply mode the script waits until Plex Media Server has fully stopped before it starts writing.
-- Dry-run mode can be used while Plex is still running, but copied DBs are still safer.
-- If the provided location contains multiple matching DB files, the script refuses to guess and asks for a narrower path.
-- If multiple target records share the same basename, the tool uses secondary metadata to decide whether the match is safe enough to apply.
-- If you omit the subcommand entirely, the CLI defaults to `transfer-watch-status`.
-- Interactive transfer mode first performs a dry-run, shows only rows with planned mutations by default, and then asks whether to apply the changes.
-- By default, rows that are already in sync or where the target is already ahead do not produce planned mutations.
-- Depending on the Plex schema version, source and target account ids may be required for account-scoped reads and writes.
-- Playlist discovery can read both legacy/custom playlist rows and metadata-backed Plex playlists.
-- `transfer-playlists` excludes empty playlists by default and prints a notice explaining how to include them.
-- `transfer-playlists` requires `--target-account-id` in non-interactive mode; interactive mode can prompt for it.
-- `sync-metadata-playlists` defaults `--playlist-conflict-policy` to `replace`, so rerunning it refreshes existing playlists from the current JSON selection.
-- `sync-metadata-playlists` also removes previously synced playlists when their stored `group_key` is no longer present in the current metadata selection for the chosen target account and library scope.
-- `sync-metadata-playlists` uses the standard `%LOCALAPPDATA%\Plex Media Server` folder as the target when `--target-path` is omitted.
-- `sync-metadata-playlists` requires `--target-library` and `--target-account-id` in non-interactive mode; if you omit them in an interactive terminal session, the command prompts you to choose them.
-- `sync-metadata-playlists` table output supports `--columns` with `column` or `column:width` entries; mandatory columns are `status` and `target_playlist`.
-- `--one-of-one-playlist` collapses all selected groups whose original metadata reports `episodes_expected=1` into one synthetic playlist, which is useful when movie-like metadata should still be synced as a single mixed collection.
-- If a playlist was previously created with a prefix or suffix, later syncs can rename it to the new configured name as long as the stored metadata `group_key` still identifies the same JSON group.
-- `--playlist-status-prefix` turns a group's stored status value into a prefix automatically, so `incomplete` becomes `[Incomplete]` and `complete_with_extras` becomes `[Complete With Extras]`.
-- `--playlist-status-suffix` does the same at the end of the playlist name instead of the beginning.
-- Prefix options are mutually exclusive with each other, and suffix options are mutually exclusive with each other, so each sync run can use at most one prefix mode and one suffix mode.
-- `--playlist-complete-suffix` is applied when `episodes_found >= episodes_expected` for groups with a known expected count; if no expected count is present, `complete` and `complete_with_extras` statuses are treated as complete.
 
 ### media-to-mp3.py
 Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.
@@ -718,41 +908,6 @@ Downloads the specified `.mp3` file and adds the provided metadata to it.
   - numpy
   - transformers
 
-### video-optimizer-v2
-A script that allows for quick and easy optimization of videos. Just supply a list of videos on the command line or drag and drop them onto the script. You get a list of choices based on the contents of the videos such as which subtitles to make default, and which audio to make default along with target quality and resolution.
-
-It is made specifically for transcoding for example tv-shows from your legacy media in a quick and simple way. Just drag a whole season onto the script and easily convert it for use on your phone.
-
-It now also supports lookup of meta data from common anime databases and imdb. It will automatically download the metadata and add it to the video.
-
-Check out branch mediaoptimizer_v1 for the old version.
-
-#### Matadata Providers
-##### metadata_cache_manager.py
-CLI helper for the video-optimizer providers to inspect and control cache TTLs. Supports `status`, `refresh`, `invalidate`, and `set-expiry` (accepts long form like "3 days" or short form like `2m7d`). TTL is persisted per provider (IMDb, Anime) and `invalidate` forces TTL to 0 so cache refreshes on next access. Optional `--no-color` disables colored output.
-
-##### metadata_provider.py
-Base metadata provider class that defines the interface for metadata retrieval services. This abstract class provides a common structure for implementing different metadata sources, handling search functionality, and managing metadata formatting for video files.
-
-##### anime_provider.py
-Implements metadata retrieval from anime databases such as AniList and MyAnimeList. Provides specialized handling for anime series metadata including episode information, season data, air dates, and anime-specific details like studio information and Japanese titles.
-
-##### imdb_provider.py
-Implements metadata retrieval from the Internet Movie Database (IMDb). Handles both movies and TV series metadata including cast information, directors, release dates, ratings, and plot summaries. Integrates with IMDb's API or web scraping for comprehensive movie and TV show information.
-
-##### plex_metadata.py
-Implements metadata retrieval from Plex Media Server. Connects to a local or remote Plex server to fetch metadata for movies and TV shows stored in the Plex library. Retrieves details such as titles, descriptions, genres, ratings, and artwork associated with the media files.
-
-#### Requires
-Use the video-optimizer-v2/requirements.txt file to install the requirements.
-- ffmpeg-python
-- requests
-- pandas
-- tqdm
-- rapidfuzz
-- inquirer
-- mutagen
-
 ### rss-feed-downloader.py
 A script to parse RSS feeds and download enclosures (e.g., audio, video, or other files) with a console-based GUI for selection and progress tracking.
 
@@ -766,89 +921,6 @@ A script to parse RSS feeds and download enclosures (e.g., audio, video, or othe
 - curses
 - urllib
 - json
-
-### youtube-video-downloader
-A collection of youtube download scripts using the `ytdl_helper` library.
-It includes a command-line interface and a text-based user interface (TUI) for downloading YouTube videos and audio. It also includes a Flask web service for downloading YouTube videos and audio via a web interface, and a user script for adding a download button to YouTube pages.
-Now integrates with `music_style_classifier.py` to classify the music style of downloaded audio files.
-
-#### ytdl_helper library
-This library provides functionalities for downloading YouTube videos and audio efficiently. Users can fetch video information (metadata, available formats) and download content directly. The library supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
-It is used by both the command-line and TUI scripts.
-
-#### youtube-video-downloader-cli.py
-A command-line tool for downloading YouTube videos and audio using the `ytdl_helper` library. It allows fetching video information (metadata, available formats) as JSON or downloading content directly. Users can specify desired resolution, audio bitrate, output format (e.g., mp4, mp3), and target directory via command-line arguments. Download progress is displayed using `tqdm` progress bars.
-
-##### Usage (Examples)
-```bash
-# Get video info as JSON
-python youtube-video-downloader-cli.py info "VIDEO_URL"
-
-# Download best available video+audio (defaults to mp4)
-python youtube-video-downloader-cli.py download "VIDEO_URL"
-
-# Download audio only as mp3 to a specific directory
-python youtube-video-downloader-cli.py download "VIDEO_URL" -a --format mp3 -o ./downloads
-
-# Download 720p video (closest) with 192k audio (closest) as mkv
-python youtube-video-downloader-cli.py download "VIDEO_URL" -r 720p -b 192k -f mkv
-```
-##### Requires
-- ytdl_helper (and its dependencies, likely yt-dlp)
-- tqdm
-- ffmpeg (must be installed and in the system PATH)
-- music_style_classifier.py
-
-#### youtube-video-downloader-gui.py
-A Text-based User Interface (TUI) built with urwid for downloading YouTube videos. It takes video URLs as command-line arguments, fetches their information asynchronously using ytdl_helper, and displays them in an interactive list. Users can select items, choose specific video and audio formats via a detailed dialog, and initiate downloads. The TUI shows status updates and progress bars for each item. Batch pre-selection of best audio or video is possible via command-line flags (--audio-only, --video).
-
-##### Features
-- Interactive TUI powered by urwid.
-- Handles multiple URLs provided via command line.
-- Displays video title, duration, status, and progress.
-- Item selection using +/- keys.
-- Detailed format selection dialog (Enter key) allowing choice of:
-- Mode (Video+Audio, Video Only, Audio Only).
-- Specific video streams (resolution, codec, etc.).
-- Specific audio streams (bitrate, codec, etc.).
-- Initiates downloads for selected items (d key).
-- Real-time status and progress updates.
-- Batch mode flags (--audio-only, --video) for quick downloads.
-- Logs activity to logs/youtube_downloader.log.
-
-##### Requires
-- ytdl_helper (and its dependencies, likely yt-dlp)
-- urwid
-- ffmpeg (must be installed and in the system PATH)
-- music_style_classifier.py
-- **Note! (Windows specific):** ctypes (standard library, used for console setup)
-
-#### youtube-video-downloader-flask-ws.py & youtube-video-downloader-user-script.js
-A Flask web service that allows downloading YouTube videos and audio via a web interface. It accepts video URLs via POST requests, fetches metadata, and downloads the content. The service supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory. It returns download progress and status updates in JSON format. To use it, run the Flask web service and send POST requests with the video URL and desired parameters. The web service can be accessed via a user script (e.g., Tampermonkey) that adds a button to download videos directly from YouTube pages.
-The user script can be installed in a browser extension like Tampermonkey, which allows users to add custom scripts to web pages. The script adds a button to YouTube video pages, enabling users to download videos directly from the page.
-
-##### Usage (Examples)
-```bash
-# Start the Flask web service
-python youtube-video-downloader-flask-ws.py
-
-# Send a POST request to download a video
-curl -X POST -H "Content-Type: application/json" -d '{"url": "VIDEO_URL", "format": "mp4", "resolution": "720p", "audio_bitrate": "192k", "output_dir": "./downloads"}' http://localhost:5000/download
-```
-
-##### Features
-- Accepts video URLs via POST requests.
-- Fetches metadata and downloads content in various formats.
-- Provides download progress and status updates in JSON format.
-- Supports output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
-- Returns download progress and status updates in JSON format.
-- Logs activity to logs/youtube_downloader.log.
-
-##### Requires
-- Flask
-- ytdl_helper (and its dependencies, likely yt-dlp)
-- ffmpeg (must be installed and in the system PATH)
-- music_style_classifier.py
 
 ### music_style_classifier.py
 A script that takes as imput an audio/video file to classify the music style of the file. It uses a pre-trained model to classify the music style and outputs the result.
@@ -1390,12 +1462,3 @@ But it is not good. Really not good. It's a start, but not quite there yet. Need
 - tqdm
 - dataclasses
 
-### mini-dlna-server.py
-A script that runs a local dlna server instance on the computer, taking as input a command line argument pointing out the folder to serve to clients.
-
-It is intended if I get time to do it, to stabilize it to properly handle conenctions, work better with Windows 11, and transcode media to the client using ffmpeg.
-
-**Note!** Currently it is extremely unstable and mostly doesn't work. If anyone wants to refactor it and fix some of the remaining issues that would be cool. :)
-
-#### Requires
-- mutagen
