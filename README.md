@@ -37,6 +37,8 @@ Miscellaneous scripts to automate common tasks.
     - [series_archiver.py](#series_archiverpy): Archives series into organized folders with optional integrity checks.
     - [series_bundler.py](#series_bundlerpy): Bundles episodes into standardized archive folders using parsed filename metadata.
     - [latest_episodes_viewer.py](#latest_episodes_viewerpy): Generates an HTML page listing the latest episodes in a collection.
+  - Local Tooling & Automation
+    - [ollama_tool_agent.py](#ollama_tool_agentpy): Approval-gated local Ollama tool agent with streamed reasoning, persistent task state, and file tools.
   - Web Services, Networking & Downloads
     - [simple_scraper_proxy.py](#simple_scraper_proxypy): Fetches pages with YAML selectors and returns scraped RSS feeds.
     - [m3u8-to-mp4-flask-webservice.py](#m3u8-to-mp4-flask-webservicepy): Flask service that inspects and converts M3U8 streams to MP4.
@@ -430,6 +432,36 @@ python compare_package_versions.py --no-color "requests==2.31.0"
 
 #### Requires
 - packaging
+
+### ollama_tool_agent.py
+A local Ollama-based task agent that can inspect files and execute approved tool actions step by step. It streams visible thinking to the console, requires explicit user approval before each tool execution, preserves recent turn context across turns, and keeps the session open for follow-up requests.
+
+#### Features
+- Streams user-visible thinking and response progress in the console
+- Uses structured JSON responses with a single next action per turn
+- Requires explicit approval before any tool call is executed
+- Persists recent thinking, plans, answers, guidance, tool inputs, and tool outputs as task state
+- Includes built-in tools for `list_files`, `crc32`, and batch `rename_files`
+- Supports follow-up guidance so the agent can continue the same task instead of restarting from scratch
+- Exposes CLI options for model name, host, read timeout, max steps, working directory, and requested context size
+
+#### Usage Examples
+```bash
+# Start an interactive session
+python ollama_tool_agent.py
+
+# Run a single task from the command line
+python ollama_tool_agent.py "List the files in C:\Media and tell me how many there are"
+
+# Override the model and requested context size
+python ollama_tool_agent.py --model gemma4:e2b --num-ctx 65536 "Compute CRC32 for files in C:\Downloads\Season 1"
+```
+
+#### Requires
+- ollama
+- httpx
+- colorama
+- tqdm
 
 ### simple_scraper_proxy.py
 A standalone scraping proxy that fetches an upstream HTML page, extracts feed data using a local YAML selector template, and returns an RSS 2.0 feed.
