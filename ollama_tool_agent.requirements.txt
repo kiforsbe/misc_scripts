@@ -1,0 +1,4 @@
+# ollama_tool_agent.py
+ollama
+tqdm
+colorama
