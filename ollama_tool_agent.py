@@ -46,7 +46,6 @@ Use the available tools directly and keep tool usage minimal.
 
 Rules:
 - Prefer list_files_by_size when the user wants files ordered by size.
-- After calling list_files_by_size, answer directly from the returned files array with a single final_answer tool call.
 - For file_info, use the exact argument name paths.
 - When list_files returns relative paths for one folder, pass that folder as base_path and the returned path values as paths.
 - Do not invent filenames, placeholder values, or example outputs.
@@ -67,12 +66,25 @@ class CompactAgentLogger(AgentLogger):
         return any(self._is_filtered_message(arg) for arg in args)
 
     def _is_filtered_message(self, value: Any) -> bool:
-        plain_text = getattr(value, "plain", None)
-        if isinstance(plain_text, str):
-            return plain_text.startswith("Final answer:")
+        plain_text = self._extract_plain_text(value)
+        if plain_text:
+            return plain_text.startswith("Final answer:") or plain_text.startswith("Calling tool: 'final_answer'")
         if isinstance(value, str):
             return value.startswith("Observations:")
         return False
+
+    def _extract_plain_text(self, value: Any) -> str:
+        plain_text = getattr(value, "plain", None)
+        if isinstance(plain_text, str):
+            return plain_text
+
+        renderable = getattr(value, "renderable", None)
+        if renderable is not None:
+            renderable_plain = getattr(renderable, "plain", None)
+            if isinstance(renderable_plain, str):
+                return renderable_plain
+
+        return ""
 
 
 def parse_verbosity_level(raw_level: str) -> LogLevel:
