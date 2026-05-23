@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from smolagents import ToolCallingAgent, tool
-from smolagents.agents import LogLevel
+from smolagents.monitoring import AgentLogger, LogLevel
 from smolagents.models import ApiModel, ChatMessage, ChatMessageToolCall, ChatMessageToolCallFunction, TokenUsage
 
 
@@ -22,7 +22,7 @@ DEFAULT_MAX_STEPS = 8
 DEFAULT_MAX_TOKENS = 32 * 1024
 DEFAULT_NUM_CTX = 128 * 1024
 DEFAULT_REASONING_EFFORT = "high"
-DEFAULT_VERBOSITY = "off"
+DEFAULT_VERBOSITY = "compact"
 CRC32_DEFAULT_CHUNK_SIZE = 1024 * 1024
 FILE_INFO_AVAILABLE_FIELDS = (
     "path",
@@ -54,8 +54,37 @@ Rules:
 CURRENT_WORKING_DIRECTORY = Path(DEFAULT_WORKING_DIRECTORY).resolve()
 
 
+class CompactAgentLogger(AgentLogger):
+    def log(self, *args: Any, level: int | str | LogLevel = LogLevel.INFO, **kwargs: Any) -> None:
+        if self._should_suppress(args, level):
+            return
+        super().log(*args, level=level, **kwargs)
+
+    def _should_suppress(self, args: tuple[Any, ...], level: int | str | LogLevel) -> bool:
+        normalized_level = LogLevel[level.upper()] if isinstance(level, str) else level
+        if normalized_level != LogLevel.INFO:
+            return False
+        return any(self._is_filtered_message(arg) for arg in args)
+
+    def _is_filtered_message(self, value: Any) -> bool:
+        plain_text = getattr(value, "plain", None)
+        if isinstance(plain_text, str):
+            return plain_text.startswith("Final answer:")
+        if isinstance(value, str):
+            return value.startswith("Observations:")
+        return False
+
+
 def parse_verbosity_level(raw_level: str) -> LogLevel:
+    if raw_level == "compact":
+        return LogLevel.INFO
     return LogLevel[raw_level.upper()]
+
+
+def build_logger(verbosity: str) -> AgentLogger | None:
+    if verbosity == "compact":
+        return CompactAgentLogger(level=LogLevel.INFO)
+    return None
 
 
 def normalize_ollama_host(host: str) -> str:
@@ -624,6 +653,7 @@ def build_agent(
         instructions=AGENT_INSTRUCTIONS,
         max_steps=max_steps,
         verbosity_level=parse_verbosity_level(verbosity),
+        logger=build_logger(verbosity),
     )
 
 
@@ -673,7 +703,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--verbosity",
-        choices=["off", "error", "info", "debug"],
+        choices=["off", "error", "compact", "info", "debug"],
         default=DEFAULT_VERBOSITY,
         help=f"smolagents console trace level (default: {DEFAULT_VERBOSITY}).",
     )
