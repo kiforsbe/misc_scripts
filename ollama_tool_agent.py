@@ -13,6 +13,7 @@ from typing import Any
 from smolagents import ToolCallingAgent, tool
 from smolagents.monitoring import AgentLogger, LogLevel
 from smolagents.models import ApiModel, ChatMessage, ChatMessageToolCall, ChatMessageToolCallFunction, TokenUsage
+from tqdm import tqdm
 
 
 DEFAULT_MODEL_NAME = "gemma4:e2b"
@@ -461,33 +462,53 @@ def crc32(paths: list[str], base_path: str = "", chunk_size: int = CRC32_DEFAULT
     if not normalized_paths:
         raise ValueError("paths is required")
 
-    files: list[dict[str, Any]] = []
+    resolved_targets: list[tuple[str, Path, int]] = []
+    total_bytes = 0
     for relative_path in normalized_paths:
         target_path = resolve_tool_path(relative_path, base_path=str(resolved_base_path))
         if not target_path.exists() or not target_path.is_file():
             raise FileNotFoundError(f"Path is not a file: {target_path}")
+        file_size = target_path.stat().st_size
+        resolved_targets.append((relative_path, target_path, file_size))
+        total_bytes += file_size
 
-        checksum = 0
-        with target_path.open("rb") as file_handle:
-            while True:
-                chunk = file_handle.read(chunk_size)
-                if not chunk:
-                    break
-                checksum = binascii.crc32(chunk, checksum)
+    files: list[dict[str, Any]] = []
+    with tqdm(
+        total=total_bytes,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc="CRC32 batch",
+        dynamic_ncols=True,
+        colour="cyan",
+        leave=True,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+    ) as progress_bar:
+        for file_index, (_, target_path, file_size) in enumerate(resolved_targets, start=1):
+            progress_bar.set_postfix_str(f"{file_index}/{len(resolved_targets)} {target_path.name}")
 
-        try:
-            display_path = str(target_path.relative_to(CURRENT_WORKING_DIRECTORY))
-        except ValueError:
-            display_path = str(target_path)
+            checksum = 0
+            with target_path.open("rb") as file_handle:
+                while True:
+                    chunk = file_handle.read(chunk_size)
+                    if not chunk:
+                        break
+                    checksum = binascii.crc32(chunk, checksum)
+                    progress_bar.update(len(chunk))
 
-        files.append(
-            {
-                "path": display_path,
-                "absolute_path": str(target_path),
-                "crc32": f"{checksum & 0xFFFFFFFF:08X}",
-                "bytes": target_path.stat().st_size,
-            }
-        )
+            try:
+                display_path = str(target_path.relative_to(CURRENT_WORKING_DIRECTORY))
+            except ValueError:
+                display_path = str(target_path)
+
+            files.append(
+                {
+                    "path": display_path,
+                    "absolute_path": str(target_path),
+                    "crc32": f"{checksum & 0xFFFFFFFF:08X}",
+                    "bytes": file_size,
+                }
+            )
 
     if len(files) == 1:
         return {**files[0], "files": files}
