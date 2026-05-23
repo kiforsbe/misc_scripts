@@ -8,9 +8,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
-from smolagents import ToolCallingAgent, tool
+from smolagents import ActionStep, AgentAudio, AgentImage, AgentToolExecutionError, ToolCall, ToolCallingAgent, ToolOutput, tool
 from smolagents.monitoring import AgentLogger, LogLevel
 from smolagents.models import ApiModel, ChatMessage, ChatMessageToolCall, ChatMessageToolCallFunction, TokenUsage
 from tqdm import tqdm
@@ -338,6 +338,179 @@ def resolve_tool_path(raw_path: str, *, base_path: str = "") -> Path:
 
     root = Path(base_path).expanduser() if base_path else CURRENT_WORKING_DIRECTORY
     return (root / candidate).resolve()
+
+
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_CYAN = "\033[36m"
+ANSI_GREEN = "\033[32m"
+ANSI_RED = "\033[31m"
+ANSI_YELLOW = "\033[33m"
+ANSI_WHITE = "\033[37m"
+APPROVAL_BLOCK_WIDTH = 78
+
+
+def style_ansi(text: str, *codes: str) -> str:
+    return f"{''.join(codes)}{text}{ANSI_RESET}"
+
+
+def approval_separator(title: str = "") -> str:
+    if not title:
+        return "=" * APPROVAL_BLOCK_WIDTH
+    decorated_title = f"[ {title} ]"
+    padding = max(APPROVAL_BLOCK_WIDTH - len(decorated_title) - 1, 0)
+    return f"{decorated_title} {'=' * padding}"
+
+
+def format_tool_call_scalar(value: Any) -> str:
+    if value is None:
+        return "(none)"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, str):
+        return value or "(empty)"
+    return str(value)
+
+
+def format_parameter_key(label: str) -> str:
+    return style_ansi(label, ANSI_CYAN, ANSI_BOLD)
+
+
+def format_parameter_value(value: Any) -> str:
+    color = ANSI_GREEN if isinstance(value, bool) else ANSI_WHITE
+    return style_ansi(format_tool_call_scalar(value), color)
+
+
+def format_tool_call_arguments(arguments: dict[str, Any] | str | None) -> str:
+    lines: list[str] = []
+
+    def append_value(label: str, value: Any, indent: int) -> None:
+        prefix = "  " * indent
+        if isinstance(value, dict):
+            if not value:
+                lines.append(f"{prefix}{format_parameter_key(label)}: {format_parameter_value(None)}")
+                return
+            lines.append(f"{prefix}{format_parameter_key(label)}")
+            for child_key in sorted(value):
+                append_value(str(child_key), value[child_key], indent + 1)
+            return
+
+        if isinstance(value, list):
+            if not value:
+                lines.append(f"{prefix}{format_parameter_key(label)}: {format_parameter_value(None)}")
+                return
+            lines.append(f"{prefix}{format_parameter_key(label)}")
+            for index, item in enumerate(value, start=1):
+                item_label = f"Item {index}"
+                if isinstance(item, (dict, list)):
+                    append_value(item_label, item, indent + 1)
+                else:
+                    item_prefix = "  " * (indent + 1)
+                    lines.append(f"{item_prefix}{format_parameter_key(item_label)}: {format_parameter_value(item)}")
+            return
+
+        lines.append(f"{prefix}{format_parameter_key(label)}: {format_parameter_value(value)}")
+
+    if arguments is None:
+        return f"  {format_parameter_key('Parameters')}: {format_parameter_value(None)}"
+
+    if isinstance(arguments, dict):
+        if not arguments:
+            return f"  {format_parameter_key('Parameters')}: {format_parameter_value(None)}"
+        for key in sorted(arguments):
+            append_value(str(key), arguments[key], 1)
+        return "\n".join(lines)
+
+    if isinstance(arguments, list):
+        append_value("Parameters", arguments, 1)
+        return "\n".join(lines)
+
+    return f"  {format_parameter_key('Value')}: {format_parameter_value(arguments)}"
+
+
+def format_tool_call_preview(tool_name: str, arguments: dict[str, Any] | str | None) -> str:
+    formatted_arguments = format_tool_call_arguments(arguments).splitlines() or ["{}"]
+    parameter_block = "\n".join(f"  {line}" for line in formatted_arguments)
+    return "\n".join(
+        [
+            style_ansi(approval_separator("TOOL CALL APPROVAL"), ANSI_CYAN, ANSI_BOLD),
+            f"{style_ansi('Status', ANSI_YELLOW, ANSI_BOLD)} : Pending user approval",
+            f"{style_ansi('Tool', ANSI_CYAN, ANSI_BOLD)}   : {style_ansi(tool_name, ANSI_BOLD)}",
+            style_ansi(approval_separator("PARAMETERS"), ANSI_CYAN),
+            parameter_block,
+            style_ansi("=" * APPROVAL_BLOCK_WIDTH, ANSI_CYAN, ANSI_BOLD),
+        ]
+    )
+
+
+def require_tool_call_approval(tool_name: str, arguments: dict[str, Any] | str | None) -> None:
+    print()
+    print(format_tool_call_preview(tool_name, arguments))
+
+    while True:
+        response = input(style_ansi("Approve this tool call? [y/N]: ", ANSI_BOLD)).strip().lower()
+        if response in {"y", "yes"}:
+            return
+        if response in {"", "n", "no"}:
+            raise AgentToolExecutionError(f"Tool call denied by user: {tool_name}")
+        print(style_ansi("Please answer y or n.", ANSI_YELLOW))
+
+
+class ApprovalToolCallingAgent(ToolCallingAgent):
+    def process_tool_calls(
+        self, chat_message: ChatMessage, memory_step: ActionStep
+    ) -> Generator[ToolCall | ToolOutput]:
+        assert chat_message.tool_calls is not None
+
+        ordered_calls: list[ToolCall] = []
+        for chat_tool_call in chat_message.tool_calls:
+            tool_call = ToolCall(
+                name=chat_tool_call.function.name,
+                arguments=chat_tool_call.function.arguments,
+                id=chat_tool_call.id,
+            )
+            yield tool_call
+            ordered_calls.append(tool_call)
+
+        outputs: list[ToolOutput] = []
+        for tool_call in ordered_calls:
+            tool_name = tool_call.name
+            tool_arguments = tool_call.arguments or {}
+            tool_call_result = self.execute_tool_call(tool_name, tool_arguments)
+            tool_call_result_type = type(tool_call_result)
+            if tool_call_result_type in [AgentImage, AgentAudio]:
+                observation_name = "image.png" if tool_call_result_type == AgentImage else "audio.mp3"
+                self.state[observation_name] = tool_call_result
+                observation = f"Stored '{observation_name}' in memory."
+            else:
+                observation = str(tool_call_result).strip()
+
+            self.logger.log(
+                f"Observations: {observation.replace('[', '|')}",
+                level=LogLevel.INFO,
+            )
+            tool_output = ToolOutput(
+                id=tool_call.id,
+                output=tool_call_result,
+                is_final_answer=tool_name == "final_answer",
+                observation=observation,
+                tool_call=tool_call,
+            )
+            outputs.append(tool_output)
+            yield tool_output
+
+        memory_step.tool_calls = ordered_calls
+        memory_step.observations = memory_step.observations or ""
+        for tool_output in outputs:
+            memory_step.observations += tool_output.observation + "\n"
+        memory_step.observations = (
+            memory_step.observations.rstrip("\n") if memory_step.observations else memory_step.observations
+        )
+
+    def execute_tool_call(self, tool_name: str, arguments: dict[str, str] | str) -> Any:
+        if tool_name != "final_answer":
+            require_tool_call_approval(tool_name, arguments)
+        return super().execute_tool_call(tool_name, arguments)
 
 
 @tool
@@ -689,7 +862,7 @@ def build_agent(
         num_ctx=num_ctx,
         reasoning_effort=reasoning_effort,
     )
-    return ToolCallingAgent(
+    return ApprovalToolCallingAgent(
         tools=[list_files, list_files_by_size, crc32, file_info, rename_files],
         model=model,
         instructions=AGENT_INSTRUCTIONS,
