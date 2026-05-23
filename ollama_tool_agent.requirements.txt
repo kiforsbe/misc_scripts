@@ -1,4 +1,4 @@
 # ollama_tool_agent.py
-ollama
+smolagents
 tqdm
 colorama
