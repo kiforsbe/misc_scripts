@@ -57,31 +57,48 @@ AGENT_RESPONSE_SCHEMA = {
 
 
 MAX_VISIBLE_THINKING_CHARS = 4096
-DEFAULT_NUM_PREDICT = 32*1024
+DEFAULT_NUM_PREDICT = 16*1024
 DEFAULT_MODEL_NAME = "gemma4:e2b"
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_WORKING_DIRECTORY = "."
 DEFAULT_MAX_STEPS = 8
 DEFAULT_READ_TIMEOUT_SECONDS = 60.0
-DEFAULT_NUM_CTX = 65536
+DEFAULT_NUM_CTX = 128*1024
 MODEL_TURN_TEMPERATURE = 0.1
 REPAIR_TEMPERATURE = 0.0
 MODEL_TURN_MAX_ATTEMPTS = 3
 RECENT_MESSAGES_LIMIT = 6
-RECENT_MESSAGE_MAX_LENGTH = 32*1024
+RECENT_MESSAGE_MAX_LENGTH = 64*1024
 INVALID_JSON_PREVIEW_MAX_LENGTH = 300
 DEFAULT_TASK_HISTORY_MAX_ENTRIES = 16
 DEFAULT_TASK_STATE_LOG_MAX_ENTRIES = 12
 DEFAULT_TASK_STATE_VALUE_MAX_ENTRIES = 18
 TURN_CONTEXT_MAX_ENTRIES = 24
-TURN_CONTEXT_THINKING_MAX_LENGTH = 32*1024
-TURN_CONTEXT_MESSAGE_MAX_LENGTH = 32*1024
-TURN_CONTEXT_TOOL_STEP_MAX_LENGTH = 32*1024
-TURN_CONTEXT_GUIDANCE_MAX_LENGTH = 32*1024
+TURN_CONTEXT_THINKING_MAX_LENGTH = 64*1024
+TURN_CONTEXT_MESSAGE_MAX_LENGTH = 64*1024
+TURN_CONTEXT_TOOL_STEP_MAX_LENGTH = 64*1024
+TURN_CONTEXT_GUIDANCE_MAX_LENGTH = 64*1024
 CRC32_DEFAULT_CHUNK_SIZE = 1024 * 1024
 HTTP_CONNECT_TIMEOUT_SECONDS = 10.0
 HTTP_WRITE_TIMEOUT_SECONDS = 30.0
 HTTP_POOL_TIMEOUT_SECONDS = 30.0
+FILE_INFO_AVAILABLE_FIELDS = (
+    "path",
+    "path_from_base",
+    "absolute_path",
+    "name",
+    "stem",
+    "suffix",
+    "parent",
+    "bytes",
+    "created",
+    "modified",
+    "accessed",
+    "is_symlink",
+    "is_hidden",
+    "is_readonly",
+)
+FILE_INFO_REQUIRED_OUTPUT_FIELDS = ("name",)
 
 
 init(autoreset=True)
@@ -466,6 +483,10 @@ Rules:
 - Keep tool calls minimal and relevant to the user's request.
 - When file paths are needed, reuse only exact paths already present in the conversation or task state. Do not invent or normalize unseen filenames.
 - When calling crc32 for many files from one listed directory, prefer using base_path plus the short entry paths returned by list_files instead of repeating long absolute paths.
+- When calling file_info, include action.arguments.base_path whenever the files come from one known directory and the paths are relative names from list_files or prior results. Do not omit base_path in that case.
+- When calling file_info, request only the specific fields you need by setting action.arguments.fields. Do not omit fields unless you genuinely need the full file info payload.
+- For file_info, prefer calls shaped like base_path=<full folder path>, paths=[<relative file names>], fields=[<needed fields>].
+- For file_info, prefer narrow field lists such as ["name", "bytes"], ["name", "modified"], or ["path", "suffix", "bytes"] instead of requesting every field by default.
 - Only use the exact tool names shown below.
 - If a previous plan was rejected, revise it to match the user's feedback.
 - After tool results are provided, either produce a concrete respond action or propose the single next tool action.
@@ -988,6 +1009,179 @@ def make_crc32_tool(working_directory: Path) -> ToolDefinition:
     )
 
 
+def make_file_info_tool(working_directory: Path) -> ToolDefinition:
+    def format_arguments(arguments: dict[str, Any]) -> list[str]:
+        paths = arguments.get("paths", [])
+        base_path = str(arguments.get("base_path", "")).strip()
+        fields = arguments.get("fields", [])
+        if not isinstance(paths, list):
+            paths = []
+        if not isinstance(fields, list):
+            fields = []
+
+        lines = [f"get detailed info for {len(paths)} file(s)"]
+        if base_path:
+            lines.append(f"folder: {base_path}")
+        if fields:
+            field_names = [str(field).strip() for field in fields if str(field).strip()]
+            if field_names:
+                lines.append(f"fields: {', '.join(field_names)}")
+
+        for path in paths:
+            path_text = str(path).strip()
+            if path_text:
+                lines.append(path_text)
+
+        return lines
+
+    def handler(arguments: dict[str, Any]) -> dict[str, Any]:
+        base_path_raw = str(arguments.get("base_path", "")).strip()
+        raw_paths = arguments.get("paths", [])
+        raw_fields = arguments.get("fields", [])
+
+        if not isinstance(raw_paths, list):
+            raise ValueError("paths must be a list of file paths")
+        if raw_fields and not isinstance(raw_fields, list):
+            raise ValueError("fields must be a list of field names")
+
+        requested_paths = [str(path).strip() for path in raw_paths if str(path).strip()]
+        requested_fields = [str(field).strip() for field in raw_fields if str(field).strip()]
+
+        normalized_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for requested_path in requested_paths:
+            normalized_key = requested_path.casefold()
+            if normalized_key in seen_paths:
+                continue
+            seen_paths.add(normalized_key)
+            normalized_paths.append(requested_path)
+
+        if not normalized_paths:
+            raise ValueError("paths is required")
+
+        selected_fields = FILE_INFO_AVAILABLE_FIELDS
+        if requested_fields:
+            normalized_fields: list[str] = []
+            seen_fields: set[str] = set()
+            for requested_field in requested_fields:
+                normalized_key = requested_field.casefold()
+                if normalized_key in seen_fields:
+                    continue
+                seen_fields.add(normalized_key)
+                normalized_fields.append(requested_field)
+
+            invalid_fields = [
+                field_name for field_name in normalized_fields if field_name not in FILE_INFO_AVAILABLE_FIELDS
+            ]
+            if invalid_fields:
+                valid_fields_text = ", ".join(FILE_INFO_AVAILABLE_FIELDS)
+                invalid_fields_text = ", ".join(invalid_fields)
+                raise ValueError(
+                    f"Unsupported file_info fields: {invalid_fields_text}. Valid fields: {valid_fields_text}"
+                )
+
+            selected_fields = tuple(normalized_fields)
+
+        selected_field_set = set(selected_fields)
+        for required_field in FILE_INFO_REQUIRED_OUTPUT_FIELDS:
+            if required_field not in selected_field_set:
+                selected_fields = (required_field, *selected_fields)
+                selected_field_set.add(required_field)
+
+        base_path = resolve_path(working_directory, base_path_raw) if base_path_raw else working_directory
+        if base_path_raw:
+            if not base_path.exists():
+                raise FileNotFoundError(f"base_path does not exist: {base_path}")
+            if not base_path.is_dir():
+                raise NotADirectoryError(f"base_path is not a directory: {base_path}")
+
+        files: list[dict[str, Any]] = []
+        for requested_path in normalized_paths:
+            target_path = resolve_path(base_path, requested_path)
+            if not target_path.exists():
+                raise FileNotFoundError(f"Path does not exist: {target_path}")
+            if not target_path.is_file():
+                raise FileNotFoundError(f"Path is not a file: {target_path}")
+
+            stat_result = target_path.stat()
+
+            try:
+                relative_to_working_directory = str(target_path.relative_to(working_directory))
+            except ValueError:
+                relative_to_working_directory = str(target_path)
+
+            try:
+                relative_to_base_path = str(target_path.relative_to(base_path))
+            except ValueError:
+                relative_to_base_path = requested_path
+
+            file_info = {
+                "path": relative_to_working_directory,
+                "path_from_base": relative_to_base_path,
+                "absolute_path": str(target_path),
+                "name": target_path.name,
+                "stem": target_path.stem,
+                "suffix": target_path.suffix,
+                "parent": str(target_path.parent),
+                "bytes": stat_result.st_size,
+                "created": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(stat_result.st_ctime)),
+                "modified": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(stat_result.st_mtime)),
+                "accessed": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(stat_result.st_atime)),
+                "is_symlink": target_path.is_symlink(),
+                "is_hidden": target_path.name.startswith("."),
+                "is_readonly": not bool(stat_result.st_mode & 0o200),
+            }
+
+            files.append({field_name: file_info[field_name] for field_name in selected_fields})
+
+        if len(files) == 1:
+            single = files[0]
+            return {
+                **single,
+                "files": files,
+            }
+
+        return {
+            "count": len(files),
+            "files": files,
+        }
+
+    return ToolDefinition(
+        name="file_info",
+        description="Get detailed file information for one or more files. Each result always includes the filename in name. When the file names are relative, provide base_path as the full containing folder path. Prefer supplying fields so only the metadata keys you need are returned.",
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "base_path": {
+                    "type": "string",
+                    "description": "Base directory used to resolve relative entries in paths. When paths come from list_files or other relative file names, set this to the full containing folder path.",
+                },
+                "paths": {
+                    "type": "array",
+                    "description": "Files to inspect. Use relative file names here when you also provide base_path. If base_path is omitted, relative paths are resolved from the working directory.",
+                    "items": {
+                        "type": "string",
+                    },
+                    "minItems": 1,
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "Optional list of specific file info fields to return. Each result still always includes name so the file can be identified. Prefer setting this to only the fields you need. A typical compact call is base_path + relative paths + fields. If omitted, all available fields are returned.",
+                    "items": {
+                        "type": "string",
+                        "enum": list(FILE_INFO_AVAILABLE_FIELDS),
+                    },
+                    "minItems": 1,
+                },
+            },
+            "required": ["paths"],
+            "additionalProperties": False,
+        },
+        handler=handler,
+        format_arguments=format_arguments,
+    )
+
+
 def make_rename_files_tool(working_directory: Path) -> ToolDefinition:
     def format_arguments(arguments: dict[str, Any]) -> list[str]:
         renames = arguments.get("renames", [])
@@ -1143,6 +1337,7 @@ def build_registry(working_directory: Path) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(make_list_files_tool(working_directory))
     registry.register(make_crc32_tool(working_directory))
+    registry.register(make_file_info_tool(working_directory))
     registry.register(make_rename_files_tool(working_directory))
     return registry
 
@@ -1661,10 +1856,13 @@ def run_agent_task(
                             "content": (
                                 f"Current task: {current_task}\n\n"
                                 "The user has given follow-up guidance for the same task. Treat this as a task "
-                                "continuation, not as a request to restate the previous answer. If the follow-up "
-                                "guidance asks you to perform an action and an available tool can do it, propose "
-                                "the next tool step instead of giving another answer. Only respond directly if the "
-                                "task is already complete and no tool step is needed. User guidance: "
+                                "continuation. If the user is asking for the result again, asking for the same result "
+                                "in a different order or format, or rejecting the previous wording, produce a fresh "
+                                "concrete answer using the exact existing tool outputs instead of refusing or saying "
+                                "the task is already complete. If the follow-up guidance asks you to perform an action "
+                                "and an available tool can do it, propose the next tool step instead of giving another "
+                                "answer. Only say the task is complete when you are also providing the requested result "
+                                "for this turn. User guidance: "
                                 f"{response_guidance}"
                             ),
                         }
