@@ -434,9 +434,18 @@ def crc32(paths: list[str], base_path: str = "", chunk_size: int = CRC32_DEFAULT
     """Compute CRC32 checksums for one or more files.
 
     Args:
-        paths: File paths to checksum. Relative paths are resolved from base_path when provided, otherwise from the configured working directory.
-        base_path: Optional base directory used to resolve relative paths in paths.
+        paths: File paths to checksum. Each item must be a file path, not a directory. Use relative paths when you also provide base_path, otherwise ensure they are absolute paths.
+        base_path: Optional base directory used only for relative paths in paths. Leave this empty when paths already contains absolute file paths.
         chunk_size: Read size in bytes for incremental checksum calculation.
+
+    Path rules:
+        - Absolute file paths: put them directly in paths and leave base_path empty.
+        - Relative file paths from one folder: put that folder in base_path and the relative file names in paths.
+        - Directory listings from list_files: use the directory you listed as base_path and pass the returned relative path values in paths.
+
+    Examples:
+        - paths=["F:/media/episode01.mkv", "F:/media/episode02.mkv"], base_path=""
+        - paths=["episode01.mkv", "episode02.mkv"], base_path="F:/media"
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be greater than zero")
