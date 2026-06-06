@@ -167,6 +167,7 @@ def generate_password(
 
     if not pool:
         raise ValueError("No character sets enabled")
+
     # Mode-specific generation
     if mode == "random":
         password_chars: List[str] = []
@@ -274,11 +275,50 @@ def generate_password(
             raise ValueError("Wordlist is empty")
 
         chosen = [secrets.choice(words) for _ in range(max(1, dice_words))]
-        base_str = "-".join(chosen)
-        chars = list(base_str)
 
-        # Enforce required subsets by appending required characters if necessary
-        # (diceware focuses on word memorability; appending keeps words intact)
+        # Build pronounceable connectors to insert between words. Connectors are
+        # short syllable-like strings (e.g. CV, CVC) and may include digits/symbols
+        # appended, keeping inserted content pronounceable rather than leet-style.
+        vowels = _filter_ambiguous("aeiou", exclude_ambiguous)
+        consonants = [c for c in _filter_ambiguous("bcdfghjklmnpqrstvwxyz", exclude_ambiguous)]
+
+        def make_connector() -> str:
+            patterns = ["CV", "CVC", "VC"]
+            pattern = secrets.choice(patterns)
+            s = []
+            for ch in pattern:
+                if ch == "C":
+                    s.append(secrets.choice(consonants))
+                else:
+                    s.append(secrets.choice(vowels))
+            conn = "".join(s)
+
+            def insert_with_pronunciation(base: str, ch: str) -> str:
+                # Ensure a vowel boundary before a digit/symbol so the sequence
+                # can be spoken as separate syllables (e.g. 'ba2' -> 'ba-two').
+                if not base:
+                    return base + ch
+                last = base[-1]
+                if last not in vowels:
+                    base += secrets.choice(vowels)
+                return base + ch
+
+            # Optionally append a single digit or symbol to the connector,
+            # but add a vowel boundary when needed so the combined string
+            # reads more like a pronounced syllable + digit/symbol.
+            if include_digits and digit_chars and secrets.choice([True, False]):
+                d = secrets.choice(digit_chars)
+                conn = insert_with_pronunciation(conn, d)
+            if include_symbols and symbol_chars and secrets.choice([False, False, True]):
+                s = secrets.choice(symbol_chars)
+                conn = insert_with_pronunciation(conn, s)
+            return conn
+
+        # Create connectors between words
+        connectors: List[str] = [make_connector() for _ in range(max(0, len(chosen) - 1))]
+
+        # Enforce required subsets by generating required characters and
+        # embedding them into the chosen words at pronounceable boundaries.
         extra_chars: List[str] = []
         for subset in required_subsets:
             if not subset:
@@ -286,13 +326,65 @@ def generate_password(
             for _ in range(MIN_PER_SUBSET):
                 extra_chars.append(secrets.choice(subset))
 
-        if extra_chars:
-            # insert extra chars at random positions
-            for ch in extra_chars:
-                insert_at = secrets.randbelow(len(chars) + 1)
-                chars.insert(insert_at, ch)
+        def embed_into_word(word: str, ch: str) -> str:
+            # Insert ch into `word` at a pronounceable boundary: prefer after
+            # the first vowel, otherwise near the middle. If ch is digit/symbol,
+            # ensure a vowel precedes it so it can be spoken as a separate
+            # syllable (e.g. 'ba2' -> 'ba-two').
+            if not word:
+                return word + ch
+            insert_pos = None
+            for i, c in enumerate(word):
+                if c in vowels:
+                    insert_pos = i + 1
+                    break
+            if insert_pos is None:
+                insert_pos = len(word) // 2
 
-        return "".join(chars)
+            base = word[:insert_pos]
+            tail = word[insert_pos:]
+
+            if (ch in digit_chars) or (ch in symbol_chars):
+                if not base or base[-1] not in vowels:
+                    base += secrets.choice(vowels)
+            return base + ch + tail
+
+        # Distribute required extra chars into the chosen words (round-robin).
+        if extra_chars:
+            for i, ch in enumerate(extra_chars):
+                idx = i % len(chosen)
+                chosen[idx] = embed_into_word(chosen[idx], ch)
+
+        # Additionally, randomly embed extra digits/symbols into words for
+        # extra entropy while keeping pronunciation reasonable.
+        for i, w in enumerate(chosen):
+            if include_digits and digit_chars and secrets.choice([False, True, False]):
+                d = secrets.choice(digit_chars)
+                chosen[i] = embed_into_word(chosen[i], d)
+            if include_symbols and symbol_chars and secrets.choice([False, False, True]):
+                s = secrets.choice(symbol_chars)
+                chosen[i] = embed_into_word(chosen[i], s)
+
+        # Merge connectors into the preceding words so hyphen-separated token
+        # count equals the requested number of dice words.
+        if connectors:
+            parts: List[str] = []
+            for i, w in enumerate(chosen):
+                if i < len(connectors):
+                    parts.append(w + connectors[i])
+                else:
+                    parts.append(w)
+            base_str = "-".join(parts)
+        else:
+            base_str = chosen[0]
+
+        # If there were extra_chars but no connectors (single-word diceware),
+        # append them to the end to satisfy composition requirements.
+        if extra_chars and not connectors:
+            base_str = base_str + "".join(extra_chars)
+
+        return base_str
+
 
     # Fallback (should not reach)
     raise RuntimeError("unsupported mode")
