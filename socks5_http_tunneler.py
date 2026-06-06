@@ -1305,7 +1305,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     socks_group.add_argument("--socks5-file", help="Text file with one SOCKS5 proxy per line; one live entry is selected at random at startup")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind locally (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8080, help="Local port to listen on (default: 8080)")
-    parser.add_argument("--timeout", type=float, default=10.0, help="Upstream request timeout in seconds (default: 10)")
+    parser.add_argument("--timeout", type=float, default=5.0, help="Upstream request timeout in seconds (default: 5)")
     parser.add_argument(
         "--rotation-interval",
         type=parse_rotation_interval,
@@ -1355,15 +1355,34 @@ def main() -> None:
     whitelisted_socks_proxies: dict[str, tuple[int, str]] = {}
     if args.socks5_file:
         # Resolve one working SOCKS endpoint at startup, then rotate across the list on a timer.
-        socks5_file_path = Path(args.socks5_file).expanduser().resolve()
-        if not socks5_file_path.is_file():
-            raise SystemExit(f"SOCKS proxy list file not found: {socks5_file_path}")
+        # Support wildcards and pick the latest modified file.
+        expanded_path = Path(args.socks5_file).expanduser()
+        
+        if "*" in args.socks5_file or "?" in args.socks5_file:
+            # Handle wildcard expansion
+            parent = expanded_path.parent
+            pattern = expanded_path.name
+            if not parent.exists():
+                raise SystemExit(f"Directory not found: {parent}")
+            matches = list(parent.glob(pattern))
+            if not matches:
+                raise SystemExit(f"No files found matching pattern: {args.socks5_file}")
+            
+            # Sort by modification time (descending) and pick the first one
+            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            socks5_file_path = matches[0]
+        else:
+            # Standard file path
+            socks5_file_path = expanded_path.resolve()
+            if not socks5_file_path.is_file():
+                raise SystemExit(f"SOCKS proxy list file not found: {socks5_file_path}")
+
         socks5_candidates = load_socks_proxy_candidates(socks5_file_path)
         blacklisted_socks_proxies = load_socks_proxy_blacklist(socks5_blacklist_file_path)
         whitelisted_socks_proxies = load_socks_proxy_whitelist(socks5_whitelist_file_path)
         socks5_candidates, removed_blacklisted_proxies = filter_blacklisted_socks_proxies(socks5_candidates, blacklisted_socks_proxies)
         if removed_blacklisted_proxies:
-            print(f"Removed {len(removed_blacklisted_proxies)} blacklisted SOCKS5 proxies from the startup pool")
+            print(f"Removed {len(removed_blacklisted_proxies)} blacklisted SOCKS5 proxies from the proxy pool")
             print(f"SOCKS5 proxy blacklist: {socks5_blacklist_file_path}")
         if not socks5_candidates:
             raise SystemExit(
