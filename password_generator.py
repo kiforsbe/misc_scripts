@@ -230,11 +230,71 @@ def generate_password(
             while len(base) < length:
                 base.append(secrets.choice(lower_chars))
 
-        # Enforce required subsets by replacing random positions
-        _enforce_required_subsets_on_chars(base, required_subsets)
-
+        # Enforce required subsets in a pronounceable-preserving way.
+        # Strategy:
+        # - For `caps==only` make all letters uppercase.
+        # - For mixed caps, uppercase a couple of letter positions.
+        # - For digits/symbols, replace characters at positions that
+        #   have a vowel immediately before them (insert vowel if needed)
+        #   so the sequence can still be spoken as separate syllables.
         rand = secrets.SystemRandom()
-        rand.shuffle(base)
+
+        # Apply caps rules
+        if caps == "only":
+            base = [c.upper() for c in base]
+            uppercase_positions = set(i for i, _ in enumerate(base))
+        else:
+            uppercase_positions = set()
+            if allow_upper:
+                letter_positions = [i for i, ch in enumerate(base) if ch.isalpha()]
+                if len(letter_positions) >= MIN_PER_SUBSET:
+                    chosen = rand.sample(letter_positions, MIN_PER_SUBSET)
+                    for i in chosen:
+                        base[i] = base[i].upper()
+                        uppercase_positions.add(i)
+
+        # Embed digits and symbols at pronounceable boundaries
+        used_positions = set()
+        vowels_set = set(vowels)
+
+        def embed_chars(char_list: List[str], chars_pool: List[str]):
+            nonlocal base, used_positions
+            if not chars_pool:
+                return
+            # candidate positions: prefer indices with a vowel before them
+            candidates = [i for i in range(1, len(base)) if i not in used_positions and i not in uppercase_positions]
+            rand.shuffle(candidates)
+            placed = 0
+            for pos in candidates:
+                if placed >= MIN_PER_SUBSET:
+                    break
+                # ensure vowel before position
+                if base[pos - 1] not in vowels_set:
+                    base[pos - 1] = rand.choice(vowels)
+                base[pos] = rand.choice(chars_pool)
+                used_positions.add(pos)
+                placed += 1
+
+            # If we didn't place enough (rare), fall back to any free positions
+            if placed < MIN_PER_SUBSET:
+                fallback = [i for i in range(len(base)) if i not in used_positions and i not in uppercase_positions]
+                rand.shuffle(fallback)
+                for pos in fallback:
+                    if placed >= MIN_PER_SUBSET:
+                        break
+                    if pos == 0 and len(base) > 1:
+                        pos = 1
+                    if pos > 0 and base[pos - 1] not in vowels_set:
+                        base[pos - 1] = rand.choice(vowels)
+                    base[pos] = rand.choice(chars_pool)
+                    used_positions.add(pos)
+                    placed += 1
+
+        if include_digits and digit_chars:
+            embed_chars(digit_chars, digit_chars)
+        if include_symbols and symbol_chars:
+            embed_chars(symbol_chars, symbol_chars)
+
         return "".join(base)
 
     # diceware
