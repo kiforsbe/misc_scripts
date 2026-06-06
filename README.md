@@ -415,6 +415,32 @@ python cbr_to_cbz_converter.py /path/to/comics --keep-original -j 4 -v
   - libarchive-c requires libarchive DLL installed on system
   - rarfile requires UnRAR tool installed and on PATH
 
+### password_generator.py
+A small CLI for generating strong, easy-to-remember passwords.
+
+Features
+- Secure random generation using the `secrets` module
+- Modes: `random`, `pronounceable` (syllable-based), and `diceware` (wordlist)
+- Options to exclude ambiguous characters (0/O, 1/l, etc.), include/exclude digits and symbols
+- Enforces at least two characters from each enabled subset (upper/lower/digits/symbols)
+- Built-in small wordlist plus support for the EFF large diceware list (downloadable)
+
+Usage examples
+```bash
+# Random 12-char password (mixed case, digits)
+python password_generator.py --length 12
+
+# Pronounceable password using 4 syllables
+python password_generator.py --mode pronounceable --pronounceable-syllables 4 --length 12
+
+# Diceware using bundled builtin wordlist (3 words)
+python password_generator.py --mode diceware --wordlist builtin --dice-words 3
+
+# Install the recommended EFF wordlist for diceware mode
+python password_generator.py --install-wordlist
+``` 
+
+
 ### compare_package_versions.py
 Compares proposed package versions against installed versions. Useful for inspecting pip output or a list of package-version pairs and highlighting downgrades, upgrades, and local version changes.
 
