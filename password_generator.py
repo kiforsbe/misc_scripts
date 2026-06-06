@@ -257,9 +257,17 @@ def generate_password(
                 with open(wordlist_path, "r", encoding="utf-8") as fh:
                     words: List[str] = []
                     for line in fh:
-                        w = line.strip()
-                        if w:
-                            words.append(w)
+                        # EFF wordlist lines are formatted as: "11111\tword" (dice-roll code + tab/space + word)
+                        # Accept either the builtin/simple wordlist format (one word per line)
+                        # or the EFF format; split on whitespace and take the last token as the word.
+                        raw = line.strip()
+                        if not raw or raw.startswith("#"):
+                            continue
+                        parts = raw.split()
+                        if not parts:
+                            continue
+                        w = parts[-1]
+                        words.append(w)
             except OSError as exc:
                 raise ValueError(f"Unable to read wordlist: {exc}") from exc
         if not words:
