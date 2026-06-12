@@ -3,6 +3,16 @@ from importlib import metadata as importlib_metadata
 import re
 import sys
 
+# This script compares proposed pip package versions against currently installed versions.
+# It reads package-version pairs from input text (e.g., pip output) and displays:
+# - Package name
+# - Currently installed version (or "Not installed")
+# - Proposed version with color coding:
+#   - Red: Proposed version is older than current
+#   - Yellow: Same base version but different local version
+#   - Green: Proposed version is newer than current
+#   - No color: If no current version is installed
+
 from packaging.version import InvalidVersion, Version, parse as parse_version
 
 

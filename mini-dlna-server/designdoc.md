@@ -131,6 +131,7 @@ A production-ready DLNA media server with Samsung TV support and Windows 11 comp
 
 ### Samsung TV Compatibility
 - DLNA 1.5 profile support
-- Samsung-specific extensions
+- Samsung-specific extensions (sec:ProductCap, sec:X_ProductCap, sec:dcmInfo)
 - Extended content types
-- Thumbnail generation
+- Thumbnail generation with Samsung-specific metadata (dcmInfo)
+- Client profiling based on Samsung-specific headers (Tizen, AllShare, etc.)
