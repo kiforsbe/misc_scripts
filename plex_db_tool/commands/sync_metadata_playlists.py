@@ -249,6 +249,17 @@ def register(subparsers: _SubParsersAction) -> None:
             "episodes_expected=1 into one playlist."
         ),
     )
+    parser.add_argument(
+        "--virtual-playlist-watching",
+        nargs="?",
+        const="!Watching",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Create a synthetic watching playlist from episodes whose MAL status is Watching. "
+            "Defaults to '!Watching'; pass NAME to rename it."
+        ),
+    )
 
 
 def run(args: Namespace) -> int:
@@ -265,6 +276,7 @@ def run(args: Namespace) -> int:
         sort_groups=args.sort,
     )
     groups = collapse_one_of_one_groups(groups, args.one_of_one_playlist)
+    groups = add_virtual_watching_playlist(groups, args.virtual_playlist_watching)
 
     if not groups:
         print("No groups matched the selected metadata filters.")
@@ -499,6 +511,137 @@ def is_one_of_one_group(group: Dict[str, Any]) -> bool:
     if (safe_int(group.get("episodes_found")) or 0) != 1:
         return False
     return not group_has_episode_markers(group)
+
+
+def add_virtual_watching_playlist(groups: Sequence[Dict[str, Any]], playlist_name: Optional[str]) -> List[Dict[str, Any]]:
+    if not playlist_name:
+        return list(groups)
+
+    watching_files = collect_watching_episode_files(groups)
+    if not watching_files:
+        return list(groups)
+
+    watching_group = build_watching_collection_group(watching_files, groups, playlist_name)
+    return [*list(groups), watching_group]
+
+
+def collect_watching_episode_files(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    watching_files: List[Dict[str, Any]] = []
+    seen_keys: Set[str] = set()
+
+    for group in groups:
+        for file_info in group.get("files", []):
+            mal_status = file_info.get("myanimelist_watch_status") or (group.get("group_data") or {}).get("myanimelist_watch_status")
+            if not is_watching_mal_status(mal_status):
+                continue
+
+            candidate_key = build_episode_identity_key(file_info)
+            if not candidate_key or candidate_key in seen_keys:
+                continue
+            seen_keys.add(candidate_key)
+            watching_files.append(dict(file_info))
+
+    return sort_episode_files_for_playlist(watching_files)
+
+
+def is_watching_mal_status(status: Any) -> bool:
+    if not isinstance(status, dict):
+        return False
+    my_status = str(status.get("my_status") or "").strip().casefold()
+    return my_status in {"watching", "watching (season)", "watching_season"}
+
+
+def build_episode_identity_key(file_info: Dict[str, Any]) -> Optional[str]:
+    source_path = str(file_info.get("filepath") or file_info.get("file_path") or "")
+    metadata_item_id = safe_int(file_info.get("metadata_item_id"))
+    if metadata_item_id is not None:
+        return f"metadata:{metadata_item_id}"
+    normalized_path = normalize_path_key(source_path)
+    if normalized_path:
+        return f"path:{normalized_path}"
+    basename = str(file_info.get("filename") or Path(source_path).name or "")
+    season = safe_int(file_info.get("season")) or 0
+    episode = safe_int(file_info.get("episode")) or 0
+    return f"fallback:{basename}:{season}:{episode}"
+
+
+def sort_episode_files_for_playlist(files: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def sort_key(file_info: Dict[str, Any]) -> Tuple[Any, ...]:
+        source_path = str(file_info.get("filepath") or file_info.get("file_path") or "")
+        modified_time = resolve_file_modified_time(file_info)
+        modified_date = modified_time.date() if modified_time is not None else datetime.max.date()
+        display_title = str(
+            file_info.get("episode_title")
+            or file_info.get("title")
+            or file_info.get("filename")
+            or Path(source_path).name
+            or ""
+        ).casefold()
+        season = safe_int(file_info.get("season")) or 0
+        episode = safe_int(file_info.get("episode")) or 0
+        return (
+            display_title,
+            modified_date,
+            season,
+            episode,
+            modified_time if modified_time is not None else datetime.max,
+            normalize_path_key(source_path),
+        )
+
+    return sorted(files, key=sort_key)
+
+
+def resolve_file_modified_time(file_info: Dict[str, Any]) -> Optional[datetime]:
+    modified_time = file_info.get("modified_time")
+    if isinstance(modified_time, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(modified_time))
+        except (ValueError, OSError, OverflowError):
+            return None
+
+    source_path = str(file_info.get("filepath") or file_info.get("file_path") or "")
+    if source_path and os.path.exists(source_path):
+        try:
+            return datetime.fromtimestamp(os.path.getmtime(source_path))
+        except (OSError, ValueError, OverflowError):
+            return None
+    return None
+
+
+def build_watching_collection_group(
+    files: Sequence[Dict[str, Any]],
+    groups: Sequence[Dict[str, Any]],
+    playlist_name: str = "!Watching",
+) -> Dict[str, Any]:
+    sorted_files = sort_episode_files_for_playlist(files)
+    modified_candidates = [candidate for candidate in (resolve_file_modified_time(file_info) for file_info in sorted_files) if candidate is not None]
+    source_group_keys = []
+    source_playlists = []
+    for group in groups:
+        source_group_keys.append(str(group.get("group_key") or ""))
+        source_playlists.append(str(group.get("playlist_name") or group.get("title") or group.get("group_key") or ""))
+
+    resolved_name = (playlist_name or "!Watching").strip() or "!Watching"
+
+    return {
+        "group_key": "collection:watching",
+        "group_data": {
+            "source_group_keys": source_group_keys,
+            "source_playlists": source_playlists,
+            "group_count": len(source_group_keys),
+            "myanimelist_watch_status": {"my_status": "Watching"},
+        },
+        "files": list(sorted_files),
+        "title": resolved_name,
+        "playlist_name": resolved_name,
+        "season": None,
+        "status": "watching",
+        "episodes_found": len(sorted_files),
+        "episodes_expected": len(sorted_files),
+        "raw_episodes_expected": len(sorted_files),
+        "watch_status": "unwatched",
+        "modified_at": max(modified_candidates) if modified_candidates else None,
+    }
 
 
 def build_one_of_one_collection_group(groups: Sequence[Dict[str, Any]], playlist_name: str) -> Dict[str, Any]:
