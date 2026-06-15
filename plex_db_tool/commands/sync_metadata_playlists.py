@@ -532,7 +532,7 @@ def collect_watching_episode_files(groups: Sequence[Dict[str, Any]]) -> List[Dic
     for group in groups:
         for file_info in group.get("files", []):
             mal_status = file_info.get("myanimelist_watch_status") or (group.get("group_data") or {}).get("myanimelist_watch_status")
-            if not is_watching_mal_status(mal_status):
+            if not is_watching_mal_status(mal_status) or is_episode_already_watched(file_info, group):
                 continue
 
             candidate_key = build_episode_identity_key(file_info)
@@ -549,6 +549,25 @@ def is_watching_mal_status(status: Any) -> bool:
         return False
     my_status = str(status.get("my_status") or "").strip().casefold()
     return my_status in {"watching", "watching (season)", "watching_season"}
+
+
+def is_episode_already_watched(file_info: Dict[str, Any], group: Dict[str, Any]) -> bool:
+    if file_info.get("episode_watched"):
+        return True
+
+    plex_status = file_info.get("plex_watch_status") or {}
+    if plex_status.get("watched") or plex_status.get("view_offset", 0) > 0:
+        return True
+
+    mal_status = file_info.get("myanimelist_watch_status") or (group.get("group_data") or {}).get("myanimelist_watch_status")
+    if not isinstance(mal_status, dict):
+        return False
+
+    watched_episodes = safe_int(mal_status.get("my_watched_episodes"))
+    episode_number = safe_int(file_info.get("episode"))
+    if watched_episodes is None or episode_number is None:
+        return False
+    return episode_number <= watched_episodes
 
 
 def build_episode_identity_key(file_info: Dict[str, Any]) -> Optional[str]:
@@ -568,8 +587,7 @@ def build_episode_identity_key(file_info: Dict[str, Any]) -> Optional[str]:
 def sort_episode_files_for_playlist(files: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def sort_key(file_info: Dict[str, Any]) -> Tuple[Any, ...]:
         source_path = str(file_info.get("filepath") or file_info.get("file_path") or "")
-        modified_time = resolve_file_modified_time(file_info)
-        modified_date = modified_time.date() if modified_time is not None else datetime.max.date()
+        created_time = resolve_file_created_time(file_info)
         display_title = str(
             file_info.get("episode_title")
             or file_info.get("title")
@@ -580,18 +598,31 @@ def sort_episode_files_for_playlist(files: Sequence[Dict[str, Any]]) -> List[Dic
         season = safe_int(file_info.get("season")) or 0
         episode = safe_int(file_info.get("episode")) or 0
         return (
-            display_title,
-            modified_date,
+            created_time if created_time is not None else datetime.max,
             season,
             episode,
-            modified_time if modified_time is not None else datetime.max,
+            display_title,
             normalize_path_key(source_path),
         )
 
     return sorted(files, key=sort_key)
 
 
-def resolve_file_modified_time(file_info: Dict[str, Any]) -> Optional[datetime]:
+def resolve_file_created_time(file_info: Dict[str, Any]) -> Optional[datetime]:
+    created_time = file_info.get("created_time")
+    if isinstance(created_time, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(created_time))
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    source_path = str(file_info.get("filepath") or file_info.get("file_path") or "")
+    if source_path and os.path.exists(source_path):
+        try:
+            return datetime.fromtimestamp(os.path.getctime(source_path))
+        except (OSError, ValueError, OverflowError):
+            pass
+
     modified_time = file_info.get("modified_time")
     if isinstance(modified_time, (int, float)):
         try:
@@ -599,7 +630,6 @@ def resolve_file_modified_time(file_info: Dict[str, Any]) -> Optional[datetime]:
         except (ValueError, OSError, OverflowError):
             return None
 
-    source_path = str(file_info.get("filepath") or file_info.get("file_path") or "")
     if source_path and os.path.exists(source_path):
         try:
             return datetime.fromtimestamp(os.path.getmtime(source_path))
@@ -614,7 +644,7 @@ def build_watching_collection_group(
     playlist_name: str = "!Watching",
 ) -> Dict[str, Any]:
     sorted_files = sort_episode_files_for_playlist(files)
-    modified_candidates = [candidate for candidate in (resolve_file_modified_time(file_info) for file_info in sorted_files) if candidate is not None]
+    modified_candidates = [candidate for candidate in (resolve_file_created_time(file_info) for file_info in sorted_files) if candidate is not None]
     source_group_keys = []
     source_playlists = []
     for group in groups:
