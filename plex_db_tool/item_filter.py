@@ -398,3 +398,76 @@ def parse_modified_conditions(expression: str) -> List[DateCondition]:
             raise ValueError("--modified cannot be empty")
         return [parse_modified_expression(p) for p in parts]
     return [parse_modified_expression(expr)]
+
+
+_WATCH_STATUS_VALUES = frozenset({"watched", "watched_partial", "unwatched"})
+_ITEM_FILTER_FIELDS = frozenset({"watch_status", "mal_status", "season", "episode", "modified", "aired"})
+_TOKEN_RE = re.compile(r"([a-z_]+)(<=|>=|!=|<|>|==|=)([^\s]+)")
+
+
+class MetadataItemFilterParser:
+    @classmethod
+    def parse(cls, expression: str) -> MetadataItemFilter:
+        expr = (expression or "").strip()
+        if not expr:
+            return MetadataItemFilter()
+
+        tokens = _TOKEN_RE.findall(expr)
+        if not tokens:
+            raise ValueError(
+                f"Invalid --item-filter expression '{expression}': no valid field=value tokens found. "
+                f"Valid fields: {', '.join(sorted(_ITEM_FILTER_FIELDS))}"
+            )
+
+        result = MetadataItemFilter()
+        for field_name, op_str, raw_value in tokens:
+            if field_name not in _ITEM_FILTER_FIELDS:
+                raise ValueError(
+                    f"Unknown field '{field_name}' in --item-filter. "
+                    f"Valid fields: {', '.join(sorted(_ITEM_FILTER_FIELDS))}"
+                )
+            op = _parse_comparison_op(op_str)
+
+            if field_name == "watch_status":
+                if op not in (ComparisonOp.EQ, ComparisonOp.NEQ):
+                    raise ValueError(f"watch_status only supports = and != operators, got '{op_str}'")
+                values = frozenset(v.strip().casefold() for v in raw_value.split(",") if v.strip())
+                invalid = values - _WATCH_STATUS_VALUES
+                if invalid:
+                    raise ValueError(
+                        f"Unknown watch_status value(s): {', '.join(sorted(invalid))}. "
+                        f"Valid: {', '.join(sorted(_WATCH_STATUS_VALUES))}"
+                    )
+                result.watch_status = StringSetCondition(op=op, values=values)
+
+            elif field_name == "mal_status":
+                if op not in (ComparisonOp.EQ, ComparisonOp.NEQ):
+                    raise ValueError(f"mal_status only supports = and != operators, got '{op_str}'")
+                values = frozenset(v.strip().casefold() for v in raw_value.split(",") if v.strip())
+                result.mal_status = StringSetCondition(op=op, values=values)
+
+            elif field_name == "season":
+                if ".." in raw_value:
+                    result.seasons.extend(parse_numeric_conditions(raw_value, "season"))
+                else:
+                    result.seasons.append(parse_numeric_expression(f"{op_str}{raw_value}", "season"))
+
+            elif field_name == "episode":
+                if ".." in raw_value:
+                    result.episodes.extend(parse_numeric_conditions(raw_value, "episode"))
+                else:
+                    result.episodes.append(parse_numeric_expression(f"{op_str}{raw_value}", "episode"))
+
+            elif field_name == "modified":
+                if ".." in raw_value:
+                    result.modified.extend(parse_modified_conditions(raw_value))
+                else:
+                    result.modified.append(parse_modified_expression(f"{op_str}{raw_value}"))
+
+            elif field_name == "aired":
+                if ".." in raw_value:
+                    result.aired.extend(parse_modified_conditions(raw_value))
+                else:
+                    result.aired.append(parse_modified_expression(f"{op_str}{raw_value}"))
+
+        return result

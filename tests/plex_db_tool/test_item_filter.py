@@ -415,3 +415,97 @@ def test_parse_modified_conditions_range():
 def test_parse_modified_conditions_invalid_range_order():
     with pytest.raises(ValueError):
         parse_modified_conditions("2026-06-30..2026-01-01")
+
+
+from plex_db_tool.item_filter import MetadataItemFilterParser
+
+
+# --- MetadataItemFilterParser ---
+
+def test_parser_empty_expression_returns_no_filter():
+    f = MetadataItemFilterParser.parse("")
+    assert f == MetadataItemFilter()
+
+
+def test_parser_watch_status_eq():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched")
+    assert f.watch_status == StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"}))
+
+
+def test_parser_watch_status_neq():
+    f = MetadataItemFilterParser.parse("watch_status!=watched")
+    assert f.watch_status == StringSetCondition(ComparisonOp.NEQ, frozenset({"watched"}))
+
+
+def test_parser_watch_status_multi_value():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched,watched_partial")
+    assert f.watch_status == StringSetCondition(
+        ComparisonOp.EQ, frozenset({"unwatched", "watched_partial"})
+    )
+
+
+def test_parser_watch_status_invalid_value():
+    with pytest.raises(ValueError, match="watch_status"):
+        MetadataItemFilterParser.parse("watch_status=flying")
+
+
+def test_parser_mal_status_single():
+    f = MetadataItemFilterParser.parse("mal_status=watching")
+    assert f.mal_status == StringSetCondition(ComparisonOp.EQ, frozenset({"watching"}))
+
+
+def test_parser_mal_status_multi():
+    f = MetadataItemFilterParser.parse("mal_status=watching,completed")
+    assert f.mal_status == StringSetCondition(
+        ComparisonOp.EQ, frozenset({"watching", "completed"})
+    )
+
+
+def test_parser_episode_gte():
+    f = MetadataItemFilterParser.parse("episode>=5")
+    assert f.episodes == [NumericCondition(ComparisonOp.GTE, 5)]
+
+
+def test_parser_season_range():
+    f = MetadataItemFilterParser.parse("season=1..2")
+    assert f.seasons == [
+        NumericCondition(ComparisonOp.GTE, 1),
+        NumericCondition(ComparisonOp.LTE, 2),
+    ]
+
+
+def test_parser_modified_gte():
+    f = MetadataItemFilterParser.parse("modified>=2026-01-01")
+    assert len(f.modified) == 1
+    assert f.modified[0].op == ComparisonOp.GTE
+    assert f.modified[0].value == datetime(2026, 1, 1)
+    assert f.modified[0].date_only is True
+
+
+def test_parser_multiple_tokens_space_separated():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched episode>=5")
+    assert f.watch_status is not None
+    assert f.episodes == [NumericCondition(ComparisonOp.GTE, 5)]
+
+
+def test_parser_multiple_episode_conditions_accumulate():
+    f = MetadataItemFilterParser.parse("episode>=5 episode<=12")
+    assert f.episodes == [
+        NumericCondition(ComparisonOp.GTE, 5),
+        NumericCondition(ComparisonOp.LTE, 12),
+    ]
+
+
+def test_parser_watch_status_later_token_replaces_earlier():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched watch_status=watched")
+    assert f.watch_status == StringSetCondition(ComparisonOp.EQ, frozenset({"watched"}))
+
+
+def test_parser_unknown_field_raises():
+    with pytest.raises(ValueError, match="Unknown field"):
+        MetadataItemFilterParser.parse("foo=bar")
+
+
+def test_parser_no_valid_tokens_raises():
+    with pytest.raises(ValueError, match="no valid"):
+        MetadataItemFilterParser.parse("!@#$%")
