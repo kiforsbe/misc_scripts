@@ -327,3 +327,91 @@ def test_filter_multiple_criteria_all_must_pass():
     assert f.matches({"season": 1, "episode": 1}, {}) is True
     assert f.matches({"season": 2, "episode": 1}, {}) is False  # wrong season
     assert f.matches({"season": 1, "episode_watched": True}, {}) is False  # watched
+
+
+from plex_db_tool.item_filter import (
+    parse_modified_conditions,
+    parse_modified_expression,
+    parse_numeric_conditions,
+    parse_numeric_expression,
+)
+
+
+# --- parse_numeric_expression ---
+
+def test_parse_numeric_expr_gte():
+    cond = parse_numeric_expression(">=5", "episode")
+    assert cond == NumericCondition(op=ComparisonOp.GTE, value=5)
+
+
+def test_parse_numeric_expr_plain_equals():
+    cond = parse_numeric_expression("12", "episode")
+    assert cond == NumericCondition(op=ComparisonOp.EQ, value=12)
+
+
+def test_parse_numeric_expr_invalid_value():
+    with pytest.raises(ValueError, match="episode"):
+        parse_numeric_expression("abc", "episode")
+
+
+# --- parse_numeric_conditions ---
+
+def test_parse_numeric_conditions_single():
+    conds = parse_numeric_conditions(">=5", "episode")
+    assert conds == [NumericCondition(ComparisonOp.GTE, 5)]
+
+
+def test_parse_numeric_conditions_range():
+    conds = parse_numeric_conditions("1..12", "episode")
+    assert conds == [
+        NumericCondition(ComparisonOp.GTE, 1),
+        NumericCondition(ComparisonOp.LTE, 12),
+    ]
+
+
+def test_parse_numeric_conditions_comma():
+    conds = parse_numeric_conditions(">=5,<=12", "episode")
+    assert conds == [
+        NumericCondition(ComparisonOp.GTE, 5),
+        NumericCondition(ComparisonOp.LTE, 12),
+    ]
+
+
+def test_parse_numeric_conditions_invalid_range_order():
+    with pytest.raises(ValueError):
+        parse_numeric_conditions("12..1", "episode")
+
+
+# --- parse_modified_expression ---
+
+def test_parse_modified_expr_gte_date_only():
+    cond = parse_modified_expression(">=2026-01-01")
+    assert cond.op == ComparisonOp.GTE
+    assert cond.value == datetime(2026, 1, 1)
+    assert cond.date_only is True
+
+
+def test_parse_modified_expr_lt_datetime():
+    cond = parse_modified_expression("<2026-01-01T12:00")
+    assert cond.op == ComparisonOp.LT
+    assert cond.value == datetime(2026, 1, 1, 12, 0)
+    assert cond.date_only is False
+
+
+def test_parse_modified_expr_invalid():
+    with pytest.raises(ValueError, match="--modified"):
+        parse_modified_expression(">=not-a-date")
+
+
+# --- parse_modified_conditions ---
+
+def test_parse_modified_conditions_range():
+    conds = parse_modified_conditions("2026-01-01..2026-06-30")
+    assert len(conds) == 2
+    assert conds[0].op == ComparisonOp.GTE
+    assert conds[1].op == ComparisonOp.LTE
+
+
+def test_parse_modified_conditions_invalid_range_order():
+    with pytest.raises(ValueError):
+        parse_modified_conditions("2026-06-30..2026-01-01")

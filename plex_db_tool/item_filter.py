@@ -292,3 +292,109 @@ def _value_to_datetime(value: Any) -> Optional[datetime]:
         parsed, _ = parse_smart_datetime(value.strip())
         return parsed
     return None
+
+
+_OP_MAP = {
+    "=": ComparisonOp.EQ,
+    "==": ComparisonOp.EQ,
+    "!=": ComparisonOp.NEQ,
+    "<": ComparisonOp.LT,
+    "<=": ComparisonOp.LTE,
+    ">": ComparisonOp.GT,
+    ">=": ComparisonOp.GTE,
+}
+
+
+def _parse_comparison_op(op_str: str) -> ComparisonOp:
+    result = _OP_MAP.get(op_str)
+    if result is None:
+        raise ValueError(f"Unknown operator '{op_str}'. Valid operators: {', '.join(_OP_MAP)}")
+    return result
+
+
+def parse_numeric_expression(expression: str, argument_name: str) -> NumericCondition:
+    expr = (expression or "").strip()
+    match = re.match(r"^(<=|>=|<|>|==|=|!=)\s*(.+)$", expr)
+    if match:
+        op_str = match.group(1)
+        raw_value = match.group(2).strip()
+    else:
+        op_str = "="
+        raw_value = expr
+    if not re.fullmatch(r"-?\d+", raw_value):
+        raise ValueError(
+            f"Invalid {argument_name} expression '{expression}'. "
+            f"Use integer values like '<12', '>=24', or '=13'."
+        )
+    return NumericCondition(op=_parse_comparison_op(op_str), value=int(raw_value))
+
+
+def parse_numeric_conditions(expression: str, argument_name: str) -> List[NumericCondition]:
+    expr = (expression or "").strip()
+    if not expr:
+        raise ValueError(f"{argument_name} cannot be empty")
+    if ".." in expr:
+        parts = expr.split("..")
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                f"Invalid {argument_name} range '{expression}'. Use format like '12..24'."
+            )
+        start = parse_numeric_expression(f">={parts[0].strip()}", argument_name)
+        end = parse_numeric_expression(f"<={parts[1].strip()}", argument_name)
+        if start.value > end.value:
+            raise ValueError(
+                f"Invalid {argument_name} range '{expression}'. "
+                f"Range start must be less than or equal to range end."
+            )
+        return [start, end]
+    if "," in expr:
+        parts = [p.strip() for p in expr.split(",") if p.strip()]
+        if not parts:
+            raise ValueError(f"{argument_name} cannot be empty")
+        return [parse_numeric_expression(p, argument_name) for p in parts]
+    return [parse_numeric_expression(expr, argument_name)]
+
+
+def parse_modified_expression(expression: str) -> DateCondition:
+    expr = (expression or "").strip()
+    match = re.match(r"^(<=|>=|<|>|==|=|!=)\s*(.+)$", expr)
+    if match:
+        op_str = match.group(1)
+        raw_value = match.group(2).strip()
+    else:
+        op_str = "="
+        raw_value = expr
+    parsed_dt, is_date_only = parse_smart_datetime(raw_value)
+    if parsed_dt is None:
+        raise ValueError(
+            f"Invalid --modified expression '{expression}'. "
+            f"Use forms like '<2026-01-01' or '>=2026-01-01T15:30'."
+        )
+    return DateCondition(op=_parse_comparison_op(op_str), value=parsed_dt, date_only=is_date_only)
+
+
+def parse_modified_conditions(expression: str) -> List[DateCondition]:
+    expr = (expression or "").strip()
+    if not expr:
+        raise ValueError("--modified cannot be empty")
+    if ".." in expr:
+        parts = expr.split("..")
+        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                f"Invalid --modified range '{expression}'. "
+                f"Use format like '2026-01-01..2026-01-31'."
+            )
+        start = parse_modified_expression(f">={parts[0].strip()}")
+        end = parse_modified_expression(f"<={parts[1].strip()}")
+        if normalize_datetime(start.value) > normalize_datetime(end.value):
+            raise ValueError(
+                f"Invalid --modified range '{expression}'. "
+                f"Range start must be earlier than or equal to range end."
+            )
+        return [start, end]
+    if "," in expr:
+        parts = [p.strip() for p in expr.split(",") if p.strip()]
+        if not parts:
+            raise ValueError("--modified cannot be empty")
+        return [parse_modified_expression(p) for p in parts]
+    return [parse_modified_expression(expr)]
