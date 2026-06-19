@@ -23,6 +23,8 @@ __pycache__/
 
 # Temp files
 .temp
+.claude
+docs/superpowers/
 out
 cache
 

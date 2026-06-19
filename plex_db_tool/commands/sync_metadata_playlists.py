@@ -348,6 +348,7 @@ def run(args: Namespace) -> int:
             args.playlist_status_suffix,
             args.playlist_complete_suffix,
             item_filter=item_filter,
+            item_filter_expr=args.item_filter,
         )
         columns = report_writer.parse_columns(args.columns)
 
@@ -974,6 +975,7 @@ def plan_group_playlists(
     playlist_status_suffix: bool,
     playlist_complete_suffix: str,
     item_filter: Optional[MetadataItemFilter] = None,
+    item_filter_expr: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[PlannedMutation]]:
     matcher = PlexMatcher("balanced", 0.65)
     target_indexes = matcher.index_target_inventory(target_inventory)
@@ -1045,7 +1047,7 @@ def plan_group_playlists(
             )
 
         added_at = int(group["modified_at"].timestamp()) if group["modified_at"] is not None else None
-        description = build_playlist_description(group)
+        description = build_playlist_description(group, item_filter_expr=item_filter_expr)
         mutation_annotations = build_sync_mutation_annotations(group)
         status = "ready_create"
         action = "create_new"
@@ -1293,11 +1295,16 @@ def plan_group_playlists(
     return plans, mutations
 
 
-def build_playlist_description(group: Dict[str, Any]) -> str:
+def build_playlist_description(group: Dict[str, Any], item_filter_expr: Optional[str] = None) -> str:
     pieces = [f"status={group['status']}", f"watch={group['watch_status']}"]
     pieces.append(f"episodes_found={group['episodes_found']}")
     if int(group["episodes_expected"] or 0) > 0:
-        pieces.append(f"episodes_expected={group['episodes_expected']}")
+        ep_expected = f"episodes_expected={group['episodes_expected']}"
+        if item_filter_expr:
+            ep_expected += " (filtered)"
+        pieces.append(ep_expected)
+    if item_filter_expr:
+        pieces.append(f"item_filter={item_filter_expr}")
     group_data = group.get("group_data") or {}
     group_count = safe_int(group_data.get("group_count"))
     if group_count and group_count > 1:
