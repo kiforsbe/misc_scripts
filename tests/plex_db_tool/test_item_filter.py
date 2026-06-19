@@ -1,0 +1,582 @@
+import pytest
+from datetime import datetime
+
+from plex_db_tool.item_filter import (
+    ComparisonOp,
+    DateCondition,
+    MetadataItemFilter,
+    NumericCondition,
+    StringSetCondition,
+    normalize_datetime,
+    normalize_path_key,
+    parse_smart_datetime,
+    safe_int,
+)
+
+
+def test_comparison_op_values():
+    assert ComparisonOp.EQ.value == "="
+    assert ComparisonOp.NEQ.value == "!="
+    assert ComparisonOp.LT.value == "<"
+    assert ComparisonOp.LTE.value == "<="
+    assert ComparisonOp.GT.value == ">"
+    assert ComparisonOp.GTE.value == ">="
+
+
+def test_numeric_condition_frozen():
+    cond = NumericCondition(op=ComparisonOp.GTE, value=5)
+    assert cond.op == ComparisonOp.GTE
+    assert cond.value == 5
+    with pytest.raises(Exception):
+        cond.value = 10  # type: ignore[misc]
+
+
+def test_date_condition_date_only_defaults_false():
+    cond = DateCondition(op=ComparisonOp.LT, value=datetime(2026, 1, 1))
+    assert cond.date_only is False
+
+
+def test_string_set_condition():
+    cond = StringSetCondition(op=ComparisonOp.EQ, values=frozenset({"unwatched"}))
+    assert "unwatched" in cond.values
+
+
+def test_metadata_item_filter_defaults():
+    f = MetadataItemFilter()
+    assert f.watch_status is None
+    assert f.mal_status is None
+    assert f.seasons == []
+    assert f.episodes == []
+    assert f.modified == []
+    assert f.aired == []
+
+
+def test_metadata_item_filter_stub_matches_everything():
+    f = MetadataItemFilter()
+    assert f.matches({"episode_watched": True}, {}) is True
+    assert f.matches({}, {}) is True
+
+
+def test_safe_int_valid():
+    assert safe_int(5) == 5
+    assert safe_int("12") == 12
+
+
+def test_safe_int_invalid():
+    assert safe_int(None) is None
+    assert safe_int("") is None
+    assert safe_int("abc") is None
+
+
+def test_normalize_path_key():
+    assert normalize_path_key("C:\\Foo\\Bar.mkv") == "c:/foo/bar.mkv"
+    assert normalize_path_key("/mnt/media/ep.mkv") == "/mnt/media/ep.mkv"
+
+
+def test_normalize_datetime_strips_tz():
+    from datetime import timezone, timedelta
+    dt_utc = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    result = normalize_datetime(dt_utc)
+    assert result.tzinfo is None
+
+
+def test_parse_smart_datetime_iso_date_only():
+    dt, date_only = parse_smart_datetime("2026-01-15")
+    assert dt == datetime(2026, 1, 15)
+    assert date_only is True
+
+
+def test_parse_smart_datetime_iso_datetime():
+    dt, date_only = parse_smart_datetime("2026-01-15T12:30")
+    assert dt == datetime(2026, 1, 15, 12, 30)
+    assert date_only is False
+
+
+def test_parse_smart_datetime_empty():
+    dt, date_only = parse_smart_datetime("")
+    assert dt is None
+    assert date_only is False
+
+
+from plex_db_tool.item_filter import (
+    classify_file_watch_status,
+    is_episode_already_watched,
+    is_watching_mal_status,
+    matches_date_condition,
+    matches_numeric_condition,
+)
+
+
+# --- classify_file_watch_status ---
+
+def test_classify_watched_via_episode_watched_flag():
+    assert classify_file_watch_status({"episode_watched": True}, {}) == "watched"
+
+
+def test_classify_watched_via_plex_watched_flag():
+    assert classify_file_watch_status({"plex_watch_status": {"watched": True}}, {}) == "watched"
+
+
+def test_classify_watched_partial_via_view_offset():
+    fi = {"plex_watch_status": {"watched": False, "view_offset": 5000}}
+    assert classify_file_watch_status(fi, {}) == "watched_partial"
+
+
+def test_classify_watched_via_file_mal():
+    fi = {"episode": 3, "myanimelist_watch_status": {"my_watched_episodes": 5}}
+    assert classify_file_watch_status(fi, {}) == "watched"
+
+
+def test_classify_watched_via_group_mal():
+    fi = {"episode": 2}
+    gd = {"myanimelist_watch_status": {"my_watched_episodes": 5}}
+    assert classify_file_watch_status(fi, gd) == "watched"
+
+
+def test_classify_unwatched_no_watch_data():
+    assert classify_file_watch_status({"episode": 3}, {}) == "unwatched"
+
+
+def test_classify_unwatched_future_episode():
+    fi = {"episode": 8, "myanimelist_watch_status": {"my_watched_episodes": 5}}
+    assert classify_file_watch_status(fi, {}) == "unwatched"
+
+
+# --- is_episode_already_watched ---
+
+def test_is_already_watched_via_flag():
+    assert is_episode_already_watched({"episode_watched": True}, {}) is True
+
+
+def test_is_already_watched_via_view_offset():
+    assert is_episode_already_watched({"plex_watch_status": {"view_offset": 100}}, {}) is True
+
+
+def test_is_not_watched():
+    assert is_episode_already_watched({"episode": 5}, {}) is False
+
+
+# --- is_watching_mal_status ---
+
+def test_is_watching_mal_status_watching():
+    assert is_watching_mal_status({"my_status": "Watching"}) is True
+
+
+def test_is_watching_mal_status_not_dict():
+    assert is_watching_mal_status("watching") is False
+
+
+def test_is_watching_mal_status_other_status():
+    assert is_watching_mal_status({"my_status": "Completed"}) is False
+
+
+# --- matches_numeric_condition ---
+
+def test_matches_numeric_eq():
+    assert matches_numeric_condition(5, NumericCondition(ComparisonOp.EQ, 5)) is True
+    assert matches_numeric_condition(4, NumericCondition(ComparisonOp.EQ, 5)) is False
+
+
+def test_matches_numeric_neq():
+    assert matches_numeric_condition(4, NumericCondition(ComparisonOp.NEQ, 5)) is True
+    assert matches_numeric_condition(5, NumericCondition(ComparisonOp.NEQ, 5)) is False
+
+
+def test_matches_numeric_lt():
+    assert matches_numeric_condition(4, NumericCondition(ComparisonOp.LT, 5)) is True
+    assert matches_numeric_condition(5, NumericCondition(ComparisonOp.LT, 5)) is False
+
+
+def test_matches_numeric_lte():
+    assert matches_numeric_condition(5, NumericCondition(ComparisonOp.LTE, 5)) is True
+    assert matches_numeric_condition(6, NumericCondition(ComparisonOp.LTE, 5)) is False
+
+
+def test_matches_numeric_gt():
+    assert matches_numeric_condition(6, NumericCondition(ComparisonOp.GT, 5)) is True
+    assert matches_numeric_condition(5, NumericCondition(ComparisonOp.GT, 5)) is False
+
+
+def test_matches_numeric_gte():
+    assert matches_numeric_condition(5, NumericCondition(ComparisonOp.GTE, 5)) is True
+    assert matches_numeric_condition(4, NumericCondition(ComparisonOp.GTE, 5)) is False
+
+
+# --- matches_date_condition ---
+
+def test_matches_date_gte():
+    actual = datetime(2026, 6, 15)
+    cond = DateCondition(op=ComparisonOp.GTE, value=datetime(2026, 1, 1))
+    assert matches_date_condition(actual, cond) is True
+
+
+def test_matches_date_lt():
+    actual = datetime(2025, 12, 31)
+    cond = DateCondition(op=ComparisonOp.LT, value=datetime(2026, 1, 1))
+    assert matches_date_condition(actual, cond) is True
+
+
+def test_matches_date_eq_date_only_same_day():
+    actual = datetime(2026, 1, 15, 10, 30)
+    cond = DateCondition(op=ComparisonOp.EQ, value=datetime(2026, 1, 15), date_only=True)
+    assert matches_date_condition(actual, cond) is True
+
+
+def test_matches_date_eq_date_only_different_day():
+    actual = datetime(2026, 1, 16, 10, 30)
+    cond = DateCondition(op=ComparisonOp.EQ, value=datetime(2026, 1, 15), date_only=True)
+    assert matches_date_condition(actual, cond) is False
+
+
+def test_matches_date_neq_date_only():
+    actual = datetime(2026, 1, 15, 10, 30)
+    cond = DateCondition(op=ComparisonOp.NEQ, value=datetime(2026, 1, 16), date_only=True)
+    assert matches_date_condition(actual, cond) is True
+
+
+# --- MetadataItemFilter.matches ---
+
+def test_filter_no_criteria_passes_everything():
+    f = MetadataItemFilter()
+    assert f.matches({"episode_watched": True, "season": 99}, {}) is True
+    assert f.matches({}, {}) is True
+
+
+def test_filter_watch_status_eq_unwatched():
+    f = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"}))
+    )
+    assert f.matches({"episode": 1}, {}) is True
+    assert f.matches({"episode_watched": True}, {}) is False
+
+
+def test_filter_watch_status_neq_watched():
+    f = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.NEQ, frozenset({"watched"}))
+    )
+    assert f.matches({"episode": 1}, {}) is True
+    assert f.matches({"episode_watched": True}, {}) is False
+
+
+def test_filter_watch_status_multi_value():
+    f = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched", "watched_partial"}))
+    )
+    assert f.matches({"episode": 1}, {}) is True
+    assert f.matches({"plex_watch_status": {"watched": False, "view_offset": 100}}, {}) is True
+    assert f.matches({"episode_watched": True}, {}) is False
+
+
+def test_filter_mal_status_eq_watching():
+    f = MetadataItemFilter(
+        mal_status=StringSetCondition(ComparisonOp.EQ, frozenset({"watching"}))
+    )
+    fi_watching = {"myanimelist_watch_status": {"my_status": "Watching"}}
+    fi_completed = {"myanimelist_watch_status": {"my_status": "Completed"}}
+    assert f.matches(fi_watching, {}) is True
+    assert f.matches(fi_completed, {}) is False
+
+
+def test_filter_mal_status_missing_excluded():
+    f = MetadataItemFilter(
+        mal_status=StringSetCondition(ComparisonOp.EQ, frozenset({"watching"}))
+    )
+    assert f.matches({}, {}) is False
+
+
+def test_filter_season_eq():
+    f = MetadataItemFilter(seasons=[NumericCondition(ComparisonOp.EQ, 1)])
+    assert f.matches({"season": 1}, {}) is True
+    assert f.matches({"season": 2}, {}) is False
+    assert f.matches({}, {}) is False  # missing season → excluded
+
+
+def test_filter_episode_gte():
+    f = MetadataItemFilter(episodes=[NumericCondition(ComparisonOp.GTE, 5)])
+    assert f.matches({"episode": 5}, {}) is True
+    assert f.matches({"episode": 4}, {}) is False
+
+
+def test_filter_episode_list_any_passes_all_conditions():
+    f = MetadataItemFilter(episodes=[NumericCondition(ComparisonOp.GTE, 5)])
+    assert f.matches({"episode": [3, 6]}, {}) is True   # 6 >= 5
+    assert f.matches({"episode": [1, 2]}, {}) is False  # neither >= 5
+
+
+def test_filter_episode_missing_excluded():
+    f = MetadataItemFilter(episodes=[NumericCondition(ComparisonOp.GTE, 1)])
+    assert f.matches({}, {}) is False
+
+
+def test_filter_modified_gte():
+    import time
+    now_ts = time.time()
+    f = MetadataItemFilter(
+        modified=[DateCondition(op=ComparisonOp.GTE, value=datetime.fromtimestamp(now_ts))]
+    )
+    assert f.matches({"modified_time": now_ts + 86400}, {}) is True
+    assert f.matches({"modified_time": now_ts - 86400}, {}) is False
+    assert f.matches({}, {}) is False  # missing → excluded
+
+
+def test_filter_multiple_criteria_all_must_pass():
+    f = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"})),
+        seasons=[NumericCondition(ComparisonOp.EQ, 1)],
+    )
+    assert f.matches({"season": 1, "episode": 1}, {}) is True
+    assert f.matches({"season": 2, "episode": 1}, {}) is False  # wrong season
+    assert f.matches({"season": 1, "episode_watched": True}, {}) is False  # watched
+
+
+from plex_db_tool.item_filter import (
+    parse_modified_conditions,
+    parse_modified_expression,
+    parse_numeric_conditions,
+    parse_numeric_expression,
+)
+
+
+# --- parse_numeric_expression ---
+
+def test_parse_numeric_expr_gte():
+    cond = parse_numeric_expression(">=5", "episode")
+    assert cond == NumericCondition(op=ComparisonOp.GTE, value=5)
+
+
+def test_parse_numeric_expr_plain_equals():
+    cond = parse_numeric_expression("12", "episode")
+    assert cond == NumericCondition(op=ComparisonOp.EQ, value=12)
+
+
+def test_parse_numeric_expr_invalid_value():
+    with pytest.raises(ValueError, match="episode"):
+        parse_numeric_expression("abc", "episode")
+
+
+# --- parse_numeric_conditions ---
+
+def test_parse_numeric_conditions_single():
+    conds = parse_numeric_conditions(">=5", "episode")
+    assert conds == [NumericCondition(ComparisonOp.GTE, 5)]
+
+
+def test_parse_numeric_conditions_range():
+    conds = parse_numeric_conditions("1..12", "episode")
+    assert conds == [
+        NumericCondition(ComparisonOp.GTE, 1),
+        NumericCondition(ComparisonOp.LTE, 12),
+    ]
+
+
+def test_parse_numeric_conditions_comma():
+    conds = parse_numeric_conditions(">=5,<=12", "episode")
+    assert conds == [
+        NumericCondition(ComparisonOp.GTE, 5),
+        NumericCondition(ComparisonOp.LTE, 12),
+    ]
+
+
+def test_parse_numeric_conditions_invalid_range_order():
+    with pytest.raises(ValueError):
+        parse_numeric_conditions("12..1", "episode")
+
+
+# --- parse_modified_expression ---
+
+def test_parse_modified_expr_gte_date_only():
+    cond = parse_modified_expression(">=2026-01-01")
+    assert cond.op == ComparisonOp.GTE
+    assert cond.value == datetime(2026, 1, 1)
+    assert cond.date_only is True
+
+
+def test_parse_modified_expr_lt_datetime():
+    cond = parse_modified_expression("<2026-01-01T12:00")
+    assert cond.op == ComparisonOp.LT
+    assert cond.value == datetime(2026, 1, 1, 12, 0)
+    assert cond.date_only is False
+
+
+def test_parse_modified_expr_invalid():
+    with pytest.raises(ValueError, match="--modified"):
+        parse_modified_expression(">=not-a-date")
+
+
+# --- parse_modified_conditions ---
+
+def test_parse_modified_conditions_range():
+    conds = parse_modified_conditions("2026-01-01..2026-06-30")
+    assert len(conds) == 2
+    assert conds[0].op == ComparisonOp.GTE
+    assert conds[1].op == ComparisonOp.LTE
+
+
+def test_parse_modified_conditions_invalid_range_order():
+    with pytest.raises(ValueError):
+        parse_modified_conditions("2026-06-30..2026-01-01")
+
+
+from plex_db_tool.item_filter import MetadataItemFilterParser
+
+
+# --- MetadataItemFilterParser ---
+
+def test_parser_empty_expression_returns_no_filter():
+    f = MetadataItemFilterParser.parse("")
+    assert f == MetadataItemFilter()
+
+
+def test_parser_watch_status_eq():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched")
+    assert f.watch_status == StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"}))
+
+
+def test_parser_watch_status_neq():
+    f = MetadataItemFilterParser.parse("watch_status!=watched")
+    assert f.watch_status == StringSetCondition(ComparisonOp.NEQ, frozenset({"watched"}))
+
+
+def test_parser_watch_status_multi_value():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched,watched_partial")
+    assert f.watch_status == StringSetCondition(
+        ComparisonOp.EQ, frozenset({"unwatched", "watched_partial"})
+    )
+
+
+def test_parser_watch_status_invalid_value():
+    with pytest.raises(ValueError, match="watch_status"):
+        MetadataItemFilterParser.parse("watch_status=flying")
+
+
+def test_parser_mal_status_single():
+    f = MetadataItemFilterParser.parse("mal_status=watching")
+    assert f.mal_status == StringSetCondition(ComparisonOp.EQ, frozenset({"watching"}))
+
+
+def test_parser_mal_status_multi():
+    f = MetadataItemFilterParser.parse("mal_status=watching,completed")
+    assert f.mal_status == StringSetCondition(
+        ComparisonOp.EQ, frozenset({"watching", "completed"})
+    )
+
+
+def test_parser_episode_gte():
+    f = MetadataItemFilterParser.parse("episode>=5")
+    assert f.episodes == [NumericCondition(ComparisonOp.GTE, 5)]
+
+
+def test_parser_season_range():
+    f = MetadataItemFilterParser.parse("season=1..2")
+    assert f.seasons == [
+        NumericCondition(ComparisonOp.GTE, 1),
+        NumericCondition(ComparisonOp.LTE, 2),
+    ]
+
+
+def test_parser_modified_gte():
+    f = MetadataItemFilterParser.parse("modified>=2026-01-01")
+    assert len(f.modified) == 1
+    assert f.modified[0].op == ComparisonOp.GTE
+    assert f.modified[0].value == datetime(2026, 1, 1)
+    assert f.modified[0].date_only is True
+
+
+def test_parser_multiple_tokens_space_separated():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched episode>=5")
+    assert f.watch_status is not None
+    assert f.episodes == [NumericCondition(ComparisonOp.GTE, 5)]
+
+
+def test_parser_multiple_episode_conditions_accumulate():
+    f = MetadataItemFilterParser.parse("episode>=5 episode<=12")
+    assert f.episodes == [
+        NumericCondition(ComparisonOp.GTE, 5),
+        NumericCondition(ComparisonOp.LTE, 12),
+    ]
+
+
+def test_parser_watch_status_later_token_replaces_earlier():
+    f = MetadataItemFilterParser.parse("watch_status=unwatched watch_status=watched")
+    assert f.watch_status == StringSetCondition(ComparisonOp.EQ, frozenset({"watched"}))
+
+
+def test_parser_unknown_field_raises():
+    with pytest.raises(ValueError, match="Unknown field"):
+        MetadataItemFilterParser.parse("foo=bar")
+
+
+def test_parser_no_valid_tokens_raises():
+    with pytest.raises(ValueError, match="Invalid filter token"):
+        MetadataItemFilterParser.parse("!@#$%")
+
+
+def test_parser_invalid_token_raises():
+    with pytest.raises(ValueError, match=r"\?\?\?"):
+        MetadataItemFilterParser.parse("episode>=5 ???")
+
+
+def test_parser_pure_junk_raises():
+    with pytest.raises(ValueError):
+        MetadataItemFilterParser.parse("not_valid_syntax")
+
+
+# --- CLI integration tests ---
+
+from plex_db_tool.commands.sync_metadata_playlists import resolve_group_metadata_item_ids
+from plex_db_tool.planners import PlexMatcher
+
+
+def _make_group(files):
+    return {"files": files, "group_data": {}}
+
+
+def test_resolve_no_filter_includes_all_files():
+    group = _make_group([
+        {"filename": "ep1.mkv", "episode": 1},
+        {"filename": "ep2.mkv", "episode": 2, "episode_watched": True},
+    ])
+    _, unmatched = resolve_group_metadata_item_ids(group, {}, {}, PlexMatcher("balanced", 0.65))
+    assert len(unmatched) == 2  # both attempted, both unmatched (no inventory)
+
+
+def test_resolve_item_filter_excludes_watched():
+    group = _make_group([
+        {"filename": "ep1.mkv", "episode": 1},
+        {"filename": "ep2.mkv", "episode": 2, "episode_watched": True},
+    ])
+    item_filter = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"}))
+    )
+    _, unmatched = resolve_group_metadata_item_ids(
+        group, {}, {}, PlexMatcher("balanced", 0.65), item_filter
+    )
+    assert len(unmatched) == 1  # only ep1 passed the filter; ep2 was excluded before matching
+    assert "ep1.mkv" in unmatched[0]
+
+
+def test_resolve_item_filter_all_excluded_returns_empty():
+    group = _make_group([
+        {"filename": "ep1.mkv", "episode": 1, "episode_watched": True},
+    ])
+    item_filter = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"}))
+    )
+    matched, unmatched = resolve_group_metadata_item_ids(
+        group, {}, {}, PlexMatcher("balanced", 0.65), item_filter
+    )
+    assert matched == []
+    assert unmatched == []
+
+
+def test_resolve_item_filter_season_range():
+    group = _make_group([
+        {"filename": "s1e1.mkv", "season": 1, "episode": 1},
+        {"filename": "s2e1.mkv", "season": 2, "episode": 1},
+    ])
+    item_filter = MetadataItemFilter(seasons=[NumericCondition(ComparisonOp.EQ, 1)])
+    _, unmatched = resolve_group_metadata_item_ids(
+        group, {}, {}, PlexMatcher("balanced", 0.65), item_filter
+    )
+    assert len(unmatched) == 1
+    assert "s1e1.mkv" in unmatched[0]

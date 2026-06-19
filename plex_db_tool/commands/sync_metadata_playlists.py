@@ -3,13 +3,23 @@ import os
 import sys
 from argparse import Namespace, _SubParsersAction
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Sequence, Set, TextIO, Tuple
 
 from ..cli_support import PlexCliSupport
 from ..infrastructure import PlexDatabase, PlexDatabaseLocator, PlexEnvironment, PlexFilenameParser
+from ..item_filter import (
+    MetadataItemFilter,
+    MetadataItemFilterParser,
+    matches_date_condition,
+    matches_numeric_condition,
+    normalize_path_key,
+    parse_modified_conditions,
+    parse_numeric_conditions,
+    safe_int,
+)
 from ..models import MediaRecord, PlannedMutation, PlexPlaylist, TableColumnSpec
 from ..planners import PlexMatcher, PlexPlaylistPlanner
 from ..reporting import PlexReportWriter
@@ -260,6 +270,17 @@ def register(subparsers: _SubParsersAction) -> None:
             "Defaults to '!Watching'; pass NAME to rename it."
         ),
     )
+    parser.add_argument(
+        "--item-filter",
+        default=None,
+        metavar="EXPR",
+        help=(
+            "Filter which individual files are included in each playlist. "
+            "Space-separated field=value tokens. "
+            "Fields: watch_status, mal_status, season, episode, modified, aired. "
+            "Examples: 'watch_status=unwatched', 'mal_status=watching episode>=5', 'season=1..2'."
+        ),
+    )
 
 
 def run(args: Namespace) -> int:
@@ -277,6 +298,14 @@ def run(args: Namespace) -> int:
     )
     groups = collapse_one_of_one_groups(groups, args.one_of_one_playlist)
     groups = add_virtual_watching_playlist(groups, args.virtual_playlist_watching)
+
+    item_filter: Optional[MetadataItemFilter] = None
+    if args.item_filter:
+        try:
+            item_filter = MetadataItemFilterParser.parse(args.item_filter)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     if not groups:
         print("No groups matched the selected metadata filters.")
@@ -318,6 +347,7 @@ def run(args: Namespace) -> int:
             args.playlist_suffix,
             args.playlist_status_suffix,
             args.playlist_complete_suffix,
+            item_filter=item_filter,
         )
         columns = report_writer.parse_columns(args.columns)
 
@@ -793,15 +823,6 @@ def classify_watch_status(group_data: Dict[str, Any], files: Sequence[Dict[str, 
     return "unwatched"
 
 
-def safe_int(value: Any) -> Optional[int]:
-    try:
-        if value is None or value == "":
-            return None
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def normalize_groups_for_filter(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [dict(group) for group in groups]
 
@@ -823,19 +844,19 @@ def filter_groups(
         filtered = [
             group for group in filtered
             if group["modified_at"] is not None
-            and all(matches_modified_expression(group["modified_at"], operator, target_value, is_date_only) for operator, target_value, is_date_only in conditions)
+            and all(matches_date_condition(group["modified_at"], cond) for cond in conditions)
         ]
     if episodes_found:
         conditions = parse_numeric_conditions(episodes_found, "--episodes-found")
         filtered = [
             group for group in filtered
-            if all(matches_numeric_expression(int(group["episodes_found"] or 0), operator, target_value) for operator, target_value in conditions)
+            if all(matches_numeric_condition(int(group["episodes_found"] or 0), cond) for cond in conditions)
         ]
     if episodes_expected:
         conditions = parse_numeric_conditions(episodes_expected, "--episodes-expected")
         filtered = [
             group for group in filtered
-            if all(matches_numeric_expression(int(group["episodes_expected"] or 0), operator, target_value) for operator, target_value in conditions)
+            if all(matches_numeric_condition(int(group["episodes_expected"] or 0), cond) for cond in conditions)
         ]
     if sort_groups:
         filtered.sort(key=lambda group: str(group["playlist_name"]).casefold())
@@ -936,186 +957,6 @@ def get_group_modified_datetime(group_data: Dict[str, Any], files: Sequence[Dict
     return datetime.fromtimestamp(newest_mtime)
 
 
-def normalize_datetime(value: datetime) -> datetime:
-    if value.tzinfo is not None:
-        return value.astimezone().replace(tzinfo=None)
-    return value
-
-
-def parse_smart_datetime(value: str) -> Tuple[Optional[datetime], bool]:
-    text = (value or "").strip()
-    if not text:
-        return None, False
-
-    lowered = text.lower()
-    now = datetime.now()
-    if lowered == "now":
-        return now, False
-    if lowered == "today":
-        return datetime(now.year, now.month, now.day), True
-    if lowered == "yesterday":
-        today = datetime(now.year, now.month, now.day)
-        return today - timedelta(days=1), True
-    if lowered == "tomorrow":
-        today = datetime(now.year, now.month, now.day)
-        return today + timedelta(days=1), True
-
-    is_date_only = bool(__import__("re").fullmatch(r"\d{4}-\d{2}-\d{2}", text))
-    iso_candidate = text[:-1] + "+00:00" if text.endswith("Z") else text
-    try:
-        parsed = datetime.fromisoformat(iso_candidate)
-        return normalize_datetime(parsed), is_date_only
-    except ValueError:
-        pass
-
-    formats = [
-        "%Y/%m/%d",
-        "%Y.%m.%d",
-        "%Y%m%d",
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-        "%d.%m.%Y",
-        "%d.%m.%Y %H:%M",
-        "%d.%m.%Y %H:%M:%S",
-    ]
-    for fmt in formats:
-        try:
-            parsed = datetime.strptime(text, fmt)
-            date_only = fmt in ("%Y/%m/%d", "%Y.%m.%d", "%Y%m%d", "%d.%m.%Y")
-            return parsed, date_only
-        except ValueError:
-            continue
-
-    if __import__("re").fullmatch(r"\d{10,13}", text):
-        try:
-            timestamp = int(text)
-            if len(text) == 13:
-                timestamp = timestamp / 1000
-            return datetime.fromtimestamp(timestamp), False
-        except (ValueError, OSError):
-            pass
-    return None, False
-
-
-def parse_modified_expression(expression: str) -> Tuple[str, datetime, bool]:
-    import re
-
-    expr = (expression or "").strip()
-    match = re.match(r"^(<=|>=|<|>|==|=|!=)\s*(.+)$", expr)
-    if match:
-        operator = match.group(1)
-        raw_value = match.group(2).strip()
-    else:
-        operator = "="
-        raw_value = expr
-
-    parsed_dt, is_date_only = parse_smart_datetime(raw_value)
-    if parsed_dt is None:
-        raise ValueError(
-            f"Invalid --modified expression '{expression}'. Use forms like '<2026-01-01' or '>=2026-01-01T15:30'."
-        )
-    return operator, parsed_dt, is_date_only
-
-
-def parse_modified_conditions(expression: str) -> List[Tuple[str, datetime, bool]]:
-    expr = (expression or "").strip()
-    if not expr:
-        raise ValueError("--modified cannot be empty")
-    if ".." in expr:
-        parts = expr.split("..")
-        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
-            raise ValueError(f"Invalid --modified range '{expression}'. Use format like '2026-01-01..2026-01-31'.")
-        start_condition = parse_modified_expression(f">={parts[0].strip()}")
-        end_condition = parse_modified_expression(f"<={parts[1].strip()}")
-        if normalize_datetime(start_condition[1]) > normalize_datetime(end_condition[1]):
-            raise ValueError(f"Invalid --modified range '{expression}'. Range start must be earlier than or equal to range end.")
-        return [start_condition, end_condition]
-    if "," in expr:
-        parts = [part.strip() for part in expr.split(",") if part.strip()]
-        if not parts:
-            raise ValueError("--modified cannot be empty")
-        return [parse_modified_expression(part) for part in parts]
-    return [parse_modified_expression(expr)]
-
-
-def matches_modified_expression(actual: datetime, operator: str, target_value: datetime, is_date_only: bool) -> bool:
-    normalized_actual = normalize_datetime(actual)
-    normalized_target = normalize_datetime(target_value)
-    if is_date_only and operator in ("=", "==", "!="):
-        is_equal = normalized_actual.date() == normalized_target.date()
-        return (not is_equal) if operator == "!=" else is_equal
-    if operator in ("=", "=="):
-        return normalized_actual == normalized_target
-    if operator == "!=":
-        return normalized_actual != normalized_target
-    if operator == "<":
-        return normalized_actual < normalized_target
-    if operator == "<=":
-        return normalized_actual <= normalized_target
-    if operator == ">":
-        return normalized_actual > normalized_target
-    if operator == ">=":
-        return normalized_actual >= normalized_target
-    return False
-
-
-def parse_numeric_expression(expression: str, argument_name: str) -> Tuple[str, int]:
-    import re
-
-    expr = (expression or "").strip()
-    match = re.match(r"^(<=|>=|<|>|==|=|!=)\s*(.+)$", expr)
-    if match:
-        operator = match.group(1)
-        raw_value = match.group(2).strip()
-    else:
-        operator = "="
-        raw_value = expr
-    if not re.fullmatch(r"-?\d+", raw_value):
-        raise ValueError(
-            f"Invalid {argument_name} expression '{expression}'. Use integer values like '<12', '>=24', or '=13'."
-        )
-    return operator, int(raw_value)
-
-
-def parse_numeric_conditions(expression: str, argument_name: str) -> List[Tuple[str, int]]:
-    expr = (expression or "").strip()
-    if not expr:
-        raise ValueError(f"{argument_name} cannot be empty")
-    if ".." in expr:
-        parts = expr.split("..")
-        if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
-            raise ValueError(f"Invalid {argument_name} range '{expression}'. Use format like '12..24'.")
-        start_condition = parse_numeric_expression(f">={parts[0].strip()}", argument_name)
-        end_condition = parse_numeric_expression(f"<={parts[1].strip()}", argument_name)
-        if start_condition[1] > end_condition[1]:
-            raise ValueError(f"Invalid {argument_name} range '{expression}'. Range start must be less than or equal to range end.")
-        return [start_condition, end_condition]
-    if "," in expr:
-        parts = [part.strip() for part in expr.split(",") if part.strip()]
-        if not parts:
-            raise ValueError(f"{argument_name} cannot be empty")
-        return [parse_numeric_expression(part, argument_name) for part in parts]
-    return [parse_numeric_expression(expr, argument_name)]
-
-
-def matches_numeric_expression(value: int, operator: str, target_value: int) -> bool:
-    if operator in ("=", "=="):
-        return value == target_value
-    if operator == "!=":
-        return value != target_value
-    if operator == "<":
-        return value < target_value
-    if operator == "<=":
-        return value <= target_value
-    if operator == ">":
-        return value > target_value
-    if operator == ">=":
-        return value >= target_value
-    return False
-
-
 def plan_group_playlists(
     groups: Sequence[Dict[str, Any]],
     target_inventory: Sequence[MediaRecord],
@@ -1132,6 +973,7 @@ def plan_group_playlists(
     playlist_suffix: str,
     playlist_status_suffix: bool,
     playlist_complete_suffix: str,
+    item_filter: Optional[MetadataItemFilter] = None,
 ) -> Tuple[List[Dict[str, Any]], List[PlannedMutation]]:
     matcher = PlexMatcher("balanced", 0.65)
     target_indexes = matcher.index_target_inventory(target_inventory)
@@ -1170,7 +1012,7 @@ def plan_group_playlists(
         ):
             playlist_name = PlexPlaylistPlanner.resolve_unique_name(reserved_names, desired_name)
 
-        matched_records, unmatched_files = resolve_group_metadata_item_ids(group, target_indexes, path_index, matcher)
+        matched_records, unmatched_files = resolve_group_metadata_item_ids(group, target_indexes, path_index, matcher, item_filter)
 
         skipped_earlier_records: List[MediaRecord] = []
         sync_records = list(matched_records)
@@ -1811,21 +1653,23 @@ def build_path_index(inventory: Sequence[MediaRecord]) -> Dict[str, List[MediaRe
     return index
 
 
-def normalize_path_key(path_value: str) -> str:
-    return str(path_value).replace("\\", "/").casefold()
-
-
 def resolve_group_metadata_item_ids(
     group: Dict[str, Any],
     target_indexes: Dict[str, List[MediaRecord]],
     path_index: Dict[str, List[MediaRecord]],
     matcher: PlexMatcher,
+    item_filter: Optional[MetadataItemFilter] = None,
 ) -> Tuple[List[MediaRecord], List[str]]:
     matched_records: List[MediaRecord] = []
     unmatched_files: List[str] = []
     seen_ids: Set[int] = set()
 
-    for file_info in group["files"]:
+    files = group["files"]
+    if item_filter is not None:
+        group_data = group.get("group_data") or {}
+        files = [f for f in files if item_filter.matches(f, group_data)]
+
+    for file_info in files:
         matched_record = resolve_file_record(file_info, target_indexes, path_index, matcher)
         if matched_record is None:
             unmatched_files.append(str(file_info.get("filename") or file_info.get("filepath") or file_info.get("file_path") or "unknown"))
