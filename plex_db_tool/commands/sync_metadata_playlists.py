@@ -1048,6 +1048,7 @@ def plan_group_playlists(
 
         added_at = int(group["modified_at"].timestamp()) if group["modified_at"] is not None else None
         description = build_playlist_description(group, item_filter_expr=item_filter_expr)
+        stable_description = build_playlist_description(group)
         mutation_annotations = build_sync_mutation_annotations(group)
         status = "ready_create"
         action = "create_new"
@@ -1078,7 +1079,7 @@ def plan_group_playlists(
         if deleted_sync_playlist and not restore_removed_playlists:
             notes.append("playlist was previously removed; pass --restore-removed-playlists to recreate it")
 
-        if existing_playlist is not None and should_update_existing_playlist_metadata(existing_playlist, playlist_name, description):
+        if existing_playlist is not None and should_update_existing_playlist_metadata(existing_playlist, playlist_name, stable_description):
             resolved_playlist_name = resolve_updated_playlist_name(
                 target_playlists,
                 existing_playlist,
