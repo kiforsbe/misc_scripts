@@ -72,7 +72,7 @@ Returns `True` only when all active criteria pass. Evaluation order:
 
 A class with a single classmethod `parse(expression: str) -> MetadataItemFilter`.
 
-**Expression syntax** — space- or comma-separated `field op value` tokens:
+**Expression syntax** — space-separated `field op value` tokens (commas are used only within a token's value, e.g. for multi-value sets):
 
 | Token example | Meaning |
 |---|---|
@@ -90,6 +90,7 @@ Rules:
 - For `seasons`, `episodes`, `modified`, `aired` (list conditions): multiple tokens for the same field are accumulated (AND-ed together), enabling range expressions like `episode>=5 episode<=12`.
 - Range shorthand `start..end` on numeric/date fields expands to `[GTE(start), LTE(end)]`, consistent with the existing `parse_numeric_conditions` / `parse_modified_conditions` patterns.
 - Unknown field names raise a `ValueError` with a clear message listing valid fields.
+- Malformed tokens (whitespace-delimited chunks that don't match the `field op value` pattern) raise a `ValueError` naming the offending token.
 
 ---
 
