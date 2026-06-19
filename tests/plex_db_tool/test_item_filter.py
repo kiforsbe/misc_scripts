@@ -507,8 +507,18 @@ def test_parser_unknown_field_raises():
 
 
 def test_parser_no_valid_tokens_raises():
-    with pytest.raises(ValueError, match="no valid"):
+    with pytest.raises(ValueError, match="Invalid filter token"):
         MetadataItemFilterParser.parse("!@#$%")
+
+
+def test_parser_invalid_token_raises():
+    with pytest.raises(ValueError, match=r"\?\?\?"):
+        MetadataItemFilterParser.parse("episode>=5 ???")
+
+
+def test_parser_pure_junk_raises():
+    with pytest.raises(ValueError):
+        MetadataItemFilterParser.parse("not_valid_syntax")
 
 
 # --- CLI integration tests ---

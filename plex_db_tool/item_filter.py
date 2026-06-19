@@ -412,12 +412,13 @@ class MetadataItemFilterParser:
         if not expr:
             return MetadataItemFilter()
 
-        tokens = _TOKEN_RE.findall(expr)
-        if not tokens:
-            raise ValueError(
-                f"Invalid --item-filter expression '{expression}': no valid field=value tokens found. "
-                f"Valid fields: {', '.join(sorted(_ITEM_FILTER_FIELDS))}"
-            )
+        chunks = expr.split()
+        tokens = []
+        for chunk in chunks:
+            m = _TOKEN_RE.fullmatch(chunk)
+            if m is None:
+                raise ValueError(f"Invalid filter token: {chunk!r}")
+            tokens.append(m.groups())
 
         result = MetadataItemFilter()
         for field_name, op_str, raw_value in tokens:

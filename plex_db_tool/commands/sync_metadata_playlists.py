@@ -13,8 +13,6 @@ from ..infrastructure import PlexDatabase, PlexDatabaseLocator, PlexEnvironment,
 from ..item_filter import (
     MetadataItemFilter,
     MetadataItemFilterParser,
-    is_episode_already_watched,
-    is_watching_mal_status,
     matches_date_condition,
     matches_numeric_condition,
     normalize_path_key,
