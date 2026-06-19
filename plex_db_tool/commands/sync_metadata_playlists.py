@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Sequence, Set, TextIO, Tuple
 from ..cli_support import PlexCliSupport
 from ..infrastructure import PlexDatabase, PlexDatabaseLocator, PlexEnvironment, PlexFilenameParser
 from ..item_filter import (
+    MetadataItemFilter,
+    MetadataItemFilterParser,
     is_episode_already_watched,
     is_watching_mal_status,
     matches_date_condition,
@@ -259,6 +261,17 @@ def register(subparsers: _SubParsersAction) -> None:
             "episodes_expected=1 into one playlist."
         ),
     )
+    parser.add_argument(
+        "--item-filter",
+        default=None,
+        metavar="EXPR",
+        help=(
+            "Filter which individual files are included in each playlist. "
+            "Space-separated field=value tokens. "
+            "Fields: watch_status, mal_status, season, episode, modified, aired. "
+            "Examples: 'watch_status=unwatched', 'mal_status=watching episode>=5', 'season=1..2'."
+        ),
+    )
 
 
 def run(args: Namespace) -> int:
@@ -275,6 +288,14 @@ def run(args: Namespace) -> int:
         sort_groups=args.sort,
     )
     groups = collapse_one_of_one_groups(groups, args.one_of_one_playlist)
+
+    item_filter: Optional[MetadataItemFilter] = None
+    if args.item_filter:
+        try:
+            item_filter = MetadataItemFilterParser.parse(args.item_filter)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     if not groups:
         print("No groups matched the selected metadata filters.")
@@ -316,6 +337,7 @@ def run(args: Namespace) -> int:
             args.playlist_suffix,
             args.playlist_status_suffix,
             args.playlist_complete_suffix,
+            item_filter=item_filter,
         )
         columns = report_writer.parse_columns(args.columns)
 
@@ -780,6 +802,7 @@ def plan_group_playlists(
     playlist_suffix: str,
     playlist_status_suffix: bool,
     playlist_complete_suffix: str,
+    item_filter: Optional[MetadataItemFilter] = None,
 ) -> Tuple[List[Dict[str, Any]], List[PlannedMutation]]:
     matcher = PlexMatcher("balanced", 0.65)
     target_indexes = matcher.index_target_inventory(target_inventory)
@@ -818,7 +841,7 @@ def plan_group_playlists(
         ):
             playlist_name = PlexPlaylistPlanner.resolve_unique_name(reserved_names, desired_name)
 
-        matched_records, unmatched_files = resolve_group_metadata_item_ids(group, target_indexes, path_index, matcher)
+        matched_records, unmatched_files = resolve_group_metadata_item_ids(group, target_indexes, path_index, matcher, item_filter)
 
         skipped_earlier_records: List[MediaRecord] = []
         sync_records = list(matched_records)
@@ -1464,12 +1487,18 @@ def resolve_group_metadata_item_ids(
     target_indexes: Dict[str, List[MediaRecord]],
     path_index: Dict[str, List[MediaRecord]],
     matcher: PlexMatcher,
+    item_filter: Optional[MetadataItemFilter] = None,
 ) -> Tuple[List[MediaRecord], List[str]]:
     matched_records: List[MediaRecord] = []
     unmatched_files: List[str] = []
     seen_ids: Set[int] = set()
 
-    for file_info in group["files"]:
+    files = group["files"]
+    if item_filter is not None:
+        group_data = group.get("group_data") or {}
+        files = [f for f in files if item_filter.matches(f, group_data)]
+
+    for file_info in files:
         matched_record = resolve_file_record(file_info, target_indexes, path_index, matcher)
         if matched_record is None:
             unmatched_files.append(str(file_info.get("filename") or file_info.get("filepath") or file_info.get("file_path") or "unknown"))

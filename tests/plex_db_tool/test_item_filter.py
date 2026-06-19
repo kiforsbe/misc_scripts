@@ -509,3 +509,64 @@ def test_parser_unknown_field_raises():
 def test_parser_no_valid_tokens_raises():
     with pytest.raises(ValueError, match="no valid"):
         MetadataItemFilterParser.parse("!@#$%")
+
+
+# --- CLI integration tests ---
+
+from plex_db_tool.commands.sync_metadata_playlists import resolve_group_metadata_item_ids
+from plex_db_tool.planners import PlexMatcher
+
+
+def _make_group(files):
+    return {"files": files, "group_data": {}}
+
+
+def test_resolve_no_filter_includes_all_files():
+    group = _make_group([
+        {"filename": "ep1.mkv", "episode": 1},
+        {"filename": "ep2.mkv", "episode": 2, "episode_watched": True},
+    ])
+    _, unmatched = resolve_group_metadata_item_ids(group, {}, {}, PlexMatcher("balanced", 0.65))
+    assert len(unmatched) == 2  # both attempted, both unmatched (no inventory)
+
+
+def test_resolve_item_filter_excludes_watched():
+    group = _make_group([
+        {"filename": "ep1.mkv", "episode": 1},
+        {"filename": "ep2.mkv", "episode": 2, "episode_watched": True},
+    ])
+    item_filter = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"}))
+    )
+    _, unmatched = resolve_group_metadata_item_ids(
+        group, {}, {}, PlexMatcher("balanced", 0.65), item_filter
+    )
+    assert len(unmatched) == 1  # only ep1 passed the filter; ep2 was excluded before matching
+    assert "ep1.mkv" in unmatched[0]
+
+
+def test_resolve_item_filter_all_excluded_returns_empty():
+    group = _make_group([
+        {"filename": "ep1.mkv", "episode": 1, "episode_watched": True},
+    ])
+    item_filter = MetadataItemFilter(
+        watch_status=StringSetCondition(ComparisonOp.EQ, frozenset({"unwatched"}))
+    )
+    matched, unmatched = resolve_group_metadata_item_ids(
+        group, {}, {}, PlexMatcher("balanced", 0.65), item_filter
+    )
+    assert matched == []
+    assert unmatched == []
+
+
+def test_resolve_item_filter_season_range():
+    group = _make_group([
+        {"filename": "s1e1.mkv", "season": 1, "episode": 1},
+        {"filename": "s2e1.mkv", "season": 2, "episode": 1},
+    ])
+    item_filter = MetadataItemFilter(seasons=[NumericCondition(ComparisonOp.EQ, 1)])
+    _, unmatched = resolve_group_metadata_item_ids(
+        group, {}, {}, PlexMatcher("balanced", 0.65), item_filter
+    )
+    assert len(unmatched) == 1
+    assert "s1e1.mkv" in unmatched[0]
