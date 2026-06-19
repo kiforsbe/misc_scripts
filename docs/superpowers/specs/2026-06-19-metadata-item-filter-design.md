@@ -64,9 +64,9 @@ Returns `True` only when all active criteria pass. Evaluation order:
 1. **watch_status** — calls `classify_file_watch_status(file_info, group_data)` which checks (in order): `episode_watched`, `plex_watch_status.watched / view_offset > 0`, then MAL `my_watched_episodes` vs `episode` number. Yields `"watched"`, `"watched_partial"`, or `"unwatched"`. Tests the result against the `StringSetCondition`.
 2. **mal_status** — reads `file_info["myanimelist_watch_status"]["my_status"]`, falls back to `group_data["myanimelist_watch_status"]["my_status"]`. Normalised to lowercase/stripped before comparison.
 3. **seasons** — reads `file_info["season"]` as int; if missing/None the condition fails (item excluded).
-4. **episodes** — reads `file_info["episode"]` as int; list values use the maximum episode number. If missing/None and conditions are present, item is excluded.
+4. **episodes** — reads `file_info["episode"]` as int. If the field is a list (multi-episode file), the item passes if *any* episode number in the list satisfies all conditions. If missing/None and conditions are present, item is excluded.
 5. **modified** — reads `file_info["modified_time"]` (unix timestamp → datetime).
-6. **aired** — reads `file_info["aired_at"]` (ISO string or unix timestamp → datetime).
+6. **aired** — reads `file_info["aired_at"]` (ISO string or unix timestamp → datetime). This field name is not standardised across all JSON producers; if absent, the condition fails (item excluded). A future producer can add `aired_at` to enable this filter.
 
 ### `MetadataItemFilterParser`
 
@@ -86,7 +86,8 @@ A class with a single classmethod `parse(expression: str) -> MetadataItemFilter`
 
 Rules:
 - Multiple tokens build one `MetadataItemFilter`.
-- A later token for the same field overwrites the earlier one (no silent AND-stacking on the same field).
+- For `watch_status` and `mal_status` (single `StringSetCondition`): a later token for the same field replaces the earlier one.
+- For `seasons`, `episodes`, `modified`, `aired` (list conditions): multiple tokens for the same field are accumulated (AND-ed together), enabling range expressions like `episode>=5 episode<=12`.
 - Range shorthand `start..end` on numeric/date fields expands to `[GTE(start), LTE(end)]`, consistent with the existing `parse_numeric_conditions` / `parse_modified_conditions` patterns.
 - Unknown field names raise a `ValueError` with a clear message listing valid fields.
 
