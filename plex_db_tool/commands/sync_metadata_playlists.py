@@ -281,6 +281,11 @@ def register(subparsers: _SubParsersAction) -> None:
             "Examples: 'watch_status=unwatched', 'mal_status=watching episode>=5', 'season=1..2'."
         ),
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-playlist item changes (added and removed items) after the plan summary.",
+    )
 
 
 def run(args: Namespace) -> int:
@@ -361,6 +366,8 @@ def run(args: Namespace) -> int:
         summary_stream = sys.stderr if args.console_format in {"json", "csv"} else sys.stdout
         print_plan_summary(plans, mutations, args.apply, summary_stream)
         print_plan_unmatched_details(plans, summary_stream)
+        if args.verbose:
+            print_plan_changes_detail(plans, summary_stream)
 
         if interactive_sync and not args.apply:
             print("Dry-run only: no playlist changes have been written yet.", file=summary_stream)
@@ -371,6 +378,8 @@ def run(args: Namespace) -> int:
             if should_apply:
                 PlexCliSupport.apply_planned_mutations(target_db_path, mutations)
                 print_plan_summary(plans, mutations, True, summary_stream)
+                if args.verbose:
+                    print_plan_changes_detail(plans, summary_stream)
             else:
                 print("No playlist changes were written.", file=summary_stream)
 
@@ -1055,6 +1064,7 @@ def plan_group_playlists(
         notes: List[str] = []
         existing_item_count = len(existing_playlist.items) if existing_playlist else 0
         added_records: List[MediaRecord] = []
+        removed_record_labels: List[str] = []
         group_count = safe_int((group.get("group_data") or {}).get("group_count")) or 0
         if group_count > 1:
             notes.append(f"combined groups: {group_count}")
@@ -1219,6 +1229,8 @@ def plan_group_playlists(
                 )
                 status = "ready_replace"
                 action = "replace_existing"
+                new_ids_set = set(metadata_ids)
+                removed_record_labels = [r.display_label for r in existing_playlist.items if r.metadata_item_id not in new_ids_set]
 
         plans.append(
             {
@@ -1238,6 +1250,7 @@ def plan_group_playlists(
                 "transfer_item_count": len(metadata_ids),
                 "added_items": format_media_record_labels(added_records),
                 "added_item_labels": list_media_record_labels(added_records),
+                "removed_item_labels": removed_record_labels,
                 "existing_item_count": existing_item_count,
                 "source_file_count": len(group["files"]),
                 "unmatched_file_count": len(unmatched_files),
@@ -1282,6 +1295,7 @@ def plan_group_playlists(
                 "transfer_item_count": 0,
                 "added_items": "",
                 "added_item_labels": [],
+                "removed_item_labels": [item.display_label for item in removed_playlist.items],
                 "existing_item_count": len(removed_playlist.items),
                 "source_file_count": 0,
                 "unmatched_file_count": 0,
@@ -1884,6 +1898,30 @@ def print_plan_summary(
         )
         print(f"Planned playlist mutations: {len(mutations)}", file=stream)
         print("Mode: apply" if apply else "Mode: dry-run", file=stream)
+        stream.flush()
+    except OSError as exc:
+        if PlexReportWriter._is_broken_pipe_error(exc):
+            if stream is sys.stdout:
+                PlexReportWriter._suppress_stdout_after_pipe_error()
+            return
+        raise
+
+
+def print_plan_changes_detail(
+    plans: Sequence[Dict[str, Any]],
+    stream: TextIO = sys.stdout,
+) -> None:
+    try:
+        for plan in plans:
+            added = plan.get("added_item_labels", [])
+            removed = plan.get("removed_item_labels", [])
+            if not added and not removed:
+                continue
+            print(f"Changes for playlist '{plan['target_playlist']}':", file=stream)
+            for label in added:
+                print(f"  + {label}", file=stream)
+            for label in removed:
+                print(f"  - {label}", file=stream)
         stream.flush()
     except OSError as exc:
         if PlexReportWriter._is_broken_pipe_error(exc):
