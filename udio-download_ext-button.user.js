@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Add Download Button to Udio and Flow Music Song Pages
 // @namespace    http://tampermonkey.net/
-// @version      0.9
+// @version      0.10.1
 // @description  Adds a download button on Udio and Flow Music song pages, using metadata from the current track page
 // @match        https://www.udio.com/*
 // @match        https://www.flowmusic.app/*
@@ -13,12 +13,25 @@
   'use strict';
 
   const CUSTOM_BUTTON_SELECTOR = '[data-download-ext-button="true"]';
-    const DEBUG = true;
+    let debugEnabled = true;
     let activeObserver = null;
     let lastUrl = window.location.href;
 
+    function setDebugEnabled(enabled) {
+        debugEnabled = Boolean(enabled);
+        return debugEnabled;
+    }
+
+    function disableDebugging() {
+        return setDebugEnabled(false);
+    }
+
+    function enableDebugging() {
+        return setDebugEnabled(true);
+    }
+
     function debugLog(event, details) {
-            if (!DEBUG) {
+        if (!debugEnabled) {
                     return;
             }
 
@@ -50,6 +63,19 @@
       return document.querySelector('link[rel="canonical"]')?.getAttribute('href') || getMetadata('og:url') || window.location.href;
   }
 
+  function isVisibleElement(element) {
+      if (!element || !(element instanceof HTMLElement)) {
+          return false;
+      }
+
+      const style = window.getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') {
+          return false;
+      }
+
+      return element.getClientRects().length > 0;
+  }
+
   function flowMetadataMatchesCurrentSong() {
       const currentSongId = getCurrentSongIdFromPath();
       if (!currentSongId) {
@@ -64,7 +90,8 @@
 
   function getCreationYearFromText(prefix) {
       const titledNode = Array.from(document.querySelectorAll('[title]'))
-          .find(node => node.getAttribute('title')?.startsWith(prefix));
+          .reverse()
+          .find(node => node.getAttribute('title')?.startsWith(prefix) && isVisibleElement(node));
 
       if (!titledNode) {
           return null;
@@ -87,6 +114,9 @@
   }
 
   function getUdioSongData() {
+      const currentSongId = getCurrentSongIdFromPath();
+      const candidates = [];
+
       for (const script of Array.from(document.scripts)) {
           const text = script.textContent || '';
           if (!text.includes('song_path')) {
@@ -98,15 +128,50 @@
           const promptMatch = text.match(/\\?"prompt\\?":\\?"([^]*?)\\?",\\?"likes\\?":/);
 
           if (songPathMatch) {
-              return {
+              candidates.push({
                   songPath: songPathMatch[1],
                   imagePath: imagePathMatch ? imagePathMatch[1] : null,
-                  prompt: promptMatch ? promptMatch[1] : null
-              };
+                  prompt: promptMatch ? promptMatch[1] : null,
+                  scriptText: text
+              });
           }
       }
 
-      return null;
+      if (!candidates.length) {
+          return null;
+      }
+
+      if (currentSongId) {
+          const matchingCandidate = candidates.find(candidate => candidate.scriptText.includes(currentSongId));
+          if (matchingCandidate) {
+              return matchingCandidate;
+          }
+      }
+
+      return candidates[candidates.length - 1];
+  }
+
+  function matchesCurrentSongId(value) {
+      const currentSongId = getCurrentSongIdFromPath();
+      if (!currentSongId) {
+          return true;
+      }
+
+      return typeof value === 'string' && value.includes(currentSongId);
+  }
+
+  function getCurrentUdioAudioUrl(songData) {
+      const candidates = [
+          getMetadata('og:audio') || '',
+          songData?.songPath || ''
+      ];
+
+      const matchingCandidate = candidates.find(candidate => candidate && matchesCurrentSongId(candidate));
+      if (matchingCandidate) {
+          return matchingCandidate;
+      }
+
+      return candidates.find(Boolean) || '';
   }
 
   function parseUdioArtistAndTitle(ogTitle) {
@@ -137,12 +202,19 @@
   }
 
   function getUdioLyrics() {
-      const lyricsHeader = Array.from(document.querySelectorAll('div')).find(div => div.textContent.trim() === 'Lyrics');
+      const lyricsHeader = Array.from(document.querySelectorAll('div'))
+          .reverse()
+          .find(div => div.textContent.trim() === 'Lyrics' && isVisibleElement(div));
       if (!lyricsHeader) {
           return null;
       }
 
-      return lyricsHeader.nextElementSibling ? lyricsHeader.nextElementSibling.textContent.trim() : '';
+      const lyricsContainer = lyricsHeader.nextElementSibling;
+      if (!lyricsContainer || !isVisibleElement(lyricsContainer)) {
+          return '';
+      }
+
+      return lyricsContainer.textContent.trim();
   }
 
   function getFlowLyrics() {
@@ -182,9 +254,10 @@
               const songData = getUdioSongData();
               const ogTitle = getMetadata('og:title');
               const parsed = parseUdioArtistAndTitle(ogTitle);
+              const mp3Url = getCurrentUdioAudioUrl(songData);
 
               return {
-                  mp3Url: songData?.songPath || getMetadata('og:audio') || '',
+                  mp3Url,
                   imageUrl: songData?.imagePath || getMetadata('og:image') || '',
                   videoUrl: '',
                   artist: parsed.artist || '',
@@ -199,6 +272,8 @@
               const metadata = SITE_CONFIGS['www.udio.com'].getMetadata();
               return Boolean(
                   SITE_CONFIGS['www.udio.com'].getAnchorButton() &&
+                  metadata.mp3Url &&
+                  matchesCurrentSongId(metadata.mp3Url) &&
                   metadata.title &&
                   metadata.year &&
                   metadata.lyrics !== null
@@ -374,6 +449,20 @@
       }
 
       const buttonContainer = getButtonContainer(existingButton);
+      const existingDownloadButton = buttonContainer?.querySelector(CUSTOM_BUTTON_SELECTOR) || null;
+      const hasStaleButton = Boolean(
+          existingDownloadButton &&
+          existingDownloadButton.getAttribute('data-download-ext-url') !== window.location.href
+      );
+
+      if (hasStaleButton) {
+          debugLog('button:add:remove-stale', {
+              previousUrl: existingDownloadButton.getAttribute('data-download-ext-url') || '',
+              currentUrl: window.location.href
+          });
+          existingDownloadButton.remove();
+      }
+
       if (!buttonContainer || buttonContainer.querySelector(CUSTOM_BUTTON_SELECTOR)) {
           debugLog('button:add:skip-existing-or-missing-container', {
               hasContainer: Boolean(buttonContainer),
@@ -500,6 +589,13 @@
       window.addEventListener('popstate', dispatchLocationChange);
       window.addEventListener('locationchange', syncForCurrentUrl);
   }
+
+        window.downloadExtDebug = {
+            enable: enableDebugging,
+            disable: disableDebugging,
+            isEnabled: () => debugEnabled,
+            setEnabled: setDebugEnabled
+        };
 
     debugLog('init', {
             currentUrl: window.location.href,
