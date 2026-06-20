@@ -282,6 +282,22 @@ def register(subparsers: _SubParsersAction) -> None:
         ),
     )
     parser.add_argument(
+        "--item-filter-keep-existing",
+        action="store_true",
+        help=(
+            "When --item-filter is active, also keep items already present in an existing playlist "
+            "even if they would not pass the filter. Has no effect without --item-filter."
+        ),
+    )
+    parser.add_argument(
+        "--item-filter-remove-empty",
+        action="store_true",
+        help=(
+            "When --item-filter is active and all items in an existing playlist are filtered out, "
+            "delete the playlist instead of leaving it unchanged. Has no effect without --item-filter."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-playlist item changes (added and removed items) after the plan summary.",
@@ -354,6 +370,8 @@ def run(args: Namespace) -> int:
             args.playlist_complete_suffix,
             item_filter=item_filter,
             item_filter_expr=args.item_filter,
+            item_filter_keep_existing=args.item_filter_keep_existing,
+            item_filter_remove_empty=args.item_filter_remove_empty,
         )
         columns = report_writer.parse_columns(args.columns)
 
@@ -985,6 +1003,8 @@ def plan_group_playlists(
     playlist_complete_suffix: str,
     item_filter: Optional[MetadataItemFilter] = None,
     item_filter_expr: Optional[str] = None,
+    item_filter_keep_existing: bool = False,
+    item_filter_remove_empty: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[PlannedMutation]]:
     matcher = PlexMatcher("balanced", 0.65)
     target_indexes = matcher.index_target_inventory(target_inventory)
@@ -1024,6 +1044,13 @@ def plan_group_playlists(
             playlist_name = PlexPlaylistPlanner.resolve_unique_name(reserved_names, desired_name)
 
         matched_records, unmatched_files = resolve_group_metadata_item_ids(group, target_indexes, path_index, matcher, item_filter)
+
+        if item_filter is not None and item_filter_keep_existing and existing_playlist is not None:
+            matched_ids = {r.metadata_item_id for r in matched_records}
+            matched_records = list(matched_records) + [
+                item.media for item in existing_playlist.items
+                if item.media is not None and item.media.metadata_item_id not in matched_ids
+            ]
 
         skipped_earlier_records: List[MediaRecord] = []
         sync_records = list(matched_records)
@@ -1113,7 +1140,22 @@ def plan_group_playlists(
                     )
                 )
 
-        if not metadata_ids and not include_empty_playlists:
+        if not metadata_ids and item_filter is not None and item_filter_remove_empty and existing_playlist is not None:
+            removed_record_labels = [r.display_label for r in existing_playlist.items]
+            mutations.append(
+                PlannedMutation(
+                    action="delete_playlist",
+                    target_guid=f"playlist:{existing_playlist.name}:{existing_playlist.id}",
+                    details={
+                        "playlist_id": existing_playlist.id,
+                        "play_queue_id": existing_playlist.play_queue_id,
+                        "storage_model": existing_playlist.storage_model,
+                    },
+                )
+            )
+            status = "ready_delete"
+            action = "delete_filtered"
+        elif not metadata_ids and not include_empty_playlists:
             status = "no_transferable_items"
             action = "skip_unmatched"
         elif deleted_sync_playlist and not restore_removed_playlists:
