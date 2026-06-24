@@ -1,0 +1,25 @@
+{
+  "shared_paths": [
+    "C:/Users/you/Videos",
+    "D:/Media/Movies"
+  ],
+  "playlists": {
+    "Favourites": [
+      "C:/Users/you/Videos/film1.mp4",
+      "D:/Media/Movies/film2.mkv"
+    ],
+    "Music": [
+      "C:/Users/you/Music/track1.mp3",
+      "C:/Users/you/Music/track2.flac"
+    ],
+    "By Genre": {
+      "Action": [
+        "D:/Media/Movies/action1.mp4",
+        "D:/Media/Movies/action2.mkv"
+      ],
+      "Drama": [
+        "D:/Media/Movies/drama1.mp4"
+      ]
+    }
+  }
+}

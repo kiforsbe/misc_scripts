@@ -76,6 +76,9 @@ class ContentDirectoryHandler:
             if action == 'GetSystemUpdateID':
                 self._send_simple_response('GetSystemUpdateID', f'<Id>{self._system_update_id()}</Id>')
                 return
+            if action == 'X_SetBookmark':
+                self._send_simple_response('X_SetBookmark', '')
+                return
             raise ValueError(f'Unsupported ContentDirectory action: {action or "unknown"}')
         except Exception as exc:
             self.error_handler.handle_request_error(self.request_handler, exc, 400)
@@ -115,6 +118,8 @@ class ContentDirectoryHandler:
         )
         if params['browse_flag'] == 'BrowseMetadata' and params['object_id'] != '0':
             self.logger.info('Browse metadata DIDL for %s: %s', params['object_id'], didl)
+        elif params['browse_flag'] == 'BrowseDirectChildren':
+            self.logger.debug('BrowseDirectChildren DIDL for %s (first 2000 chars): %s', params['object_id'], didl[:2000])
         self.soap_handler.send_soap_response(body, 'Browse', self.CONTENT_DIRECTORY_NS)
 
     def _send_simple_response(self, action_name, body):
@@ -489,19 +494,26 @@ class ContentDirectoryHandler:
             thumbnail_info = self._thumbnail_info(folder_index, abs_path)
             thumbnail_url = thumbnail_info['url']
             if is_samsung and is_video:
+                # Samsung F-series+ TVs require JPEG_SM (max 640x480) for video thumbnails.
+                # JPEG_TN (max 160x160, 4KB) is ignored by newer Samsung models.
                 thumbnail_res = SubElement(item, 'res')
                 thumbnail_res.text = thumbnail_url
-                thumbnail_res.set('protocolInfo', 'http-get:*:image/jpeg:*')
+                thumbnail_res.set('protocolInfo', self._thumbnail_protocol_info('JPEG_SM'))
+                thumbnail_res.set('dlna:profileID', 'JPEG_SM')
                 if thumbnail_info['size'] is not None:
                     thumbnail_res.set('size', str(thumbnail_info['size']))
                 if thumbnail_info['resolution'] is not None:
                     thumbnail_res.set('resolution', thumbnail_info['resolution'])
 
                 album_art = SubElement(item, 'upnp:albumArtURI')
+                album_art.set('dlna:profileID', 'JPEG_SM')
                 album_art.text = thumbnail_url
 
+                icon = SubElement(item, 'upnp:icon')
+                icon.text = thumbnail_url
+
                 sec_dcm_info = SubElement(item, 'sec:dcmInfo')
-                sec_dcm_info.text = 'thumbnail'
+                sec_dcm_info.text = f'THUMBNAIL_URI={thumbnail_url}'
             else:
                 thumbnail_res = SubElement(item, 'res')
                 thumbnail_res.text = thumbnail_url
@@ -918,8 +930,6 @@ class ContentDirectoryHandler:
 
     def _upnp_class_for_extension(self, ext):
         if ext in VIDEO_EXTENSIONS:
-            if self._is_likely_samsung_client():
-                return 'object.item.videoItem'
             return 'object.item.videoItem.movie'
         if ext in AUDIO_EXTENSIONS:
             return 'object.item.audioItem.musicTrack'
@@ -939,18 +949,28 @@ class ContentDirectoryHandler:
         }
         profile = profiles.get(ext)
         if not profile:
-            return f'http-get:*:{mime_type}:*'
+            # No official DLNA profile for this format (e.g. MKV, AVI), but include
+            # DLNA operational parameters so Samsung recognises it as a DLNA item
+            # and processes associated thumbnail metadata.
+            return (
+                f'http-get:*:{mime_type}:'
+                'DLNA.ORG_OP=01;DLNA.ORG_CI=0;'
+                'DLNA.ORG_FLAGS=01700000000000000000000000000000'
+            )
         return (
             f'http-get:*:{mime_type}:'
             f'DLNA.ORG_PN={profile};DLNA.ORG_OP=01;DLNA.ORG_CI=0;'
             'DLNA.ORG_FLAGS=01700000000000000000000000000000'
         )
 
-    def _thumbnail_protocol_info(self):
+    def _thumbnail_protocol_info(self, profile='JPEG_TN'):
+        # CI=1 (Convert Indicator) is mandatory: it tells the TV this image was
+        # generated/converted from another source, identifying it as a thumbnail.
+        # CI=0 causes Samsung to treat the resource as native media and skip it.
         return (
-            'http-get:*:image/jpeg:'
-            'DLNA.ORG_PN=JPEG_TN;DLNA.ORG_OP=01;DLNA.ORG_CI=0;'
-            'DLNA.ORG_FLAGS=00f00000000000000000000000000000'
+            f'http-get:*:image/jpeg:'
+            f'DLNA.ORG_PN={profile};DLNA.ORG_OP=01;DLNA.ORG_CI=1;'
+            'DLNA.ORG_FLAGS=00d00000000000000000000000000000'
         )
 
     def get_media_duration(self, file_path):
