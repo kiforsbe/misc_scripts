@@ -1,0 +1,3 @@
+mistletoe
+beautifulsoup4
+python-docx
