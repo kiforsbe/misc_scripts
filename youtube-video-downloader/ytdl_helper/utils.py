@@ -14,8 +14,10 @@ def sanitize_filename(filename: str) -> str:
 
     # Remove invalid characters (Windows)
     filename = re.sub(r'[<>:"/\|?*]', "_", filename)
-    # Remove control characters (0-31) except tab (9), newline (10), carriage return (13)
-    filename = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", filename)
+    # Remove all control characters (0-31) and DEL (127). Tab, newline, and
+    # carriage return are invalid in filenames (notably on Windows, where they
+    # trigger WinError 123), so they must be stripped too.
+    filename = re.sub(r"[\x00-\x1F\x7F]", "", filename)
 
     # Handle path separators carefully if the input might be a path
     if os.path.sep in filename:
