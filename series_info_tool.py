@@ -6,8 +6,6 @@ import webbrowser
 import subprocess
 import logging
 import json
-import os
-
 
 class Colors:
     """ANSI color codes for terminal output."""
