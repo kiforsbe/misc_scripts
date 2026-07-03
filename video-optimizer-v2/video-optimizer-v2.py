@@ -1,5 +1,6 @@
 import os
 import re
+import glob
 import ffmpeg
 import inquirer
 import subprocess
@@ -12,6 +13,24 @@ from typing import Dict, Any, List
 from metadata_provider import MetadataManager
 from anime_metadata import AnimeDataProvider
 from imdb_metadata import IMDbDataProvider
+
+# guessit_wrapper lives in the repository root, one level above this script
+REPO_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT_DIR not in sys.path:
+    sys.path.append(REPO_ROOT_DIR)
+
+try:
+    from guessit_wrapper import guessit_wrapper
+except ModuleNotFoundError as exc:
+    if exc.name == 'guessit_wrapper':
+        print("Error: guessit_wrapper.py was not found in the repository root")
+    else:
+        print(
+            f"Error: guessit_wrapper.py could not be imported because dependency '{exc.name}' is missing. "
+            f"Install it with: pip install {exc.name}"
+        )
+    input("Press Enter to exit...")
+    sys.exit(1)
 
 # Initialize metadata manager as a global variable
 METADATA_MANAGER = None
@@ -517,156 +536,139 @@ def select_default_tracks(files):
     logging.info(f"User selected default audio: {answers['audio_language']}, default subtitle: {answers['subtitle_language']}")
     return answers['audio_language'], answers['subtitle_language']
 
-def parse_filename(filename):
-    """Extract metadata from filename using unified metadata interface."""
-    basename = os.path.splitext(filename)[0]
-    metadata_manager = get_metadata_manager()
-    
-    # Updated patterns to handle various filename formats
-    patterns = [
-        # Modern streaming format: Show.Year.S01E02.Title.Quality.Encoding-Group
-        r'^([\w\.]*)\.(\d{4})\.S(\d+)E(\d+)\.([^.]+(?:\.[^.]+)*)\.([^-]*)-(.+)$',
-        # Movie format: Movie.Name.Year.Quality.Encoding-Group
-        r'^([\w\.]*)\.(\d{4})\.([^-]+)-(.+)$',
-        # [Group] Show Title - Episode [Quality][Tags][CRC]
-        r'\[([^\]]+)\]\s*([^-]+(?:\s*-\s*[^-]+)*)\s*-\s*(\d+)(?:\s*\[[^\]]+\])*$',
-        # [Group] Show - S01E02 (standard format)
-        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*S(\d+)E(\d+)(?:\s*\[[^\]]+\])*$',
-        # [Group] Show - 01x02
-        r'\[([^\]]+)\]\s*([^-]+?)\s*-\s*(\d+)x(\d+)(?:\s*\[[^\]]+\])*$'
+def _get_ordinal_suffix(n: int) -> str:
+    """Get the ordinal form of a number (1st, 2nd, 3rd, 4th, ...)."""
+    if 10 <= n % 100 <= 20:
+        suffix = 'th'
+    else:
+        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
+
+def _generate_season_titles(title: str, season: int) -> List[str]:
+    """Generate common season naming patterns for metadata lookup."""
+    ordinal = _get_ordinal_suffix(season)
+    return [
+        f"{title} {ordinal} Season",  # "Title 2nd Season" - Common MAL format
+        f"{title} Season {season}",   # "Title Season 2"
+        f"{title} Part {season}",     # "Title Part 2"
+        f"{title} {season}",          # "Title 2"
     ]
-    
-    for pattern in patterns:
-        match = re.match(pattern, basename)
-        if match:
-            groups = match.groups()
-            
-            # Extract common metadata fields
-            release_group = None
-            quality = None
-            
-            # Modern streaming TV show format
-            if len(groups) == 7:
-                show_title_raw, year, season_num, episode_num, episode_title, quality, release_group = groups
-                title = show_title_raw.replace('.', ' ').strip()
-                try:
-                    year_int = int(year) if year else None
-                    season_int = int(season_num)
-                    episode_int = int(episode_num)
-                except ValueError:
-                    logging.warning(f"Could not parse numbers from {filename}")
-                    return None
-                
-                # Find title in metadata databases
-                title_info, provider = metadata_manager.find_title(title, year_int)
-                if title_info:
-                    episode_info = metadata_manager.get_episode_info(provider, title_info.id, season_int, episode_int)
-                    
-                    if episode_info:
-                        quality_info = quality.replace('.', ' ') if quality else None
-                        return {
-                            'MEDIA TYPE': title_info.type,
-                            'TITLE': title_info.title,
-                            'TVSHOW': title_info.title,
-                            'TVSEASON': season_int,
-                            'TVEPISODE': episode_int,
-                            'EPISODE TITLE': episode_info.title or episode_title.replace('.', ' ').strip() if episode_title else None,
-                            'RELEASE GROUP': release_group.strip() if release_group else None,
-                            'YEAR': year_int,
-                            'QUALITY': quality_info,
-                            'RATING': title_info.rating,
-                            'EPISODE RATING': episode_info.rating,
-                            'VOTES': title_info.votes,
-                            'EPISODE VOTES': episode_info.votes,
-                            'GENRES': title_info.genres or [],
-                            'TAGS': title_info.tags or [],
-                            'STATUS': title_info.status,
-                            'TOTAL EPISODES': title_info.total_episodes,
-                            'TOTAL SEASONS': title_info.total_seasons,
-                            'START YEAR': title_info.start_year,
-                            'END YEAR': title_info.end_year,
-                            'SOURCES': title_info.sources or []
-                        }
-            
-            # Movie format
-            elif len(groups) == 4:
-                movie_title_raw, year, quality, release_group = groups
-                title = movie_title_raw.replace('.', ' ').strip()
-                
-                try:
-                    year_int = int(year) if year else None
-                except ValueError:
-                    logging.warning(f"Could not parse year from {filename}")
-                    return None
-                
-                # Find movie in metadata databases
-                title_info, provider = metadata_manager.find_title(title, year_int)
-                if title_info:
-                    quality_info = quality.replace('.', ' ') if quality else None
-                    return {
-                        'MEDIA TYPE': title_info.type,
-                        'TITLE': title_info.title,
-                        'YEAR': year_int,
-                        'QUALITY': quality_info,
-                        'RELEASE GROUP': release_group.strip() if release_group else None,
-                        'RATING': title_info.rating,
-                        'VOTES': title_info.votes,
-                        'GENRES': title_info.genres or [],
-                        'TAGS': title_info.tags or [],
-                        'STATUS': title_info.status,
-                        'SOURCES': title_info.sources or []
-                    }
-            
-            # Anime-style episode formats
-            else:
-                release_group = groups[0]
-                show_title = groups[1].strip()
-                
-                if len(groups) == 3:  # Simple episode format
-                    season_int = 1  # Default season
-                    try:
-                        episode_int = int(groups[2])
-                    except ValueError:
-                        logging.warning(f"Could not parse episode number from {filename}")
-                        return None
-                else:  # Standard S01E02 or 01x02 format
-                    try:
-                        season_int = int(groups[2])
-                        episode_int = int(groups[3])
-                    except ValueError:
-                        logging.warning(f"Could not parse season/episode numbers from {filename}")
-                        return None
-                
-                # Find title in metadata databases
-                title_info, provider = metadata_manager.find_title(show_title)
-                if title_info:
-                    episode_info = metadata_manager.get_episode_info(provider, title_info.id, season_int, episode_int)
-                    
-                    if episode_info:
-                        return {
-                            'MEDIA TYPE': title_info.type,
-                            'TITLE': title_info.title,
-                            'TVSHOW': title_info.title,
-                            'TVSEASON': season_int,
-                            'TVEPISODE': episode_int,
-                            'EPISODE TITLE': episode_info.title,
-                            'RELEASE GROUP': release_group.strip() if release_group else None,
-                            'YEAR': title_info.year,
-                            'RATING': title_info.rating,
-                            'EPISODE RATING': episode_info.rating,
-                            'VOTES': title_info.votes,
-                            'EPISODE VOTES': episode_info.votes,
-                            'GENRES': title_info.genres or [],
-                            'TAGS': title_info.tags or [],
-                            'STATUS': title_info.status,
-                            'TOTAL EPISODES': title_info.total_episodes,
-                            'TOTAL SEASONS': title_info.total_seasons,
-                            'START YEAR': title_info.start_year,
-                            'END YEAR': title_info.end_year,
-                            'SOURCES': title_info.sources or []
-                        }
-    
-    return None
+
+# Cache manager lookups; a batch is usually many episodes of the same series
+_TITLE_LOOKUP_CACHE: Dict[Any, Any] = {}
+
+def _find_title_cached(metadata_manager, title, year=None):
+    key = (title.lower(), year)
+    if key not in _TITLE_LOOKUP_CACHE:
+        _TITLE_LOOKUP_CACHE[key] = metadata_manager.find_title(title, year)
+    return _TITLE_LOOKUP_CACHE[key]
+
+def parse_filename(filename):
+    """Extract metadata from filename using guessit and enrich it via the metadata providers."""
+    metadata_manager = get_metadata_manager()
+
+    try:
+        parsed = guessit_wrapper(filename)
+    except Exception as e:
+        logging.warning(f"guessit could not parse '{filename}': {e}")
+        return None
+
+    title = parsed.get('title')
+    if not title:
+        logging.warning(f"No title could be parsed from '{filename}'")
+        return None
+
+    year = parsed.get('year')
+    season = parsed.get('season')
+    episode = parsed.get('episode')
+    episode_title = parsed.get('episode_title')
+    release_group = parsed.get('release_group')
+    screen_size = parsed.get('screen_size')
+
+    # guessit may return lists for multi-value fields; use the first entry
+    if isinstance(season, list):
+        season = season[0]
+    if isinstance(episode, list):
+        episode = episode[0]
+
+    # For season 2+, season-specific titles ("Title 2nd Season") are separate
+    # entries in the anime database; IMDb keeps all seasons under one title.
+    title_info = None
+    provider = None
+    anime_provider = next((p for p in metadata_manager.providers
+                           if 'anime' in p.__class__.__name__.lower()), None)
+    if season and season > 1 and anime_provider:
+        for season_title in _generate_season_titles(title, season):
+            anime_result = anime_provider.find_title(season_title, year)
+            if anime_result and anime_result.info:
+                title_info, provider = anime_result.info, anime_provider
+                break
+
+    if not title_info:
+        title_info, provider = _find_title_cached(metadata_manager, title, year)
+
+    if not title_info:
+        logging.info(f"No metadata found for '{title}' ({filename})")
+        return None
+
+    episode_info = None
+    is_series = title_info.type in ('tv', 'anime_series')
+    if is_series and episode is not None:
+        provider_name = provider.__class__.__name__ if provider else ''
+        if 'anime' in provider_name.lower() or title_info.type == 'anime_series':
+            # Anime filenames often use absolute episode numbers; let the anime
+            # provider remap them to the correct season and in-season episode.
+            if anime_provider and hasattr(anime_provider, 'get_episode_info'):
+                base_result = anime_provider.find_title(title, year)
+                if base_result and base_result.info:
+                    episode_info = anime_provider.get_episode_info(base_result.info.id, season, episode)
+                if episode_info:
+                    original_season = season
+                    if episode_info.season:
+                        season = episode_info.season
+                    if episode_info.episode:
+                        episode = episode_info.episode
+                    # Re-lookup with the season-specific title so multi-season
+                    # anime get that season's metadata instead of season 1's.
+                    if season and season != original_season and season > 1:
+                        for season_title in _generate_season_titles(title, season):
+                            season_info, season_provider = _find_title_cached(metadata_manager, season_title, year)
+                            if season_info:
+                                title_info, provider = season_info, season_provider
+                                break
+        elif season and provider:
+            episode_info = metadata_manager.get_episode_info(provider, title_info.id, season, episode)
+
+    result = {
+        'MEDIA TYPE': title_info.type,
+        'TITLE': title_info.title,
+        'RELEASE GROUP': release_group,
+        'YEAR': year or title_info.year,
+        'QUALITY': str(screen_size) if screen_size else None,
+        'RATING': round(title_info.rating, 1) if title_info.rating is not None else None,
+        'VOTES': title_info.votes,
+        'GENRES': title_info.genres or [],
+        'TAGS': title_info.tags or [],
+        'STATUS': title_info.status,
+        'SOURCES': title_info.sources or []
+    }
+
+    if is_series and episode is not None:
+        result.update({
+            'TVSHOW': title_info.title,
+            'TVSEASON': int(season) if season else 1,
+            # Floor fractional specials (e.g. episode 12.5) for tag compatibility
+            'TVEPISODE': int(episode),
+            'EPISODE TITLE': episode_info.title if episode_info and episode_info.title else episode_title,
+            'EPISODE RATING': round(episode_info.rating, 1) if episode_info and episode_info.rating is not None else None,
+            'EPISODE VOTES': episode_info.votes if episode_info else None,
+            'TOTAL EPISODES': title_info.total_episodes,
+            'TOTAL SEASONS': title_info.total_seasons,
+            'START YEAR': title_info.start_year,
+            'END YEAR': title_info.end_year
+        })
+
+    return result
 
 class VideoMetadata:
     def __init__(self, filename: str, metadata: Dict[str, Any]):
@@ -709,7 +711,7 @@ def display_metadata_preview(metadata_list: List[VideoMetadata]):
         start_year = video_meta.metadata.get('YEAR', 'Unknown')
         rating = video_meta.metadata.get('RATING', '?')
         
-        if show_type == 'movie':
+        if show_type == 'movie' or 'TVEPISODE' not in video_meta.metadata:
             metadata_line = f"{show_title} ({start_year}), [{release_group}] Rating: {rating}"
         else:
             episode_rating = video_meta.metadata.get('EPISODE RATING', '?')
@@ -939,14 +941,60 @@ def initialize_metadata_providers():
     
     return metadata_manager
 
+# Video file extensions considered when expanding directories
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.m4v', '.webm', '.wmv', '.flv', '.ts', '.mpg', '.mpeg'}
+
+def expand_input_paths(args):
+    """Expand wildcard patterns and directories into a list of video file paths.
+
+    - Wildcard patterns (*, ?, [) are expanded with glob (supports ** recursion).
+    - Directories yield their top-level video files (no recursion).
+    - Plain file paths are passed through unchanged.
+    Duplicates are removed while preserving order.
+    """
+    file_paths = []
+    for arg in args:
+        if any(c in arg for c in '*?[') and not os.path.exists(arg):
+            matches = sorted(glob.glob(arg, recursive=True))
+            if not matches and '[' in arg:
+                # Literal brackets in fansub-style names ([SubsPlease], [Batch])
+                # read as glob character classes; retry with them escaped.
+                matches = sorted(glob.glob(arg.replace('[', '[[]'), recursive=True))
+            if not matches:
+                logging.warning(f"No files match pattern: {arg}")
+            candidates = matches
+        else:
+            candidates = [arg]
+
+        for path in candidates:
+            if os.path.isdir(path):
+                videos = sorted(
+                    entry.path for entry in os.scandir(path)
+                    if entry.is_file() and os.path.splitext(entry.name)[1].lower() in VIDEO_EXTENSIONS
+                )
+                if not videos:
+                    logging.warning(f"No video files found in directory: {path}")
+                file_paths.extend(videos)
+            elif os.path.isfile(path):
+                file_paths.append(path)
+            else:
+                logging.warning(f"Path not found, skipping: {path}")
+
+    return list(dict.fromkeys(file_paths))
+
 # Main function to handle files and transcoding
 def main():
     if len(sys.argv) < 2:
-        print("Drag and drop your media files onto this script to transcode them.")
+        print("Drag and drop your media files onto this script to transcode them,")
+        print("or pass file paths, directories, or wildcard patterns as arguments.")
         input("Press Enter to exit...")
         sys.exit(1)
 
-    file_paths = sys.argv[1:]
+    file_paths = expand_input_paths(sys.argv[1:])
+    if not file_paths:
+        print("No video files found for the given paths/patterns.")
+        input("Press Enter to exit...")
+        sys.exit(1)
     logging.info(f"Files received for transcoding: {file_paths}")
 
     # Initialize metadata providers with progress indication
