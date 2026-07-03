@@ -75,19 +75,19 @@ default_profiles = [
     },
     {
         'profile_id': 'iphone_hevc_480p',
-        'description': 'iPhone (HEVC), 480p, H265 Main Profile, AAC audio, MP4',
+        'description': 'iPhone (HEVC), 480p, H265 Main 10 Profile, AAC audio, MP4',
         'settings': {
             'horizontal_resolution': 854,
             'audio_bitrate': '128k',
             'video_codec': 'h265',
             'codec_preset': 'medium',
             'constant_quality': 28,
-            'pix_fmt': 'yuv420p',  # iPhone requires 8-bit color for compatibility
-            'profile': 'main',    # HEVC Main profile is well supported
+            'pix_fmt': 'yuv420p10le',  # every iPhone since the 6s (A9) hardware-decodes HEVC Main 10
+            'profile': 'main10',    # HEVC Main 10 profile is well supported
             'level': '4.1',      # Common HEVC level for mobile
             'max_muxing_queue_size': 1024,
             'movflags': '+faststart+use_metadata_tags',
-            'tag:v': 'hvc1',     # Essential for Apple device compatibility
+            'tag:v': 'hvc1',      # Apple decoders require hvc1, not ffmpeg's default hev1
             'brand': 'mp42,iso6,isom,msdh,dby1'  # Compatible brands for iOS
         }
     },
@@ -314,15 +314,24 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
     logging.info(f"Output path {outfilename}")
     logging.info(f"Video encoder: {encoder}, Target resolution: {resolution}, Audio bitrate: {audio_bitrate}, Quality setting: {constant_quality}, Denoise filter applied: {apply_denoise}")
 
-    # Set up ffmpeg command with modified parameters for iPhone compatibility
+    # Quality control differs per encoder: NVENC uses -rc vbr/-cq, CPU encoders use -crf
+    if use_nvenc:
+        quality_args = ['-rc', 'vbr', '-cq', str(constant_quality), '-b:v', '0']
+    else:
+        quality_args = ['-crf', str(constant_quality)]
+
+    # NVENC takes 10-bit input as p010le rather than yuv420p10le
+    pix_fmt = settings.get('pix_fmt', 'yuv420p10le')
+    if use_nvenc and pix_fmt == 'yuv420p10le':
+        pix_fmt = 'p010le'
+
     ffmpeg_cmd = [
         'ffmpeg',
         '-i', input_file,
-        '-ab', audio_bitrate,
+        '-b:a', audio_bitrate,
         '-vf', vf_options,
-        '-rc', 'vbr',
-        '-cq', str(constant_quality),
-        '-pix_fmt', settings.get('pix_fmt', 'yuv420p10le'),  # Use profile-specific format if available
+        *quality_args,
+        '-pix_fmt', pix_fmt,
         '-preset', codec_preset
     ]
 
@@ -333,19 +342,18 @@ def transcode_file(input_file, output_file, extension, settings, use_nvenc, appl
         ffmpeg_cmd.extend(['-level', settings['level']])
     if 'max_muxing_queue_size' in settings:
         ffmpeg_cmd.extend(['-max_muxing_queue_size', str(settings['max_muxing_queue_size'])])
-    if 'profile' in settings:
-        ffmpeg_cmd.extend(['-profile:v', settings['profile']])
-    
-    # Add brand for Apple compatibility if using NVENC
-    if settings.get('video_codec') == 'h265' and use_nvenc:
-        ffmpeg_cmd.extend(['-tag:v', 'hvc1'])
 
-    # Add stream mapping and codec selection
+    # Apple decoders require the hvc1 tag for HEVC in MP4 (ffmpeg defaults to hev1)
+    if settings.get('video_codec') == 'h265' and extension == 'mp4':
+        ffmpeg_cmd.extend(['-tag:v', settings.get('tag:v', 'hvc1')])
+
+    # Add stream mapping and codec selection; audio/subtitles are optional (0:a?/0:s?)
+    # so sources without them don't abort the encode
     ffmpeg_cmd.extend([
-        '-movflags', 'faststart',
+        '-movflags', settings.get('movflags', '+faststart'),
         '-map', '0:v',
-        '-map', '0:a',
-        '-map', '0:s',
+        '-map', '0:a?',
+        '-map', '0:s?',
         '-c:v', encoder,
         '-c:a', 'aac',
         '-c:s', subtitle_format,
