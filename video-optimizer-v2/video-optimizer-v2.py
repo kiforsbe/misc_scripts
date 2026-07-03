@@ -70,12 +70,34 @@ default_profiles = [
             'profile': 'high',  # H.264 High Profile
             'level': '4.0',    # Compatible level for iOS
             'max_muxing_queue_size': 1024,  # Helps with MP4 muxing
-            'movflags': '+faststart+use_metadata_tags'
+            # NOTE: never add use_metadata_tags here - the mdta atoms it writes make
+            # the Apple TV app silently reject the file on import; mutagen adds the
+            # iTunes-style tags afterwards anyway
+            'movflags': '+faststart'
+        }
+    },
+    {
+        'profile_id': 'iphone_h264_720p',
+        'description': 'iPhone via Apple TV app sync, 720p, H264 High Profile, AAC audio, MP4 (TV app on Windows only imports H264)',
+        'settings': {
+            'horizontal_resolution': 1280,
+            'audio_bitrate': '128k',
+            'video_codec': 'h264',
+            'codec_preset': 'medium',
+            'constant_quality': 23,
+            'pix_fmt': 'yuv420p',
+            'profile': 'high',
+            'level': '4.0',
+            'max_muxing_queue_size': 1024,
+            # NOTE: never add use_metadata_tags here - the mdta atoms it writes make
+            # the Apple TV app silently reject the file on import; mutagen adds the
+            # iTunes-style tags afterwards anyway
+            'movflags': '+faststart'
         }
     },
     {
         'profile_id': 'iphone_hevc_480p',
-        'description': 'iPhone (HEVC), 480p, H265 Main 10 Profile, AAC audio, MP4',
+        'description': 'iPhone direct playback (HEVC), 480p, H265 Main 10, AAC, MP4 (NOT importable by the Apple TV app on Windows)',
         'settings': {
             'horizontal_resolution': 854,
             'audio_bitrate': '128k',
@@ -86,7 +108,10 @@ default_profiles = [
             'profile': 'main10',    # HEVC Main 10 profile is well supported
             'level': '4.1',      # Common HEVC level for mobile
             'max_muxing_queue_size': 1024,
-            'movflags': '+faststart+use_metadata_tags',
+            # NOTE: never add use_metadata_tags here - the mdta atoms it writes make
+            # the Apple TV app silently reject the file on import; mutagen adds the
+            # iTunes-style tags afterwards anyway
+            'movflags': '+faststart',
             'tag:v': 'hvc1',      # Apple decoders require hvc1, not ffmpeg's default hev1
             'brand': 'mp42,iso6,isom,msdh,dby1'  # Compatible brands for iOS
         }
