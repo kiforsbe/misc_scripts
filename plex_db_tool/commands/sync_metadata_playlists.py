@@ -579,8 +579,17 @@ def add_virtual_watching_playlist(groups: Sequence[Dict[str, Any]], playlist_nam
     if not watching_files:
         return list(groups)
 
-    watching_group = build_watching_collection_group(watching_files, groups, playlist_name)
-    return [*list(groups), watching_group]
+    resolved_name = (playlist_name or "!Watching").strip() or "!Watching"
+    sorted_watching_files = sort_episode_files_for_playlist(watching_files)
+    watching_group = build_watching_collection_group(sorted_watching_files, groups, resolved_name)
+    reverse_group = build_watching_collection_group(
+        list(reversed(sorted_watching_files)),
+        groups,
+        f"{resolved_name}-New",
+        group_key="collection:watching:new",
+        preserve_order=True,
+    )
+    return [*list(groups), watching_group, reverse_group]
 
 
 def collect_watching_episode_files(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -700,8 +709,10 @@ def build_watching_collection_group(
     files: Sequence[Dict[str, Any]],
     groups: Sequence[Dict[str, Any]],
     playlist_name: str = "!Watching",
+    group_key: str = "collection:watching",
+    preserve_order: bool = False,
 ) -> Dict[str, Any]:
-    sorted_files = sort_episode_files_for_playlist(files)
+    sorted_files = list(files) if preserve_order else sort_episode_files_for_playlist(files)
     modified_candidates = [candidate for candidate in (resolve_file_created_time(file_info) for file_info in sorted_files) if candidate is not None]
     source_group_keys = []
     source_playlists = []
@@ -712,7 +723,7 @@ def build_watching_collection_group(
     resolved_name = (playlist_name or "!Watching").strip() or "!Watching"
 
     return {
-        "group_key": "collection:watching",
+        "group_key": group_key,
         "group_data": {
             "source_group_keys": source_group_keys,
             "source_playlists": source_playlists,
