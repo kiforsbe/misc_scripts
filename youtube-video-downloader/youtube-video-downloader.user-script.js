@@ -46,8 +46,14 @@
     .ytdl-download-button:hover, .ytdl-dropdown-arrow:hover, .ytdl-custom-button-container:hover { background-color: var(--yt-spec-menu-subtle-background, rgba(0,0,0,0.06)); }
     .ytdl-download-button:focus, .ytdl-dropdown-arrow:focus { outline: none !important; box-shadow: none !important; -webkit-box-shadow: none !important; }
 
-    /* Aggressively remove any inherited focus rings or outlines */
-    .ytdl-custom-button-container, .ytdl-custom-button-container * {
+    /* Targeted focus/outline removal for our controls only.
+       Avoid using the universal (*) selector so we don't accidentally
+       strip outlines from unrelated elements (accessibility). */
+    .ytdl-custom-button-container,
+    .ytdl-custom-button-container .ytdl-download-button,
+    .ytdl-custom-button-container .ytdl-dropdown-arrow,
+    .ytdl-custom-button-container .ytdl-download-button *,
+    .ytdl-custom-button-container .ytdl-dropdown-arrow * {
       outline: none !important;
       outline-style: none !important;
       outline-color: transparent !important;
@@ -60,7 +66,9 @@
       background-clip: padding-box !important;
       -webkit-focus-ring-color: transparent !important;
     }
-    .ytdl-download-button:focus-visible, .ytdl-dropdown-arrow:focus-visible, .ytdl-custom-button-container:focus-within {
+    .ytdl-download-button:focus-visible,
+    .ytdl-dropdown-arrow:focus-visible,
+    .ytdl-custom-button-container:focus-within {
       outline: none !important;
       outline-style: none !important;
       outline-color: transparent !important;
@@ -69,9 +77,9 @@
       -moz-box-shadow: none !important;
       -webkit-focus-ring-color: transparent !important;
     }
-    /* Remove inner focus border for Firefox */
+    /* Remove inner focus border for Firefox on our button elements */
     .ytdl-download-button::-moz-focus-inner, .ytdl-dropdown-arrow::-moz-focus-inner { border: 0 !important; padding: 0 !important; }
-    /* Defensive focus/active states */
+    /* Defensive focus/active states for our controls */
     .ytdl-download-button:active, .ytdl-dropdown-arrow:active, .ytdl-custom-button-container:active { outline: none !important; box-shadow: none !important; }
 
     /* Format dropdown */
