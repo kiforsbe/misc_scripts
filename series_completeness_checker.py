@@ -1525,6 +1525,14 @@ class SeriesCompletenessChecker:
                 else:
                     extra_info.append(f"{Colors.CYAN}Watched: {watched_range}{Colors.RESET}")
 
+        mal_status = analysis.get('myanimelist_watch_status')
+        if isinstance(mal_status, dict):
+            my_status = mal_status.get('my_status')
+            if isinstance(my_status, str):
+                normalized_status = my_status.strip().lower().replace('_', ' ').replace('-', ' ')
+                if normalized_status == 'plan to watch':
+                    extra_info.append(f"{Colors.BRIGHT_CYAN}Plan to Watch{Colors.RESET}")
+
         if analysis.get('missing_episodes'):
             missing_range = self._format_episode_ranges(analysis['missing_episodes'])
             extra_info.append(f"{Colors.RED}Missing: {missing_range}{Colors.RESET}")

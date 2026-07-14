@@ -694,6 +694,20 @@ class SeriesArchiver:
         
         return f"{', '.join(ranges)}"
     
+    def _get_group_episode_numbers(self, group_data: Dict) -> List[int]:
+        """Extract episode numbers from group data files."""
+        episode_numbers = []
+        files = group_data.get('files', [])
+
+        for file_info in files:
+            episode = file_info.get('episode')
+            if isinstance(episode, list):
+                episode_numbers.extend(episode)
+            elif episode is not None:
+                episode_numbers.append(episode)
+
+        return sorted(set(episode_numbers)) if episode_numbers else []
+
     def _get_watched_episodes(self, group_data: Dict) -> List[int]:
         """Extract watched episode numbers from group data."""
         watched_episodes = []
@@ -722,6 +736,14 @@ class SeriesArchiver:
 
     def _get_watch_status_classification(self, group_data: Dict) -> str:
         """Determine watch status classification for a group."""
+        mal_status = group_data.get('myanimelist_watch_status')
+        if isinstance(mal_status, dict):
+            my_status = mal_status.get('my_status')
+            if isinstance(my_status, str):
+                normalized_status = my_status.strip().lower().replace('_', ' ').replace('-', ' ')
+                if normalized_status == 'plan to watch':
+                    return 'plan_to_watch'
+
         # Check if this is a movie based on type
         files = group_data.get('files', [])
         if files:
@@ -2986,7 +3008,7 @@ def cmd_list(args):
     if hasattr(args, 'status_filter') and args.status_filter:
         all_statuses = {'complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 
                        'unknown_total_episodes', 'not_series', 'no_metadata', 'no_metadata_manager', 'unknown'}
-        all_watch_statuses = {'watched', 'watched_partial', 'unwatched'}
+        all_watch_statuses = {'watched', 'watched_partial', 'unwatched', 'plan_to_watch'}
         
         # Parse include/exclude patterns
         status_filters = args.status_filter.split()
@@ -2997,23 +3019,28 @@ def cmd_list(args):
         exclude_watch_statuses = set()
         plain_watch_statuses = set()
         
+        def normalize_filter_status(value: str) -> str:
+            return re.sub(r'[-\s]+', '_', value.strip().lower())
+
         for filter_item in status_filters:
             if filter_item.startswith('+'):
-                status = filter_item[1:]
+                status = normalize_filter_status(filter_item[1:])
                 if status in all_statuses:
                     include_statuses.add(status)
                 elif status in all_watch_statuses:
                     include_watch_statuses.add(status)
             elif filter_item.startswith('-'):
-                status = filter_item[1:]
+                status = normalize_filter_status(filter_item[1:])
                 if status in all_statuses:
                     exclude_statuses.add(status)
                 elif status in all_watch_statuses:
                     exclude_watch_statuses.add(status)
-            elif filter_item in all_statuses:
-                plain_statuses.add(filter_item)
-            elif filter_item in all_watch_statuses:
-                plain_watch_statuses.add(filter_item)
+            else:
+                status = normalize_filter_status(filter_item)
+                if status in all_statuses:
+                    plain_statuses.add(status)
+                elif status in all_watch_statuses:
+                    plain_watch_statuses.add(status)
         
         # Determine final filter sets
         # Completion status filter
@@ -3152,6 +3179,8 @@ def cmd_list(args):
             print(f"    Episodes: {details['episodes_found']}/{details['episodes_expected']} ({details['status']})")
             if watched_episodes:
                 print(f"    Watched: {archiver._format_episode_ranges(watched_episodes)}")
+            if archiver._get_watch_status_classification(group_data) == 'plan_to_watch':
+                print("    Plan to Watch")
             if missing_episodes:
                 print(f"    Missing: {archiver._format_episode_ranges(missing_episodes)}")
             if extra_episodes:
@@ -3346,7 +3375,7 @@ def main():
                                  '-status to exclude specific statuses, or plain status names for exact match. '
                                  'Available completion statuses: complete, incomplete, complete_with_extras, no_episode_numbers, '
                                  'unknown_total_episodes, not_series, no_metadata, no_metadata_manager, unknown. '
-                                 'Available watch statuses: watched, watched_partial, unwatched. '
+                                 'Available watch statuses: watched, watched_partial, unwatched, plan_to_watch. '
                                  'Examples: "complete watched", "+complete +watched", "-unknown -unwatched", "watched -watched_partial"')
     list_parser.add_argument('--sort', action='store_true',
                             help='Sort series alphabetically by title')

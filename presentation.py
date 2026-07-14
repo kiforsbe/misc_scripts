@@ -151,6 +151,14 @@ class Presenter:
                 watched_range = self._format_episode_ranges(sorted(set(watched_nums)))
                 extra_info.append(f"Watched: {watched_range}")
 
+        mal_watch_status = analysis.get('myanimelist_watch_status') or {}
+        if isinstance(mal_watch_status, dict):
+            my_status = mal_watch_status.get('my_status')
+            if isinstance(my_status, str):
+                normalized_status = my_status.strip().lower().replace('_', ' ').replace('-', ' ')
+                if normalized_status == 'plan to watch':
+                    extra_info.append("Plan to Watch")
+
         if analysis.get('missing_episodes'):
             extra_info.append(f"Missing: {self._format_episode_ranges(analysis['missing_episodes'])}")
         if analysis.get('extra_episodes'):
