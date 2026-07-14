@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.12
+// @version      1.7.13
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -39,10 +39,40 @@
   // --- Styles ---
   const STYLES = `
     /* Main watch-page controls */
-    .ytdl-custom-button-container { display: inline-flex; align-items: stretch; justify-content: center; margin-left: 8px; font-size: 1.4rem; background: transparent; padding: 0; border: none; border-radius: 18px; cursor: pointer; height: 36px; width: auto; min-width: 0; overflow: hidden; flex: 0 0 auto; flex-shrink: 0; box-sizing: border-box; isolation: isolate; }
-    .ytdl-download-button { padding: 0 16px; height: 100%; display: inline-flex; align-items: center; justify-content: center; border: none; font-family: "Roboto", "Arial", sans-serif; font-size: 1.4rem; font-weight: 500; cursor: pointer; border-right: 1px solid rgba(0, 0, 0, 0.12); border-radius: 18px 0 0 18px; flex: 0 0 auto; min-width: 0; box-sizing: border-box; appearance: none; }
-    .ytdl-dropdown-arrow { padding: 0 8px; height: 100%; display: inline-flex; align-items: center; justify-content: center; border: none; font-size: 1.6rem; cursor: pointer; border-radius: 0 18px 18px 0; flex: 0 0 auto; min-width: 0; box-sizing: border-box; appearance: none; }
-    .ytdl-download-button:hover, .ytdl-dropdown-arrow:hover { background-color: var(--yt-spec-badge-chip-background-hover); }
+    .ytdl-custom-button-container { display: inline-flex; align-items: center; justify-content: center; margin-left: 8px; height: 36px; min-height: 36px; width: auto; min-width: 0; overflow: hidden; flex: 0 0 auto; flex-shrink: 0; box-sizing: border-box; isolation: isolate; border-radius: 18px; border: 1px solid var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.12)); background: transparent; box-shadow: none; outline: none !important; -webkit-tap-highlight-color: transparent; }
+    .ytdl-download-button, .ytdl-dropdown-arrow { height: 100%; display: inline-flex; align-items: center; justify-content: center; border: none; font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer; flex: 0 0 auto; min-width: 0; box-sizing: border-box; appearance: none; background: transparent; color: var(--yt-spec-text-primary, #0f0f0f); transition: background-color 0.12s ease, color 0.12s ease; margin: 0; padding: 0; }
+    .ytdl-download-button { padding: 0 12px; border-radius: 18px 0 0 18px; }
+    .ytdl-dropdown-arrow { padding: 0 12px; border-left: 1px solid var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.12)); border-radius: 0 18px 18px 0; font-size: 13px; min-width: 34px; justify-content: center; }
+    .ytdl-download-button:hover, .ytdl-dropdown-arrow:hover, .ytdl-custom-button-container:hover { background-color: var(--yt-spec-menu-subtle-background, rgba(0,0,0,0.06)); }
+    .ytdl-download-button:focus, .ytdl-dropdown-arrow:focus { outline: none !important; box-shadow: none !important; -webkit-box-shadow: none !important; }
+
+    /* Aggressively remove any inherited focus rings or outlines */
+    .ytdl-custom-button-container, .ytdl-custom-button-container * {
+      outline: none !important;
+      outline-style: none !important;
+      outline-color: transparent !important;
+      outline-width: 0 !important;
+      outline-offset: 0 !important;
+      box-shadow: none !important;
+      -webkit-box-shadow: none !important;
+      -moz-box-shadow: none !important;
+      border-color: var(--yt-spec-10-percent-layer, rgba(15,15,15,0.12)) !important;
+      background-clip: padding-box !important;
+      -webkit-focus-ring-color: transparent !important;
+    }
+    .ytdl-download-button:focus-visible, .ytdl-dropdown-arrow:focus-visible, .ytdl-custom-button-container:focus-within {
+      outline: none !important;
+      outline-style: none !important;
+      outline-color: transparent !important;
+      box-shadow: none !important;
+      -webkit-box-shadow: none !important;
+      -moz-box-shadow: none !important;
+      -webkit-focus-ring-color: transparent !important;
+    }
+    /* Remove inner focus border for Firefox */
+    .ytdl-download-button::-moz-focus-inner, .ytdl-dropdown-arrow::-moz-focus-inner { border: 0 !important; padding: 0 !important; }
+    /* Defensive focus/active states */
+    .ytdl-download-button:active, .ytdl-dropdown-arrow:active, .ytdl-custom-button-container:active { outline: none !important; box-shadow: none !important; }
 
     /* Format dropdown */
     .ytdl-dropdown-menu { display: none; position: fixed; background-color: var(--yt-spec-menu-background); border: 1px solid var(--yt-spec-10-percent-layer); border-radius: 12px; box-shadow: 0 4px 32px rgba(0, 0, 0, 0.12); z-index: 10000; min-width: 200px; max-height: 300px; overflow-y: auto; color: var(--yt-spec-text-primary); padding: 8px 0; }
@@ -1259,9 +1289,37 @@
    * @returns {string}
    */
   function getNativeActionButtonClassName() {
-    const nativeButton = Array.from(document.querySelectorAll('#actions #actions-inner button'))
-      .find((button) => !button.closest('#ytdl-custom-button-container') && typeof button.className === 'string' && button.className.trim());
+    const nativeButton = getNativeActionButton();
     return nativeButton ? nativeButton.className.trim() : '';
+  }
+
+  /**
+   * Returns a native watch-page action button that can be used as a styling reference.
+   * @returns {HTMLButtonElement|null}
+   */
+  function getNativeActionButton() {
+    const selectors = [
+      '#top-level-buttons-computed button',
+      'ytd-video-primary-info-renderer #top-level-buttons-computed button',
+      '#actions #actions-inner button',
+      'ytd-video-primary-info-renderer button',
+      '#top-row button',
+      'button'
+    ];
+
+    for (const selector of selectors) {
+      const nativeButton = Array.from(document.querySelectorAll(selector))
+        .find((button) => !button.closest('#ytdl-custom-button-container') && typeof button.className === 'string' && button.className.trim());
+      if (nativeButton) {
+        const text = (nativeButton.textContent || '').trim();
+        const label = (nativeButton.getAttribute('aria-label') || '').trim();
+        if (!/download/i.test(text) && !/download/i.test(label) && nativeButton.offsetParent !== null) {
+          return nativeButton;
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -1269,15 +1327,14 @@
    * @returns {string}
    */
   function getNativeActionButtonTextColor() {
-    const nativeButton = Array.from(document.querySelectorAll('#actions #actions-inner button'))
-      .find((button) => !button.closest('#ytdl-custom-button-container'));
+    const nativeButton = getNativeActionButton();
 
     if (nativeButton) {
       const color = getComputedStyle(nativeButton).color;
       if (color) return color;
     }
 
-    return 'rgb(15, 15, 15)';
+    return 'var(--yt-spec-text-primary, rgb(15, 15, 15))';
   }
 
   /**
@@ -1329,10 +1386,12 @@
     container.id = 'ytdl-custom-button-container';
 
     const nativeButtonClassName = getNativeActionButtonClassName();
+    const nativeButton = getNativeActionButton();
 
     const downloadButton = document.createElement('button');
     downloadButton.textContent = 'Download';
-    downloadButton.className = nativeButtonClassName ? `${nativeButtonClassName} ytdl-download-button` : 'ytdl-download-button';
+    // Use only our custom class to avoid inheriting native outline/shape
+    downloadButton.className = 'ytdl-download-button';
     downloadButton.id = 'ytdl-download-button';
     downloadButton.title = 'Download best quality (default)';
     downloadButton.addEventListener('click', () => {
@@ -1360,7 +1419,8 @@
 
     const dropdownArrow = document.createElement('button');
     dropdownArrow.textContent = '\u25BC'; // Down arrow ▼
-    dropdownArrow.className = nativeButtonClassName ? `${nativeButtonClassName} ytdl-dropdown-arrow` : 'ytdl-dropdown-arrow';
+    // Use only our dropdown class to avoid native styling that causes circular shapes
+    dropdownArrow.className = 'ytdl-dropdown-arrow';
     dropdownArrow.title = 'Show download options';
 
     // Create the dropdown menu but DON'T append it to the container yet
@@ -1373,6 +1433,19 @@
     dropdownArrow.style.color = nativeTextColor;
     dropdownMenu.style.color = nativeTextColor;
     dropdownMenu.style.setProperty('--ytdl-dropdown-item-hover-color', dropdownItemHoverColor);
+
+    if (nativeButton) {
+      const nativeStyle = getComputedStyle(nativeButton);
+      const nativeBackground = nativeStyle.backgroundColor && nativeStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' ? nativeStyle.backgroundColor : 'var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.06))';
+      downloadButton.style.fontFamily = nativeStyle.fontFamily || 'inherit';
+      downloadButton.style.fontSize = nativeStyle.fontSize || '14px';
+      downloadButton.style.fontWeight = nativeStyle.fontWeight || '500';
+      dropdownArrow.style.fontFamily = nativeStyle.fontFamily || 'inherit';
+      dropdownArrow.style.fontSize = nativeStyle.fontSize || '14px';
+      dropdownArrow.style.fontWeight = nativeStyle.fontWeight || '500';
+      container.style.borderColor = nativeStyle.borderColor || 'var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.12))';
+      container.style.backgroundColor = nativeBackground;
+    }
 
     dropdownArrow.addEventListener('click', (e) => {
       e.stopPropagation(); // Prevent body click listener closing it immediately
@@ -1480,19 +1553,18 @@
    * @returns {boolean}
    */
   function insertButton() {
-    // Try a more specific and potentially stable selector for the button container row
-    const actionsContainer = document.querySelector('#actions #actions-inner #menu ytd-menu-renderer');
-    // Fallback selector if the first one fails (might be needed in some YT layouts)
+    const actionsContainer = document.querySelector('ytd-video-primary-info-renderer #top-level-buttons-computed, ytd-video-primary-info-renderer #actions, ytd-video-primary-info-renderer #actions-inner, #top-level-buttons-computed, #actions, #actions-inner, #menu ytd-menu-renderer');
+    const metadataActionsContainer = Array.from(document.querySelectorAll('ytd-video-primary-info-renderer > *'))
+      .find((node) => node instanceof HTMLElement && node.querySelector('button') && node.querySelector('button').textContent && /share|save|more actions/i.test(node.textContent || ''));
 
-    // Fallback selector remains the same
-    const fallbackContainer = document.querySelector('#actions-inner');
+    const fallbackContainer = actionsContainer || metadataActionsContainer || document.querySelector('ytd-video-primary-info-renderer');
 
-    const targetContainer = actionsContainer || fallbackContainer; // Use the first one found
+    const targetContainer = fallbackContainer;
 
     const existingButton = document.getElementById('ytdl-custom-button-container');
 
     if (targetContainer && !existingButton) {
-      const containerName = actionsContainer ? '#actions #actions-inner #menu ytd-menu-renderer' : '#actions-inner'; // Log correct name
+      const containerName = targetContainer?.id || (targetContainer?.tagName || 'unknown');
       console.log(`Action container (${containerName}) found, inserting download button.`);
       const newButton = createDownloadButton();
 
