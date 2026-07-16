@@ -277,9 +277,18 @@ class PlexFilenameParser:
 
 
 class PlexDatabase:
-    def __init__(self, db_path: Path, readonly: bool) -> None:
+    def __init__(self, db_path: Path, readonly: bool, sqlite_engine: str = "builtin") -> None:
         self.db_path = db_path
         self.readonly = readonly
+        self.sqlite_engine = sqlite_engine
+        self.use_plex_sqlite = sqlite_engine == "plex" and not readonly
+        self.plex_sqlite_executable: Optional[Path] = None
+        if self.use_plex_sqlite:
+            self.plex_sqlite_executable = find_plex_sqlite_executable()
+            if self.plex_sqlite_executable is None:
+                raise RuntimeError(
+                    "Plex SQLite executable not found. Install Plex Media Server or use --sqlite-engine=builtin."
+                )
         self.connection = self._connect()
 
     @staticmethod
@@ -306,6 +315,54 @@ class PlexDatabase:
         connection.row_factory = sqlite3.Row
         connection.create_collation("icu_root", self.sqlite_icu_root_collation)
         return connection
+
+    def _sql_literal(self, value: Any) -> str:
+        if value is None:
+            return "NULL"
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, bytes):
+            return f"X'{value.hex()}'"
+        quoted_value = self.connection.execute("SELECT quote(?)", (value,)).fetchone()[0]
+        return str(quoted_value)
+
+    def execute_external_sqlite(self, sql: str, params: Sequence[Any] = ()) -> str:
+        if self.plex_sqlite_executable is None:
+            raise RuntimeError(
+                "Plex SQLite executable is not configured for external writes."
+            )
+
+        rendered_sql = sql
+        for param in params:
+            rendered_sql = rendered_sql.replace("?", self._sql_literal(param), 1)
+
+        result = run_external_sqlite_command(
+            self.plex_sqlite_executable,
+            self.db_path,
+            rendered_sql,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Plex SQLite write failed: {result.stderr.strip() or result.stdout.strip()}"
+            )
+        return result.stdout.strip()
+
+    def execute_external_sqlite_insert(self, sql: str, params: Sequence[Any] = ()) -> int:
+        sql_with_return = f"BEGIN IMMEDIATE; {sql}; SELECT last_insert_rowid(); COMMIT;"
+        output = self.execute_external_sqlite(sql_with_return, params)
+        if not output:
+            raise RuntimeError("Plex SQLite insert did not return a row id.")
+        last_line = output.splitlines()[-1].strip()
+        return int(last_line)
+
+    def execute_metadata_items_write(self, sql: str, params: Sequence[Any] = ()) -> None:
+        if self.use_plex_sqlite:
+            self.execute_external_sqlite(sql, params)
+        else:
+            with self.temporarily_disable_metadata_fts_triggers():
+                self.connection.execute(sql, params)
 
     def close(self) -> None:
         self.connection.close()
@@ -721,264 +778,299 @@ class PlexDatabase:
         return None
 
     def apply_mutations(self, mutations: Sequence[PlannedMutation]) -> None:
-        for mutation in mutations:
-            if mutation.action == "insert_views":
-                values = mutation.details["values"]
-                columns = list(values)
-                placeholders = ", ".join("?" for _ in columns)
-                quoted_columns = ", ".join(self.quote_identifier(column) for column in columns)
-                sql = f"INSERT INTO metadata_item_views ({quoted_columns}) VALUES ({placeholders})"
-                row_values = [values[column] for column in columns]
-                for _ in range(int(mutation.details["count"])):
-                    self.connection.execute(sql, row_values)
-            elif mutation.action == "replace_views":
-                row_ids = [int(row_id) for row_id in mutation.details["row_ids"]]
-                if row_ids:
-                    placeholders = ", ".join("?" for _ in row_ids)
+        with self.temporarily_disable_metadata_fts_triggers():
+            for mutation in mutations:
+                if mutation.action == "insert_views":
+                    values = mutation.details["values"]
+                    columns = list(values)
+                    placeholders = ", ".join("?" for _ in columns)
+                    quoted_columns = ", ".join(self.quote_identifier(column) for column in columns)
+                    sql = f"INSERT INTO metadata_item_views ({quoted_columns}) VALUES ({placeholders})"
+                    row_values = [values[column] for column in columns]
+                    for _ in range(int(mutation.details["count"])):
+                        self.connection.execute(sql, row_values)
+                elif mutation.action == "replace_views":
+                    row_ids = [int(row_id) for row_id in mutation.details["row_ids"]]
+                    if row_ids:
+                        placeholders = ", ".join("?" for _ in row_ids)
+                        self.connection.execute(
+                            f"DELETE FROM metadata_item_views WHERE rowid IN ({placeholders})",
+                            row_ids,
+                        )
+
+                    values = mutation.details["values"]
+                    columns = list(values)
+                    placeholders = ", ".join("?" for _ in columns)
+                    quoted_columns = ", ".join(self.quote_identifier(column) for column in columns)
+                    sql = f"INSERT INTO metadata_item_views ({quoted_columns}) VALUES ({placeholders})"
+                    row_values = [values[column] for column in columns]
+                    for _ in range(int(mutation.details["count"])):
+                        self.connection.execute(sql, row_values)
+                elif mutation.action == "update_latest_view":
                     self.connection.execute(
-                        f"DELETE FROM metadata_item_views WHERE rowid IN ({placeholders})",
-                        row_ids,
+                        "UPDATE metadata_item_views SET viewed_at = ? WHERE rowid = ?",
+                        (mutation.details["viewed_at"], mutation.details["row_id"]),
                     )
+                elif mutation.action == "upsert_settings":
+                    details = mutation.details
+                    account_id = details["account_id"]
+                    existing_row = self.connection.execute(
+                        """
+                        SELECT id
+                        FROM metadata_item_settings
+                        WHERE guid = ?
+                          AND ((account_id = ?) OR (account_id IS NULL AND ? IS NULL))
+                        ORDER BY id
+                        LIMIT 1
+                        """,
+                        (details["guid"], account_id, account_id),
+                    ).fetchone()
 
-                values = mutation.details["values"]
-                columns = list(values)
-                placeholders = ", ".join("?" for _ in columns)
-                quoted_columns = ", ".join(self.quote_identifier(column) for column in columns)
-                sql = f"INSERT INTO metadata_item_views ({quoted_columns}) VALUES ({placeholders})"
-                row_values = [values[column] for column in columns]
-                for _ in range(int(mutation.details["count"])):
-                    self.connection.execute(sql, row_values)
-            elif mutation.action == "update_latest_view":
-                self.connection.execute(
-                    "UPDATE metadata_item_views SET viewed_at = ? WHERE rowid = ?",
-                    (mutation.details["viewed_at"], mutation.details["row_id"]),
-                )
-            elif mutation.action == "upsert_settings":
-                details = mutation.details
-                account_id = details["account_id"]
-                existing_row = self.connection.execute(
-                    """
-                    SELECT id
-                    FROM metadata_item_settings
-                    WHERE guid = ?
-                      AND ((account_id = ?) OR (account_id IS NULL AND ? IS NULL))
-                    ORDER BY id
-                    LIMIT 1
-                    """,
-                    (details["guid"], account_id, account_id),
-                ).fetchone()
-
-                if existing_row:
+                    if existing_row:
+                        self.connection.execute(
+                            """
+                            UPDATE metadata_item_settings
+                            SET view_count = ?,
+                                last_viewed_at = ?,
+                                updated_at = ?,
+                                changed_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                details["view_count"],
+                                details["last_viewed_at"],
+                                details["updated_at"],
+                                details["changed_at"],
+                                existing_row["id"],
+                            ),
+                        )
+                    else:
+                        self.connection.execute(
+                            """
+                            INSERT INTO metadata_item_settings (
+                                account_id,
+                                guid,
+                                view_count,
+                                last_viewed_at,
+                                created_at,
+                                updated_at,
+                                changed_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                account_id,
+                                details["guid"],
+                                details["view_count"],
+                                details["last_viewed_at"],
+                                details["created_at"],
+                                details["updated_at"],
+                                details["changed_at"],
+                            ),
+                        )
+                elif mutation.action == "refresh_view_rows":
+                    details = mutation.details
                     self.connection.execute(
                         """
-                        UPDATE metadata_item_settings
-                        SET view_count = ?,
-                            last_viewed_at = ?,
-                            updated_at = ?,
-                            changed_at = ?
-                        WHERE id = ?
+                        UPDATE metadata_item_views
+                        SET account_id = ?,
+                            metadata_type = ?,
+                            library_section_id = ?,
+                            grandparent_title = ?,
+                            parent_index = ?,
+                            parent_title = ?,
+                            "index" = ?,
+                            title = ?,
+                            viewed_at = COALESCE(viewed_at, ?),
+                            grandparent_guid = ?,
+                            originally_available_at = ?,
+                            view_type = ?
+                        WHERE guid = ?
+                          AND (? IS NULL OR account_id IS NULL OR account_id = ?)
                         """,
                         (
-                            details["view_count"],
-                            details["last_viewed_at"],
-                            details["updated_at"],
-                            details["changed_at"],
-                            existing_row["id"],
-                        ),
-                    )
-                else:
-                    self.connection.execute(
-                        """
-                        INSERT INTO metadata_item_settings (
-                            account_id,
-                            guid,
-                            view_count,
-                            last_viewed_at,
-                            created_at,
-                            updated_at,
-                            changed_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            account_id,
+                            details["account_id"],
+                            details["metadata_type"],
+                            details["library_section_id"],
+                            details["grandparent_title"],
+                            details["parent_index"],
+                            details["parent_title"],
+                            details["index"],
+                            details["title"],
+                            details["viewed_at"],
+                            details["grandparent_guid"],
+                            details["originally_available_at"],
+                            details["view_type"],
                             details["guid"],
-                            details["view_count"],
-                            details["last_viewed_at"],
-                            details["created_at"],
-                            details["updated_at"],
-                            details["changed_at"],
+                            details["account_id"],
+                            details["account_id"],
                         ),
                     )
-            elif mutation.action == "refresh_view_rows":
-                details = mutation.details
-                self.connection.execute(
-                    """
-                    UPDATE metadata_item_views
-                    SET account_id = ?,
-                        metadata_type = ?,
-                        library_section_id = ?,
-                        grandparent_title = ?,
-                        parent_index = ?,
-                        parent_title = ?,
-                        "index" = ?,
-                        title = ?,
-                        viewed_at = COALESCE(viewed_at, ?),
-                        grandparent_guid = ?,
-                        originally_available_at = ?,
-                        view_type = ?
-                    WHERE guid = ?
-                      AND (? IS NULL OR account_id IS NULL OR account_id = ?)
-                    """,
-                    (
-                        details["account_id"],
-                        details["metadata_type"],
-                        details["library_section_id"],
-                        details["grandparent_title"],
-                        details["parent_index"],
-                        details["parent_title"],
-                        details["index"],
-                        details["title"],
-                        details["viewed_at"],
-                        details["grandparent_guid"],
-                        details["originally_available_at"],
-                        details["view_type"],
-                        details["guid"],
-                        details["account_id"],
-                        details["account_id"],
-                    ),
-                )
-            elif mutation.action == "create_playlist":
-                details = mutation.details
-                if details.get("storage_model") == "metadata" or self.prefers_metadata_playlist_storage():
-                    self.create_metadata_playlist(details)
-                else:
-                    now = int(datetime.now().timestamp())
-                    playlist_added_at = PlexFilenameParser.safe_int(details.get("added_at")) or now
-                    cursor = self.connection.execute(
-                        """
-                        INSERT INTO custom_channels (
-                            name,
-                            description,
-                            ordering,
-                            visibility,
-                            displayed_on,
-                            content_rating
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            details["name"],
-                            details.get("description"),
-                            details.get("ordering", 0),
-                            details.get("visibility"),
-                            details.get("displayed_on"),
-                            details.get("content_rating"),
-                        ),
-                    )
-                    playlist_id = int(cursor.lastrowid)
-                    play_queue_cursor = self.connection.execute(
-                        """
-                        INSERT INTO play_queues (
-                            client_identifier,
-                            account_id,
-                            playlist_id,
-                            play_queue_generator_id,
-                            version,
-                            created_at,
-                            updated_at,
-                            metadata_type,
-                            total_items_count,
-                            extra_data
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            details.get("client_identifier") or uuid.uuid4().hex,
-                            details.get("account_id"),
-                            playlist_id,
-                            None,
-                            1,
-                            playlist_added_at,
-                            playlist_added_at,
-                            details.get("metadata_type"),
-                            len(details.get("metadata_item_ids", [])),
-                            details.get("extra_data"),
-                        ),
-                    )
-                    self.insert_playlist_items(
-                        int(play_queue_cursor.lastrowid),
-                        details.get("metadata_item_ids", []),
-                    )
-            elif mutation.action == "merge_playlist_items":
-                details = mutation.details
-                if details.get("storage_model") == "metadata":
-                    self.insert_playlist_generators(
-                        int(details["playlist_id"]),
-                        details.get("metadata_item_ids", []),
-                        self.next_playlist_generator_order(int(details["playlist_id"])),
-                    )
-                    self.refresh_metadata_playlist_totals(int(details["playlist_id"]))
-                else:
-                    self.insert_playlist_items(
-                        int(details["play_queue_id"]),
-                        details.get("metadata_item_ids", []),
-                        self.next_playlist_order(int(details["play_queue_id"])),
-                    )
-                    self.refresh_playlist_queue_totals(int(details["play_queue_id"]))
-            elif mutation.action == "replace_playlist_items":
-                details = mutation.details
-                if details.get("storage_model") == "metadata":
-                    playlist_id = int(details["playlist_id"])
-                    self.connection.execute(
-                        "DELETE FROM play_queue_generators WHERE playlist_id = ?",
-                        (playlist_id,),
-                    )
-                    self.insert_playlist_generators(
-                        playlist_id,
-                        details.get("metadata_item_ids", []),
-                    )
-                    self.refresh_metadata_playlist_totals(playlist_id)
-                    self.update_metadata_playlist_added_at(
-                        playlist_id,
-                        PlexFilenameParser.safe_int(details.get("added_at")),
-                    )
-                else:
-                    play_queue_id = int(details["play_queue_id"])
-                    self.connection.execute(
-                        "DELETE FROM play_queue_items WHERE play_queue_id = ?",
-                        (play_queue_id,),
-                    )
-                    self.insert_playlist_items(
-                        play_queue_id,
-                        details.get("metadata_item_ids", []),
-                    )
-                    self.refresh_playlist_queue_totals(play_queue_id)
-                    self.update_custom_playlist_added_at(
-                        play_queue_id,
-                        PlexFilenameParser.safe_int(details.get("added_at")),
-                    )
-            elif mutation.action == "update_playlist_metadata":
-                details = mutation.details
-                if details.get("storage_model") == "metadata":
-                    self.update_metadata_playlist_details(
-                        int(details["playlist_id"]),
-                        str(details["name"]),
-                        details.get("description"),
-                    )
-                else:
-                    self.update_custom_playlist_details(
-                        int(details["playlist_id"]),
-                        str(details["name"]),
-                        details.get("description"),
-                    )
-            elif mutation.action == "delete_playlist":
-                details = mutation.details
-                if details.get("storage_model") == "metadata":
-                    playlist_id = int(details["playlist_id"])
-                    now = int(datetime.now().timestamp())
-                    with self.temporarily_disable_metadata_fts_triggers():
+                elif mutation.action == "create_playlist":
+                    details = mutation.details
+                    if details.get("storage_model") == "metadata" or self.prefers_metadata_playlist_storage():
+                        self.create_metadata_playlist(details)
+                    else:
+                        now = int(datetime.now().timestamp())
+                        playlist_added_at = PlexFilenameParser.safe_int(details.get("added_at")) or now
+                        cursor = self.connection.execute(
+                            """
+                            INSERT INTO custom_channels (
+                                name,
+                                description,
+                                ordering,
+                                visibility,
+                                displayed_on,
+                                content_rating
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                details["name"],
+                                details.get("description"),
+                                details.get("ordering", 0),
+                                details.get("visibility"),
+                                details.get("displayed_on"),
+                                details.get("content_rating"),
+                            ),
+                        )
+                        playlist_id = int(cursor.lastrowid)
+                        play_queue_cursor = self.connection.execute(
+                            """
+                            INSERT INTO play_queues (
+                                client_identifier,
+                                account_id,
+                                playlist_id,
+                                play_queue_generator_id,
+                                version,
+                                created_at,
+                                updated_at,
+                                metadata_type,
+                                total_items_count,
+                                extra_data
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                details.get("client_identifier") or uuid.uuid4().hex,
+                                details.get("account_id"),
+                                playlist_id,
+                                None,
+                                1,
+                                playlist_added_at,
+                                playlist_added_at,
+                                details.get("metadata_type"),
+                                len(details.get("metadata_item_ids", [])),
+                                details.get("extra_data"),
+                            ),
+                        )
+                        self.insert_playlist_items(
+                            int(play_queue_cursor.lastrowid),
+                            details.get("metadata_item_ids", []),
+                        )
+                elif mutation.action == "merge_playlist_items":
+                    details = mutation.details
+                    if details.get("storage_model") == "metadata":
+                        self.insert_playlist_generators(
+                            int(details["playlist_id"]),
+                            details.get("metadata_item_ids", []),
+                            self.next_playlist_generator_order(int(details["playlist_id"])),
+                        )
+                        self.refresh_metadata_playlist_totals(int(details["playlist_id"]))
+                    else:
+                        self.insert_playlist_items(
+                            int(details["play_queue_id"]),
+                            details.get("metadata_item_ids", []),
+                            self.next_playlist_order(int(details["play_queue_id"])),
+                        )
+                        self.refresh_playlist_queue_totals(int(details["play_queue_id"]))
+                elif mutation.action == "replace_playlist_items":
+                    details = mutation.details
+                    if details.get("storage_model") == "metadata":
+                        playlist_id = int(details["playlist_id"])
                         self.connection.execute(
                             "DELETE FROM play_queue_generators WHERE playlist_id = ?",
                             (playlist_id,),
                         )
+                        self.insert_playlist_generators(
+                            playlist_id,
+                            details.get("metadata_item_ids", []),
+                        )
+                        self.refresh_metadata_playlist_totals(playlist_id)
+                        self.update_metadata_playlist_added_at(
+                            playlist_id,
+                            PlexFilenameParser.safe_int(details.get("added_at")),
+                        )
+                    else:
+                        play_queue_id = int(details["play_queue_id"])
+                        self.connection.execute(
+                            "DELETE FROM play_queue_items WHERE play_queue_id = ?",
+                            (play_queue_id,),
+                        )
+                        self.insert_playlist_items(
+                            play_queue_id,
+                            details.get("metadata_item_ids", []),
+                        )
+                        self.refresh_playlist_queue_totals(play_queue_id)
+                        self.update_custom_playlist_added_at(
+                            play_queue_id,
+                            PlexFilenameParser.safe_int(details.get("added_at")),
+                        )
+                elif mutation.action == "update_playlist_metadata":
+                    details = mutation.details
+                    if details.get("storage_model") == "metadata":
+                        self.update_metadata_playlist_details(
+                            int(details["playlist_id"]),
+                            str(details["name"]),
+                            details.get("description"),
+                        )
+                    else:
+                        self.update_custom_playlist_details(
+                            int(details["playlist_id"]),
+                            str(details["name"]),
+                            details.get("description"),
+                        )
+                elif mutation.action == "delete_playlist":
+                    details = mutation.details
+                    if details.get("storage_model") == "metadata":
+                        playlist_id = int(details["playlist_id"])
+                        now = int(datetime.now().timestamp())
+                        with self.temporarily_disable_metadata_fts_triggers():
+                            self.connection.execute(
+                                "DELETE FROM play_queue_generators WHERE playlist_id = ?",
+                                (playlist_id,),
+                            )
+                            self.connection.execute(
+                                "DELETE FROM play_queues WHERE playlist_id = ?",
+                                (playlist_id,),
+                            )
+                            self.connection.execute(
+                                "DELETE FROM metadata_item_accounts WHERE metadata_item_id = ?",
+                                (playlist_id,),
+                            )
+                            self.connection.execute(
+                                """
+                                UPDATE metadata_items
+                                SET deleted_at = ?,
+                                    updated_at = ?,
+                                    changed_at = ?,
+                                    resources_changed_at = ?
+                                WHERE id = ?
+                                """,
+                                (now, now, now, now, playlist_id),
+                            )
+                    else:
+                        playlist_id = int(details["playlist_id"])
+                        play_queue_ids = [
+                            int(row["id"])
+                            for row in self.connection.execute(
+                                "SELECT id FROM play_queues WHERE playlist_id = ?",
+                                (playlist_id,),
+                            ).fetchall()
+                        ]
+                        if play_queue_ids:
+                            placeholders = ", ".join("?" for _ in play_queue_ids)
+                            self.connection.execute(
+                                f"DELETE FROM play_queue_items WHERE play_queue_id IN ({placeholders})",
+                                play_queue_ids,
+                            )
                         self.connection.execute(
                             "DELETE FROM play_queues WHERE playlist_id = ?",
                             (playlist_id,),
@@ -988,45 +1080,11 @@ class PlexDatabase:
                             (playlist_id,),
                         )
                         self.connection.execute(
-                            """
-                            UPDATE metadata_items
-                            SET deleted_at = ?,
-                                updated_at = ?,
-                                changed_at = ?,
-                                resources_changed_at = ?
-                            WHERE id = ?
-                            """,
-                            (now, now, now, now, playlist_id),
+                            "DELETE FROM custom_channels WHERE id = ?",
+                            (playlist_id,),
                         )
                 else:
-                    playlist_id = int(details["playlist_id"])
-                    play_queue_ids = [
-                        int(row["id"])
-                        for row in self.connection.execute(
-                            "SELECT id FROM play_queues WHERE playlist_id = ?",
-                            (playlist_id,),
-                        ).fetchall()
-                    ]
-                    if play_queue_ids:
-                        placeholders = ", ".join("?" for _ in play_queue_ids)
-                        self.connection.execute(
-                            f"DELETE FROM play_queue_items WHERE play_queue_id IN ({placeholders})",
-                            play_queue_ids,
-                        )
-                    self.connection.execute(
-                        "DELETE FROM play_queues WHERE playlist_id = ?",
-                        (playlist_id,),
-                    )
-                    self.connection.execute(
-                        "DELETE FROM metadata_item_accounts WHERE metadata_item_id = ?",
-                        (playlist_id,),
-                    )
-                    self.connection.execute(
-                        "DELETE FROM custom_channels WHERE id = ?",
-                        (playlist_id,),
-                    )
-            else:
-                raise RuntimeError(f"Unsupported mutation action: {mutation.action}")
+                    raise RuntimeError(f"Unsupported mutation action: {mutation.action}")
 
     def prefers_metadata_playlist_storage(self) -> bool:
         row = self.connection.execute(
@@ -1042,13 +1100,16 @@ class PlexDatabase:
 
     @contextmanager
     def temporarily_disable_metadata_fts_triggers(self):
+        if self.use_plex_sqlite:
+            yield
+            return
+
         trigger_rows = self.connection.execute(
             """
             SELECT name, sql
             FROM sqlite_master
             WHERE type = 'trigger'
               AND tbl_name = 'metadata_items'
-              AND name LIKE 'fts4_metadata_titles_%'
             ORDER BY name
             """
         ).fetchall()
@@ -1122,88 +1183,94 @@ class PlexDatabase:
         extra_data = details.get("extra_data") or self.build_playlist_extra_data(metadata_item_ids, owner_id=account_id)
         guid = details.get("guid") or f"com.plexapp.agents.none://{uuid.uuid4()}"
         hash_value = hashlib.sha1(f"{guid}|{title}|{now}".encode("utf-8")).hexdigest()
-        with self.temporarily_disable_metadata_fts_triggers():
-            cursor = self.connection.execute(
-                """
-                INSERT INTO metadata_items (
-                    metadata_type,
-                    guid,
-                    media_item_count,
-                    title,
-                    title_sort,
-                    original_title,
-                    studio,
-                    tagline,
-                    summary,
-                    content_rating,
-                    "index",
-                    absolute_index,
-                    duration,
-                    user_thumb_url,
-                    user_art_url,
-                    user_banner_url,
-                    user_music_url,
-                    user_fields,
-                    tags_genre,
-                    tags_collection,
-                    tags_director,
-                    tags_writer,
-                    tags_star,
-                    added_at,
-                    created_at,
-                    updated_at,
-                    tags_country,
-                    extra_data,
-                    hash,
-                    changed_at,
-                    resources_changed_at,
-                    edition_title,
-                    slug,
-                    is_adult,
-                    user_clear_logo_url,
-                    user_square_art_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    15,
-                    guid,
-                    len(metadata_item_ids),
-                    title,
-                    title,
-                    "",
-                    "",
-                    "",
-                    details.get("description") or "",
-                    "",
-                    0,
-                    1,
-                    total_duration_seconds,
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    playlist_added_at,
-                    playlist_added_at,
-                    playlist_added_at,
-                    "",
-                    extra_data,
-                    hash_value,
-                    now,
-                    now,
-                    "",
-                    "",
-                    0,
-                    "",
-                    "",
-                ),
-            )
-        playlist_id = int(cursor.lastrowid)
+
+        insert_sql = """
+            INSERT INTO metadata_items (
+                metadata_type,
+                guid,
+                media_item_count,
+                title,
+                title_sort,
+                original_title,
+                studio,
+                tagline,
+                summary,
+                content_rating,
+                "index",
+                absolute_index,
+                duration,
+                user_thumb_url,
+                user_art_url,
+                user_banner_url,
+                user_music_url,
+                user_fields,
+                tags_genre,
+                tags_collection,
+                tags_director,
+                tags_writer,
+                tags_star,
+                added_at,
+                created_at,
+                updated_at,
+                tags_country,
+                extra_data,
+                hash,
+                changed_at,
+                resources_changed_at,
+                edition_title,
+                slug,
+                is_adult,
+                user_clear_logo_url,
+                user_square_art_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+        params = (
+            15,
+            guid,
+            len(metadata_item_ids),
+            title,
+            title,
+            "",
+            "",
+            "",
+            details.get("description") or "",
+            "",
+            0,
+            1,
+            total_duration_seconds,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            playlist_added_at,
+            playlist_added_at,
+            playlist_added_at,
+            "",
+            extra_data,
+            hash_value,
+            now,
+            now,
+            "",
+            "",
+            0,
+            "",
+            "",
+        )
+
+        if self.use_plex_sqlite:
+            playlist_id = self.execute_external_sqlite_insert(insert_sql, params)
+        else:
+            with self.temporarily_disable_metadata_fts_triggers():
+                cursor = self.connection.execute(insert_sql, params)
+                playlist_id = int(cursor.lastrowid)
+
         self.ensure_metadata_item_account(playlist_id, account_id)
         self.insert_playlist_generators(playlist_id, metadata_item_ids)
 
@@ -1266,27 +1333,66 @@ class PlexDatabase:
     def update_metadata_playlist_added_at(self, playlist_id: int, added_at: Optional[int]) -> None:
         if added_at is None:
             return
-        with self.temporarily_disable_metadata_fts_triggers():
-            self.connection.execute(
-                "UPDATE metadata_items SET added_at = ? WHERE id = ?",
-                (added_at, playlist_id),
-            )
+        self.execute_metadata_items_write(
+            "UPDATE metadata_items SET added_at = ? WHERE id = ?",
+            (added_at, playlist_id),
+        )
 
     def update_metadata_playlist_details(self, playlist_id: int, name: str, description: Optional[str]) -> None:
         now = int(datetime.now().timestamp())
-        with self.temporarily_disable_metadata_fts_triggers():
-            self.connection.execute(
+        full_update_sql = """
+            UPDATE metadata_items
+            SET title = ?,
+                title_sort = ?,
+                summary = ?,
+                updated_at = ?,
+                changed_at = ?,
+                resources_changed_at = ?
+            WHERE id = ?
+            """
+        full_params = (name, name, description or "", now, now, now, playlist_id)
+
+        existing_row = self.connection.execute(
+            "SELECT title FROM metadata_items WHERE id = ?",
+            (playlist_id,),
+        ).fetchone()
+        existing_title = "" if existing_row is None else str(existing_row["title"] or "")
+        rename_needed = existing_row is not None and existing_title != name
+
+        if rename_needed and not self.use_plex_sqlite:
+            if self.plex_sqlite_executable is None:
+                self.plex_sqlite_executable = find_plex_sqlite_executable()
+            if self.plex_sqlite_executable is None:
+                raise RuntimeError(
+                    "Metadata playlist rename requires Plex SQLite fallback, but Plex SQLite executable was not found. "
+                    "Install Plex Media Server or run with --sqlite-engine=plex."
+                )
+
+            print(
+                f"Info: playlist rename for metadata_items.id={playlist_id} is using Plex SQLite fallback "
+                "to apply title/title_sort safely."
+            )
+            self.execute_external_sqlite(full_update_sql, full_params)
+            return
+
+        try:
+            self.execute_metadata_items_write(full_update_sql, full_params)
+        except sqlite3.DatabaseError as exc:
+            # Some Plex DBs can report malformed-image errors when touching title/title_sort indexes
+            # through builtin sqlite. Keep sync running by applying non-title metadata updates.
+            if self.use_plex_sqlite or "database disk image is malformed" not in str(exc).lower():
+                raise
+
+            self.execute_metadata_items_write(
                 """
                 UPDATE metadata_items
-                SET title = ?,
-                    title_sort = ?,
-                    summary = ?,
+                SET summary = ?,
                     updated_at = ?,
                     changed_at = ?,
                     resources_changed_at = ?
                 WHERE id = ?
                 """,
-                (name, name, description or "", now, now, now, playlist_id),
+                (description or "", now, now, now, playlist_id),
             )
 
     def next_playlist_order(self, play_queue_id: int) -> float:

@@ -25,6 +25,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "remove-playlists",
         "list-libraries",
         "list-accounts",
+        "recover-database",
     }
     if raw_argv and not raw_argv[0].startswith("-") and raw_argv[0] not in subcommands:
         raw_argv = ["transfer-watch-status", *raw_argv]

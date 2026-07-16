@@ -181,6 +181,15 @@ def register(subparsers: _SubParsersAction) -> None:
         ),
     )
     parser.add_argument(
+        "--sqlite-engine",
+        choices=["builtin", "plex"],
+        default="builtin",
+        help=(
+            "Which SQLite runtime to use for write operations. "
+            "Use 'plex' to run writes through the Plex-provided SQLite engine, avoiding Plex-specific tokenizer/collation failures."
+        ),
+    )
+    parser.add_argument(
         "--status-filter",
         metavar="FILTERS",
         help=(
@@ -302,6 +311,11 @@ def register(subparsers: _SubParsersAction) -> None:
         action="store_true",
         help="Print per-playlist item changes (added and removed items) after the plan summary.",
     )
+    parser.add_argument(
+        "--include-removed-output",
+        action="store_true",
+        help="Include rows for previously removed playlists in console/report output.",
+    )
 
 
 def run(args: Namespace) -> int:
@@ -341,7 +355,11 @@ def run(args: Namespace) -> int:
         PlexEnvironment.wait_for_plex_shutdown()
         backup_database_file(target_db_path)
 
-    database = PlexDatabase(target_db_path, readonly=not args.apply)
+    database = PlexDatabase(
+        target_db_path,
+        readonly=not args.apply,
+        sqlite_engine=args.sqlite_engine,
+    )
     try:
         schema = database.inspect_schema()
         if not schema.supports_playlists:
@@ -378,6 +396,7 @@ def run(args: Namespace) -> int:
             item_filter_keep_existing=args.item_filter_keep_existing,
             item_filter_remove_empty=args.item_filter_remove_empty,
         )
+        visible_plans = filter_sync_output_plans(plans, include_removed_output=args.include_removed_output)
         columns = report_writer.parse_columns(args.columns)
 
         if args.apply and mutations:
@@ -385,12 +404,12 @@ def run(args: Namespace) -> int:
             database.apply_mutations(mutations)
             database.commit()
 
-        emit_sync_outputs(plans, mutations, args.console_format, args.report, args.report_format, report_writer, columns)
+        emit_sync_outputs(visible_plans, mutations, args.console_format, args.report, args.report_format, report_writer, columns)
         summary_stream = sys.stderr if args.console_format in {"json", "csv"} else sys.stdout
-        print_plan_summary(plans, mutations, args.apply, summary_stream)
-        print_plan_unmatched_details(plans, summary_stream)
+        print_plan_summary(visible_plans, mutations, args.apply, summary_stream)
+        print_plan_unmatched_details(visible_plans, summary_stream)
         if args.verbose:
-            print_plan_changes_detail(plans, summary_stream)
+            print_plan_changes_detail(visible_plans, summary_stream)
 
         if interactive_sync and not args.apply:
             print("Dry-run only: no playlist changes have been written yet.", file=summary_stream)
@@ -400,9 +419,9 @@ def run(args: Namespace) -> int:
             )
             if should_apply:
                 PlexCliSupport.apply_planned_mutations(target_db_path, mutations)
-                print_plan_summary(plans, mutations, True, summary_stream)
+                print_plan_summary(visible_plans, mutations, True, summary_stream)
                 if args.verbose:
-                    print_plan_changes_detail(plans, summary_stream)
+                    print_plan_changes_detail(visible_plans, summary_stream)
             else:
                 print("No playlist changes were written.", file=summary_stream)
 
@@ -1808,6 +1827,22 @@ def choose_candidate_by_size(candidates: Sequence[MediaRecord], expected_size: O
 
 def emit_plan_summary(plans: Sequence[Dict[str, Any]], applied: bool) -> None:
     print_plan_summary(plans, [], applied)
+
+
+def filter_sync_output_plans(
+    plans: Sequence[Dict[str, Any]],
+    include_removed_output: bool,
+) -> List[Dict[str, Any]]:
+    if include_removed_output:
+        return list(plans)
+    return [
+        plan
+        for plan in plans
+        if str(plan.get("status") or "") != "skipped_removed"
+        and str(plan.get("action") or "") != "skip_removed"
+        and str(plan.get("status") or "") != "no_transferable_items"
+        and str(plan.get("action") or "") != "skip_unmatched"
+    ]
 
 
 def build_sync_rows(plans: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
