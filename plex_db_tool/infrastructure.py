@@ -29,6 +29,51 @@ def quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def find_plex_sqlite_executable() -> Optional[Path]:
+    candidates: List[Path] = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Plex Media Server" / "Plex SQLite.exe")
+    program_files = os.environ.get("ProgramFiles")
+    if program_files:
+        candidates.append(Path(program_files) / "Plex" / "Plex Media Server" / "Plex SQLite.exe")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)")
+    if program_files_x86:
+        candidates.append(Path(program_files_x86) / "Plex" / "Plex Media Server" / "Plex SQLite.exe")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def run_external_sqlite_command(sqlite_executable: Path, db_path: Path, sql: str, timeout: int = 30, verbose: bool = False) -> subprocess.CompletedProcess:
+    command = [str(sqlite_executable), str(db_path), sql]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    if verbose:
+        print(f"Ran external SQLite command: {' '.join(command)}")
+        print(f"stdout: {result.stdout.strip()}")
+        print(f"stderr: {result.stderr.strip()}")
+    return result
+
+
+def check_plex_database_integrity(source_path: Path, verbose: bool = False) -> bool:
+    sqlite_executable = find_plex_sqlite_executable()
+    if sqlite_executable is None:
+        if verbose:
+            print("Plex SQLite executable not found for external integrity check.")
+        return False
+
+    result = run_external_sqlite_command(sqlite_executable, source_path, "PRAGMA integrity_check;", verbose=verbose)
+    if result.returncode != 0:
+        return False
+
+    for line in result.stdout.splitlines():
+        if line.strip().lower() == "ok":
+            return True
+    return False
+
+
 def backup_database_file(source_path: Path, backup_path: Optional[Path] = None, verbose: bool = False) -> Path:
     if not source_path.exists():
         raise FileNotFoundError(f"Source database not found: {source_path}")
@@ -61,13 +106,15 @@ def recover_sqlite_database(source_path: Path, output_path: Path, verbose: bool 
 
     source_connection.row_factory = sqlite3.Row
     try:
+        integrity_result: Optional[str] = None
         try:
             integrity_row = source_connection.execute("PRAGMA integrity_check").fetchone()
             integrity_result = integrity_row[0] if integrity_row else None
         except sqlite3.Error as exc:
-            integrity_result = None
             if verbose:
-                print(f"Integrity check failed: {exc}")
+                print(f"Integrity check failed using built-in sqlite3 runtime: {exc}")
+            if check_plex_database_integrity(source_path, verbose=verbose):
+                integrity_result = "ok"
 
         if integrity_result == "ok":
             if verbose:
@@ -1345,6 +1392,10 @@ class PlexDatabaseLocator:
         try:
             database = PlexDatabase(db_path, readonly=True)
         except sqlite3.Error as exc:
+            error_text = str(exc).lower()
+            if "unknown tokenizer" in error_text or "no such collation sequence" in error_text:
+                if check_plex_database_integrity(db_path, verbose=True):
+                    return
             raise RuntimeError(f"Failed to open SQLite database: {db_path}: {exc}") from exc
 
         try:
