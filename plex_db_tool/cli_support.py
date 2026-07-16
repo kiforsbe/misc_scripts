@@ -476,9 +476,10 @@ class PlexCliSupport:
 
     @staticmethod
     def apply_planned_mutations(target_db_path: Path, mutations: Sequence[PlannedMutation]) -> None:
-        from .infrastructure import PlexDatabase, PlexEnvironment
+        from .infrastructure import PlexDatabase, PlexEnvironment, backup_database_file
 
         PlexEnvironment.wait_for_plex_shutdown()
+        backup_database_file(target_db_path)
         database = PlexDatabase(target_db_path, readonly=False)
         try:
             database.begin_immediate()

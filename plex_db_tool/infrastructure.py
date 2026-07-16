@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -22,6 +23,156 @@ from .models import (
     TableColumn,
     WatchHistory,
 )
+
+
+def quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def backup_database_file(source_path: Path, backup_path: Optional[Path] = None, verbose: bool = False) -> Path:
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source database not found: {source_path}")
+
+    if backup_path is None:
+        backup_path = source_path.with_name(f"{source_path.name}.bak")
+
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = backup_path
+    index = 1
+    while candidate.exists():
+        candidate = source_path.with_name(f"{source_path.name}.bak.{index}")
+        index += 1
+
+    shutil.copy2(str(source_path), str(candidate))
+    if verbose:
+        print(f"Backed up {source_path} to {candidate}")
+    return candidate
+
+
+def recover_sqlite_database(source_path: Path, output_path: Path, verbose: bool = False) -> None:
+    if verbose:
+        print(f"Starting recovery for: {source_path}")
+
+    source_uri = f"file:{source_path.as_posix()}?mode=ro"
+    try:
+        source_connection = sqlite3.connect(source_uri, uri=True, timeout=30)
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"Unable to open source database: {exc}") from exc
+
+    source_connection.row_factory = sqlite3.Row
+    try:
+        try:
+            integrity_row = source_connection.execute("PRAGMA integrity_check").fetchone()
+            integrity_result = integrity_row[0] if integrity_row else None
+        except sqlite3.Error as exc:
+            integrity_result = None
+            if verbose:
+                print(f"Integrity check failed: {exc}")
+
+        if integrity_result == "ok":
+            if verbose:
+                print("Source database integrity check passed. Backing up directly.")
+            with sqlite3.connect(str(output_path)) as target_connection:
+                source_connection.backup(target_connection)
+            return
+
+        if verbose:
+            print(
+                "Source database is damaged or failed integrity check. "
+                "Attempting best-effort recovery."
+            )
+
+        _recover_sqlite_database_content(source_connection, output_path, verbose=verbose)
+    finally:
+        source_connection.close()
+
+
+def _recover_sqlite_database_content(source_connection: sqlite3.Connection, output_path: Path, verbose: bool = False) -> None:
+    with sqlite3.connect(str(output_path)) as target_connection:
+        target_connection.row_factory = sqlite3.Row
+        target_connection.execute("PRAGMA foreign_keys = OFF")
+
+        master_rows = source_connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('table','index','trigger','view') "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY type DESC, name"
+        ).fetchall()
+
+        table_names: list[str] = []
+        for row in master_rows:
+            obj_type = row["type"]
+            name = row["name"]
+            sql = row["sql"]
+            if not sql:
+                continue
+            try:
+                target_connection.execute(sql)
+                if obj_type == "table":
+                    table_names.append(name)
+                if verbose:
+                    print(f"Created {obj_type} {name}")
+            except sqlite3.Error as exc:
+                if verbose:
+                    print(f"Skipping creation of {obj_type} {name}: {exc}")
+
+        for table_name in table_names:
+            _recover_table_rows(source_connection, target_connection, table_name, verbose=verbose)
+
+        target_connection.execute("PRAGMA foreign_keys = ON")
+
+
+def _recover_table_rows(source_connection: sqlite3.Connection, target_connection: sqlite3.Connection, table_name: str, verbose: bool = False) -> None:
+    if verbose:
+        print(f"Recovering rows for table: {table_name}")
+
+    column_rows = source_connection.execute(f"PRAGMA table_info({quote_identifier(table_name)})").fetchall()
+    if not column_rows:
+        if verbose:
+            print(f"Skipping table with no schema: {table_name}")
+        return
+
+    columns = [row["name"] for row in column_rows]
+    placeholders = ", ".join("?" for _ in columns)
+    insert_sql = f"INSERT INTO {quote_identifier(table_name)} ({', '.join(quote_identifier(col) for col in columns)}) VALUES ({placeholders})"
+
+    try:
+        rows = source_connection.execute(f"SELECT * FROM {quote_identifier(table_name)}")
+        target_connection.executemany(insert_sql, rows)
+        if verbose:
+            print(f"Recovered all rows for table: {table_name}")
+        return
+    except sqlite3.Error as exc:
+        if verbose:
+            print(f"Failed to copy full table {table_name}: {exc}")
+
+    try:
+        rowid_rows = source_connection.execute(f"SELECT rowid FROM {quote_identifier(table_name)}").fetchall()
+    except sqlite3.Error as exc:
+        if verbose:
+            print(f"Unable to enumerate rowids for {table_name}: {exc}")
+        return
+
+    recovered = 0
+    skipped = 0
+    for row in rowid_rows:
+        try:
+            row_data = source_connection.execute(
+                f"SELECT * FROM {quote_identifier(table_name)} WHERE rowid = ?",
+                (row[0],),
+            ).fetchone()
+            if row_data is None:
+                skipped += 1
+                continue
+            target_connection.execute(insert_sql, list(row_data))
+            recovered += 1
+        except sqlite3.Error as row_exc:
+            skipped += 1
+            if verbose:
+                print(f"Skipping corrupt rowid {row[0]} from {table_name}: {row_exc}")
+            continue
+
+    if verbose:
+        print(f"Recovered {recovered} rows from {table_name}, skipped {skipped} rows.")
 
 
 class PlexFilenameParser:
@@ -1202,7 +1353,7 @@ class PlexDatabaseLocator:
             database.close()
 
     @classmethod
-    def resolve_db_path(cls, path_value: str, label: str) -> Path:
+    def resolve_db_path(cls, path_value: str, label: str, validate: bool = True) -> Path:
         base_path = Path(path_value).expanduser().resolve()
         if not base_path.exists():
             raise FileNotFoundError(f"{label} path not found: {base_path}")
@@ -1224,8 +1375,31 @@ class PlexDatabaseLocator:
                 f"{label} path resolved to {db_path}, but the filename must be {cls.PLEX_DB_FILENAME}."
             )
 
-        cls.validate_plex_db(db_path)
+        if validate:
+            cls.validate_plex_db(db_path)
         return db_path
+
+    @classmethod
+    def resolve_local_db_path(
+        cls,
+        path_value: Optional[str],
+        label: str,
+        path_arg_name: str,
+        validate: bool = True,
+    ) -> Path:
+        if path_value:
+            return cls.resolve_db_path(path_value, label, validate=validate)
+
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            default_plex_root = Path(local_app_data) / "Plex Media Server"
+            if default_plex_root.exists():
+                return cls.resolve_db_path(str(default_plex_root), label, validate=validate)
+
+        raise RuntimeError(
+            f"{path_arg_name} is required when the standard LOCALAPPDATA Plex Media Server folder is not available. "
+            f"Pass --{path_arg_name} explicitly."
+        )
 
 
 class PlexEnvironment:

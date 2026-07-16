@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, TextIO
 
 from ..cli_support import PlexCliSupport
-from ..infrastructure import PlexDatabase, PlexDatabaseLocator, PlexEnvironment
+from ..infrastructure import PlexDatabase, PlexDatabaseLocator, PlexEnvironment, backup_database_file
 from ..models import PlannedMutation, PlaylistTransferPlan, PlexPlaylist
 from ..planners import PlexMatcher, PlexPlaylistPlanner
 from ..reporting import PlexReportWriter
@@ -116,6 +116,7 @@ def run(args: Namespace) -> int:
 
     if args.apply:
         PlexEnvironment.wait_for_plex_shutdown()
+        backup_database_file(target_db_path)
 
     source_database = PlexDatabase(source_db_path, readonly=True)
     target_database = PlexDatabase(target_db_path, readonly=not args.apply)

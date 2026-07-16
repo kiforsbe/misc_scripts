@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional, Sequence, Set, TextIO, Tuple
 
 from ..cli_support import PlexCliSupport
-from ..infrastructure import PlexDatabase, PlexDatabaseLocator, PlexEnvironment, PlexFilenameParser
+from ..infrastructure import PlexDatabase, PlexDatabaseLocator, PlexEnvironment, PlexFilenameParser, backup_database_file
 from ..item_filter import (
     MetadataItemFilter,
     MetadataItemFilterParser,
@@ -332,9 +332,14 @@ def run(args: Namespace) -> int:
         print("No groups matched the selected metadata filters.")
         return 0
 
-    target_db_path = resolve_target_db_path(args.target_path)
+    target_db_path = PlexDatabaseLocator.resolve_local_db_path(
+        args.target_path,
+        label="target",
+        path_arg_name="target-path",
+    )
     if args.apply:
         PlexEnvironment.wait_for_plex_shutdown()
+        backup_database_file(target_db_path)
 
     database = PlexDatabase(target_db_path, readonly=not args.apply)
     try:
@@ -426,7 +431,11 @@ def populate_missing_sync_args(args: Namespace) -> bool:
         )
 
     print("Interactive metadata playlist sync setup")
-    target_db_path = resolve_target_db_path(args.target_path)
+    target_db_path = PlexDatabaseLocator.resolve_local_db_path(
+        args.target_path,
+        label="target",
+        path_arg_name="target-path",
+    )
     if args.target_path is None:
         args.target_path = str(target_db_path)
 
@@ -467,22 +476,6 @@ def load_group_payload(json_path: Path) -> Dict[str, Any]:
     if not isinstance(groups, dict):
         raise RuntimeError(f"Metadata JSON is missing a 'groups' object: {json_path}")
     return payload
-
-
-def resolve_target_db_path(path_value: Optional[str]) -> Path:
-    if path_value:
-        return PlexDatabaseLocator.resolve_db_path(path_value, "target")
-
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        default_plex_root = Path(local_app_data) / "Plex Media Server"
-        if default_plex_root.exists():
-            return PlexDatabaseLocator.resolve_db_path(str(default_plex_root), "target")
-
-    raise RuntimeError(
-        "Target Plex path is required when the standard LOCALAPPDATA Plex Media Server folder is not available. "
-        "Pass --target-path explicitly."
-    )
 
 
 def normalize_groups(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
