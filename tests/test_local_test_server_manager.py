@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from local_test_server_manager import (
     ProcessInfo,
+    WindowsBackend,
     build_instances,
     is_test_server_cmdline,
     parse_ports_json,
@@ -117,3 +120,54 @@ def test_parse_ports_json_handles_single_object():
 
 def test_parse_ports_json_handles_empty_input():
     assert parse_ports_json("") == {}
+
+
+def test_graceful_kill_invokes_taskkill_without_force():
+    backend = WindowsBackend()
+    with patch("local_test_server_manager.subprocess.run") as mock_run:
+        backend.graceful_kill(1234)
+    assert mock_run.call_args.args[0] == ["taskkill", "/PID", "1234", "/T"]
+
+
+def test_force_kill_invokes_taskkill_with_force():
+    backend = WindowsBackend()
+    with patch("local_test_server_manager.subprocess.run") as mock_run:
+        backend.force_kill(1234)
+    assert mock_run.call_args.args[0] == ["taskkill", "/PID", "1234", "/T", "/F"]
+
+
+def test_is_alive_true_when_pid_present_in_tasklist_output():
+    backend = WindowsBackend()
+    fake_result = MagicMock(stdout="python.exe                    1234 Console  1     12,345 K")
+    with patch("local_test_server_manager.subprocess.run", return_value=fake_result):
+        assert backend.is_alive(1234) is True
+
+
+def test_is_alive_false_when_pid_absent_from_tasklist_output():
+    backend = WindowsBackend()
+    fake_result = MagicMock(
+        stdout="INFO: No tasks are running which match the specified criteria."
+    )
+    with patch("local_test_server_manager.subprocess.run", return_value=fake_result):
+        assert backend.is_alive(1234) is False
+
+
+def test_list_processes_parses_powershell_output():
+    backend = WindowsBackend()
+    fake_result = MagicMock(
+        stdout='[{"ProcessId":1,"ParentProcessId":0,"Name":"a.exe","CommandLine":"a.exe"}]'
+    )
+    with patch(
+        "local_test_server_manager.subprocess.run", return_value=fake_result
+    ) as mock_run:
+        result = backend.list_processes()
+    assert result == [ProcessInfo(pid=1, ppid=0, name="a.exe", cmdline="a.exe")]
+    assert mock_run.call_args.args[0][0] == "powershell"
+
+
+def test_list_listening_ports_parses_powershell_output():
+    backend = WindowsBackend()
+    fake_result = MagicMock(stdout='[{"LocalPort":3000,"OwningProcess":200}]')
+    with patch("local_test_server_manager.subprocess.run", return_value=fake_result):
+        result = backend.list_listening_ports()
+    assert result == {200: [3000]}

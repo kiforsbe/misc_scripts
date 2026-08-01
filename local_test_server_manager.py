@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -126,3 +128,56 @@ def parse_ports_json(raw: str) -> dict[int, list[int]]:
             continue
         port_map.setdefault(int(pid), []).append(int(port))
     return port_map
+
+
+class Backend(Protocol):
+    def list_processes(self) -> list[ProcessInfo]: ...
+    def list_listening_ports(self) -> dict[int, list[int]]: ...
+    def graceful_kill(self, pid: int) -> None: ...
+    def force_kill(self, pid: int) -> None: ...
+    def is_alive(self, pid: int) -> bool: ...
+
+
+_PS_LIST_PROCESSES = (
+    "@(Get-CimInstance Win32_Process | "
+    "Select-Object ProcessId,ParentProcessId,Name,CommandLine) | ConvertTo-Json -Compress"
+)
+_PS_LIST_PORTS = (
+    "@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
+    "Select-Object LocalPort,OwningProcess) | ConvertTo-Json -Compress"
+)
+
+
+def _run_powershell(script: str) -> str:
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout
+
+
+class WindowsBackend:
+    def list_processes(self) -> list[ProcessInfo]:
+        return parse_processes_json(_run_powershell(_PS_LIST_PROCESSES))
+
+    def list_listening_ports(self) -> dict[int, list[int]]:
+        return parse_ports_json(_run_powershell(_PS_LIST_PORTS))
+
+    def graceful_kill(self, pid: int) -> None:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T"], capture_output=True, check=False)
+
+    def force_kill(self, pid: int) -> None:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False
+        )
+
+    def is_alive(self, pid: int) -> bool:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return str(pid) in result.stdout
