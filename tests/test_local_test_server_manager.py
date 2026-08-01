@@ -3,12 +3,15 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from local_test_server_manager import (
+    Instance,
     ProcessInfo,
     WindowsBackend,
     build_instances,
     is_test_server_cmdline,
+    kill_instance,
     parse_ports_json,
     parse_processes_json,
+    resolve_selector,
 )
 
 
@@ -171,3 +174,78 @@ def test_list_listening_ports_parses_powershell_output():
     with patch("local_test_server_manager.subprocess.run", return_value=fake_result):
         result = backend.list_listening_ports()
     assert result == {200: [3000]}
+
+
+class FakeBackend:
+    def __init__(self, alive_after_graceful: bool = False):
+        self.alive_after_graceful = alive_after_graceful
+        self.graceful_calls: list[int] = []
+        self.force_calls: list[int] = []
+        self._forced: set[int] = set()
+
+    def list_processes(self):
+        return []
+
+    def list_listening_ports(self):
+        return {}
+
+    def graceful_kill(self, pid: int) -> None:
+        self.graceful_calls.append(pid)
+
+    def force_kill(self, pid: int) -> None:
+        self.force_calls.append(pid)
+        self._forced.add(pid)
+
+    def is_alive(self, pid: int) -> bool:
+        if pid in self._forced:
+            return False
+        return self.alive_after_graceful
+
+
+def test_kill_instance_stops_after_graceful_when_process_exits():
+    backend = FakeBackend(alive_after_graceful=False)
+    instance = Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve .")
+
+    result = kill_instance(backend, instance, wait_seconds=0)
+
+    assert result is True
+    assert backend.graceful_calls == [200]
+    assert backend.force_calls == []
+
+
+def test_kill_instance_escalates_to_force_when_still_alive():
+    backend = FakeBackend(alive_after_graceful=True)
+    instance = Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve .")
+
+    result = kill_instance(backend, instance, wait_seconds=0)
+
+    assert result is True
+    assert backend.graceful_calls == [200]
+    assert backend.force_calls == [200]
+
+
+def _sample_instances() -> list[Instance]:
+    return [
+        Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve ."),
+        Instance(id=2, root_pid=400, pids=(400,), ports=(8000,), cmdline="python -m http.server 8000"),
+    ]
+
+
+def test_resolve_selector_by_id():
+    instances = _sample_instances()
+    assert resolve_selector(instances, "1") == [instances[0]]
+
+
+def test_resolve_selector_by_port():
+    instances = _sample_instances()
+    assert resolve_selector(instances, "8000") == [instances[1]]
+
+
+def test_resolve_selector_all():
+    instances = _sample_instances()
+    assert resolve_selector(instances, "all") == instances
+
+
+def test_resolve_selector_unknown_returns_empty():
+    instances = _sample_instances()
+    assert resolve_selector(instances, "999") == []

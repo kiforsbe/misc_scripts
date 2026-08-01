@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import platform
 import re
 import subprocess
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
@@ -181,3 +183,34 @@ class WindowsBackend:
             check=False,
         )
         return str(pid) in result.stdout
+
+
+def get_backend() -> Backend:
+    if platform.system() != "Windows":
+        raise SystemExit("local_test_server_manager currently only supports Windows.")
+    return WindowsBackend()
+
+
+def kill_instance(backend: Backend, instance: Instance, wait_seconds: float = 2.0) -> bool:
+    backend.graceful_kill(instance.root_pid)
+    time.sleep(wait_seconds)
+    if backend.is_alive(instance.root_pid):
+        backend.force_kill(instance.root_pid)
+        time.sleep(0.5)
+    return not backend.is_alive(instance.root_pid)
+
+
+def resolve_selector(instances: list[Instance], selector: str) -> list[Instance]:
+    if selector.lower() == "all":
+        return list(instances)
+    try:
+        value = int(selector)
+    except ValueError:
+        return []
+    by_id = {inst.id: inst for inst in instances}
+    if value in by_id:
+        return [by_id[value]]
+    for inst in instances:
+        if value in inst.ports:
+            return [inst]
+    return []
