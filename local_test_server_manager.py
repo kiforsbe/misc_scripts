@@ -11,6 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
 
+import inquirer
 from rich.console import Console
 from rich.table import Table
 
@@ -270,6 +271,43 @@ def cmd_kill(args: argparse.Namespace, backend: Backend, console: Console) -> in
     return exit_code
 
 
+def interactive_mode(backend: Backend, console: Console) -> int:
+    instances = discover_instances(backend)
+    if not instances:
+        console.print("No local test servers detected.")
+        return 0
+
+    console.print(render_instances_table(instances))
+
+    choices = [
+        (
+            f"#{inst.id}  port {', '.join(str(p) for p in inst.ports) or '-'}  {inst.cmdline}",
+            inst,
+        )
+        for inst in instances
+    ]
+    questions = [
+        inquirer.Checkbox(
+            "selected",
+            message="Select servers to stop (space to toggle, enter to confirm)",
+            choices=choices,
+        )
+    ]
+    answers = inquirer.prompt(questions)
+    if not answers or not answers["selected"]:
+        console.print("No servers selected. Exiting.")
+        return 0
+
+    exit_code = 0
+    for inst in answers["selected"]:
+        stopped = kill_instance(backend, inst)
+        status = "stopped" if stopped else "FAILED to stop"
+        console.print(f"#{inst.id} (PID {inst.root_pid}): {status}")
+        if not stopped:
+            exit_code = 1
+    return exit_code
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="List and stop local test HTTP servers.")
     subparsers = parser.add_subparsers(dest="command")
@@ -293,8 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list(args, backend, console)
     if args.command == "kill":
         return cmd_kill(args, backend, console)
-    parser.print_help()
-    return 1
+    return interactive_mode(backend, console)
 
 
 if __name__ == "__main__":

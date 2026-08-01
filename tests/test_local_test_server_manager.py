@@ -15,6 +15,7 @@ from local_test_server_manager import (
     build_instances,
     cmd_kill,
     cmd_list,
+    interactive_mode,
     is_test_server_cmdline,
     kill_instance,
     parse_ports_json,
@@ -342,3 +343,44 @@ def test_cmd_kill_reports_error_for_unknown_selector():
 
     assert exit_code == 1
     assert "No matching" in console.file.getvalue()
+
+
+def test_interactive_mode_stops_selected_instances(monkeypatch):
+    instance = Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve .")
+    backend = FakeBackend(alive_after_graceful=False)
+    monkeypatch.setattr("local_test_server_manager.discover_instances", lambda b: [instance])
+    monkeypatch.setattr(
+        "local_test_server_manager.inquirer.prompt",
+        lambda questions: {"selected": [instance]},
+    )
+    console = Console(file=io.StringIO(), width=100)
+
+    exit_code = interactive_mode(backend, console)
+
+    assert exit_code == 0
+    assert backend.graceful_calls == [200]
+
+
+def test_interactive_mode_exits_when_nothing_selected(monkeypatch):
+    instance = Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve .")
+    backend = FakeBackend()
+    monkeypatch.setattr("local_test_server_manager.discover_instances", lambda b: [instance])
+    monkeypatch.setattr(
+        "local_test_server_manager.inquirer.prompt",
+        lambda questions: {"selected": []},
+    )
+    console = Console(file=io.StringIO(), width=100)
+
+    exit_code = interactive_mode(backend, console)
+
+    assert exit_code == 0
+    assert backend.graceful_calls == []
+
+
+def test_interactive_mode_reports_when_nothing_detected():
+    console = Console(file=io.StringIO(), width=100)
+
+    exit_code = interactive_mode(FakeBackend(), console)
+
+    assert exit_code == 0
+    assert "No local test servers" in console.file.getvalue()
