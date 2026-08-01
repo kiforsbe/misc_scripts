@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -86,3 +87,42 @@ def build_instances(
             )
         )
     return instances
+
+
+def parse_processes_json(raw: str) -> list[ProcessInfo]:
+    if not raw or not raw.strip():
+        return []
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        data = [data]
+    processes: list[ProcessInfo] = []
+    for item in data:
+        pid = item.get("ProcessId")
+        if pid is None:
+            continue
+        ppid = item.get("ParentProcessId")
+        processes.append(
+            ProcessInfo(
+                pid=int(pid),
+                ppid=int(ppid) if ppid is not None else None,
+                name=item.get("Name") or "",
+                cmdline=item.get("CommandLine") or "",
+            )
+        )
+    return processes
+
+
+def parse_ports_json(raw: str) -> dict[int, list[int]]:
+    if not raw or not raw.strip():
+        return {}
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        data = [data]
+    port_map: dict[int, list[int]] = {}
+    for item in data:
+        pid = item.get("OwningProcess")
+        port = item.get("LocalPort")
+        if pid is None or port is None:
+            continue
+        port_map.setdefault(int(pid), []).append(int(port))
+    return port_map

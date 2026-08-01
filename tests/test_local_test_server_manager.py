@@ -4,6 +4,8 @@ from local_test_server_manager import (
     ProcessInfo,
     build_instances,
     is_test_server_cmdline,
+    parse_ports_json,
+    parse_processes_json,
 )
 
 
@@ -76,3 +78,42 @@ def test_build_instances_handles_self_referential_ppid():
         ProcessInfo(pid=0, ppid=0, name="System Idle Process", cmdline=""),
     ]
     assert build_instances(processes, {}) == []
+
+
+def test_parse_processes_json_handles_array():
+    raw = '[{"ProcessId":1,"ParentProcessId":0,"Name":"a.exe","CommandLine":"a.exe"}]'
+    assert parse_processes_json(raw) == [
+        ProcessInfo(pid=1, ppid=0, name="a.exe", cmdline="a.exe")
+    ]
+
+
+def test_parse_processes_json_handles_single_object():
+    raw = '{"ProcessId":1,"ParentProcessId":0,"Name":"a.exe","CommandLine":"a.exe"}'
+    assert parse_processes_json(raw) == [
+        ProcessInfo(pid=1, ppid=0, name="a.exe", cmdline="a.exe")
+    ]
+
+
+def test_parse_processes_json_handles_null_commandline():
+    raw = '{"ProcessId":4,"ParentProcessId":0,"Name":"System","CommandLine":null}'
+    assert parse_processes_json(raw) == [
+        ProcessInfo(pid=4, ppid=0, name="System", cmdline="")
+    ]
+
+
+def test_parse_processes_json_handles_empty_input():
+    assert parse_processes_json("") == []
+
+
+def test_parse_ports_json_groups_multiple_ports_per_pid():
+    raw = '[{"LocalPort":3000,"OwningProcess":200},{"LocalPort":3001,"OwningProcess":200}]'
+    assert parse_ports_json(raw) == {200: [3000, 3001]}
+
+
+def test_parse_ports_json_handles_single_object():
+    raw = '{"LocalPort":3000,"OwningProcess":200}'
+    assert parse_ports_json(raw) == {200: [3000]}
+
+
+def test_parse_ports_json_handles_empty_input():
+    assert parse_ports_json("") == {}
