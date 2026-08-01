@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import argparse
+import io
 from unittest.mock import MagicMock, patch
 
+from rich.console import Console
+
+import local_test_server_manager as mod
 from local_test_server_manager import (
     Instance,
     ProcessInfo,
     WindowsBackend,
+    build_arg_parser,
     build_instances,
+    cmd_kill,
+    cmd_list,
     is_test_server_cmdline,
     kill_instance,
     parse_ports_json,
     parse_processes_json,
+    render_instances_table,
     resolve_selector,
 )
 
@@ -249,3 +258,87 @@ def test_resolve_selector_all():
 def test_resolve_selector_unknown_returns_empty():
     instances = _sample_instances()
     assert resolve_selector(instances, "999") == []
+
+
+def test_build_arg_parser_defaults_command_to_none():
+    parser = build_arg_parser()
+    args = parser.parse_args([])
+    assert args.command is None
+
+
+def test_build_arg_parser_parses_kill_with_yes_flag():
+    parser = build_arg_parser()
+    args = parser.parse_args(["kill", "1", "-y"])
+    assert args.command == "kill"
+    assert args.selector == "1"
+    assert args.yes is True
+
+
+def test_build_arg_parser_kill_defaults_yes_to_false():
+    parser = build_arg_parser()
+    args = parser.parse_args(["kill", "8000"])
+    assert args.yes is False
+
+
+def test_render_instances_table_includes_port_and_command():
+    instances = [Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve .")]
+    table = render_instances_table(instances)
+    console = Console(file=io.StringIO(), width=100)
+    console.print(table)
+    output = console.file.getvalue()
+    assert "3000" in output
+    assert "npx serve ." in output
+
+
+def test_cmd_list_reports_when_nothing_detected():
+    empty_backend = FakeBackend()
+    console = Console(file=io.StringIO(), width=100)
+
+    exit_code = cmd_list(argparse.Namespace(), empty_backend, console)
+
+    assert exit_code == 0
+    assert "No local test servers" in console.file.getvalue()
+
+
+def test_cmd_kill_aborts_without_confirmation(monkeypatch):
+    instance = Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve .")
+    backend = FakeBackend()
+    monkeypatch.setattr("local_test_server_manager.discover_instances", lambda b: [instance])
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    console = Console(file=io.StringIO(), width=100)
+
+    exit_code = cmd_kill(argparse.Namespace(selector="1", yes=False), backend, console)
+
+    assert exit_code == 1
+    assert backend.graceful_calls == []
+
+
+def test_cmd_kill_with_yes_skips_confirmation_and_kills():
+    instance = Instance(id=1, root_pid=200, pids=(200,), ports=(3000,), cmdline="npx serve .")
+    backend = FakeBackend(alive_after_graceful=False)
+    console = Console(file=io.StringIO(), width=100)
+
+    original = mod.discover_instances
+    mod.discover_instances = lambda b: [instance]
+    try:
+        exit_code = cmd_kill(argparse.Namespace(selector="1", yes=True), backend, console)
+    finally:
+        mod.discover_instances = original
+
+    assert exit_code == 0
+    assert backend.graceful_calls == [200]
+
+
+def test_cmd_kill_reports_error_for_unknown_selector():
+    backend = FakeBackend()
+    console = Console(file=io.StringIO(), width=100)
+
+    original = mod.discover_instances
+    mod.discover_instances = lambda b: []
+    try:
+        exit_code = cmd_kill(argparse.Namespace(selector="999", yes=True), backend, console)
+    finally:
+        mod.discover_instances = original
+
+    assert exit_code == 1
+    assert "No matching" in console.file.getvalue()

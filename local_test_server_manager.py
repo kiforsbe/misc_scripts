@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import argparse
 import json
 import platform
 import re
 import subprocess
+import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
+
+from rich.console import Console
+from rich.table import Table
 
 
 @dataclass(frozen=True)
@@ -214,3 +219,83 @@ def resolve_selector(instances: list[Instance], selector: str) -> list[Instance]
         if value in inst.ports:
             return [inst]
     return []
+
+
+def discover_instances(backend: Backend) -> list[Instance]:
+    processes = backend.list_processes()
+    port_map = backend.list_listening_ports()
+    return build_instances(processes, port_map)
+
+
+def render_instances_table(instances: list[Instance]) -> Table:
+    table = Table(title="Local test servers")
+    table.add_column("Id", justify="right")
+    table.add_column("PID", justify="right")
+    table.add_column("Port(s)")
+    table.add_column("Command")
+    for inst in instances:
+        ports = ", ".join(str(p) for p in inst.ports) if inst.ports else "-"
+        table.add_row(str(inst.id), str(inst.root_pid), ports, inst.cmdline)
+    return table
+
+
+def cmd_list(args: argparse.Namespace, backend: Backend, console: Console) -> int:
+    instances = discover_instances(backend)
+    if not instances:
+        console.print("No local test servers detected.")
+        return 0
+    console.print(render_instances_table(instances))
+    return 0
+
+
+def cmd_kill(args: argparse.Namespace, backend: Backend, console: Console) -> int:
+    instances = discover_instances(backend)
+    targets = resolve_selector(instances, args.selector)
+    if not targets:
+        console.print(f"No matching test server for '{args.selector}'.")
+        return 1
+    if not args.yes:
+        names = ", ".join(f"#{t.id} ({t.cmdline})" for t in targets)
+        confirm = input(f"Stop {len(targets)} server(s): {names}? [y/N] ").strip().lower()
+        if confirm != "y":
+            console.print("Aborted.")
+            return 1
+    exit_code = 0
+    for inst in targets:
+        stopped = kill_instance(backend, inst)
+        status = "stopped" if stopped else "FAILED to stop"
+        console.print(f"#{inst.id} (PID {inst.root_pid}): {status}")
+        if not stopped:
+            exit_code = 1
+    return exit_code
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="List and stop local test HTTP servers.")
+    subparsers = parser.add_subparsers(dest="command")
+
+    subparsers.add_parser("list", help="List detected test servers.")
+
+    kill_parser = subparsers.add_parser("kill", help="Stop one or more test servers.")
+    kill_parser.add_argument("selector", help="Instance id, port number, or 'all'.")
+    kill_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation.")
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    backend = get_backend()
+    console = Console()
+
+    if args.command == "list":
+        return cmd_list(args, backend, console)
+    if args.command == "kill":
+        return cmd_kill(args, backend, console)
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
