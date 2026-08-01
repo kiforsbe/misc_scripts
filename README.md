@@ -39,6 +39,7 @@ Miscellaneous scripts to automate common tasks.
     - [latest_episodes_viewer.py](#latest_episodes_viewerpy): Generates an HTML page listing the latest episodes in a collection.
   - Local Tooling & Automation
     - [ollama_tool_agent.py](#ollama_tool_agentpy): Approval-gated local Ollama tool agent with streamed reasoning, persistent task state, and file tools.
+    - [local_test_server_manager.py](#local_test_server_managerpy): Lists and cleanly stops locally running test HTTP servers (npx, http.server, vite, etc.).
   - Web Services, Networking & Downloads
     - [simple_scraper_proxy.py](#simple_scraper_proxypy): Fetches pages with YAML selectors and returns scraped RSS feeds.
     - [m3u8-to-mp4-flask-webservice.py](#m3u8-to-mp4-flask-webservicepy): Flask service that inspects and converts M3U8 streams to MP4.
@@ -495,6 +496,37 @@ python ollama_tool_agent.py --model gemma4:e2b --num-ctx 65536 "Compute CRC32 fo
 - httpx
 - colorama
 - tqdm
+
+### local_test_server_manager.py
+A Windows-only utility that finds locally running test HTTP servers (`npx serve`/`http-server`, `python -m http.server`, `vite preview`, `php -S`, etc.) and lets you stop them cleanly without touching unrelated local processes. Detects servers by matching process command lines against a known pattern list, groups wrapper and child processes (e.g. `npx` and the `node` process it spawns) into a single instance, and shows the port(s) each one is listening on.
+
+#### Features
+- Lists detected test servers with id, PID, port(s), and command line via a `rich` table
+- Stops one, several, or all detected servers by id, port, or `all`
+- No-argument interactive mode with an `inquirer` checkbox menu for picking which servers to stop
+- Graceful shutdown first (`taskkill /T`), escalating to a forced whole-tree kill only if the process is still alive after a short wait
+- Only ever acts on processes whose command line matched a known test-server pattern; never lists or touches arbitrary local servers
+
+#### Usage Examples
+```bash
+# List detected test servers
+python local_test_server_manager.py list
+
+# Stop a specific instance by id or port
+python local_test_server_manager.py kill 1
+python local_test_server_manager.py kill 8080
+
+# Stop everything detected, skipping the confirmation prompt
+python local_test_server_manager.py kill all -y
+
+# No arguments: interactive checkbox menu
+python local_test_server_manager.py
+```
+
+#### Requires
+Windows 10 or Windows 11 (uses PowerShell and `taskkill`/`tasklist`).
+- rich
+- inquirer
 
 ### simple_scraper_proxy.py
 A standalone scraping proxy that fetches an upstream HTML page, extracts feed data using a local YAML selector template, and returns an RSS 2.0 feed.
