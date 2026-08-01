@@ -28,12 +28,25 @@ The tool supports the following primary commands:
 - **`transfer-playlists`**: Migrates entire playlists between two databases using filename-based item matching.
     - Supports conflict policies: `unique`, `merge`, `replace`, `skip`.
     - Uses a confidence-based duplicate resolution system for items sharing the same basename.
+- **`recover-database`**: Rebuilds a malformed Plex SQLite library database into a clean copy.
+    - Also supports a read-only `--check-episode-date-added` audit mode that inspects whether file-backed `metadata_items.added_at` values drift too far from the underlying file timestamps.
+    - Supports `--apply-episode-date-added-fix --in-place` to back up the source DB and repair flagged `added_at` rows in place using the closest file creation or modified time.
 
 **Basic Usage:**
 ```bash
 python -m plex_db_tool.main <command> [args]
 ```
 *Note: Replace `<command>` with any of the commands listed above.*
+
+**Episode Date Added Audit Example:**
+```bash
+python -m plex_db_tool.main recover-database --path "C:\Users\you\AppData\Local\Plex Media Server" --check-episode-date-added --episode-date-added-max-drift-hours 24
+```
+
+**Date Added Repair Example:**
+```bash
+python -m plex_db_tool.main recover-database --path "C:\Users\you\AppData\Local\Plex Media Server" --in-place --apply-episode-date-added-fix --episode-date-added-max-drift-hours 24
+```
 
 
 ---

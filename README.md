@@ -122,6 +122,7 @@ The main entrypoint is the root shim `plex_db_tool.py`, which forwards into the 
 
 #### Features
 - `transfer-watch-status`, `transfer-playlists`, `sync-metadata-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
+- `recover-database` for rebuilding malformed Plex library databases, plus a file-backed `Date Added` audit/repair mode that checks drift against file timestamps and can repair flagged rows in place after making a backup
 - Accepts source and target locations instead of requiring the full DB filename path
 - Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
 - Exact basename matching only; no partial filename matching
@@ -198,6 +199,12 @@ python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.js
 
 # Export a compact table report with custom columns
 python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --console-format table --columns target_playlist,status,matched_item_count,unmatched_item_count,notes --report .\sync-playlists.txt --report-format table
+
+# Audit episode Date Added drift against file timestamps without modifying the DB
+python plex_db_tool.py recover-database --path "C:\Users\you\AppData\Local\Plex Media Server" --check-episode-date-added --episode-date-added-max-drift-hours 24
+
+# Back up the source DB and repair flagged Date Added rows in place
+python plex_db_tool.py recover-database --path "C:\Users\you\AppData\Local\Plex Media Server" --in-place --apply-episode-date-added-fix --episode-date-added-max-drift-hours 24
 
 # Omit required transfer values to use the interactive workflow
 python plex_db_tool.py transfer-watch-status
