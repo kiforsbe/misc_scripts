@@ -198,7 +198,10 @@
     try {
       const u = new URL(url, window.location.origin);
       const host = (u.hostname || '').toLowerCase();
-      if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+      if (
+        host === 'youtube.com' || host === 'youtube-nocookie.com' ||
+        host.endsWith('.youtube.com') || host.endsWith('.youtube-nocookie.com')
+      ) {
         const qv = u.searchParams.get('v');
         if (qv) return qv;
         if (u.pathname.startsWith('/embed/')) {
@@ -487,7 +490,10 @@
     try {
       const u = new URL(url, window.location.origin);
       const host = (u.hostname || '').toLowerCase();
-      if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+      if (
+        host === 'youtube.com' || host === 'youtube-nocookie.com' ||
+        host.endsWith('.youtube.com') || host.endsWith('.youtube-nocookie.com')
+      ) {
         if (u.searchParams.get('v')) return true;
         if (u.pathname.startsWith('/embed/')) return true;
         return false;
@@ -867,14 +873,6 @@
     // Don't fetch if already fetching or if data is cached
     if (isFetchingFormats || formatDataCache) {
       console.log("Skipping format fetch (already fetching or cached).");
-      return;
-    }
-
-    // Validate URL is a single video URL
-    if (!isVideoUrlJS(url)) {
-      console.warn('fetchFormats called with non-video URL:', url);
-      if (dropdownMenu) showDropdownError(dropdownMenu, 'Only individual YouTube video URLs are supported.');
-      formatFetchError = 'Only individual YouTube video URLs are supported.';
       return;
     }
 

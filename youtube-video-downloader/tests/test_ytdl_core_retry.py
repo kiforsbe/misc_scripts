@@ -13,6 +13,7 @@ import asyncio
 import pathlib
 import sys
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -176,6 +177,37 @@ def test_download_item_stops_retrying_once_cancelled_between_attempts(tmp_path, 
             )
 
     assert calls["n"] == 1, "must not retry once cancellation has been requested"
+
+
+def test_download_item_retry_wait_is_interruptible_by_cancel(tmp_path, monkeypatch):
+    """Cancelling during the inter-retry backoff must not wait out the
+    full delay before noticing."""
+    monkeypatch.setattr(ytdl_core, "DOWNLOAD_RETRY_ATTEMPTS", 3)
+    monkeypatch.setattr(ytdl_core, "DOWNLOAD_RETRY_DELAY_SECONDS", 5.0)
+    cancel_event = threading.Event()
+    calls = {"n": 0}
+
+    def download_impl(opts):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            threading.Timer(0.05, cancel_event.set).start()
+        raise yt_dlp.utils.DownloadError(
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        )
+
+    item = _make_audio_item()
+    start = time.monotonic()
+    with patch("ytdl_helper.core.check_ffmpeg", return_value="C:/fake/ffmpeg.exe"), patch(
+        "yt_dlp.YoutubeDL", _make_fake_youtube_dl(download_impl)
+    ):
+        with pytest.raises(yt_dlp.utils.DownloadError):
+            asyncio.run(
+                ytdl_core.download_item(item, output_dir=tmp_path, cancel_event=cancel_event)
+            )
+    elapsed = time.monotonic() - start
+
+    assert calls["n"] == 1, "must not retry once cancellation fired during the backoff wait"
+    assert elapsed < 2.0, f"cancel during backoff took {elapsed:.2f}s, expected well under the 5s delay"
 
 
 def test_download_item_retry_disabled_via_zero_attempts(tmp_path, monkeypatch):

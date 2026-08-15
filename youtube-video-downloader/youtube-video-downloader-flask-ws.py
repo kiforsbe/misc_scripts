@@ -68,6 +68,7 @@ except ImportError:
 
 # --- Flask App and Logging Setup ---
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MiB - form/JSON bodies only, never file uploads
 
 # Allow Tampermonkey (https) to call local Flask (http) by adding CORS headers.
 # Keep this permissive for local-only usage.

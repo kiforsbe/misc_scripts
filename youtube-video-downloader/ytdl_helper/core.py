@@ -890,7 +890,16 @@ async def download_item(
                             # it doesn't look like the download silently
                             # stalled while waiting to retry.
                             _update_status("Downloading", retry_msg)
-                            await asyncio.sleep(delay)
+                            if cancel_event is not None:
+                                # threading.Event.wait is blocking, not a
+                                # coroutine - run it in the executor so a
+                                # cancel fires immediately instead of
+                                # waiting out the rest of the backoff.
+                                await loop.run_in_executor(None, cancel_event.wait, delay)
+                                if cancel_event.is_set():
+                                    raise
+                            else:
+                                await asyncio.sleep(delay)
                             attempt += 1
 
             # --- Post-Download Processing (Finding and Moving) ---
