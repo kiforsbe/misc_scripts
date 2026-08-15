@@ -156,6 +156,20 @@ def delayed_delete():
             time.sleep(60)
 
 
+# --- In-Flight Download Deduplication ---
+# Prevents a client retry (e.g. after its own request timed out while the
+# server kept downloading) from kicking off a duplicate download of a video
+# that is already being downloaded. Concurrent requests for the same item
+# (same URL + same requested formats/target) wait for the in-progress
+# download to finish and then reuse its result via the existing-file check
+# in download_item(), instead of starting a second parallel download.
+DOWNLOAD_WAIT_TIMEOUT_SECONDS = float(
+    os.environ.get("YTDL_DOWNLOAD_WAIT_TIMEOUT_SECONDS", "1800")
+)
+_active_downloads: dict = {}
+_active_downloads_lock = threading.Lock()
+
+
 # --- Check for FFmpeg ---
 FFMPEG_PATH = None
 try:
@@ -407,6 +421,90 @@ async def _process_download(
         )
 
 
+def _run_download_deduped(
+    url: str,
+    audio_format_id: str | None,
+    video_format_id: str | None,
+    target_format: str | None,
+    target_audio_params: str | None,
+    target_video_params: str | None,
+    progress_hook=None,
+) -> pathlib.Path:
+    """
+    Runs _process_download for this request, but if an identical request
+    (same URL and same requested formats/target) is already downloading on
+    another thread, waits for it to finish and reuses its result instead of
+    starting a duplicate download. Only the first ("owner") caller for a
+    given dedup key actually invokes _process_download; every other caller
+    that arrives while it is in flight blocks on the owner's completion and
+    then returns (or re-raises) exactly what the owner produced.
+    """
+    dedup_key = (
+        ytdl_core.clean_youtube_url(url),
+        audio_format_id,
+        video_format_id,
+        target_format,
+        target_audio_params,
+        target_video_params,
+    )
+
+    with _active_downloads_lock:
+        entry = _active_downloads.get(dedup_key)
+        is_owner = entry is None
+        if is_owner:
+            entry = {"event": threading.Event(), "result": None, "error": None}
+            _active_downloads[dedup_key] = entry
+
+    if not is_owner:
+        log.info(
+            f"Download already in progress for {dedup_key}; "
+            "waiting for it to finish instead of starting a duplicate."
+        )
+        if progress_hook:
+            progress_hook(10, "Waiting for an in-progress download of this item to finish")
+        if entry["event"].wait(timeout=DOWNLOAD_WAIT_TIMEOUT_SECONDS):
+            if entry["error"] is not None:
+                raise entry["error"]
+            return entry["result"]
+        log.warning(
+            f"Timed out waiting for in-progress download {dedup_key}; "
+            "attempting our own download."
+        )
+        return asyncio.run(
+            _process_download(
+                url,
+                audio_format_id,
+                video_format_id,
+                target_format,
+                target_audio_params,
+                target_video_params,
+                progress_hook=progress_hook,
+            )
+        )
+
+    try:
+        result = asyncio.run(
+            _process_download(
+                url,
+                audio_format_id,
+                video_format_id,
+                target_format,
+                target_audio_params,
+                target_video_params,
+                progress_hook=progress_hook,
+            )
+        )
+        entry["result"] = result
+        return result
+    except Exception as e:
+        entry["error"] = e
+        raise
+    finally:
+        with _active_downloads_lock:
+            _active_downloads.pop(dedup_key, None)
+        entry["event"].set()
+
+
 # --- Flask Routes ---
 @app.route("/", methods=["GET"])
 def index():
@@ -555,16 +653,14 @@ def download():
             f"Processing download request for URL: {url} (A_ID: {audio_format_id}, V_ID: {video_format_id}, Target: {target_format}), TargetAudioParams: {target_audio_params}), TargetVideoParams: {target_video_params})"
         )
         progress_hook(10, "Download task started")
-        final_filepath = asyncio.run(
-            _process_download(
-                url,
-                audio_format_id,
-                video_format_id,
-                target_format,
-                target_audio_params,
-                target_video_params,
-                progress_hook=progress_hook,
-            )
+        final_filepath = _run_download_deduped(
+            url,
+            audio_format_id,
+            video_format_id,
+            target_format,
+            target_audio_params,
+            target_video_params,
+            progress_hook=progress_hook,
         )
 
         if final_filepath and final_filepath.exists():
