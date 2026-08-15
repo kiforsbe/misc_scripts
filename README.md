@@ -436,16 +436,16 @@ Features
 Usage examples
 ```bash
 # Random 12-char password (mixed case, digits)
-python password_generator.py --length 12
+python password_generator/password_generator.py --length 12
 
 # Pronounceable password using 4 syllables
-python password_generator.py --mode pronounceable --pronounceable-syllables 4 --length 12
+python password_generator/password_generator.py --mode pronounceable --pronounceable-syllables 4 --length 12
 
 # Diceware using bundled builtin wordlist (3 words)
-python password_generator.py --mode diceware --wordlist builtin --dice-words 3
+python password_generator/password_generator.py --mode diceware --wordlist builtin --dice-words 3
 
 # Install the recommended EFF wordlist for diceware mode
-python password_generator.py --install-wordlist
+python password_generator/password_generator.py --install-wordlist
 ``` 
 
 
@@ -541,7 +541,7 @@ A standalone scraping proxy that fetches an upstream HTML page, extracts feed da
 #### Usage Examples
 ```bash
 # Start the scraper proxy
-python simple_scraper_proxy.py --port 8081
+python simple_scraper_proxy/simple_scraper_proxy.py --port 8081
 
 # Request RSS using the bundled Nyaa template
 http://localhost:8081/?url=<url>&template=nyaa_rss
@@ -620,25 +620,25 @@ A smart directory explorer for querying files and folders with composable filter
 #### Usage Examples
 ```bash
 # All directories with no files anywhere below them
-python smartls.py --type d --files =0 --long
+python smartls/smartls.py --type d --files =0 --long
 
 # Directories with 1 to 3 recursive files, sorted by total size descending
-python smartls.py --type d --files 1..3 --sort -size --stats
+python smartls/smartls.py --type d --files 1..3 --sort -size --stats
 
 # Large files modified within the last week
-python smartls.py --type f --size >=50MB --mtime <7d --flat
+python smartls/smartls.py --type f --size >=50MB --mtime <7d --flat
 
 # Python and JavaScript files excluding test names
-python smartls.py ./src --ext py,js --not --name "*test*" --long
+python smartls/smartls.py ./src --ext py,js --not --name "*test*" --long
 
 # Export matching directories to JSON
-python smartls.py --type d --files =0 --json
+python smartls/smartls.py --type d --files =0 --json
 
 # Render console output in aligned columns like the web report
-python smartls.py --type f --flat --columns type,size,modified,relative-path --bytes
+python smartls/smartls.py --type f --flat --columns type,size,modified,relative-path --bytes
 
 # Export a self-contained HTML report
-python smartls.py --type f --size >=10MB --export-html smartls-report.html
+python smartls/smartls.py --type f --size >=10MB --export-html smartls-report.html
 ```
 
 #### Notes
@@ -729,13 +729,13 @@ Reads a Netflix viewing history CSV, classifies entries as movies or series epis
 
 #### Usage Examples
 ```bash
-python netflix_watch_status.py path/to/NetflixViewingHistory.csv
-python netflix_watch_status.py path/to/NetflixViewingHistory.csv --json
-python netflix_watch_status.py path/to/NetflixViewingHistory.csv --table
-python netflix_watch_status.py path/to/NetflixViewingHistory.csv --table --columns title,year,episode,views,average_rating
-python netflix_watch_status.py path/to/NetflixViewingHistory.csv --webapp-export netflix-watch-status.html
-python netflix_watch_status.py path/to/NetflixViewingHistory.csv --episode-title-overrides my_overrides.csv
-python netflix_watch_status.py path/to/NetflixViewingHistory.csv --no-metadata
+python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv
+python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --json
+python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --table
+python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --table --columns title,year,episode,views,average_rating
+python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --webapp-export netflix-watch-status.html
+python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --episode-title-overrides my_overrides.csv
+python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --no-metadata
 ```
 
 ### srt_to_transcript.py
@@ -855,34 +855,34 @@ A comprehensive tool for extracting metadata from files and folders with support
 #### Usage Examples
 ```bash
 # Basic scan of current directory (exports to ./metadata/)
-python file_metadata_scanner.py .
+python file_metadata_scanner/file_metadata_scanner.py .
 
 # Recursive scan with custom export location
-python file_metadata_scanner.py /path/to/folder -r --export-bundle /output/location
+python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --export-bundle /output/location
 
 # Scan only video files with extended metadata and thumbnails
-python file_metadata_scanner.py /path/to/videos -r -e mp4,mkv,avi --extended --thumbnails
+python file_metadata_scanner/file_metadata_scanner.py /path/to/videos -r -e mp4,mkv,avi --extended --thumbnails
 
 # Exclude specific paths (node_modules, cache directories, etc.)
-python file_metadata_scanner.py /path/to/folder -r --exclude node_modules,__pycache__,.git
+python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --exclude node_modules,__pycache__,.git
 
 # Full scan with all features and custom export location
-python file_metadata_scanner.py /path/to/media -r --extended --thumbnails --export-bundle C:\MyMetadata
+python file_metadata_scanner/file_metadata_scanner.py /path/to/media -r --extended --thumbnails --export-bundle C:\MyMetadata
 
 # Skip slow CBR processing, only process CBZ comic archives
-python file_metadata_scanner.py /path/to/comics -r --extended --skip-cbr
+python file_metadata_scanner/file_metadata_scanner.py /path/to/comics -r --extended --skip-cbr
 
 # Set minimum video duration for thumbnail generation (e.g., 10 minutes)
-python file_metadata_scanner.py /path/to/videos -r --thumbnails --min-duration 600
+python file_metadata_scanner/file_metadata_scanner.py /path/to/videos -r --thumbnails --min-duration 600
 
 # Regenerate webapp from existing metadata bundle
-python file_metadata_scanner.py --regenerate-bundle /path/to/bundle
+python file_metadata_scanner/file_metadata_scanner.py --regenerate-bundle /path/to/bundle
 
 # Regenerate webapp with missing thumbnails
-python file_metadata_scanner.py --regenerate-bundle /path/to/bundle --thumbnails
+python file_metadata_scanner/file_metadata_scanner.py --regenerate-bundle /path/to/bundle --thumbnails
 
 # Verbose logging for troubleshooting
-python file_metadata_scanner.py /path/to/folder -r --extended --log-level DEBUG
+python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --extended --log-level DEBUG
 ```
 
 #### Requires
@@ -1038,10 +1038,10 @@ The script can be used from the command line by specifying an input Markdown fil
 #### Usage (Examples)
 ```bash
 # Convert README.md to README.docx
-python md_to_docx.py README.md
+python md_to_docx/md_to_docx.py README.md
 
 # Convert with specific output filename
-python md_to_docx.py input.md output.docx
+python md_to_docx/md_to_docx.py input.md output.docx
 ```
 
 #### Features
@@ -1145,25 +1145,25 @@ The script automatically fetches additional media content from online sources an
 #### Usage (Examples)
 ```bash
 # Convert CSV to HTML with full AI analysis (recommended)
-python gog_csv_to_html.py gog_export.csv
+python gog_csv_to_html/gog_csv_to_html.py gog_export.csv
 
 # Convert with custom output filename
-python gog_csv_to_html.py gog_export.csv -o my_game_library.html
+python gog_csv_to_html/gog_csv_to_html.py gog_export.csv -o my_game_library.html
 
 # Skip media fetching for faster processing (disables AI features)
-python gog_csv_to_html.py gog_export.csv --no-media
+python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --no-media
 
 # Disable media caching
-python gog_csv_to_html.py gog_export.csv --no-cache
+python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --no-cache
 
 # Open result in browser automatically
-python gog_csv_to_html.py gog_export.csv --open
+python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --open
 
 # Show cache statistics including AI analysis data
-python gog_csv_to_html.py --cache-stats
+python gog_csv_to_html/gog_csv_to_html.py --cache-stats
 
 # Use custom Ollama host for AI analysis
-python gog_csv_to_html.py gog_export.csv --ollama-host http://192.168.1.100:11434
+python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --ollama-host http://192.168.1.100:11434
 ```
 
 #### AI Analysis Features
@@ -1196,7 +1196,7 @@ To enable the full AI analysis capabilities:
 1. **Install Ollama**: Download from [ollama.ai](https://ollama.ai)
 2. **Install deepseek-r1 model**: `ollama pull deepseek-r1`
 3. **Start Ollama server**: `ollama serve`
-4. **Run with AI features**: `python gog_csv_to_html.py your_games.csv`
+4. **Run with AI features**: `python gog_csv_to_html/gog_csv_to_html.py your_games.csv`
 
 The script will automatically detect Ollama availability and enable advanced features when the server and model are accessible.
 
@@ -1242,13 +1242,13 @@ Now features **MyAnimeList** as the primary source for anime information, provid
 #### Usage (Examples)
 ```bash
 # Check completeness of series in current directory
-python series_completeness_checker.py
+python series_completeness_checker/series_completeness_checker.py
 
 # Generate JSON report
-python series_completeness_checker.py /path/to/series --export series.json
+python series_completeness_checker/series_completeness_checker.py /path/to/series --export series.json
 
 # Generate HTML webapp
-python series_completeness_checker.py /path/to/series --webapp-export series.html
+python series_completeness_checker/series_completeness_checker.py /path/to/series --webapp-export series.html
 ```
 
 #### Requires
