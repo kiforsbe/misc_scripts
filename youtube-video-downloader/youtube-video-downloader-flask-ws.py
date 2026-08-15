@@ -335,14 +335,22 @@ async def _process_download(
         )
 
         # --- Verify result ---
+        # "Skipped" with a final_filepath that exists means download_item found the
+        # target already on disk (e.g. a retry after this client's previous request
+        # timed out while the server kept downloading) - that is success, not failure.
         if (
-            item.status == "Complete"
+            item.status in ("Complete", "Skipped")
             and item.final_filepath
             and item.final_filepath.exists()
         ):
-            log.info(
-                f"Download and processing complete. Final file: {item.final_filepath}"
-            )
+            if item.status == "Skipped":
+                log.info(
+                    f"Reusing already-downloaded file for '{item.title}': {item.final_filepath}"
+                )
+            else:
+                log.info(
+                    f"Download and processing complete. Final file: {item.final_filepath}"
+                )
             return item.final_filepath
         else:
             # This case should ideally be handled by exceptions within download_item,

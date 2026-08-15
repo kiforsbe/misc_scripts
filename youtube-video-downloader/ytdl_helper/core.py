@@ -6,6 +6,7 @@ import functools
 import logging
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 from typing import Optional, Callable, Dict, Any
@@ -101,6 +102,67 @@ def get_cookies_from_browser() -> Optional[tuple]:
     
     logger.warning("Could not access cookies from any browser. Continuing without cookies.")
     return None
+
+
+def _find_ffprobe(ffmpeg_path: str) -> Optional[str]:
+    """Locate ffprobe next to the given ffmpeg binary, falling back to PATH."""
+    ffmpeg_dir = pathlib.Path(ffmpeg_path).parent
+    candidate_name = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
+    candidate = ffmpeg_dir / candidate_name
+    if candidate.is_file():
+        return str(candidate)
+    return shutil.which("ffprobe")
+
+
+def _is_existing_download_complete(path: pathlib.Path, ffmpeg_path: str) -> bool:
+    """
+    Best-effort check that a file already sitting at `path` is a complete,
+    playable media file rather than a truncated/corrupt leftover (e.g. from a
+    crash mid-move), so it is safe to reuse instead of re-downloading.
+    """
+    try:
+        if path.stat().st_size <= 0:
+            return False
+    except OSError:
+        return False
+
+    ffprobe_path = _find_ffprobe(ffmpeg_path)
+    if not ffprobe_path:
+        logger.debug(
+            f"ffprobe not found; falling back to file-size check only for '{path}'."
+        )
+        return True  # Non-empty file is the best we can verify without ffprobe.
+
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_path,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning(f"ffprobe check failed to run for '{path}': {e}")
+        return False
+
+    if result.returncode != 0:
+        logger.warning(
+            f"ffprobe reported '{path}' as invalid/incomplete: {result.stderr.strip()}"
+        )
+        return False
+
+    try:
+        duration = float(result.stdout.strip())
+    except (TypeError, ValueError):
+        logger.warning(f"ffprobe returned no usable duration for '{path}'.")
+        return False
+
+    return duration > 0
 
 
 def clean_youtube_url(url: str) -> str:
@@ -648,14 +710,34 @@ async def download_item(
             final_filename = f"{safe_title_base}{final_extension}"
             item.final_filepath = output_dir / final_filename
 
-            # Check for existing final file *before* download
+            # Check for existing final file *before* download. This is the common
+            # path when a client retries after its own request timed out while the
+            # server was still finishing a previous download of the same item.
             if item.final_filepath.exists():
-                logger.warning(
-                    f"Output file already exists: '{item.final_filepath}'. Skipping."
-                )
-                _update_status("Skipped", "File already exists")
-                item.progress = 100  # Mark as complete visually
-                return  # Exit download process for this item
+                if _is_existing_download_complete(item.final_filepath, ffmpeg_path):
+                    logger.info(
+                        f"Output file already exists and looks complete: "
+                        f"'{item.final_filepath}'. Reusing it instead of re-downloading."
+                    )
+                    _update_status("Skipped", "File already exists")
+                    item.progress = 100  # Mark as complete visually
+                    return  # Exit download process for this item
+                else:
+                    # Incomplete/corrupt leftover from an interrupted previous attempt
+                    # (e.g. a crash mid-move). yt-dlp has no persisted partial-download
+                    # state to resume from here - each attempt downloads into a fresh
+                    # temp directory - so the only safe option is to scrub it and
+                    # start the download over.
+                    logger.warning(
+                        f"Output file already exists but is incomplete/invalid: "
+                        f"'{item.final_filepath}'. Removing stale file and re-downloading."
+                    )
+                    try:
+                        item.final_filepath.unlink()
+                    except OSError as e:
+                        logger.warning(
+                            f"Could not remove stale file '{item.final_filepath}': {e}"
+                        )
 
             # --- Execute Download ---
             _update_status("Downloading")
