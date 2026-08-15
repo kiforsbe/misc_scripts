@@ -1,4 +1,9 @@
-from netflix_title_parser import parse_netflix_title
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from common.netflix_title_parser import parse_netflix_title
 
 
 def assert_parse(raw_title, expected):
