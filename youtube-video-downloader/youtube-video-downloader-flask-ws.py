@@ -921,8 +921,27 @@ def _background_job_runner(
                 job["status"] = "cancelled"
                 job["error"] = str(e) or "Cancelled"
                 job["finished_at"] = time.time()
+    except (
+        yt_dlp.utils.DownloadError,
+        ValueError,
+        FileNotFoundError,
+        RuntimeError,
+    ) as e:
+        # _process_download/download_item already logged this with a clean,
+        # single-line message and no traceback - dumping a second full
+        # stack trace here for an already-diagnosed, expected failure type
+        # just buries the useful log line under noise.
+        log.error(f"Job {job_id} failed: {_clean_error_message(e)}")
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None and job["status"] != "cancelled":
+                job["status"] = "error"
+                job["error"] = _clean_error_message(e)
+                job["finished_at"] = time.time()
     except Exception as e:
-        log.error(f"Job {job_id} failed: {e}", exc_info=True)
+        # An exception type not already recognized/logged elsewhere - keep
+        # the traceback here since this is the only place it'll be seen.
+        log.error(f"Job {job_id} failed unexpectedly: {e}", exc_info=True)
         with _jobs_lock:
             job = _jobs.get(job_id)
             if job is not None and job["status"] != "cancelled":
@@ -931,6 +950,25 @@ def _background_job_runner(
                 job["finished_at"] = time.time()
     finally:
         cleanup_progress()
+
+
+def _clean_error_message(e: Exception) -> str:
+    """
+    Returns a client-friendly message for an exception raised during
+    download processing: yt_dlp.utils.DownloadError messages come prefixed
+    with a redundant "ERROR: " tag (already implied by the fact this is an
+    error), so that prefix is stripped while keeping the rest of the
+    message (e.g. "HTTP Error 403: Forbidden") intact. Other exception
+    types are returned as-is via str(e).
+    """
+    message = str(e)
+    if isinstance(e, yt_dlp.utils.DownloadError):
+        parts = message.split(":")
+        if len(parts) > 1:
+            stripped = ":".join(parts[1:]).strip()
+            if stripped:
+                return stripped
+    return message
 
 
 def _parse_download_request(data):
@@ -1123,23 +1161,11 @@ def download():
         RuntimeError,
         asyncio.CancelledError,
     ) as e:
-        # Handle errors raised from _process_download
+        # _process_download already logged the details with a clean
+        # message; a warning here is enough context to correlate the URL.
         error_type = type(e).__name__
-        error_detail = str(e)
-        log.warning(
-            f"Download failed for {url}. Error: {error_type}: {error_detail}"
-        )  # Already logged details in _process_download
-
-        # Sanitize yt-dlp error messages slightly for the client
-        if isinstance(e, yt_dlp.utils.DownloadError):
-            # Often contains verbose prefixes, try to get the core message
-            parts = error_detail.split(":")
-            if len(parts) > 1:
-                error_detail = ":".join(
-                    parts[1:]
-                ).strip()  # Join back in case of colons in message
-            if not error_detail:
-                error_detail = str(e)  # Fallback if split fails
+        error_detail = _clean_error_message(e)
+        log.warning(f"Download failed for {url}. Error: {error_type}: {error_detail}")
 
         status_code = (
             400 if isinstance(e, ValueError) else 500
@@ -1352,17 +1378,14 @@ def list_formats():
         }
         return jsonify(response_data)
 
-    except (yt_dlp.utils.DownloadError, ValueError, Exception) as e:
-        log.error(f"Error fetching formats for {url}: {e}", exc_info=True)
+    except (yt_dlp.utils.DownloadError, ValueError) as e:
         error_type = type(e).__name__
-        error_detail = str(e)
-        if isinstance(e, yt_dlp.utils.DownloadError):
-            parts = error_detail.split(":")
-            if len(parts) > 1:
-                error_detail = ":".join(parts[1:]).strip()
-            if not error_detail:
-                error_detail = str(e)
+        error_detail = _clean_error_message(e)
+        log.warning(f"Error fetching formats for {url}: {error_type}: {error_detail}")
         return jsonify({"error": f"{error_type}: {error_detail}"}), 500
+    except Exception as e:
+        log.error(f"Unexpected error fetching formats for {url}: {e}", exc_info=True)
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
 # --- Main Execution ---

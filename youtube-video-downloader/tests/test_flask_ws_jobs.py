@@ -191,6 +191,38 @@ def test_job_error_is_reported_via_status(mod, client):
     assert "boom" in final["error"]
 
 
+def test_download_error_reports_clean_message_without_traceback_spam(mod, client, caplog):
+    """A yt_dlp.utils.DownloadError is already logged with a clean message
+    (no traceback) inside _process_download - _background_job_runner must
+    not dump a second, redundant full stack trace for this already-
+    diagnosed failure type, and the job's error message should have the
+    "ERROR: " prefix stripped rather than being shown to the client raw."""
+    async def fake_process_download(*a, **kw):
+        raise mod.yt_dlp.utils.DownloadError(
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        )
+
+    mod._process_download = fake_process_download
+
+    with caplog.at_level("ERROR"):
+        resp = client.post("/download/start", json={"url": "https://example.com/v-403"})
+        job_id = resp.get_json()["job_id"]
+
+        final = _poll_until(
+            lambda d: d["status"] == "error",
+            lambda: client.get(f"/download/status/{job_id}").get_json(),
+        )
+
+    assert final["status"] == "error"
+    assert final["error"] == "unable to download video data: HTTP Error 403: Forbidden"
+
+    job_failed_records = [r for r in caplog.records if f"Job {job_id} failed" in r.message]
+    assert job_failed_records, "expected a 'Job ... failed' log record"
+    assert all(r.exc_info is None for r in job_failed_records), (
+        "known/already-diagnosed error types must not dump a redundant traceback"
+    )
+
+
 # --- Explicit cancel ---
 
 
