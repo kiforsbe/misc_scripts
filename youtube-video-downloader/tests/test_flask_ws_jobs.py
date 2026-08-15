@@ -37,6 +37,7 @@ def mod():
     original_heartbeat_timeout = m.JOB_HEARTBEAT_TIMEOUT_SECONDS
     original_reaper_interval = m.JOB_REAPER_INTERVAL_SECONDS
     original_enable_console_progress = m.ENABLE_CONSOLE_PROGRESS
+    original_wait_timeout = m.DOWNLOAD_WAIT_TIMEOUT_SECONDS
 
     m._active_downloads.clear()
     m._jobs.clear()
@@ -53,6 +54,7 @@ def mod():
     m.JOB_HEARTBEAT_TIMEOUT_SECONDS = original_heartbeat_timeout
     m.JOB_REAPER_INTERVAL_SECONDS = original_reaper_interval
     m.ENABLE_CONSOLE_PROGRESS = original_enable_console_progress
+    m.DOWNLOAD_WAIT_TIMEOUT_SECONDS = original_wait_timeout
     m._active_downloads.clear()
     m._jobs.clear()
 
@@ -332,6 +334,62 @@ def test_dedup_only_runs_underlying_download_once_for_concurrent_identical_reque
             lambda d: d["status"] == "complete",
             lambda jid=job_id: client.get(f"/download/status/{jid}").get_json(),
         )
+
+    assert call_count["n"] == 1, f"expected exactly 1 real download, got {call_count['n']}"
+
+
+def test_waiter_timeout_retries_via_dedup_instead_of_starting_a_duplicate_download(mod, client, result_file):
+    """Regression test: a waiter that times out waiting for the owner's
+    download used to fall back to calling _process_download directly,
+    bypassing dedup registration entirely and starting a second, unmanaged,
+    uncancellable download of the same item. It must instead retry through
+    _run_download_deduped - repeatedly re-waiting on the still-running
+    owner - and never launch a second concurrent _process_download call for
+    the same item."""
+    mod.DOWNLOAD_WAIT_TIMEOUT_SECONDS = 0.05
+
+    call_count = {"n": 0}
+    lock = threading.Lock()
+    started = threading.Event()
+    release = threading.Event()
+
+    async def fake_process_download(*a, progress_hook=None, cancel_event=None, **kw):
+        with lock:
+            call_count["n"] += 1
+        started.set()
+        while not release.is_set():
+            time.sleep(0.02)
+        return result_file
+
+    mod._process_download = fake_process_download
+
+    r1 = client.post(
+        "/download/start",
+        json={"url": "https://example.com/v-timeout", "video_format_id": "137"},
+    )
+    job_owner = r1.get_json()["job_id"]
+    assert started.wait(timeout=2)
+
+    r2 = client.post(
+        "/download/start",
+        json={"url": "https://example.com/v-timeout", "video_format_id": "137"},
+    )
+    job_waiter = r2.get_json()["job_id"]
+
+    # The owner's download runs far longer than the (tiny) wait timeout, so
+    # the waiter is guaranteed to time out and retry - several times over -
+    # while the owner is still in flight.
+    time.sleep(0.3)
+    assert call_count["n"] == 1, "waiter's timeout retry started a duplicate download"
+
+    release.set()
+
+    for job_id in (job_owner, job_waiter):
+        final = _poll_until(
+            lambda d: d["status"] == "complete",
+            lambda jid=job_id: client.get(f"/download/status/{jid}").get_json(),
+        )
+        assert final["status"] == "complete", f"job {job_id} did not complete: {final}"
 
     assert call_count["n"] == 1, f"expected exactly 1 real download, got {call_count['n']}"
 

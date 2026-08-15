@@ -687,18 +687,31 @@ def _run_download_deduped(
             return entry["result"]
         log.warning(
             f"Timed out waiting for in-progress download {dedup_key}; "
-            "attempting our own download."
+            "retrying dedup registration instead of starting an "
+            "unmanaged duplicate download."
         )
-        return asyncio.run(
-            _process_download(
-                url,
-                audio_format_id,
-                video_format_id,
-                target_format,
-                target_audio_params,
-                target_video_params,
-                progress_hook=progress_hook,
-            )
+        # Re-enter from the top rather than calling _process_download
+        # directly here. A raw call would bypass the _active_downloads
+        # entry entirely: no cancel_event (this retry could never be
+        # cancelled), no job_id bookkeeping (leaving _deregister_job's
+        # view of this job's dedup entry incoherent), and no protection
+        # against running a second, duplicate yt-dlp download of the same
+        # item concurrently with the still-running owner. Recursing goes
+        # through the same registration path again, either becoming the
+        # new owner (if the original just finished) or waiting again (if
+        # it's still running) - both outcomes keep this call fully
+        # participating in dedup/cancel/job tracking. job_id re-adds are
+        # idempotent (entry["job_ids"] is a set), so this is safe even if
+        # the original entry is still around.
+        return _run_download_deduped(
+            url,
+            audio_format_id,
+            video_format_id,
+            target_format,
+            target_audio_params,
+            target_video_params,
+            progress_hook=progress_hook,
+            job_id=job_id,
         )
 
     try:
