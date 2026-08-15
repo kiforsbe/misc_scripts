@@ -17,11 +17,13 @@ Reads a Netflix viewing history CSV, classifies entries as movies or series epis
 
 ## Usage Examples
 ```bash
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --json
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --table
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --table --columns title,year,episode,views,average_rating
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --webapp-export netflix-watch-status.html
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --episode-title-overrides my_overrides.csv
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --no-metadata
+python -m netflix_watch_status path/to/NetflixViewingHistory.csv
+python -m netflix_watch_status path/to/NetflixViewingHistory.csv --json
+python -m netflix_watch_status path/to/NetflixViewingHistory.csv --table
+python -m netflix_watch_status path/to/NetflixViewingHistory.csv --table --columns title,year,episode,views,average_rating
+python -m netflix_watch_status path/to/NetflixViewingHistory.csv --webapp-export netflix-watch-status.html
+python -m netflix_watch_status path/to/NetflixViewingHistory.csv --episode-title-overrides my_overrides.csv
+python -m netflix_watch_status path/to/NetflixViewingHistory.csv --no-metadata
 ```
+
+Can also be run directly: `python netflix_watch_status/netflix_watch_status.py ...`

@@ -107,10 +107,12 @@ Playlist files must be inside one of the `shared_paths`. Entries outside shared 
 ## Running
 
 ```bash
-python mini-dlna-server.py
+python -m mini-dlna-server
 # or with a custom config path:
-python mini-dlna-server.py --config /path/to/config.json
+python -m mini-dlna-server --config /path/to/config.json
 ```
+
+Can also be run directly: `python mini-dlna-server/mini-dlna-server.py ...`
 
 The server binds to the local IP on port 8201 (incrementing to 8299 if in use) and starts SSDP discovery. The console prints the server address on startup:
 

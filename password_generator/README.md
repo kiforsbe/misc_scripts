@@ -12,16 +12,18 @@ A small CLI for generating strong, easy-to-remember passwords.
 ## Usage examples
 ```bash
 # Random 12-char password (mixed case, digits)
-python password_generator/password_generator.py --length 12
+python -m password_generator --length 12
 
 # Pronounceable password using 4 syllables
-python password_generator/password_generator.py --mode pronounceable --pronounceable-syllables 4 --length 12
+python -m password_generator --mode pronounceable --pronounceable-syllables 4 --length 12
 
 # Diceware using bundled builtin wordlist (3 words)
-python password_generator/password_generator.py --mode diceware --wordlist builtin --dice-words 3
+python -m password_generator --mode diceware --wordlist builtin --dice-words 3
 
 # Install the recommended EFF wordlist for diceware mode
-python password_generator/password_generator.py --install-wordlist
+python -m password_generator --install-wordlist
 ```
+
+Can also be run directly: `python password_generator/password_generator.py ...`
 
 Downloaded wordlists are stored in `wordlists/` (ignored by git).

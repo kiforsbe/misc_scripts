@@ -14,7 +14,10 @@ import magic
 from io import BytesIO
 from mutagen.mp4 import MP4, MP4Cover
 from PIL import Image
-from audio_metadata import AudioMetadata, get_metadata_writer
+try:
+    from .audio_metadata import AudioMetadata, get_metadata_writer
+except ImportError:
+    from audio_metadata import AudioMetadata, get_metadata_writer
 
 # Set up logging
 logging.basicConfig(level=logging.WARN, format='%(asctime)s - %(levelname)s - %(message)s')

@@ -14,26 +14,28 @@ A smart directory explorer for querying files and folders with composable filter
 ## Usage Examples
 ```bash
 # All directories with no files anywhere below them
-python smartls/smartls.py --type d --files =0 --long
+python -m smartls --type d --files =0 --long
 
 # Directories with 1 to 3 recursive files, sorted by total size descending
-python smartls/smartls.py --type d --files 1..3 --sort -size --stats
+python -m smartls --type d --files 1..3 --sort -size --stats
 
 # Large files modified within the last week
-python smartls/smartls.py --type f --size >=50MB --mtime <7d --flat
+python -m smartls --type f --size >=50MB --mtime <7d --flat
 
 # Python and JavaScript files excluding test names
-python smartls/smartls.py ./src --ext py,js --not --name "*test*" --long
+python -m smartls ./src --ext py,js --not --name "*test*" --long
 
 # Export matching directories to JSON
-python smartls/smartls.py --type d --files =0 --json
+python -m smartls --type d --files =0 --json
 
 # Render console output in aligned columns like the web report
-python smartls/smartls.py --type f --flat --columns type,size,modified,relative-path --bytes
+python -m smartls --type f --flat --columns type,size,modified,relative-path --bytes
 
 # Export a self-contained HTML report
-python smartls/smartls.py --type f --size >=10MB --export-html smartls-report.html
+python -m smartls --type f --size >=10MB --export-html smartls-report.html
 ```
+
+Can also be run directly: `python smartls/smartls.py ...`
 
 ## Notes
 - `--or` separates filter groups and `--not` negates only the next filter

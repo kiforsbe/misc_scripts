@@ -4,7 +4,10 @@ import random
 import socket
 import threading
 import time
-from network_utils import NetworkUtils
+try:
+    from .network_utils import NetworkUtils
+except ImportError:
+    from network_utils import NetworkUtils
 
 SSDP_ADDR = '239.255.255.250'
 SSDP_PORT = 1900

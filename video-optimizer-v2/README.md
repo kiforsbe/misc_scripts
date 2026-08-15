@@ -10,8 +10,10 @@ Check out branch mediaoptimizer_v1 for the old version.
 
 ## Usage
 ```bash
-python video-optimizer-v2/video-optimizer-v2.py video1.mkv video2.mkv
+python -m video-optimizer-v2 video1.mkv video2.mkv
 ```
+
+Can also be run directly: `python video-optimizer-v2/video-optimizer-v2.py video1.mkv video2.mkv`
 
 ## Requires
 Use the video-optimizer-v2/requirements.txt file to install the requirements.

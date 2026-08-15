@@ -32,35 +32,37 @@ A comprehensive tool for extracting metadata from files and folders with support
 ## Usage Examples
 ```bash
 # Basic scan of current directory (exports to ./metadata/)
-python file_metadata_scanner/file_metadata_scanner.py .
+python -m file_metadata_scanner .
 
 # Recursive scan with custom export location
-python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --export-bundle /output/location
+python -m file_metadata_scanner /path/to/folder -r --export-bundle /output/location
 
 # Scan only video files with extended metadata and thumbnails
-python file_metadata_scanner/file_metadata_scanner.py /path/to/videos -r -e mp4,mkv,avi --extended --thumbnails
+python -m file_metadata_scanner /path/to/videos -r -e mp4,mkv,avi --extended --thumbnails
 
 # Exclude specific paths (node_modules, cache directories, etc.)
-python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --exclude node_modules,__pycache__,.git
+python -m file_metadata_scanner /path/to/folder -r --exclude node_modules,__pycache__,.git
 
 # Full scan with all features and custom export location
-python file_metadata_scanner/file_metadata_scanner.py /path/to/media -r --extended --thumbnails --export-bundle C:\MyMetadata
+python -m file_metadata_scanner /path/to/media -r --extended --thumbnails --export-bundle C:\MyMetadata
 
 # Skip slow CBR processing, only process CBZ comic archives
-python file_metadata_scanner/file_metadata_scanner.py /path/to/comics -r --extended --skip-cbr
+python -m file_metadata_scanner /path/to/comics -r --extended --skip-cbr
 
 # Set minimum video duration for thumbnail generation (e.g., 10 minutes)
-python file_metadata_scanner/file_metadata_scanner.py /path/to/videos -r --thumbnails --min-duration 600
+python -m file_metadata_scanner /path/to/videos -r --thumbnails --min-duration 600
 
 # Regenerate webapp from existing metadata bundle
-python file_metadata_scanner/file_metadata_scanner.py --regenerate-bundle /path/to/bundle
+python -m file_metadata_scanner --regenerate-bundle /path/to/bundle
 
 # Regenerate webapp with missing thumbnails
-python file_metadata_scanner/file_metadata_scanner.py --regenerate-bundle /path/to/bundle --thumbnails
+python -m file_metadata_scanner --regenerate-bundle /path/to/bundle --thumbnails
 
 # Verbose logging for troubleshooting
-python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --extended --log-level DEBUG
+python -m file_metadata_scanner /path/to/folder -r --extended --log-level DEBUG
 ```
+
+Can also be run directly: `python file_metadata_scanner/file_metadata_scanner.py ...`
 
 ## Requires
 - tqdm (for progress bars)

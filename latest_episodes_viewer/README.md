@@ -10,12 +10,14 @@ A script that generates a simple HTML page listing the latest episodes from a co
 
 ## Usage Examples
 ```bash
-latest_episodes_viewer.py /path/to/episodes --max-episodes 50 --recursive
-latest_episodes_viewer.py /path/to/episodes --exclude-paths /path/to/episodes/trash
-latest_episodes_viewer.py /path/to/episodes --include-patterns "*.mkv" "*.mp4" --export episodes.html
-latest_episodes_viewer.py /path/to/episodes --myanimelist-xml /path/to/animelist.xml --export episodes.html
-latest_episodes_viewer.py /path/to/episodes --verbose 3 --max-episodes 200 --export latest.html
+python -m latest_episodes_viewer /path/to/episodes --max-episodes 50 --recursive
+python -m latest_episodes_viewer /path/to/episodes --exclude-paths /path/to/episodes/trash
+python -m latest_episodes_viewer /path/to/episodes --include-patterns "*.mkv" "*.mp4" --export episodes.html
+python -m latest_episodes_viewer /path/to/episodes --myanimelist-xml /path/to/animelist.xml --export episodes.html
+python -m latest_episodes_viewer /path/to/episodes --verbose 3 --max-episodes 200 --export latest.html
 ```
+
+Can also be run directly: `python latest_episodes_viewer/latest_episodes_viewer.py ...`
 
 ## Requires
 - guessit

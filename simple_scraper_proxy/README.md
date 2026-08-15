@@ -12,11 +12,13 @@ A standalone scraping proxy that fetches an upstream HTML page, extracts feed da
 ## Usage Examples
 ```bash
 # Start the scraper proxy
-python simple_scraper_proxy/simple_scraper_proxy.py --port 8081
+python -m simple_scraper_proxy --port 8081
 
 # Request RSS using the bundled Nyaa template
 http://localhost:8081/?url=<url>&template=nyaa_rss
 ```
+
+Can also be run directly: `python simple_scraper_proxy/simple_scraper_proxy.py --port 8081`
 
 ## Requires
 - beautifulsoup4

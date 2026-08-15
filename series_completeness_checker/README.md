@@ -21,18 +21,20 @@ Features **MyAnimeList** (via [metadatacommon](../metadatacommon/README.md)) as 
 ## Usage (Examples)
 ```bash
 # Check completeness of series in current directory
-python series_completeness_checker/series_completeness_checker.py
+python -m series_completeness_checker
 
 # Generate JSON report
-python series_completeness_checker/series_completeness_checker.py /path/to/series --export series.json
+python -m series_completeness_checker /path/to/series --export series.json
 
 # Generate HTML webapp
-python series_completeness_checker/series_completeness_checker.py /path/to/series --webapp-export series.html
+python -m series_completeness_checker /path/to/series --webapp-export series.html
 ```
+
+Can also be run directly: `python series_completeness_checker/series_completeness_checker.py ...`
 
 For the full CLI reference (filters, refresh operations, thumbnails), run:
 ```bash
-python series_completeness_checker/series_completeness_checker.py --help
+python -m series_completeness_checker --help
 ```
 
 ## Requires

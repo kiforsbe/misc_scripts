@@ -11,7 +11,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Any, List, Dict, Optional
 
 try:
-    from ytdl_helper import (
+    from .ytdl_helper import (
         DownloadItem,
         FormatInfo,
         fetch_info,
@@ -20,9 +20,6 @@ try:
         __version__ as ytdl_helper_version,
     )
 except ImportError:
-    # Add parent directory to path if running script directly
-    script_dir = pathlib.Path(__file__).parent
-    sys.path.insert(0, str(script_dir.parent))
     try:
         from ytdl_helper import (
             DownloadItem,

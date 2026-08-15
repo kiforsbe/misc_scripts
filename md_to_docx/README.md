@@ -7,11 +7,13 @@ The script can be used from the command line by specifying an input Markdown fil
 ## Usage (Examples)
 ```bash
 # Convert README.md to README.docx
-python md_to_docx/md_to_docx.py README.md
+python -m md_to_docx README.md
 
 # Convert with specific output filename
-python md_to_docx/md_to_docx.py input.md output.docx
+python -m md_to_docx input.md output.docx
 ```
+
+Can also be run directly: `python md_to_docx/md_to_docx.py ...`
 
 ## Features
 - Converts Markdown to properly formatted Word documents

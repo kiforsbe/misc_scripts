@@ -21,16 +21,28 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from common.video_thumbnail_generator import VideoThumbnailGenerator
-from network_utils import NetworkUtils
-from ssdpserver import SSDPServer
-from resourcemonitor import ResourceMonitor
-from contentdirectoryhandler import (
-    ALL_EXTENSIONS,
-    AUDIO_EXTENSIONS,
-    IMAGE_EXTENSIONS,
-    VIDEO_EXTENSIONS,
-    ContentDirectoryHandler,
-)
+try:
+    from .network_utils import NetworkUtils
+    from .ssdpserver import SSDPServer
+    from .resourcemonitor import ResourceMonitor
+    from .contentdirectoryhandler import (
+        ALL_EXTENSIONS,
+        AUDIO_EXTENSIONS,
+        IMAGE_EXTENSIONS,
+        VIDEO_EXTENSIONS,
+        ContentDirectoryHandler,
+    )
+except ImportError:
+    from network_utils import NetworkUtils
+    from ssdpserver import SSDPServer
+    from resourcemonitor import ResourceMonitor
+    from contentdirectoryhandler import (
+        ALL_EXTENSIONS,
+        AUDIO_EXTENSIONS,
+        IMAGE_EXTENSIONS,
+        VIDEO_EXTENSIONS,
+        ContentDirectoryHandler,
+    )
 
 # DLNA/UPnP Constants
 DEVICE_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, socket.gethostname())

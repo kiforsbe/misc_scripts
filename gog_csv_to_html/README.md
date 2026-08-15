@@ -52,26 +52,28 @@ The script automatically fetches additional media content from online sources an
 ## Usage (Examples)
 ```bash
 # Convert CSV to HTML with full AI analysis (recommended)
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv
+python -m gog_csv_to_html gog_export.csv
 
 # Convert with custom output filename
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv -o my_game_library.html
+python -m gog_csv_to_html gog_export.csv -o my_game_library.html
 
 # Skip media fetching for faster processing (disables AI features)
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --no-media
+python -m gog_csv_to_html gog_export.csv --no-media
 
 # Disable media caching
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --no-cache
+python -m gog_csv_to_html gog_export.csv --no-cache
 
 # Open result in browser automatically
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --open
+python -m gog_csv_to_html gog_export.csv --open
 
 # Show cache statistics including AI analysis data
-python gog_csv_to_html/gog_csv_to_html.py --cache-stats
+python -m gog_csv_to_html --cache-stats
 
 # Use custom Ollama host for AI analysis
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --ollama-host http://192.168.1.100:11434
+python -m gog_csv_to_html gog_export.csv --ollama-host http://192.168.1.100:11434
 ```
+
+Can also be run directly: `python gog_csv_to_html/gog_csv_to_html.py ...`
 
 ## AI Analysis Features
 The script includes sophisticated AI-powered game analysis:
@@ -103,6 +105,6 @@ To enable the full AI analysis capabilities:
 1. **Install Ollama**: Download from [ollama.ai](https://ollama.ai)
 2. **Install deepseek-r1 model**: `ollama pull deepseek-r1`
 3. **Start Ollama server**: `ollama serve`
-4. **Run with AI features**: `python gog_csv_to_html/gog_csv_to_html.py your_games.csv`
+4. **Run with AI features**: `python -m gog_csv_to_html your_games.csv`
 
 The script will automatically detect Ollama availability and enable advanced features when the server and model are accessible.

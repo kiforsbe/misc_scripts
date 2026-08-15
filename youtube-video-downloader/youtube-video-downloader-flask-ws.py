@@ -22,41 +22,41 @@ from rich.progress import (
 # rich.progress is required; assume installed and available
 
 # --- Add ytdl_helper to Python path ---
-# This assumes the script is run from the 'youtube-video-downloader' directory
-# and 'ytdl_helper' is a subdirectory within it.
-current_dir = pathlib.Path(__file__).parent
-ytdl_helper_path = current_dir / "ytdl_helper"
-if ytdl_helper_path.is_dir():
-    sys.path.insert(0, str(current_dir))
-    print(f"DEBUG: Added {current_dir} to sys.path")  # Debug print
-    try:
-        from ytdl_helper import core as ytdl_core
-        from ytdl_helper import models as ytdl_models
-        from ytdl_helper.utils import check_ffmpeg
-    except ImportError as e:
-        print(
-            f"ERROR: Failed to import ytdl_helper from {current_dir}. Error: {e}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-else:
-    # If not found locally, try assuming it's installed as a package
-    try:
-        from ytdl_helper import core as ytdl_core
-        from ytdl_helper import models as ytdl_models
-        from ytdl_helper.utils import check_ffmpeg
-
-        print("DEBUG: Imported ytdl_helper as installed package.")  # Debug print
-    except ImportError:
-        print(
-            "ERROR: Could not find ytdl_helper locally or as an installed package.",
-            file=sys.stderr,
-        )
-        print(
-            "Ensure 'ytdl_helper' directory exists relative to the script or is installed.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+try:
+    from .ytdl_helper import core as ytdl_core
+    from .ytdl_helper import models as ytdl_models
+    from .ytdl_helper.utils import check_ffmpeg
+except ImportError:
+    current_dir = pathlib.Path(__file__).parent
+    ytdl_helper_path = current_dir / "ytdl_helper"
+    if ytdl_helper_path.is_dir():
+        sys.path.insert(0, str(current_dir))
+        try:
+            from ytdl_helper import core as ytdl_core
+            from ytdl_helper import models as ytdl_models
+            from ytdl_helper.utils import check_ffmpeg
+        except ImportError as e:
+            print(
+                f"ERROR: Failed to import ytdl_helper from {current_dir}. Error: {e}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        # If not found locally, try assuming it's installed as a package
+        try:
+            from ytdl_helper import core as ytdl_core
+            from ytdl_helper import models as ytdl_models
+            from ytdl_helper.utils import check_ffmpeg
+        except ImportError:
+            print(
+                "ERROR: Could not find ytdl_helper locally or as an installed package.",
+                file=sys.stderr,
+            )
+            print(
+                "Ensure 'ytdl_helper' directory exists relative to the script or is installed.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 # --- End ytdl_helper import ---
 
 

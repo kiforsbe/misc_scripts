@@ -15,17 +15,30 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence, cast
 
-from utils import (
-    Colors,
-    colorize,
-    display_path,
-    format_age,
-    format_permissions,
-    format_size,
-    format_timestamp,
-    icon_for_entry,
-    should_use_color,
-)
+try:
+    from .utils import (
+        Colors,
+        colorize,
+        display_path,
+        format_age,
+        format_permissions,
+        format_size,
+        format_timestamp,
+        icon_for_entry,
+        should_use_color,
+    )
+except ImportError:
+    from utils import (
+        Colors,
+        colorize,
+        display_path,
+        format_age,
+        format_permissions,
+        format_size,
+        format_timestamp,
+        icon_for_entry,
+        should_use_color,
+    )
 
 try:
     import grp

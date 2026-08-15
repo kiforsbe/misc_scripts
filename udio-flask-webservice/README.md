@@ -9,6 +9,13 @@ The webservice exposes the following interfaces:
 | --- | --- | --- | --- |
 | /api/download_ext | POST & GET | download_ext | mp3_url, image_url, title, artist, album, genre, year, cannonical, lyrics |
 
+## Running
+```bash
+python -m udio-flask-webservice
+```
+
+Can also be run directly: `python udio-flask-webservice/udio-flask-webservice.py`
+
 ## /api/download_ext
 Downloads the specified `.mp3` file and adds the provided metadata to it.
 
