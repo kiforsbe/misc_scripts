@@ -20,7 +20,7 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from video_thumbnail_generator import VideoThumbnailGenerator
+from common.video_thumbnail_generator import VideoThumbnailGenerator
 from network_utils import NetworkUtils
 from ssdpserver import SSDPServer
 from resourcemonitor import ResourceMonitor
