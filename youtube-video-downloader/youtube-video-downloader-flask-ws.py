@@ -120,6 +120,17 @@ delete_queue = []
 queue_lock = threading.Lock()  # For thread safety
 
 
+def _queue_file_for_deletion(path: str) -> None:
+    """Schedules a file for deletion by delayed_delete(), unless it's
+    already queued (e.g. /download/result and the reaper's
+    forgotten-job cleanup both racing to queue the same completed file)."""
+    with queue_lock:
+        already_queued = any(fi["path"] == path for fi in delete_queue)
+        if not already_queued:
+            delete_queue.append({"path": path, "time": time.time()})
+            log.info(f"Queued for deletion: {path} (Queue size: {len(delete_queue)})")
+
+
 def delayed_delete():
     """Periodically checks the queue and deletes old files."""
     log.info("Background deletion thread started.")
@@ -869,7 +880,9 @@ def _job_reaper_loop():
             if to_forget:
                 with _jobs_lock:
                     for job_id in to_forget:
-                        _jobs.pop(job_id, None)
+                        job = _jobs.pop(job_id, None)
+                        if job is not None and job.get("result_path"):
+                            _queue_file_for_deletion(job["result_path"])
         except Exception as e:
             log.error(f"Error in job reaper loop: {e}", exc_info=True)
         time.sleep(JOB_REAPER_INTERVAL_SECONDS)
@@ -1155,11 +1168,7 @@ def download():
             progress_hook(95, f"{final_filepath.name} - file prepared")
 
             # Add to delete queue *before* sending the file
-            with queue_lock:
-                delete_queue.append({"path": str(final_filepath), "time": time.time()})
-                log.info(
-                    f"Queued for deletion: {final_filepath} (Queue size: {len(delete_queue)})"
-                )
+            _queue_file_for_deletion(str(final_filepath))
 
             progress_hook(100, f"{final_filepath.name} - completed")
             return send_file(
@@ -1324,13 +1333,7 @@ def download_result(job_id):
         log.error(f"Job {job_id} reports complete but file is missing: {final_filepath}")
         return jsonify({"error": "Result file not found on server."}), 500
 
-    with queue_lock:
-        already_queued = any(fi["path"] == str(final_filepath) for fi in delete_queue)
-        if not already_queued:
-            delete_queue.append({"path": str(final_filepath), "time": time.time()})
-            log.info(
-                f"Queued for deletion: {final_filepath} (Queue size: {len(delete_queue)})"
-            )
+    _queue_file_for_deletion(str(final_filepath))
 
     return send_file(
         str(final_filepath),
