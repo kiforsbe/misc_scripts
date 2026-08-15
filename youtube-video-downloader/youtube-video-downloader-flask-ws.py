@@ -170,6 +170,35 @@ _active_downloads: dict = {}
 _active_downloads_lock = threading.Lock()
 
 
+# --- Async Job Tracking (for /download/start, /download/status, /download/cancel) ---
+# A "job" is one client's request for a download; several jobs can point at the
+# same in-flight download (see dedup above) when multiple clients ask for the
+# same item at the same time. Each job tracks its own lifecycle (queued ->
+# downloading -> complete/error/cancelled/dropped) plus a heartbeat timestamp
+# refreshed by /download/status polls, so an abandoned job (client crashed,
+# tab closed without a clean unload, network lost) can be detected even
+# without an explicit cancel request.
+JOB_HEARTBEAT_TIMEOUT_SECONDS = float(
+    os.environ.get("YTDL_JOB_HEARTBEAT_TIMEOUT_SECONDS", "15")
+)
+JOB_REAPER_INTERVAL_SECONDS = float(
+    os.environ.get("YTDL_JOB_REAPER_INTERVAL_SECONDS", "5")
+)
+JOB_RETENTION_SECONDS = float(
+    os.environ.get("YTDL_JOB_RETENTION_SECONDS", "600")
+)
+# Off by default: a lost heartbeat alone does not cancel the underlying
+# download (it might resume polling, or another tab may still want the
+# result). An explicit /download/cancel request always cancels regardless of
+# this flag. Set YTDL_AUTO_CANCEL_ON_HEARTBEAT_LOSS=1 to also auto-cancel on
+# heartbeat loss.
+AUTO_CANCEL_ON_HEARTBEAT_LOSS = os.environ.get(
+    "YTDL_AUTO_CANCEL_ON_HEARTBEAT_LOSS", ""
+).strip().lower() in ("1", "true", "yes", "on")
+_jobs: dict = {}
+_jobs_lock = threading.Lock()
+
+
 # --- Check for FFmpeg ---
 FFMPEG_PATH = None
 try:
@@ -194,6 +223,7 @@ async def _process_download(
     target_audio_params: str | None,
     target_video_params: str | None,
     progress_hook=None,
+    cancel_event: threading.Event | None = None,
 ) -> pathlib.Path:
     """
     Fetches info, selects formats, downloads the item into TEMP_DIR,
@@ -346,6 +376,7 @@ async def _process_download(
             target_video_params=target_video_params,
             status_callback=status_callback,
             progress_callback=progress_callback,
+            cancel_event=cancel_event,
         )
 
         # --- Verify result ---
@@ -382,6 +413,12 @@ async def _process_download(
             else:
                 raise RuntimeError(f"Download failed: {error_msg}")
 
+    except yt_dlp.utils.DownloadCancelled as e:
+        log.info(f"Download cancelled for {url}: {e}")
+        if item:
+            item.status = "Cancelled"
+            item.error = str(e)
+        raise asyncio.CancelledError(str(e)) from e
     except (
         yt_dlp.utils.DownloadError,
         ValueError,
@@ -429,6 +466,7 @@ def _run_download_deduped(
     target_audio_params: str | None,
     target_video_params: str | None,
     progress_hook=None,
+    job_id: str | None = None,
 ) -> pathlib.Path:
     """
     Runs _process_download for this request, but if an identical request
@@ -438,6 +476,11 @@ def _run_download_deduped(
     given dedup key actually invokes _process_download; every other caller
     that arrives while it is in flight blocks on the owner's completion and
     then returns (or re-raises) exactly what the owner produced.
+
+    If job_id is given, it is registered against the underlying download so
+    that a later /download/cancel request or a lost heartbeat can ask for
+    cancellation (see _deregister_job) - the download is only actually
+    cancelled once no registered job_id is left wanting the result.
     """
     dedup_key = (
         ytdl_core.clean_youtube_url(url),
@@ -448,12 +491,45 @@ def _run_download_deduped(
         target_video_params,
     )
 
+    cancel_requested_early = False
+    if job_id is not None:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None:
+                cancel_requested_early = bool(job.get("cancel_requested"))
+
     with _active_downloads_lock:
         entry = _active_downloads.get(dedup_key)
         is_owner = entry is None
         if is_owner:
-            entry = {"event": threading.Event(), "result": None, "error": None}
+            entry = {
+                "event": threading.Event(),
+                "result": None,
+                "error": None,
+                "cancel_event": threading.Event(),
+                "job_ids": set(),
+                "percent": 0.0,
+                "message": "",
+            }
             _active_downloads[dedup_key] = entry
+        if job_id is not None:
+            if cancel_requested_early:
+                # Cancelled before this job's download work even started
+                # (e.g. the user clicked Cancel within milliseconds of
+                # starting). Don't register it as interested; if it would
+                # have been the sole owner, cancel immediately.
+                if is_owner and not entry["job_ids"]:
+                    entry["cancel_event"].set()
+            else:
+                entry["job_ids"].add(job_id)
+
+    def _tracked_progress_hook(percent, message=None):
+        with _active_downloads_lock:
+            entry["percent"] = percent
+            if message:
+                entry["message"] = message
+        if progress_hook:
+            progress_hook(percent, message)
 
     if not is_owner:
         log.info(
@@ -491,7 +567,8 @@ def _run_download_deduped(
                 target_format,
                 target_audio_params,
                 target_video_params,
-                progress_hook=progress_hook,
+                progress_hook=_tracked_progress_hook,
+                cancel_event=entry["cancel_event"],
             )
         )
         entry["result"] = result
@@ -503,6 +580,203 @@ def _run_download_deduped(
         with _active_downloads_lock:
             _active_downloads.pop(dedup_key, None)
         entry["event"].set()
+
+
+def _deregister_job(job_id: str, allow_cancel: bool) -> None:
+    """
+    Removes job_id from its dedup entry's set of interested jobs. If that
+    was the last interested job and allow_cancel is True, cancels the
+    underlying download. Safe to call even if the job or its entry no
+    longer exist (e.g. the download already finished).
+    """
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        dedup_key = job.get("dedup_key") if job else None
+
+    if dedup_key is None:
+        return
+
+    with _active_downloads_lock:
+        entry = _active_downloads.get(dedup_key)
+        if entry is None:
+            return
+        entry["job_ids"].discard(job_id)
+        if allow_cancel and not entry["job_ids"]:
+            entry["cancel_event"].set()
+
+
+def _compute_dedup_key(
+    url: str,
+    audio_format_id: str | None,
+    video_format_id: str | None,
+    target_format: str | None,
+    target_audio_params: str | None,
+    target_video_params: str | None,
+):
+    return (
+        ytdl_core.clean_youtube_url(url),
+        audio_format_id,
+        video_format_id,
+        target_format,
+        target_audio_params,
+        target_video_params,
+    )
+
+
+def _job_reaper_loop():
+    """
+    Periodically sweeps the job registry: jobs whose client hasn't polled
+    /download/status recently are treated as dropped (heartbeat lost) - this
+    always cleans up their bookkeeping so they stop blocking other clients'
+    explicit cancels, and additionally cancels the underlying download too
+    if AUTO_CANCEL_ON_HEARTBEAT_LOSS is enabled. Old finished jobs are
+    forgotten after JOB_RETENTION_SECONDS so _jobs doesn't grow unbounded.
+    """
+    log.info("Job reaper thread started.")
+    terminal_statuses = ("complete", "error", "cancelled", "dropped")
+    while True:
+        try:
+            now = time.time()
+            to_drop = []
+            to_forget = []
+            with _jobs_lock:
+                for job_id, job in _jobs.items():
+                    if job["status"] not in terminal_statuses:
+                        if now - job.get("last_seen", job["created"]) > JOB_HEARTBEAT_TIMEOUT_SECONDS:
+                            to_drop.append(job_id)
+                    elif now - job.get("finished_at", job["created"]) > JOB_RETENTION_SECONDS:
+                        to_forget.append(job_id)
+
+            for job_id in to_drop:
+                log.info(f"Job {job_id} heartbeat lost; treating as dropped.")
+                _deregister_job(job_id, allow_cancel=AUTO_CANCEL_ON_HEARTBEAT_LOSS)
+                with _jobs_lock:
+                    job = _jobs.get(job_id)
+                    if job is not None and job["status"] not in terminal_statuses:
+                        job["status"] = "dropped"
+                        job["finished_at"] = now
+
+            if to_forget:
+                with _jobs_lock:
+                    for job_id in to_forget:
+                        _jobs.pop(job_id, None)
+        except Exception as e:
+            log.error(f"Error in job reaper loop: {e}", exc_info=True)
+        time.sleep(JOB_REAPER_INTERVAL_SECONDS)
+
+
+def _background_job_runner(
+    job_id: str,
+    url: str,
+    audio_format_id: str | None,
+    video_format_id: str | None,
+    target_format: str | None,
+    target_audio_params: str | None,
+    target_video_params: str | None,
+) -> None:
+    """Runs a /download/start job in the background and records its outcome."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is not None:
+            job["status"] = "downloading"
+
+    def _job_progress_hook(percent, message=None):
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None:
+                job["percent"] = percent
+                if message:
+                    job["message"] = message
+                job["last_seen"] = time.time()
+
+    try:
+        result_path = _run_download_deduped(
+            url,
+            audio_format_id,
+            video_format_id,
+            target_format,
+            target_audio_params,
+            target_video_params,
+            progress_hook=_job_progress_hook,
+            job_id=job_id,
+        )
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            # A job the client already explicitly cancelled (e.g. this job
+            # was kept alive only because another waiter shared the same
+            # download) stays "cancelled" from that client's point of view,
+            # even though the shared download went on to succeed.
+            if job is not None and job["status"] != "cancelled":
+                job["status"] = "complete"
+                job["percent"] = 100
+                job["result_path"] = str(result_path)
+                job["finished_at"] = time.time()
+    except asyncio.CancelledError as e:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None:
+                job["status"] = "cancelled"
+                job["error"] = str(e) or "Cancelled"
+                job["finished_at"] = time.time()
+    except Exception as e:
+        log.error(f"Job {job_id} failed: {e}", exc_info=True)
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None and job["status"] != "cancelled":
+                job["status"] = "error"
+                job["error"] = str(e)
+                job["finished_at"] = time.time()
+
+
+def _parse_download_request(data):
+    """
+    Parses/validates the parameters shared by /download and /download/start.
+    Returns (params_dict, None) on success, or (None, (response, status_code))
+    on failure - the caller can return that tuple directly from a Flask view.
+    """
+    if not data:
+        log.warning("Download request received with no parameters.")
+        return None, (jsonify({"error": "No parameters provided"}), 400)
+
+    url = data.get("url")
+    audio_format_id = data.get("audio_format_id") or None
+    video_format_id = data.get("video_format_id") or None
+    target_format = data.get("target_format") or None
+    target_audio_params = data.get("target_audio_params") or None
+    target_video_params = data.get("target_video_params") or None
+
+    if not url:
+        log.warning("Download request missing 'url' parameter.")
+        return None, (jsonify({"error": "Missing 'url' parameter"}), 400)
+
+    if not url.startswith(("http://", "https://")):
+        log.warning(f"Download request with invalid URL format: {url}")
+        return None, (jsonify({"error": "Invalid 'url' parameter format"}), 400)
+
+    needs_ffmpeg = bool(target_format) or (
+        audio_format_id and video_format_id and audio_format_id != video_format_id
+    )
+    if needs_ffmpeg and not FFMPEG_PATH:
+        log.warning(
+            f"Request requires FFmpeg (Target: {target_format}, A_ID: {audio_format_id}, V_ID: {video_format_id}) but it is not available."
+        )
+        return None, (
+            jsonify(
+                {
+                    "error": "FFmpeg is required for this request (conversion or merging) but was not found or configured."
+                }
+            ),
+            501,
+        )
+
+    return {
+        "url": url,
+        "audio_format_id": audio_format_id,
+        "video_format_id": video_format_id,
+        "target_format": target_format,
+        "target_audio_params": target_audio_params,
+        "target_video_params": target_video_params,
+    }, None
 
 
 # --- Flask Routes ---
@@ -575,26 +849,16 @@ def download():
     else:  # GET
         data = request.args
 
-    if not data:
-        log.warning("Download request received with no parameters.")
-        return jsonify({"error": "No parameters provided"}), 400
+    params, error_response = _parse_download_request(data)
+    if error_response:
+        return error_response
 
-    url = data.get("url")
-    # Ensure None if empty string or missing, otherwise use the value
-    audio_format_id = data.get("audio_format_id") or None
-    video_format_id = data.get("video_format_id") or None
-    target_format = data.get("target_format") or None
-    target_audio_params = data.get("target_audio_params") or None
-    target_video_params = data.get("target_video_params") or None
-
-    if not url:
-        log.warning("Download request missing 'url' parameter.")
-        return jsonify({"error": "Missing 'url' parameter"}), 400
-
-    # Basic URL validation (can be improved, e.g., regex for YouTube domains)
-    if not url.startswith(("http://", "https://")):
-        log.warning(f"Download request with invalid URL format: {url}")
-        return jsonify({"error": "Invalid 'url' parameter format"}), 400
+    url = params["url"]
+    audio_format_id = params["audio_format_id"]
+    video_format_id = params["video_format_id"]
+    target_format = params["target_format"]
+    target_audio_params = params["target_audio_params"]
+    target_video_params = params["target_video_params"]
 
     progress = None
     progress_task_id = None
@@ -610,24 +874,6 @@ def download():
                 log.info(f"Progress {percent:.0f}% - {message}")
             else:
                 log.info(f"Progress {percent:.0f}%")
-
-    # Check if FFmpeg is needed but unavailable
-    needs_ffmpeg = bool(target_format) or (
-        audio_format_id and video_format_id and audio_format_id != video_format_id
-    )
-    if needs_ffmpeg and not FFMPEG_PATH:
-        log.warning(
-            f"Request requires FFmpeg (Target: {target_format}, A_ID: {audio_format_id}, V_ID: {video_format_id}) but it is not available."
-        )
-        # Return an error immediately if FFmpeg is essential for the request
-        return (
-            jsonify(
-                {
-                    "error": f"FFmpeg is required for this request (conversion or merging) but was not found or configured."
-                }
-            ),
-            501,
-        )  # 501 Not Implemented
 
     final_filepath = None
     # Keep original blocking download route for compatibility, but recommend
@@ -739,6 +985,157 @@ def download():
         # The current logic queues *before* send_file, which seems reasonable.
         # If send_file raises an exception (e.g., client disconnects), the file remains queued.
         pass
+
+
+@app.route("/download/start", methods=["POST", "OPTIONS"])
+def download_start():
+    """
+    Starts a download in the background and returns a job_id immediately.
+    Intended for clients (the userscript) that want live status/percent via
+    /download/status/<job_id> instead of blocking on the whole download like
+    /download does. Poll /download/status/<job_id>, then GET
+    /download/result/<job_id> once status is "complete".
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.json if request.is_json else request.form
+
+    params, error_response = _parse_download_request(data)
+    if error_response:
+        return error_response
+
+    job_id = uuid.uuid4().hex
+    dedup_key = _compute_dedup_key(
+        params["url"],
+        params["audio_format_id"],
+        params["video_format_id"],
+        params["target_format"],
+        params["target_audio_params"],
+        params["target_video_params"],
+    )
+    now = time.time()
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "dedup_key": dedup_key,
+            "status": "queued",
+            "percent": 0,
+            "message": "Queued",
+            "error": None,
+            "result_path": None,
+            "cancel_requested": False,
+            "created": now,
+            "last_seen": now,
+            "finished_at": None,
+        }
+
+    thread = threading.Thread(
+        target=_background_job_runner,
+        args=(
+            job_id,
+            params["url"],
+            params["audio_format_id"],
+            params["video_format_id"],
+            params["target_format"],
+            params["target_audio_params"],
+            params["target_video_params"],
+        ),
+        name=f"ytdl-job-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"job_id": job_id}), 202
+
+
+@app.route("/download/status/<job_id>", methods=["GET", "OPTIONS"])
+def download_status(job_id):
+    """Returns live status/percent for a job started via /download/start."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Unknown or expired job_id"}), 404
+        job["last_seen"] = time.time()
+        status = job["status"]
+        percent = job["percent"]
+        message = job["message"]
+        error = job["error"]
+
+    return jsonify(
+        {
+            "job_id": job_id,
+            "status": status,
+            "percent": percent,
+            "message": message,
+            "error": error,
+            "ready": status == "complete",
+        }
+    )
+
+
+@app.route("/download/result/<job_id>", methods=["GET", "OPTIONS"])
+def download_result(job_id):
+    """Sends the completed file for a job started via /download/start."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Unknown or expired job_id"}), 404
+        if job["status"] != "complete":
+            return (
+                jsonify({"error": f"Job is not complete (status: {job['status']})"}),
+                409,
+            )
+        result_path = job["result_path"]
+
+    final_filepath = pathlib.Path(result_path)
+    if not final_filepath.exists():
+        log.error(f"Job {job_id} reports complete but file is missing: {final_filepath}")
+        return jsonify({"error": "Result file not found on server."}), 500
+
+    with queue_lock:
+        already_queued = any(fi["path"] == str(final_filepath) for fi in delete_queue)
+        if not already_queued:
+            delete_queue.append({"path": str(final_filepath), "time": time.time()})
+            log.info(
+                f"Queued for deletion: {final_filepath} (Queue size: {len(delete_queue)})"
+            )
+
+    return send_file(
+        str(final_filepath),
+        as_attachment=True,
+        download_name=final_filepath.name,
+    )
+
+
+@app.route("/download/cancel/<job_id>", methods=["POST", "OPTIONS"])
+def download_cancel(job_id):
+    """
+    Cancels a job started via /download/start. Only actually stops the
+    underlying yt-dlp download once no other job is still waiting on the
+    same item (see _run_download_deduped/_deregister_job) - one tab
+    cancelling doesn't kill a download another tab is still waiting for.
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Unknown or expired job_id"}), 404
+        job["cancel_requested"] = True
+        already_terminal = job["status"] in ("complete", "error", "cancelled", "dropped")
+
+    if not already_terminal:
+        _deregister_job(job_id, allow_cancel=True)
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None and job["status"] not in ("complete", "error", "cancelled", "dropped"):
+                job["status"] = "cancelled"
+                job["finished_at"] = time.time()
+
+    return jsonify({"job_id": job_id, "status": "cancelled"})
 
 
 @app.route("/list_formats", methods=["GET", "OPTIONS"])
@@ -856,6 +1253,12 @@ if __name__ == "__main__":
         target=delayed_delete, name="FileDeletionThread", daemon=True
     )
     delete_thread.start()
+
+    # Start the job heartbeat reaper for /download/start jobs
+    reaper_thread = threading.Thread(
+        target=_job_reaper_loop, name="JobReaperThread", daemon=True
+    )
+    reaper_thread.start()
 
     # Run Flask app
     # Use host='0.0.0.0' to make it accessible on the local network

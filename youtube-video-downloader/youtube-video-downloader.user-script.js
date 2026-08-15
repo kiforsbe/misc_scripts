@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.7.13
+// @version      1.8.0
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -22,6 +22,7 @@
   const MAX_RETRIES = 15; // Stop trying after 15 seconds if container not found
   const QUICK_DOWNLOAD_STATUS_STORAGE_KEY = 'ytdl_quick_download_status_v1';
   const ENABLE_FORMAT_DEBUG_LOGS = true;
+  const DOWNLOAD_STATUS_POLL_INTERVAL = 1000; // Poll /download/status this often while a job is running
   // --- End Configuration ---
 
   // Runtime state for watch-page insertion retries and SPA route tracking.
@@ -555,7 +556,104 @@
   }
 
   /**
-   * Starts a download request and streams progress into the download center UI.
+   * Builds the plain-object param set sent to /download/start (and /download).
+   * Pure/no side effects so it's directly unit-testable.
+    * @param {string} url - Source video URL.
+    * @param {string|null} audioId - Explicit audio format ID, if any.
+    * @param {string|null} videoId - Explicit video format ID, if any.
+    * @param {string|null} targetFormat - Requested conversion/output format.
+    * @param {string|number|null} targetAudioParams - Optional audio conversion argument.
+    * @param {string|number|null} targetVideoParams - Optional video conversion argument.
+   * @returns {Record<string, string|number>}
+   */
+  function buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams) {
+    const params = { url };
+    if (audioId) params.audio_format_id = audioId;
+    if (videoId) params.video_format_id = videoId;
+    if (targetFormat) params.target_format = targetFormat;
+    if (targetAudioParams) params.target_audio_params = targetAudioParams;
+    if (targetVideoParams) params.target_video_params = targetVideoParams;
+    return params;
+  }
+
+  /**
+   * Extracts a filename from a Content-Disposition header value, falling
+   * back when absent/unparseable. Pure/no side effects.
+    * @param {string} headerText - Raw Content-Disposition header text (or response headers blob).
+    * @param {string} fallbackFilename - Filename to use when none can be parsed.
+   * @returns {string}
+   */
+  function parseContentDispositionFilename(headerText, fallbackFilename) {
+    try {
+      const m = /filename\*?=(?:UTF-8'')?([^;\n]*)/i.exec(headerText || '');
+      if (m && m[1]) {
+        const raw = m[1].trim().replace(/['"]/g, '');
+        try { return decodeURIComponent(raw); } catch (e) { return raw; }
+      }
+    } catch (e) { /* fall through to fallback */ }
+    return fallbackFilename;
+  }
+
+  /**
+   * Decides what a /download/status poll response means for the client,
+   * without performing any of the actual side effects (UI updates, further
+   * network calls). Pure/no side effects so the state machine is directly
+   * unit-testable against the exact status vocabulary the server emits.
+    * @param {any} data - Parsed JSON body from /download/status/<job_id>.
+   * @returns {{action: 'fetch_result'|'error'|'cancelled'|'dropped'|'continue_polling'|'retry_poll', message?: string, percent?: number}}
+   */
+  function decideJobStatusAction(data) {
+    if (!data || typeof data !== 'object' || !data.status) {
+      // Malformed/empty response - treat as a transient hiccup, keep polling.
+      return { action: 'retry_poll' };
+    }
+    switch (data.status) {
+      case 'complete':
+        return { action: 'fetch_result' };
+      case 'error':
+        return { action: 'error', message: data.error || 'Download failed' };
+      case 'cancelled':
+        return { action: 'cancelled', message: data.error || 'Cancelled' };
+      case 'dropped':
+        return {
+          action: 'dropped',
+          message: 'Connection lost; the server may still finish this download in the background.'
+        };
+      default:
+        // queued/downloading/etc.
+        return {
+          action: 'continue_polling',
+          percent: typeof data.percent === 'number' ? data.percent : 0,
+          message: data.message || 'Downloading...'
+        };
+    }
+  }
+
+  /**
+   * Fire-and-forget request to cancel a job on the server. Used both by the
+   * Cancel button and by the best-effort pagehide handler.
+    * @param {string} jobId - Server-assigned job id to cancel.
+   */
+  function cancelJobOnServer(jobId) {
+    if (!jobId) return;
+    try {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: `${FLASK_SERVICE_BASE_URL}/download/cancel/${encodeURIComponent(jobId)}`,
+        timeout: 5000,
+        onload: function () {},
+        onerror: function (err) { console.error('[ytdl-ui] cancel request failed:', err); },
+        ontimeout: function () { console.error('[ytdl-ui] cancel request timed out'); }
+      });
+    } catch (e) {
+      console.error('[ytdl-ui] Failed to send cancel request:', e);
+    }
+  }
+
+  /**
+   * Starts a download via /download/start, polls /download/status for live
+   * progress, and fetches /download/result once complete - streaming state
+   * into the download center UI throughout.
     * @param {string} url - Source video URL passed to the backend.
     * @param {string|null} audioId - Explicit audio format ID to request, if any.
     * @param {string|null} videoId - Explicit video format ID to request, if any.
@@ -600,85 +698,161 @@
       };
     }
 
-    const params = new URLSearchParams();
-    params.append('url', url);
-    // client_id is local-only; do not send to server
-    if (audioId) params.append('audio_format_id', audioId);
-    if (videoId) params.append('video_format_id', videoId);
-    if (targetFormat) params.append('target_format', targetFormat);
-    if (targetAudioParams) params.append('target_audio_params', targetAudioParams);
-    if (targetVideoParams) params.append('target_video_params', targetVideoParams);
-
-    // Perform the download directly and stream the response to provide local progress
-    const requestUrl = `${FLASK_SERVICE_BASE_URL}/download?${params.toString()}`;
     updatePersistentToast(clientId, 0, 'Starting download...', 'running');
-    let contentDisposition = '';
+
+    const paramsObj = buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams);
+    const params = new URLSearchParams();
+    Object.keys(paramsObj).forEach((key) => params.append(key, paramsObj[key]));
+
+    let stopped = false;
+    let pollTimer = null;
+
+    /**
+     * Local control handle stored in activeDownloads so Cancel/Close
+     * buttons can stop polling and tell the server to cancel the job.
+     */
+    const control = {
+      jobId: null,
+      abort: function () {
+        if (stopped) return;
+        stopped = true;
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        if (control.jobId) cancelJobOnServer(control.jobId);
+        updatePersistentToast(clientId, 0, 'Cancelled', 'error');
+      }
+    };
+    activeDownloads[clientId] = control;
+
+    /**
+     * Downloads the completed job's file and saves it, mirroring the old
+     * single-request onload handling.
+     */
+    function fetchJobResult() {
+      if (stopped || !control.jobId) return;
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: `${FLASK_SERVICE_BASE_URL}/download/result/${encodeURIComponent(control.jobId)}`,
+        responseType: 'blob',
+        onload: function (res) {
+          try {
+            if (res.status >= 200 && res.status < 300) {
+              const blob = res.response;
+              const fallbackFilename = filenameHint + '.' + (targetFormat || (videoId ? 'mp4' : 'mp3'));
+              const filename = parseContentDispositionFilename(res.responseHeaders || '', fallbackFilename);
+              const link = document.createElement('a');
+              link.href = URL.createObjectURL(blob);
+              link.download = filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(link.href);
+              updatePersistentToast(clientId, 100, `Downloaded: ${filename}`, 'complete');
+              if (quickTrack && quickTrack.videoId && (quickTrack.kind === 'video' || quickTrack.kind === 'audio')) {
+                markQuickDownloadCompleted(quickTrack.videoId, quickTrack.kind);
+              }
+            } else {
+              updatePersistentToast(clientId, 0, `Server error: ${res.status}`, 'error');
+              showToast(`✗ Download failed: ${res.statusText || res.status}`, 'error', 8000);
+            }
+          } catch (err) {
+            updatePersistentToast(clientId, 0, `Error: ${err.message}`, 'error');
+            showToast(`✗ Download failed: ${err.message}`, 'error', 8000);
+            console.error('Download result processing error:', err);
+          } finally {
+            delete activeDownloads[clientId];
+          }
+        },
+        onerror: function () {
+          updatePersistentToast(clientId, 0, 'Error: Failed to fetch completed file', 'error');
+          showToast('✗ Download failed: network error', 'error', 8000);
+          delete activeDownloads[clientId];
+        },
+        ontimeout: function () {
+          updatePersistentToast(clientId, 0, 'Error: Timed out fetching file', 'error');
+          showToast('✗ Download timed out', 'error', 8000);
+          delete activeDownloads[clientId];
+        }
+      });
+    }
+
+    /** Polls /download/status/<job_id> until the job reaches a terminal state. */
+    function pollJobStatus() {
+      if (stopped || !control.jobId) return;
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: `${FLASK_SERVICE_BASE_URL}/download/status/${encodeURIComponent(control.jobId)}`,
+        responseType: 'json',
+        timeout: 10000,
+        onload: function (res) {
+          if (stopped) return;
+          if (res.status !== 200 || !res.response) {
+            pollTimer = setTimeout(pollJobStatus, DOWNLOAD_STATUS_POLL_INTERVAL);
+            return;
+          }
+          const decision = decideJobStatusAction(res.response);
+          if (decision.action === 'fetch_result') {
+            fetchJobResult();
+          } else if (decision.action === 'error') {
+            updatePersistentToast(clientId, 0, decision.message, 'error');
+            showToast(`✗ Download failed: ${decision.message}`, 'error', 8000);
+            delete activeDownloads[clientId];
+          } else if (decision.action === 'cancelled') {
+            updatePersistentToast(clientId, 0, decision.message, 'error');
+            delete activeDownloads[clientId];
+          } else if (decision.action === 'dropped') {
+            updatePersistentToast(clientId, 0, decision.message, 'error');
+            delete activeDownloads[clientId];
+          } else {
+            updatePersistentToast(clientId, decision.percent, decision.message, 'running');
+            pollTimer = setTimeout(pollJobStatus, DOWNLOAD_STATUS_POLL_INTERVAL);
+          }
+        },
+        onerror: function () {
+          if (stopped) return;
+          // Transient network hiccup - keep polling rather than failing hard.
+          pollTimer = setTimeout(pollJobStatus, DOWNLOAD_STATUS_POLL_INTERVAL);
+        },
+        ontimeout: function () {
+          if (stopped) return;
+          pollTimer = setTimeout(pollJobStatus, DOWNLOAD_STATUS_POLL_INTERVAL);
+        }
+      });
+    }
 
     // Use GM_xmlhttpRequest to avoid extensions blocking page fetch()
-    const gmReq = GM_xmlhttpRequest({
-      method: 'GET',
-      url: requestUrl,
-      responseType: 'blob',
-      onprogress: function (e) {
-        if (e.lengthComputable) {
-          const pct = Math.min(99, Math.floor((e.loaded / e.total) * 100));
-          updatePersistentToast(clientId, pct, `Downloading... ${pct}%`, 'running');
-        } else {
-          updatePersistentToast(clientId, 50, `Downloading...`, 'running');
-        }
-      },
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: `${FLASK_SERVICE_BASE_URL}/download/start`,
+      data: params.toString(),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      responseType: 'json',
+      timeout: 30000,
       onload: function (res) {
-        try {
-          if (res.status >= 200 && res.status < 300) {
-            const blob = res.response;
-            contentDisposition = res.responseHeaders || '';
-            let filename = filenameHint + '.' + (targetFormat || (videoId ? 'mp4' : 'mp3'));
-            try {
-              const m = /filename\*?=(?:UTF-8'')?([^;\n]*)/i.exec(contentDisposition);
-              if (m && m[1]) {
-                const raw = m[1].trim().replace(/['"]/g, '');
-                try { filename = decodeURIComponent(raw); } catch (e) { filename = raw; }
-              }
-            } catch (e) {}
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = filename;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(link.href);
-            updatePersistentToast(clientId, 100, `Downloaded: ${filename}`, 'complete');
-            // Persist status only after successful response handling.
-            if (quickTrack && quickTrack.videoId && (quickTrack.kind === 'video' || quickTrack.kind === 'audio')) {
-              markQuickDownloadCompleted(quickTrack.videoId, quickTrack.kind);
-            }
-          } else {
-            updatePersistentToast(clientId, 0, `Server error: ${res.status}`, 'error');
-            showToast(`✗ Download failed: ${res.statusText || res.status}`, 'error', 8000);
-          }
-        } catch (err) {
-          updatePersistentToast(clientId, 0, `Error: ${err.message}`, 'error');
-          showToast(`✗ Download failed: ${err.message}`, 'error', 8000);
-          console.error('Download onload processing error:', err);
-        } finally {
-          try { delete activeDownloads[clientId]; } catch (e) {}
+        if (stopped) return;
+        if (res.status !== 202 || !res.response || !res.response.job_id) {
+          const errMsg = (res.response && res.response.error) || `Server error: ${res.status}`;
+          updatePersistentToast(clientId, 0, errMsg, 'error');
+          showToast(`✗ Download failed: ${errMsg}`, 'error', 8000);
+          delete activeDownloads[clientId];
+          return;
         }
+        control.jobId = res.response.job_id;
+        pollJobStatus();
       },
       onerror: function (err) {
+        if (stopped) return;
         updatePersistentToast(clientId, 0, `Error: Request failed`, 'error');
         showToast(`✗ Download failed: network error`, 'error', 8000);
         console.error('GM_xmlhttpRequest error:', err);
-        try { delete activeDownloads[clientId]; } catch (e) {}
+        delete activeDownloads[clientId];
       },
       ontimeout: function () {
+        if (stopped) return;
         updatePersistentToast(clientId, 0, `Error: Request timed out`, 'error');
         showToast(`✗ Download timed out`, 'error', 8000);
-        try { delete activeDownloads[clientId]; } catch (e) {}
+        delete activeDownloads[clientId];
       }
     });
-
-    // Store the GM request so cancel/close buttons can abort it
-    activeDownloads[clientId] = gmReq;
   }
 
 
@@ -2068,4 +2242,40 @@
   document.addEventListener('yt-page-data-updated', () => {
     setTimeout(() => addThumbnailIcons(document), 0);
   }, true);
+
+  // Best-effort: tell the server to cancel any still-running jobs when the
+  // tab is closed/navigated away from at the browser level (not needed for
+  // in-SPA YouTube navigation, since downloads track independently of the
+  // current video page). This is best-effort only, since a request fired
+  // during pagehide isn't guaranteed to complete - the server's own
+  // heartbeat-loss reaper (see YTDL_AUTO_CANCEL_ON_HEARTBEAT_LOSS) is the
+  // reliable backstop for hard crashes/network loss where no unload event
+  // fires at all.
+  window.addEventListener('pagehide', () => {
+    try {
+      Object.keys(activeDownloads).forEach((clientId) => {
+        const ctrl = activeDownloads[clientId];
+        if (ctrl && ctrl.jobId) cancelJobOnServer(ctrl.jobId);
+      });
+    } catch (e) { /* best effort */ }
+  });
+
+  // Expose pure, DOM-independent functions for unit testing under Node
+  // (see tests/test_userscript_pure.js). This is a no-op under Tampermonkey,
+  // where `module` is never defined.
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      isValidFormatId,
+      sanitizeFormatPayload,
+      extractVideoIdFromAnyUrl,
+      isVideoUrlJS,
+      gcd,
+      formatBitrate,
+      formatVideoDetails,
+      getValidAudioFormats,
+      buildDownloadStartParams,
+      parseContentDispositionFilename,
+      decideJobStatusAction
+    };
+  }
 })();

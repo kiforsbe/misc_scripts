@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from typing import Optional, Callable, Dict, Any
 
 from flask import json
@@ -381,6 +382,7 @@ async def download_item(
     progress_callback: Optional[ProgressCallbackType] = None,
     status_callback: Optional[StatusCallbackType] = None,
     use_cookies: bool = False,
+    cancel_event: Optional[threading.Event] = None,
 ) -> None:
     """
     Downloads the specified DownloadItem based on its selected formats,
@@ -394,6 +396,8 @@ async def download_item(
                        (mp4 for video, m4a for audio).
         progress_callback: Function called with download progress updates.
         status_callback: Function called when the overall status changes.
+        cancel_event: Optional event checked on every yt-dlp progress tick;
+                      when set, aborts the in-progress download.
 
     Raises:
         ValueError: If required format selections are missing, FFmpeg is not found,
@@ -432,6 +436,12 @@ async def download_item(
 
     # --- Helper for progress updates ---
     def _progress_hook(d: Dict[str, Any]):
+        # Checked on every tick (yt-dlp calls this ~1x/sec while downloading);
+        # raising DownloadCancelled here is yt-dlp's documented way to abort
+        # a download from within a progress hook.
+        if cancel_event is not None and cancel_event.is_set():
+            raise yt_dlp.utils.DownloadCancelled("Download cancelled by user request.")
+
         # Update item's internal progress
         if d["status"] == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate")
@@ -849,6 +859,10 @@ async def download_item(
         logger.error(f"Download failed for '{item.title}': {e}", exc_info=False)
         _update_status("Error", str(e))
         raise e
+    except yt_dlp.utils.DownloadCancelled as e:
+        logger.warning(f"Download cancelled for '{item.title}': {e}")
+        _update_status("Cancelled", str(e) or "Cancelled by user request.")
+        raise
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e).split(":")[-1].strip()  # Get cleaner error message
         logger.error(
