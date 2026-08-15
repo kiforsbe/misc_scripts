@@ -246,6 +246,17 @@ test('buildDownloadStartParams only includes provided/truthy fields', () => {
   );
 });
 
+test('buildDownloadStartParams includes title_hint only when provided', () => {
+  assert.deepEqual(
+    lib.buildDownloadStartParams('https://x/y', null, null, null, null, null, 'My Video Title'),
+    { url: 'https://x/y', title_hint: 'My Video Title' }
+  );
+  assert.deepEqual(
+    lib.buildDownloadStartParams('https://x/y', null, null, null, null, null, ''),
+    { url: 'https://x/y' }
+  );
+});
+
 // --- parseContentDispositionFilename ---
 
 test('parseContentDispositionFilename extracts a quoted filename', () => {

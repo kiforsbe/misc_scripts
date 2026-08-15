@@ -564,15 +564,17 @@
     * @param {string|null} targetFormat - Requested conversion/output format.
     * @param {string|number|null} targetAudioParams - Optional audio conversion argument.
     * @param {string|number|null} targetVideoParams - Optional video conversion argument.
+    * @param {string|null} titleHint - Best-effort video title, for display while queued server-side.
    * @returns {Record<string, string|number>}
    */
-  function buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams) {
+  function buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, titleHint) {
     const params = { url };
     if (audioId) params.audio_format_id = audioId;
     if (videoId) params.video_format_id = videoId;
     if (targetFormat) params.target_format = targetFormat;
     if (targetAudioParams) params.target_audio_params = targetAudioParams;
     if (targetVideoParams) params.target_video_params = targetVideoParams;
+    if (titleHint) params.title_hint = titleHint;
     return params;
   }
 
@@ -700,7 +702,7 @@
 
     updatePersistentToast(clientId, 0, 'Starting download...', 'running');
 
-    const paramsObj = buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams);
+    const paramsObj = buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, filenameHint);
     const params = new URLSearchParams();
     Object.keys(paramsObj).forEach((key) => params.append(key, paramsObj[key]));
 

@@ -187,6 +187,74 @@ def test_cancel_while_queued_never_starts_its_download(mod, client, result_file)
     _poll_until(lambda d: d["status"] == "complete", lambda: _status(client, job_holder))
 
 
+def test_queued_message_includes_title_hint_when_provided(mod, client, result_file):
+    """A job queued behind another (cap=1) should show the client-supplied
+    title alongside its queue position, not just the generic message -
+    the server doesn't know the real title itself until _process_download
+    fetches it, which only happens after a queue slot is claimed."""
+    holder_started = threading.Event()
+    holder_release = threading.Event()
+
+    async def fake_process_download(*a, progress_hook=None, cancel_event=None, **kw):
+        holder_started.set()
+        holder_release.wait(timeout=3)
+        return result_file
+
+    mod._process_download = fake_process_download
+
+    r1 = client.post("/download/start", json={"url": "https://example.com/qtitle-holder"})
+    job_holder = r1.get_json()["job_id"]
+    assert holder_started.wait(timeout=2)
+
+    r2 = client.post(
+        "/download/start",
+        json={"url": "https://example.com/qtitle-queued", "title_hint": "My Cool Video"},
+    )
+    job_queued = r2.get_json()["job_id"]
+
+    queued_status = _poll_until(
+        lambda d: "position" in (d.get("message") or ""),
+        lambda: _status(client, job_queued),
+    )
+    assert queued_status["message"].startswith("My Cool Video - "), queued_status
+    assert "position" in queued_status["message"]
+
+    holder_release.set()
+    for job_id in (job_holder, job_queued):
+        final = _poll_until(lambda d: d["status"] == "complete", lambda jid=job_id: _status(client, jid))
+        assert final["status"] == "complete"
+
+
+def test_queued_message_falls_back_to_generic_text_without_title_hint(mod, client, result_file):
+    holder_started = threading.Event()
+    holder_release = threading.Event()
+
+    async def fake_process_download(*a, progress_hook=None, cancel_event=None, **kw):
+        holder_started.set()
+        holder_release.wait(timeout=3)
+        return result_file
+
+    mod._process_download = fake_process_download
+
+    r1 = client.post("/download/start", json={"url": "https://example.com/qnotitle-holder"})
+    job_holder = r1.get_json()["job_id"]
+    assert holder_started.wait(timeout=2)
+
+    r2 = client.post("/download/start", json={"url": "https://example.com/qnotitle-queued"})
+    job_queued = r2.get_json()["job_id"]
+
+    queued_status = _poll_until(
+        lambda d: "position" in (d.get("message") or ""),
+        lambda: _status(client, job_queued),
+    )
+    assert queued_status["message"].startswith("Queued for download (position"), queued_status
+
+    holder_release.set()
+    for job_id in (job_holder, job_queued):
+        final = _poll_until(lambda d: d["status"] == "complete", lambda jid=job_id: _status(client, jid))
+        assert final["status"] == "complete"
+
+
 def test_dedup_waiter_does_not_consume_a_queue_slot(mod, client, result_file):
     """Regression coverage for the core queue/dedup interaction: with cap=2,
     an owner (item X) plus a dedup waiter for that same item X must not

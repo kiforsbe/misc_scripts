@@ -483,7 +483,11 @@ async def _process_download(
             try:
                 if progress_hook:
                     if status.lower() in ("downloading", "download"):
-                        progress_hook(40, f"{cb_item.title} - downloading")
+                        # error doubles as a general detail message here (not
+                        # just failures) - e.g. core.py's automatic retry
+                        # sets it to "Retrying after a transient error..."
+                        # so that's visible instead of looking stalled.
+                        progress_hook(40, f"{cb_item.title} - {error}" if error else f"{cb_item.title} - downloading")
                     elif status.lower() in ("processing", "post-processing", "merging"):
                         progress_hook(88, f"{cb_item.title} - processing")
                     elif status.lower() in ("finished", "completed"):
@@ -617,6 +621,7 @@ def _run_download_deduped(
     progress_hook=None,
     job_id: str | None = None,
     on_downloading_started=None,
+    title_hint: str | None = None,
 ) -> pathlib.Path:
     """
     Runs _process_download for this request, but if an identical request
@@ -733,7 +738,10 @@ def _run_download_deduped(
             progress_hook=progress_hook,
             job_id=job_id,
             on_downloading_started=on_downloading_started,
+            title_hint=title_hint,
         )
+
+    queued_label = f"{title_hint} - " if title_hint else ""
 
     ticket_id = uuid.uuid4().hex
     try:
@@ -741,7 +749,7 @@ def _run_download_deduped(
             ticket_id,
             cancel_event=entry["cancel_event"],
             on_waiting=lambda position: _tracked_progress_hook(
-                0, f"Queued for download (position {position})"
+                0, f"{queued_label}Queued for download (position {position})"
             ),
         )
         if not acquired:
@@ -865,6 +873,7 @@ def _background_job_runner(
     target_format: str | None,
     target_audio_params: str | None,
     target_video_params: str | None,
+    title_hint: str | None = None,
 ) -> None:
     """Runs a /download/start job in the background and records its outcome."""
     sink, cleanup_progress = _build_progress_sink(f"Job {job_id[:8]}", job_id=job_id)
@@ -892,6 +901,7 @@ def _background_job_runner(
             progress_hook=sink,
             job_id=job_id,
             on_downloading_started=_mark_downloading,
+            title_hint=title_hint,
         )
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -977,6 +987,12 @@ def _parse_download_request(data):
     target_format = data.get("target_format") or None
     target_audio_params = data.get("target_audio_params") or None
     target_video_params = data.get("target_video_params") or None
+    # Best-effort title supplied by the client (e.g. read from the YouTube
+    # page DOM before this request was even sent) purely for display while
+    # queued/waiting - the server doesn't know the real title itself until
+    # _process_download fetches it, well after a job may have already been
+    # sitting in the concurrency queue.
+    title_hint = (data.get("title_hint") or "").strip() or None
 
     if not url:
         log.warning("Download request missing 'url' parameter.")
@@ -1009,6 +1025,7 @@ def _parse_download_request(data):
         "target_format": target_format,
         "target_audio_params": target_audio_params,
         "target_video_params": target_video_params,
+        "title_hint": title_hint,
     }, None
 
 
@@ -1113,6 +1130,7 @@ def download():
             target_audio_params,
             target_video_params,
             progress_hook=progress_hook,
+            title_hint=params["title_hint"],
         )
 
         if final_filepath and final_filepath.exists():
@@ -1212,7 +1230,7 @@ def download_start():
             "dedup_key": dedup_key,
             "status": "queued",
             "percent": 0,
-            "message": "Queued",
+            "message": f"{params['title_hint']} - Queued" if params["title_hint"] else "Queued",
             "error": None,
             "result_path": None,
             "cancel_requested": False,
@@ -1231,6 +1249,7 @@ def download_start():
             params["target_format"],
             params["target_audio_params"],
             params["target_video_params"],
+            params["title_hint"],
         ),
         name=f"ytdl-job-{job_id[:8]}",
         daemon=True,

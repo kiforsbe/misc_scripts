@@ -128,6 +128,18 @@ def _is_likely_transient_download_error(e: "yt_dlp.utils.DownloadError") -> bool
     return any(marker in message for marker in _TRANSIENT_DOWNLOAD_ERROR_MARKERS)
 
 
+def _clean_yt_dlp_error(e: Exception) -> str:
+    """Strips yt-dlp's redundant leading 'ERROR: ' tag from a message
+    while keeping the rest (e.g. 'HTTP Error 403: Forbidden') intact."""
+    message = str(e)
+    parts = message.split(":")
+    if len(parts) > 1:
+        stripped = ":".join(parts[1:]).strip()
+        if stripped:
+            return stripped
+    return message
+
+
 def _yt_dlp_verbose_enabled() -> bool:
     """Enable yt-dlp verbose output when debug logging is enabled."""
     env_level = os.environ.get("LOG_LEVEL")
@@ -863,11 +875,21 @@ async def download_item(
                             ):
                                 raise
                             delay = DOWNLOAD_RETRY_DELAY_SECONDS * attempt
+                            retry_msg = (
+                                f"Retrying after a transient error "
+                                f"(attempt {attempt + 1}/{DOWNLOAD_RETRY_ATTEMPTS + 1}): "
+                                f"{_clean_yt_dlp_error(e)}"
+                            )
                             logger.warning(
                                 f"Transient-looking download error for '{item.title}' "
                                 f"(attempt {attempt}/{DOWNLOAD_RETRY_ATTEMPTS + 1}): "
                                 f"{e}. Retrying in {delay:.0f}s."
                             )
+                            # Surface the retry itself to the caller (progress
+                            # bar / job status), not just the server log, so
+                            # it doesn't look like the download silently
+                            # stalled while waiting to retry.
+                            _update_status("Downloading", retry_msg)
                             await asyncio.sleep(delay)
                             attempt += 1
 
