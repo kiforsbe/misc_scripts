@@ -1,4 +1,3 @@
-# test_netflix_watch_status.py
 pytest
 requests
 rapidfuzz

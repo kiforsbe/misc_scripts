@@ -50,7 +50,7 @@ except ImportError:
         def set_description(self, desc):
             self.desc = desc
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
     from common.video_thumbnail_generator import VideoThumbnailGenerator
     THUMBNAIL_GENERATOR_AVAILABLE = True
@@ -493,8 +493,8 @@ class WebappGenerator:
         logger.info(f"Generating webapp HTML with {len(metadata_list)} items")
         
         # Get script directory to load templates
-        script_dir = Path(__file__).parent
-        
+        script_dir = Path(__file__).parent / 'webapp'
+
         try:
             # Load templates
             logger.debug("Loading template files")

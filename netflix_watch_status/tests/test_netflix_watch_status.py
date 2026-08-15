@@ -5,7 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
 from netflix_watch_status import (
     DEFAULT_EPISODE_TITLE_OVERRIDES_FILE,

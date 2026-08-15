@@ -833,7 +833,7 @@ def build_summary_stats(scan_result: ScanResult, matched_entries: Sequence[Entry
 
 
 def load_template_asset(file_name: str) -> str:
-    asset_path = Path(__file__).with_name(file_name)
+    asset_path = Path(__file__).parent / "webapp" / file_name
     return asset_path.read_text(encoding="utf-8")
 
 

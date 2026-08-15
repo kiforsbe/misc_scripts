@@ -7,12 +7,12 @@ from typing import Dict, List, Any, Optional
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.video_thumbnail_generator import VideoThumbnailGenerator
 from common.file_grouper import FileGrouper, CustomJSONEncoder
 from common.presentation import Presenter, Colors, get_emoji, format_size
 try:
-    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'video-optimizer-v2'))
     from myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
 except ImportError:
     resolve_myanimelist_xml_path = None
@@ -1301,7 +1301,7 @@ class SeriesCompletenessChecker:
                     pass
         
         # Get the directory of this script to find template files
-        script_dir = Path(__file__).parent
+        script_dir = Path(__file__).parent / 'webapp'
 
         # Read template files
         html_template_path = script_dir / 'series_completeness_webapp_template.html'
@@ -1548,7 +1548,7 @@ def _refresh_myanimelist_metadata(results: Dict[str, Any], myanimelist_xml_path:
     # Import MyAnimeList watch status module
     try:
         import sys
-        video_optimizer_path = Path(__file__).parent / 'video-optimizer-v2'
+        video_optimizer_path = Path(__file__).resolve().parents[1] / 'video-optimizer-v2'
         if video_optimizer_path.exists() and str(video_optimizer_path) not in sys.path:
             sys.path.insert(0, str(video_optimizer_path))
         

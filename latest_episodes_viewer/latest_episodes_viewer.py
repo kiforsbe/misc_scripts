@@ -10,7 +10,7 @@ import sys
 import argparse
 import logging
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.video_thumbnail_generator import VideoThumbnailGenerator
 from common.file_grouper import (
     FileGrouper,
@@ -237,8 +237,8 @@ class LatestEpisodesViewer:
         """Export results as a standalone HTML webapp."""
         
         # Read template files
-        template_dir = Path(__file__).parent
-        
+        template_dir = Path(__file__).parent / "webapp"
+
         # Define template file paths
         css_template_path = template_dir / "latest_episodes_webapp_template.css"
         virtual_list_template_path = template_dir / "latest_episodes_virtual_list.js"
@@ -421,7 +421,7 @@ Examples:
             print(f"Warning: Could not initialize metadata providers: {e}")
     
     # Check if template files exist before proceeding
-    template_dir = Path(__file__).parent
+    template_dir = Path(__file__).parent / "webapp"
     required_templates = [
         "latest_episodes_webapp_template.html",
         "latest_episodes_webapp_template.css",

@@ -164,7 +164,7 @@ class GOGCSVToHTML:
         self.media_cache: GOGMediaCache | None = GOGMediaCache()
 
         # Initialize Jinja2 environment with custom delimiters
-        template_dir = os.path.dirname(__file__)
+        template_dir = os.path.join(os.path.dirname(__file__), 'webapp')
         self.env = Environment(
             loader=FileSystemLoader(template_dir),
             block_start_string='[%', block_end_string='%]',

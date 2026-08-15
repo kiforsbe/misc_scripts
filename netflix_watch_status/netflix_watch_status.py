@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
 
 tqdm_progress: Any
@@ -1872,7 +1872,7 @@ def _format_progress(watched_count: int, total_count: int) -> str:
 
 
 def load_template_asset(filename: str) -> str:
-    return Path(__file__).with_name(filename).read_text(encoding="utf-8")
+    return (Path(__file__).parent / "webapp" / filename).read_text(encoding="utf-8")
 
 
 def parse_table_columns(raw_columns: str) -> List[str]:
