@@ -9,7 +9,6 @@ import uuid # Import uuid for generating unique names
 classifier_found = False
 classifier_path_found = None
 expected_locations = []
-_get_music_genre_fallback = None # Placeholder for fallback function
 
 try:
     # Get the directory containing the current script (ffmpeg_genre_pp.py)
@@ -104,35 +103,6 @@ except ImportError as e:
 from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
 from yt_dlp.utils import PostProcessingError, encodeFilename
 
-# --- Import the Genre Classifier ---
-# This assumes 'music_style_classifier.py' is accessible in the Python path
-# or you adjust the import path accordingly.
-# If it's one level up from ytdl_helper, you might need path adjustments.
-# For simplicity, let's assume it can be imported directly for now.
-try:
-    # If music_style_classifier.py is in the parent directory of ytdl_helper
-    # and the parent directory is in sys.path:
-    # from .. import music_style_classifier # Use relative import if applicable
-    # Or if it's installed as a module:
-    # from music_style_classifier_module import get_music_genre
-    # --- Assuming it's directly importable ---
-    from music_style_classifier import (
-        get_music_genre,
-        main as classifier_main,
-    )  # Import main to potentially configure logging if needed
-except ImportError as e:
-    logging.error(f"Could not import music_style_classifier: {e}")
-    logging.error(
-        "Ensure music_style_classifier.py is in the Python path or adjust the import."
-    )
-
-    # Define a dummy function so the PP doesn't crash immediately if import fails,
-    # but it won't do anything useful.
-    def get_music_genre(*args, **kwargs):
-        logging.warning("music_style_classifier not found, cannot determine genre.")
-        return None
-
-
 # Configure logging for the classifier if it uses logging internally
 # This is a basic setup; adjust if the classifier needs specific config
 logger = logging.getLogger(__name__) # Use the logger defined in the module
@@ -190,19 +160,12 @@ class FFmpegGenrePP(FFmpegPostProcessor):
             logging.warning(
                 f"Filepath missing or file not found: {filepath}. Skipping genre detection."
             )
-            return [], info  # Must return ([files_to_delete], info)        # Check if the fallback function is being used (meaning import failed)
-        if get_music_genre == _get_music_genre_fallback:
+            return [], info  # Must return ([files_to_delete], info)
+
+        if not is_classifier_available():
             self.report_warning("Skipping genre detection because music_style_classifier could not be loaded.")
             logging.warning("Skipping genre detection because music_style_classifier could not be loaded.")
             return [], info
-
-        # Check if the fallback function is being used (meaning import failed)
-        # Use a more robust check, e.g., checking its __name__ or a flag
-        is_fallback = getattr(get_music_genre, '_is_fallback', False)
-        if is_fallback:
-             self.report_warning("Skipping genre detection because music_style_classifier could not be loaded.")
-             logging.warning("Skipping genre detection because music_style_classifier could not be loaded.")
-             return [], info
 
 
         self.to_screen(f'[genre] Analyzing genre for "{os.path.basename(filepath)}"')

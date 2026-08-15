@@ -117,6 +117,30 @@ def test_warm_up_genre_classifier_returns_false_on_exception(monkeypatch):
     assert ffmpeg_genre_pp.warm_up_genre_classifier() is False
 
 
+# --- FFmpegGenrePP.run() early-exit when classifier unavailable ---
+
+
+def test_genre_pp_run_skips_classification_when_classifier_unavailable(monkeypatch, tmp_path):
+    """FFmpegGenrePP.run() must skip calling get_music_genre entirely when
+    the classifier module couldn't be imported, rather than relying on a
+    dead identity check that never actually detects the fallback."""
+    monkeypatch.setattr(ffmpeg_genre_pp, "classifier_found", False)
+    monkeypatch.setattr(
+        ffmpeg_genre_pp,
+        "get_music_genre",
+        lambda *a, **kw: pytest.fail("get_music_genre must not be called when classifier is unavailable"),
+    )
+
+    fake_file = tmp_path / "output.mp3"
+    fake_file.write_bytes(b"fake audio data")
+
+    pp = ffmpeg_genre_pp.FFmpegGenrePP(downloader=None)
+    files_to_delete, info = pp.run({"filepath": str(fake_file)})
+
+    assert files_to_delete == []
+    assert info == {"filepath": str(fake_file)}
+
+
 # --- ytdl_helper.core.warm_up_genre_classifier_if_enabled() ---
 
 
