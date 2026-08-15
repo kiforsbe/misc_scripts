@@ -25,6 +25,7 @@ __pycache__/
 .temp
 .claude
 docs/superpowers/
+.superpowers/
 out
 cache
 
