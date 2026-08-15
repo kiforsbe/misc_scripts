@@ -1,3 +1,4 @@
 guessit
+pytest
 # Optional: install for interactive checkbox/select prompts.
 questionary

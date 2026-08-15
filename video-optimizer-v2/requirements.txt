@@ -5,3 +5,4 @@ rapidfuzz>=2.0.0
 inquirer>=2.7.0
 mutagen>=1.45.0
 zstandard>=0.25.0
+colorama>=0.4.6
