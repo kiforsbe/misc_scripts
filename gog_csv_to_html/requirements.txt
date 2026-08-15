@@ -1,0 +1,7 @@
+# gog_csv_to_html.py
+requests
+beautifulsoup4
+Jinja2
+ollama
+pydantic
+Brotli

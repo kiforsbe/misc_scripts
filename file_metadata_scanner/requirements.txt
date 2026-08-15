@@ -1,0 +1,5 @@
+# file_metadata_scanner.py
+tqdm
+Pillow
+libarchive-c
+rarfile

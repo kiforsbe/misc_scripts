@@ -1,0 +1,3 @@
+# simple_scraper_proxy.py
+beautifulsoup4
+PyYAML

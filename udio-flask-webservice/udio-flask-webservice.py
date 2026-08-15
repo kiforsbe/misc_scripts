@@ -1,10 +1,12 @@
 import os
+import sys
 import uuid
 import logging
 import threading
 import time
 import json
 import subprocess
+from pathlib import Path
 from flask import Flask, request, send_file, render_template_string, jsonify
 import requests
 import eyed3
@@ -21,7 +23,8 @@ eyed3.log.setLevel("ERROR")
 
 # --- Import the music genre classifier ---
 try:
-    # Assuming music_style_classifier.py is in the same directory or accessible via PYTHONPATH
+    # music_style_classifier.py lives at repo root (not moved into this tool's folder)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from music_style_classifier import get_music_genre
     MUSIC_CLASSIFIER_AVAILABLE = True
     logging.info("Successfully imported music_style_classifier.")

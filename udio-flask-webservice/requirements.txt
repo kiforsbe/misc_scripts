@@ -1,0 +1,7 @@
+# udio-flask-webservice.py
+flask
+requests
+python-magic-bin
+eyed3
+mutagen
+Pillow
