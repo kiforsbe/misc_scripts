@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, asdict
 
 from video_thumbnail_generator import VideoThumbnailGenerator
 from file_grouper import FileGrouper, CustomJSONEncoder
-from presentation import Presenter, Colors, get_emoji
+from presentation import Presenter, Colors, get_emoji, format_size
 try:
     sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
     from myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
@@ -87,7 +87,8 @@ class SeriesAnalysis:
     watch_status: Optional[WatchStatus] = None
     myanimelist_watch_status: Optional[Dict] = None
     group_metadata: Optional[Dict] = None  # Group-level metadata including average timestamps
-    
+    total_size_bytes: int = 0  # Total size of all files in the group (bytes)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         result = {
@@ -104,7 +105,8 @@ class SeriesAnalysis:
             'extra_files': self.extra_files,
             'watch_status': self.watch_status.to_dict() if isinstance(self.watch_status, WatchStatus) else self.watch_status,
             'myanimelist_watch_status': self.myanimelist_watch_status,
-            'group_metadata': self.group_metadata
+            'group_metadata': self.group_metadata,
+            'total_size_bytes': self.total_size_bytes
         }
         return result
     
@@ -135,7 +137,8 @@ class SeriesAnalysis:
             extra_files=data.get('extra_files', []),
             watch_status=watch_status,
             myanimelist_watch_status=data.get('myanimelist_watch_status'),
-            group_metadata=data.get('group_metadata')
+            group_metadata=data.get('group_metadata'),
+            total_size_bytes=data.get('total_size_bytes', 0)
         )
 
 
@@ -259,6 +262,7 @@ class ResultsFilter:
         unknown_series = total_series - complete_series - incomplete_series
         total_episodes_found = sum(a['episodes_found'] for a in filtered_groups.values())
         total_episodes_expected = sum(a.get('episodes_expected', 0) for a in filtered_groups.values())
+        total_size_bytes = sum(a.get('total_size_bytes', 0) for a in filtered_groups.values())
 
         results['completeness_summary'].update({
             'total_series': total_series,
@@ -266,7 +270,8 @@ class ResultsFilter:
             'incomplete_series': incomplete_series,
             'unknown_series': unknown_series,
             'total_episodes_found': total_episodes_found,
-            'total_episodes_expected': total_episodes_expected
+            'total_episodes_expected': total_episodes_expected,
+            'total_size_bytes': total_size_bytes
         })
 
 
@@ -695,7 +700,8 @@ class SeriesCompletenessChecker:
                 'incomplete_series': 0,
                 'unknown_series': 0,
                 'total_episodes_found': 0,
-                'total_episodes_expected': 0
+                'total_episodes_expected': 0,
+                'total_size_bytes': 0
             }
         }
         
@@ -716,6 +722,7 @@ class SeriesCompletenessChecker:
 
                 results['completeness_summary']['total_episodes_found'] += analysis.episodes_found
                 results['completeness_summary']['total_episodes_expected'] += analysis.episodes_expected
+                results['completeness_summary']['total_size_bytes'] += analysis.total_size_bytes
                 
                 # Update progress with current series name
                 display_title = analysis.title[:30]
@@ -1072,6 +1079,13 @@ class SeriesCompletenessChecker:
         Returns:
             SeriesAnalysis instance
         """
+        # Total size across all files in the group.
+        # Note: extra_files is a subset of group_files (same dict objects), so
+        # summing group_files alone already covers episodes + extras.
+        total_size_bytes = sum(
+            int(f.get('file_size', 0) or 0) for f in group_files
+        )
+
         return SeriesAnalysis(
             title=title,
             season=season,
@@ -1086,7 +1100,8 @@ class SeriesCompletenessChecker:
             extra_files=extra_files,
             watch_status=watch_status,
             myanimelist_watch_status=mal_watch_status,
-            group_metadata=group_metadata
+            group_metadata=group_metadata,
+            total_size_bytes=total_size_bytes
         )
 
     def _check_movie_type(self, first_file: Dict, metadata: Dict, result: SeriesAnalysis) -> bool:
@@ -1410,6 +1425,9 @@ class SeriesCompletenessChecker:
         print(f"{Colors.BRIGHT_BLACK}Unknown status:{Colors.RESET} {summary['unknown_series']}")
         print(f"{Colors.BRIGHT_BLACK}Episodes found:{Colors.RESET} {summary['total_episodes_found']}")
         print(f"{Colors.BRIGHT_BLACK}Episodes expected:{Colors.RESET} {summary['total_episodes_expected']}")
+        total_size_bytes = summary.get('total_size_bytes', 0)
+        if total_size_bytes > 0:
+            print(f"{Colors.BRIGHT_BLACK}Total size:{Colors.RESET} {Colors.BOLD}{format_size(total_size_bytes)}{Colors.RESET}")
         
         if summary['total_episodes_expected'] > 0:
             completion_rate = (summary['total_episodes_found'] / summary['total_episodes_expected']) * 100

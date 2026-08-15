@@ -164,6 +164,11 @@ class Presenter:
         if analysis.get('extra_episodes'):
             extra_info.append(f"Extra: {self._format_episode_ranges(analysis['extra_episodes'])}")
 
+        # Total size for the series
+        total_size_bytes = analysis.get('total_size_bytes', 0)
+        if total_size_bytes and total_size_bytes > 0:
+            extra_info.append(f"Size: {format_size(total_size_bytes)}")
+
         # Timestamp
         timestamp_str = ''
         gm = analysis.get('group_metadata', {}) or {}
@@ -286,3 +291,25 @@ def color_text(text: str, color: str = '', use_colors: bool = True) -> str:
     if use_colors and color:
         return f"{color}{text}{Colors.RESET}"
     return text
+
+
+def format_size(size_bytes: Optional[float]) -> str:
+    """Format a byte count as a human-readable string (e.g. ``1.2 GB``).
+
+    Args:
+        size_bytes: Size in bytes. ``None`` or non-positive values return an empty string.
+
+    Returns:
+        A compact human-readable size string, or '' when there is nothing to show.
+    """
+    if not size_bytes or size_bytes <= 0:
+        return ''
+    units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    size = float(size_bytes)
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+    if unit_index == 0:
+        return f"{int(size)} {units[unit_index]}"
+    return f"{size:.1f} {units[unit_index]}"

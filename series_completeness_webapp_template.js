@@ -1230,20 +1230,21 @@ class SeriesCompletenessApp {
     renderSeriesInfo(series) {
         const title_metadata = this.getTitleMetadata(series);
         const group_metadata = series.group_metadata || {};
-        
+
         // Check if we have any metadata to show
         const hasYear = title_metadata.year;
         const hasGenres = title_metadata.genres && title_metadata.genres.length > 0;
         const hasTags = title_metadata.tags && title_metadata.tags.length > 0;
         const hasPlot = title_metadata.plot;
         const hasType = title_metadata.type;
-        
+        const hasSize = series.total_size_bytes > 0;
+
         // Check for timestamps
         const hasCreated = group_metadata.avg_created_time;
         const hasModified = group_metadata.avg_modified_time;
         const hasAccess = group_metadata.avg_access_time;
-        
-        if (!hasYear && !hasGenres && !hasTags && !hasPlot && !hasType && !hasCreated && !hasModified && !hasAccess) {
+
+        if (!hasYear && !hasGenres && !hasTags && !hasPlot && !hasType && !hasSize && !hasCreated && !hasModified && !hasAccess) {
             return ''; // Don't show the card if no metadata available
         }
         
@@ -1275,6 +1276,7 @@ class SeriesCompletenessApp {
                 </h4>
                 ${hasType ? `<p><strong>Type:</strong> ${this.escapeHtml(title_metadata.type)}</p>` : ''}
                 ${hasYear ? `<p><strong>Year:</strong> ${title_metadata.year}</p>` : ''}
+                ${hasSize ? `<p><strong>Total Size:</strong> ${this.formatFileSize(series.total_size_bytes)}</p>` : ''}
                 ${genresHtml}
                 ${hasTags ? this.renderTagsWithPopup(title_metadata.tags) : ''}
                 ${hasPlot ? `<p><strong>Plot:</strong> ${this.escapeHtml(title_metadata.plot)}</p>` : ''}
