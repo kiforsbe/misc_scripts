@@ -1,7 +1,10 @@
 import gzip
 import sys
 import argparse
+from pathlib import Path
 from lxml import etree
+
+DEFAULT_XSD_PATH = Path(__file__).with_name("myanimelist.xsd")
 
 def validate_mal_xml(xml_path, xsd_path):
     """
@@ -62,7 +65,7 @@ def validate_mal_xml(xml_path, xsd_path):
 def main():
     parser = argparse.ArgumentParser(description='Validate MyAnimeList XML export against XSD schema')
     parser.add_argument('xml_file', help='Path to the XML file to validate (.xml or .xml.gz)')
-    parser.add_argument('--xsd', default='myanimelist.xsd', help='Path to XSD schema file (default: myanimelist.xsd)')
+    parser.add_argument('--xsd', default=str(DEFAULT_XSD_PATH), help='Path to XSD schema file (default: myanimelist.xsd next to this script)')
     
     args = parser.parse_args()
     
