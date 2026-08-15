@@ -38,6 +38,8 @@ def mod():
     m = importlib.import_module(MODULE_NAME)
 
     m.ytdl_core.clean_youtube_url = lambda u: u
+    original_is_video_url = m.is_video_url
+    m.is_video_url = lambda u: True
     m.FFMPEG_PATH = "C:/fake/ffmpeg.exe"
 
     original_process_download = m._process_download
@@ -51,6 +53,7 @@ def mod():
     yield m
 
     m._process_download = original_process_download
+    m.is_video_url = original_is_video_url
     m.ENABLE_CONSOLE_PROGRESS = original_enable_console_progress
     m._make_console_progress_subscriber = original_make_console_subscriber
     m._active_downloads.clear()

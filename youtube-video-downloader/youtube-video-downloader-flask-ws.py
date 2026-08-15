@@ -91,7 +91,11 @@ def is_video_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
-        if host.endswith("youtube.com") or host.endswith("youtube-nocookie.com"):
+        if (
+            host in ("youtube.com", "youtube-nocookie.com")
+            or host.endswith(".youtube.com")
+            or host.endswith(".youtube-nocookie.com")
+        ):
             qs = parse_qs(parsed.query)
             if qs.get("v"):
                 return True
@@ -1001,6 +1005,13 @@ def _parse_download_request(data):
     if not url.startswith(("http://", "https://")):
         log.warning(f"Download request with invalid URL format: {url}")
         return None, (jsonify({"error": "Invalid 'url' parameter format"}), 400)
+
+    if not is_video_url(url):
+        log.warning(f"Download request with non-YouTube-video URL: {url}")
+        return None, (
+            jsonify({"error": "Only individual YouTube video URLs are supported."}),
+            400,
+        )
 
     needs_ffmpeg = bool(target_format) or (
         audio_format_id and video_format_id and audio_format_id != video_format_id

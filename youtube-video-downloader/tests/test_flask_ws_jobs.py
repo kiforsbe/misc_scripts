@@ -30,12 +30,15 @@ def mod():
 
     # Isolate from real network/ffmpeg/dedup-url-cleaning behavior.
     m.ytdl_core.clean_youtube_url = lambda u: u
+    original_is_video_url = m.is_video_url
+    m.is_video_url = lambda u: True
     m.FFMPEG_PATH = "C:/fake/ffmpeg.exe"
 
     original_process_download = m._process_download
     original_auto_cancel = m.AUTO_CANCEL_ON_HEARTBEAT_LOSS
     original_heartbeat_timeout = m.JOB_HEARTBEAT_TIMEOUT_SECONDS
     original_reaper_interval = m.JOB_REAPER_INTERVAL_SECONDS
+    original_job_retention = m.JOB_RETENTION_SECONDS
     original_enable_console_progress = m.ENABLE_CONSOLE_PROGRESS
     original_wait_timeout = m.DOWNLOAD_WAIT_TIMEOUT_SECONDS
 
@@ -50,9 +53,11 @@ def mod():
     yield m
 
     m._process_download = original_process_download
+    m.is_video_url = original_is_video_url
     m.AUTO_CANCEL_ON_HEARTBEAT_LOSS = original_auto_cancel
     m.JOB_HEARTBEAT_TIMEOUT_SECONDS = original_heartbeat_timeout
     m.JOB_REAPER_INTERVAL_SECONDS = original_reaper_interval
+    m.JOB_RETENTION_SECONDS = original_job_retention
     m.ENABLE_CONSOLE_PROGRESS = original_enable_console_progress
     m.DOWNLOAD_WAIT_TIMEOUT_SECONDS = original_wait_timeout
     m._active_downloads.clear()
@@ -488,3 +493,47 @@ def test_heartbeat_loss_cancels_when_auto_cancel_enabled(mod, client):
     resp = client.post("/download/start", json={"url": "https://example.com/hb2"})
     # Deliberately do not poll status - simulate a dropped client.
     assert cancel_seen.wait(timeout=3), "auto-cancel is on but heartbeat loss did not cancel the download"
+
+
+# --- Orphaned completed-file cleanup ---
+
+
+def test_forgotten_completed_job_still_queues_its_file_for_deletion(mod, client, result_file):
+    """A job whose client never calls /download/result (e.g. the tab was
+    closed right after the download finished, well after heartbeat loss
+    already marked it "dropped") must not leak its output file forever -
+    once the reaper forgets the job (JOB_RETENTION_SECONDS after it
+    actually completed), the file must still end up in the delete queue
+    even though nobody ever fetched it."""
+    mod.JOB_HEARTBEAT_TIMEOUT_SECONDS = 0.15
+    mod.JOB_REAPER_INTERVAL_SECONDS = 0.05
+    mod.JOB_RETENTION_SECONDS = 0.2
+
+    reaper = threading.Thread(target=mod._job_reaper_loop, daemon=True)
+    reaper.start()
+
+    async def fake_process_download(*a, progress_hook=None, cancel_event=None, **kw):
+        return result_file
+
+    mod._process_download = fake_process_download
+
+    resp = client.post("/download/start", json={"url": "https://example.com/leak1"})
+    job_id = resp.get_json()["job_id"]
+
+    final = _poll_until(
+        lambda d: d["status"] == "complete",
+        lambda: client.get(f"/download/status/{job_id}").get_json(),
+    )
+    assert final["status"] == "complete"
+    # Deliberately never call /download/result - simulate an abandoned tab.
+
+    deadline = time.time() + 3
+    while time.time() < deadline and job_id in mod._jobs:
+        time.sleep(0.05)
+    assert job_id not in mod._jobs, "job was never forgotten by the reaper"
+
+    with mod.queue_lock:
+        queued_paths = [fi["path"] for fi in mod.delete_queue]
+    assert str(result_file) in queued_paths, (
+        "completed file from a forgotten-but-never-fetched job was never queued for deletion"
+    )
