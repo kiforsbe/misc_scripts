@@ -14,7 +14,8 @@ from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Protocol
-from presentation import Presenter, color_text, get_emoji, Colors
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+from common.presentation import Presenter, color_text, get_emoji, Colors
 
 try:
     from tqdm import tqdm

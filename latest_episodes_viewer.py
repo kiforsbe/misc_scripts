@@ -10,8 +10,9 @@ import sys
 import argparse
 import logging
 
-from video_thumbnail_generator import VideoThumbnailGenerator
-from file_grouper import (
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+from common.video_thumbnail_generator import VideoThumbnailGenerator
+from common.file_grouper import (
     FileGrouper,
     CustomJSONEncoder,
     get_metadata_manager,

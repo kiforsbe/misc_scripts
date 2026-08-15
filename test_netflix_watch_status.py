@@ -1,10 +1,12 @@
 import csv
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 
-from netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+from common.netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
 from netflix_watch_status import (
     DEFAULT_EPISODE_TITLE_OVERRIDES_FILE,
     NetflixHistoryEntry,

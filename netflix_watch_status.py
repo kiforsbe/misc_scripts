@@ -15,7 +15,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+from common.netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
 
 tqdm_progress: Any
 

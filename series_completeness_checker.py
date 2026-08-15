@@ -7,9 +7,10 @@ from typing import Dict, List, Any, Optional
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 
-from video_thumbnail_generator import VideoThumbnailGenerator
-from file_grouper import FileGrouper, CustomJSONEncoder
-from presentation import Presenter, Colors, get_emoji, format_size
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+from common.video_thumbnail_generator import VideoThumbnailGenerator
+from common.file_grouper import FileGrouper, CustomJSONEncoder
+from common.presentation import Presenter, Colors, get_emoji, format_size
 try:
     sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
     from myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
@@ -604,7 +605,7 @@ except ImportError:
 
 # Try to get metadata manager - it may not be available if dependencies aren't installed
 try:
-    from file_grouper import get_metadata_manager, get_plex_provider
+    from common.file_grouper import get_metadata_manager, get_plex_provider
     metadata_manager_available = True
     plex_provider_available = True
 except ImportError:

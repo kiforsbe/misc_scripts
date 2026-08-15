@@ -50,8 +50,9 @@ except ImportError:
         def set_description(self, desc):
             self.desc = desc
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 try:
-    from video_thumbnail_generator import VideoThumbnailGenerator
+    from common.video_thumbnail_generator import VideoThumbnailGenerator
     THUMBNAIL_GENERATOR_AVAILABLE = True
 except ImportError:
     THUMBNAIL_GENERATOR_AVAILABLE = False

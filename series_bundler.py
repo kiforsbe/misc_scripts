@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
-from presentation import get_emoji, color_text, Presenter, Colors
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
+from common.presentation import get_emoji, color_text, Presenter, Colors
 
 try:
     from tqdm import tqdm
@@ -40,7 +41,7 @@ except ImportError:
             pass
 
 from guessit_wrapper import guessit_wrapper
-from file_grouper import FileGrouper
+from common.file_grouper import FileGrouper
 try:
     sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
     from myanimelist_watch_status import resolve_myanimelist_xml_path

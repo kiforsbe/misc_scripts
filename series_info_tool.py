@@ -37,13 +37,14 @@ class LogOutputTracker(logging.Handler):
 
 
 # Import dependencies from the reference codebase
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 try:
-    from file_grouper import FileGrouper, get_metadata_manager, get_plex_provider
+    from common.file_grouper import FileGrouper, get_metadata_manager, get_plex_provider
 except ImportError as e:
     # Early logging setup for critical errors
     logging.basicConfig(level=logging.ERROR, format='%(levelname)s: %(message)s')
     logging.error(f"Required modules not found: {e}")
-    logging.error("Make sure file_grouper.py is available in the same directory.")
+    logging.error("Make sure common/file_grouper.py is available in the repo root's common/ folder.")
     sys.exit(1)
 
 try:
