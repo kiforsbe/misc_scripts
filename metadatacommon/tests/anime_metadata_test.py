@@ -1,15 +1,17 @@
 import os
+import sys
 import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from guessit_wrapper import guessit_wrapper
 
 provider = None
 
 try:
-    import sys
-    # Load this library from subfolder video-optimizer-v2
-    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
-    from anime_metadata import AnimeDataProvider
-    from metadata_provider import TitleInfo, EpisodeInfo, MatchResult
+    from metadatacommon.anime_metadata import AnimeDataProvider
+    from metadatacommon.metadata_provider import TitleInfo, EpisodeInfo, MatchResult
 
     provider = AnimeDataProvider()
 except ImportError:

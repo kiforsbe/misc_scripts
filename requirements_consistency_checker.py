@@ -37,7 +37,6 @@ KNOWN_LOCAL_MODULES = {
     "guessit_wrapper",
     "browser_utils",
     "music_style_classifier",
-    "myanimelist_watch_status",
 }
 
 
@@ -148,7 +147,7 @@ def normalize_for_compare(name: str) -> str:
 def check_undeclared_imports(tool_dir: Path) -> list[str]:
     requirements_path = tool_dir / "requirements.txt"
     declared_normalized = {normalize_for_compare(p) for p in declared_packages(requirements_path)}
-    locals_ = local_sibling_modules(tool_dir) | {"common"} | KNOWN_LOCAL_MODULES
+    locals_ = local_sibling_modules(tool_dir) | {"common", "metadatacommon"} | KNOWN_LOCAL_MODULES
 
     warnings = []
     for py_file in sorted(tool_dir.rglob("*.py")):

@@ -1,16 +1,18 @@
 import os
+import sys
 import time
 import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from guessit_wrapper import guessit_wrapper
 
 provider = None
 
 try:
-    import sys
-    # Load this library from subfolder video-optimizer-v2
-    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
-    from imdb_metadata import IMDbDataProvider
-    from metadata_provider import TitleInfo, EpisodeInfo, MatchResult
+    from metadatacommon.imdb_metadata import IMDbDataProvider
+    from metadatacommon.metadata_provider import TitleInfo, EpisodeInfo, MatchResult
 
     provider = IMDbDataProvider()
 except ImportError:

@@ -7,9 +7,10 @@ Miscellaneous scripts to automate common tasks.
   - [myanimelist-addtolist-improved.user-script.js](#myanimelist-addtolist-improveduser-scriptjs): Adds quick MyAnimeList watch-status dropdowns directly to anime pages.
 - [Libraries](#libraries): Reusable helper modules shared by multiple scripts in this repository.
   - [browser_utils.py](#browser_utilspy): Cross-platform browser launcher with popup, new-window, and maximized modes.
+  - [metadatacommon](#metadatacommon): Shared metadata provider package (anime, IMDb, Plex, MyAnimeList) used across several tools.
 - [Projects](#projects): Larger multi-file tools with dedicated packages, helpers, tests, or service components.
   - [plex_db_tool](#plex_db_tool): Package-backed Plex database transfer and playlist sync CLI with root shim.
-  - [video-optimizer-v2](#video-optimizer-v2): Multi-file video transcoder with metadata providers, cache tooling, and tests.
+  - [video-optimizer-v2](#video-optimizer-v2): Multi-file video transcoder using shared metadata providers, with tests.
   - [youtube-video-downloader](#youtube-video-downloader): Bundle of CLI, TUI, web, userscript, and helper download tools.
   - [mini-dlna-server](#mini-dlna-server): Experimental DLNA server project with multiple networking and service modules.
 - [Scripts](#scripts): Standalone utilities for media, metadata, downloads, reports, and local tooling.
@@ -26,6 +27,7 @@ Miscellaneous scripts to automate common tasks.
   - Metadata, Cataloging & Reports
     - [compare_package_versions.py](#compare_package_versionspy): Compares proposed package versions against installed ones, highlighting upgrades and downgrades.
     - [imdb_title_query.py](#imdb_title_querypy): Queries IMDb TSV datasets with filtering, column selection, and downloads.
+    - [metadata_cache_manager.py](#metadata_cache_managerpy): CLI to inspect and control TTLs for the metadatacommon provider caches.
     - [smartls.py](#smartlspy): Metadata-aware directory explorer with rich filtering, sorting, and report exports.
     - [series_info_tool.py](#series_info_toolpy): Groups video files and fetches series metadata with MyAnimeList integration.
     - [netflix_watch_status.py](#netflix_watch_statuspy): Builds Netflix viewing history reports with metadata and standalone HTML output.
@@ -112,6 +114,19 @@ A cross-platform browser launcher library with support for different window mode
 
 #### Requires
 - Platform-specific: winreg (Windows), ctypes (Windows)
+
+### metadatacommon
+Shared metadata provider package used by `video-optimizer-v2`, `common/file_grouper.py`, and several other tools (`netflix_watch_status`, `series_completeness_checker`, `latest_episodes_viewer`, `series_bundler.py`) to look up show/movie metadata and MyAnimeList watch status.
+
+#### Modules
+- `metadata_provider.py` — Base metadata provider class (`BaseMetadataProvider`, `MetadataManager`, `TitleInfo`, `EpisodeInfo`, `MatchResult`) that defines the interface for metadata retrieval services and manages metadata formatting for video files.
+- `anime_metadata.py` — Metadata retrieval from anime databases such as AniList and MyAnimeList, including episode information, season data, air dates, and anime-specific details like studio information and Japanese titles.
+- `imdb_metadata.py` — Metadata retrieval from the Internet Movie Database (IMDb), including cast information, directors, release dates, ratings, and plot summaries.
+- `plex_metadata.py` — Metadata retrieval from a local or remote Plex Media Server, including titles, descriptions, genres, ratings, and artwork.
+- `myanimelist_watch_status.py` — Reads MyAnimeList watch-status data for tagging and completeness workflows.
+
+#### Requires
+Consuming tools declare `metadatacommon`'s runtime dependencies (`requests`, `rapidfuzz`, `zstandard`, `tqdm`) in their own requirements.txt, matching the pattern already used for `common/`.
 
 ## Projects
 Larger tools in this repository that have their own subfolders, packages, helpers, or tests.
@@ -246,28 +261,9 @@ A script that allows for quick and easy optimization of videos. Just supply a li
 
 It is made specifically for transcoding for example tv-shows from your legacy media in a quick and simple way. Just drag a whole season onto the script and easily convert it for use on your phone.
 
-It now also supports lookup of meta data from common anime databases and imdb. It will automatically download the metadata and add it to the video.
+It now also supports lookup of meta data from common anime databases and imdb via the shared [metadatacommon](#metadatacommon) providers. It will automatically download the metadata and add it to the video.
 
 Check out branch mediaoptimizer_v1 for the old version.
-
-#### Project Files
-##### metadata_cache_manager.py
-CLI helper for the video-optimizer providers to inspect and control cache TTLs. Supports `status`, `refresh`, `invalidate`, and `set-expiry` (accepts long form like "3 days" or short form like `2m7d`). TTL is persisted per provider (IMDb, Anime) and `invalidate` forces TTL to 0 so cache refreshes on next access. Optional `--no-color` disables colored output.
-
-##### metadata_provider.py
-Base metadata provider class that defines the interface for metadata retrieval services. This abstract class provides a common structure for implementing different metadata sources, handling search functionality, and managing metadata formatting for video files.
-
-##### anime_metadata.py
-Implements metadata retrieval from anime databases such as AniList and MyAnimeList. Provides specialized handling for anime series metadata including episode information, season data, air dates, and anime-specific details like studio information and Japanese titles.
-
-##### imdb_metadata.py
-Implements metadata retrieval from the Internet Movie Database (IMDb). Handles both movies and TV series metadata including cast information, directors, release dates, ratings, and plot summaries. Integrates with IMDb's API or web scraping for comprehensive movie and TV show information.
-
-##### plex_metadata.py
-Implements metadata retrieval from Plex Media Server. Connects to a local or remote Plex server to fetch metadata for movies and TV shows stored in the Plex library. Retrieves details such as titles, descriptions, genres, ratings, and artwork associated with the media files.
-
-##### myanimelist_watch_status.py
-Reads MyAnimeList watch-status data for the optimizer's metadata and tagging workflows.
 
 #### Requires
 Use the video-optimizer-v2/requirements.txt file to install the requirements.
@@ -552,7 +548,7 @@ http://localhost:8081/?url=<url>&template=nyaa_rss
 - PyYAML
 
 ### imdb_title_query.py
-A simple CLI for querying IMDb `title.*.tsv.gz` datasets using the declared dataset schemas, substring search, basic filters, and plain-text table output. It can read a specific file, scan a directory for the matching dataset, or use the same default cache folder as the `video-optimizer-v2` IMDb provider.
+A simple CLI for querying IMDb `title.*.tsv.gz` datasets using the declared dataset schemas, substring search, basic filters, and plain-text table output. It can read a specific file, scan a directory for the matching dataset, or use the same default cache folder as the `metadatacommon` IMDb provider.
 
 #### Features
 - Declared schemas for `title.basics`, `title.akas`, `title.crew`, `title.episode`, `title.principals`, and `title.ratings`
@@ -582,6 +578,12 @@ python imdb_title_query.py --show-schema title.episode
 
 #### Requires
 - No external dependencies required (uses only Python standard libraries)
+
+### metadata_cache_manager.py
+CLI helper for the `metadatacommon` providers to inspect and control cache TTLs. Supports `status`, `refresh`, `invalidate`, and `set-expiry` (accepts long form like "3 days" or short form like `2m7d`). TTL is persisted per provider (IMDb, Anime) and `invalidate` forces TTL to 0 so cache refreshes on next access. Optional `--no-color` disables colored output.
+
+#### Requires
+- colorama (optional, for colored output)
 
 ### media-to-mp3.py
 Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.

@@ -92,10 +92,6 @@ except ImportError as exc:
     print(f"Error: Failed to import local guessit_wrapper.py: {exc}")
     sys.exit(1)
 
-VIDEO_OPTIMIZER_DIR = os.path.join(os.path.dirname(__file__), 'video-optimizer-v2')
-if VIDEO_OPTIMIZER_DIR not in sys.path:
-    sys.path.append(VIDEO_OPTIMIZER_DIR)
-
 MetadataManager = None
 BaseMetadataProvider = None
 TitleInfo = None
@@ -118,28 +114,28 @@ def _missing_dependency_message(feature_name: str, exc: ImportError) -> str:
 
 
 try:
-    from metadata_provider import MetadataManager, BaseMetadataProvider, TitleInfo
+    from metadatacommon.metadata_provider import MetadataManager, BaseMetadataProvider, TitleInfo
 except ImportError as exc:
-    print(f"Warning: video-optimizer-v2 core metadata modules unavailable: {exc}")
+    print(f"Warning: metadatacommon core metadata modules unavailable: {exc}")
 
 if MetadataManager is not None:
     try:
-        from anime_metadata import AnimeDataProvider
+        from metadatacommon.anime_metadata import AnimeDataProvider
     except ImportError as exc:
         print(_missing_dependency_message("Anime metadata provider", exc))
 
     try:
-        from imdb_metadata import IMDbDataProvider
+        from metadatacommon.imdb_metadata import IMDbDataProvider
     except ImportError as exc:
         print(_missing_dependency_message("IMDb metadata provider", exc))
 
     try:
-        from plex_metadata import PlexMetadataProvider, PlexWatchStatus
+        from metadatacommon.plex_metadata import PlexMetadataProvider, PlexWatchStatus
     except ImportError as exc:
         print(f"Warning: Plex metadata provider unavailable: {exc}")
 
     try:
-        from myanimelist_watch_status import MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
+        from metadatacommon.myanimelist_watch_status import MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
     except ImportError as exc:
         print(f"Warning: MyAnimeList watch status provider unavailable: {exc}")
 

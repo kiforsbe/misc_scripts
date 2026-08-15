@@ -10,14 +10,15 @@ import sys
 import threading
 from mutagen.mp4 import MP4, MP4Cover
 from typing import Dict, Any, List
-from metadata_provider import MetadataManager
-from anime_metadata import AnimeDataProvider
-from imdb_metadata import IMDbDataProvider
 
-# guessit_wrapper lives in the repository root, one level above this script
+# guessit_wrapper and metadatacommon live in the repository root, one level above this script
 REPO_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT_DIR not in sys.path:
     sys.path.append(REPO_ROOT_DIR)
+
+from metadatacommon.metadata_provider import MetadataManager
+from metadatacommon.anime_metadata import AnimeDataProvider
+from metadatacommon.imdb_metadata import IMDbDataProvider
 
 try:
     from guessit_wrapper import guessit_wrapper

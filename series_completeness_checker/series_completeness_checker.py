@@ -12,8 +12,7 @@ from common.video_thumbnail_generator import VideoThumbnailGenerator
 from common.file_grouper import FileGrouper, CustomJSONEncoder
 from common.presentation import Presenter, Colors, get_emoji, format_size
 try:
-    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'video-optimizer-v2'))
-    from myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
+    from metadatacommon.myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
 except ImportError:
     resolve_myanimelist_xml_path = None
     MyAnimeListWatchStatusProvider = None
@@ -655,7 +654,7 @@ class SeriesCompletenessChecker:
             except Exception as e:
                 print(f"Warning: Could not load MyAnimeList data from {resolved_mal_path}: {e}")
         elif myanimelist_xml_path and MyAnimeListWatchStatusProvider is None:
-            print("Warning: MyAnimeList functionality not available (video-optimizer-v2 not found)")
+            print("Warning: MyAnimeList functionality not available (metadatacommon not found)")
         self.completeness_results = {}
     
     def load_results(self, input_path: str) -> Dict[str, Any]:
@@ -1547,12 +1546,7 @@ def _refresh_myanimelist_metadata(results: Dict[str, Any], myanimelist_xml_path:
     
     # Import MyAnimeList watch status module
     try:
-        import sys
-        video_optimizer_path = Path(__file__).resolve().parents[1] / 'video-optimizer-v2'
-        if video_optimizer_path.exists() and str(video_optimizer_path) not in sys.path:
-            sys.path.insert(0, str(video_optimizer_path))
-        
-        from myanimelist_watch_status import MyAnimeListWatchStatusProvider
+        from metadatacommon.myanimelist_watch_status import MyAnimeListWatchStatusProvider
         
         # Load MyAnimeList data
         mal_provider = MyAnimeListWatchStatusProvider(myanimelist_xml_path)

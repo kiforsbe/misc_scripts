@@ -61,13 +61,9 @@ except ImportError:
 
 
 try:
-    video_optimizer_dir = os.path.join(os.path.dirname(__file__), "video-optimizer-v2")
-    if video_optimizer_dir not in sys.path:
-        sys.path.append(video_optimizer_dir)
-
-    AnimeDataProvider = importlib.import_module("anime_metadata").AnimeDataProvider
-    IMDbDataProvider = importlib.import_module("imdb_metadata").IMDbDataProvider
-    MetadataManagerClass = importlib.import_module("metadata_provider").MetadataManager
+    AnimeDataProvider = importlib.import_module("metadatacommon.anime_metadata").AnimeDataProvider
+    IMDbDataProvider = importlib.import_module("metadatacommon.imdb_metadata").IMDbDataProvider
+    MetadataManagerClass = importlib.import_module("metadatacommon.metadata_provider").MetadataManager
 
     METADATA_MANAGER: Any = None
 

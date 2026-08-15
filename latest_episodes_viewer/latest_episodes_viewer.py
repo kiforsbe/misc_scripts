@@ -49,10 +49,7 @@ MyAnimeListWatchStatus = None
 resolve_myanimelist_xml_path = None
 
 try:
-    video_optimizer_dir = os.path.join(os.path.dirname(__file__), 'video-optimizer-v2')
-    if video_optimizer_dir not in sys.path:
-        sys.path.append(video_optimizer_dir)
-    from myanimelist_watch_status import (
+    from metadatacommon.myanimelist_watch_status import (
         MyAnimeListWatchStatusProvider,
         MyAnimeListWatchStatus,
         resolve_myanimelist_xml_path,
@@ -86,7 +83,7 @@ class LatestEpisodesViewer:
             except Exception as e:
                 print(f"Warning: Could not load MyAnimeList data from {resolved_mal_path}: {e}")
         elif myanimelist_xml_path and MyAnimeListWatchStatusProvider is None:
-            print("Warning: MyAnimeList functionality not available (video-optimizer-v2 not found)")
+            print("Warning: MyAnimeList functionality not available (metadatacommon not found)")
     
     def analyze_latest_episodes(self, files: List[Path], show_progress: bool = True, max_episodes: int = 100) -> Dict[str, Any]:
         """Analyze files and return the latest episodes by download date."""

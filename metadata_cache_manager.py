@@ -35,8 +35,8 @@ except ImportError:
         RESET_ALL = '\033[0m'
         BRIGHT = '\033[1m'
 
-from anime_metadata import AnimeDataProvider
-from imdb_metadata import IMDbDataProvider
+from metadatacommon.anime_metadata import AnimeDataProvider
+from metadatacommon.imdb_metadata import IMDbDataProvider
 
 ProviderMap = Dict[str, object]
 ProviderBuilderMap = Dict[str, Callable[[], object]]

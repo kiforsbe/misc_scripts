@@ -15,7 +15,7 @@ import requests
 from rapidfuzz import fuzz, process
 from tqdm import tqdm
 
-from metadata_provider import BaseMetadataProvider, EpisodeInfo, MatchResult, TitleInfo
+from metadatacommon.metadata_provider import BaseMetadataProvider, EpisodeInfo, MatchResult, TitleInfo
 
 
 CacheValue = Union[MatchResult, EpisodeInfo, List[EpisodeInfo]]

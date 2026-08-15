@@ -12,7 +12,7 @@ from datetime import timedelta
 import datetime
 from typing import Optional
 from tqdm import tqdm
-from metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
+from metadatacommon.metadata_provider import BaseMetadataProvider, TitleInfo, EpisodeInfo, MatchResult
 import enum
 
 try:

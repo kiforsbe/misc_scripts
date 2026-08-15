@@ -43,8 +43,7 @@ except ImportError:
 from guessit_wrapper import guessit_wrapper
 from common.file_grouper import FileGrouper
 try:
-    sys.path.append(os.path.join(os.path.dirname(__file__), 'video-optimizer-v2'))
-    from myanimelist_watch_status import resolve_myanimelist_xml_path
+    from metadatacommon.myanimelist_watch_status import resolve_myanimelist_xml_path
 except ImportError:
     resolve_myanimelist_xml_path = None
 
@@ -1089,14 +1088,9 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
 def _get_metadata_manager():
     """Get or create metadata manager instance."""
     try:
-        # Add video-optimizer-v2 to path if not already there
-        video_optimizer_path = Path(__file__).parent / 'video-optimizer-v2'
-        if video_optimizer_path.exists() and str(video_optimizer_path) not in sys.path:
-            sys.path.insert(0, str(video_optimizer_path))
-        
-        from metadata_provider import MetadataManager
-        from anime_metadata import AnimeDataProvider
-        from imdb_metadata import IMDbDataProvider
+        from metadatacommon.metadata_provider import MetadataManager
+        from metadatacommon.anime_metadata import AnimeDataProvider
+        from metadatacommon.imdb_metadata import IMDbDataProvider
         
         # Create providers
         providers = [
