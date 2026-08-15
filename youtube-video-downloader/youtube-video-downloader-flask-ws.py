@@ -26,6 +26,7 @@ try:
     from .ytdl_helper import core as ytdl_core
     from .ytdl_helper import models as ytdl_models
     from .ytdl_helper.utils import check_ffmpeg
+    from .ytdl_helper.progress_sink import ProgressSink
 except ImportError:
     current_dir = pathlib.Path(__file__).parent
     ytdl_helper_path = current_dir / "ytdl_helper"
@@ -35,6 +36,7 @@ except ImportError:
             from ytdl_helper import core as ytdl_core
             from ytdl_helper import models as ytdl_models
             from ytdl_helper.utils import check_ffmpeg
+            from ytdl_helper.progress_sink import ProgressSink
         except ImportError as e:
             print(
                 f"ERROR: Failed to import ytdl_helper from {current_dir}. Error: {e}",
@@ -47,6 +49,7 @@ except ImportError:
             from ytdl_helper import core as ytdl_core
             from ytdl_helper import models as ytdl_models
             from ytdl_helper.utils import check_ffmpeg
+            from ytdl_helper.progress_sink import ProgressSink
         except ImportError:
             print(
                 "ERROR: Could not find ytdl_helper locally or as an installed package.",
@@ -197,6 +200,126 @@ AUTO_CANCEL_ON_HEARTBEAT_LOSS = os.environ.get(
 ).strip().lower() in ("1", "true", "yes", "on")
 _jobs: dict = {}
 _jobs_lock = threading.Lock()
+
+
+# --- Progress reporting fan-out ---
+# Every download entry point (the blocking /download route and background
+# /download/start jobs) reports progress through one ProgressSink built by
+# _build_progress_sink, instead of each hand-rolling its own wiring - a
+# background job runner previously used its own bespoke progress_hook that
+# only updated the job dict and silently never attached the console display
+# below, so the terminal progress bar stopped appearing for any download
+# started via /download/start. Routing every entry point through this one
+# factory means a new one can no longer "forget" a subscriber the same way.
+ENABLE_CONSOLE_PROGRESS = os.environ.get(
+    "YTDL_ENABLE_CONSOLE_PROGRESS", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+
+_console_progress_lock = threading.Lock()
+_console_progress: Progress | None = None
+_console_progress_active_tasks = 0
+
+
+def _get_console_progress() -> Progress:
+    """
+    Returns the single process-wide Progress/Live instance used by every
+    download's console subscriber. Rich's Live renderer isn't safe to run
+    multiple overlapping instances of in one terminal, so concurrent
+    downloads share this one instance, each as its own task within it -
+    this is the only place a Progress(...) instance should be constructed.
+    """
+    global _console_progress
+    if _console_progress is None:
+        _console_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(bar_width=None),
+            TextColumn("{task.completed:>3.0f}%"),
+            TimeRemainingColumn(),
+        )
+    return _console_progress
+
+
+def _make_console_progress_subscriber(description: str):
+    """
+    Adds a task to the shared console Progress display for one download.
+    Returns (subscriber, remove) - remove() must be called exactly once,
+    when the download reaches a terminal state, to release the task and
+    stop the shared renderer once nothing else is using it. Split out as
+    its own function (rather than inlined into _build_progress_sink) so
+    tests can monkeypatch it with a fake instead of exercising real
+    terminal rendering.
+    """
+    global _console_progress_active_tasks
+    with _console_progress_lock:
+        progress = _get_console_progress()
+        if _console_progress_active_tasks == 0:
+            progress.start()
+        task_id = progress.add_task(description, total=100)
+        _console_progress_active_tasks += 1
+
+    def _subscriber(percent, message=None):
+        with _console_progress_lock:
+            if message:
+                progress.update(task_id, completed=percent, description=message)
+            else:
+                progress.update(task_id, completed=percent)
+
+    def _remove():
+        global _console_progress_active_tasks
+        with _console_progress_lock:
+            progress.remove_task(task_id)
+            _console_progress_active_tasks = max(0, _console_progress_active_tasks - 1)
+            if _console_progress_active_tasks == 0:
+                progress.stop()
+
+    return _subscriber, _remove
+
+
+def _build_progress_sink(description: str, job_id: str | None = None):
+    """
+    Builds the ProgressSink shared by every download entry point: a
+    job-dict subscriber (only if job_id is given), a console subscriber
+    (unless disabled via YTDL_ENABLE_CONSOLE_PROGRESS=0), and a debug-log
+    subscriber. Returns (sink, cleanup) - cleanup() must be called exactly
+    once the download reaches a terminal state (success, error, or cancel).
+    """
+    sink = ProgressSink()
+    cleanup_fns = []
+
+    if job_id is not None:
+        def _job_subscriber(percent, message=None):
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if job is not None:
+                    job["percent"] = percent
+                    if message:
+                        job["message"] = message
+                    job["last_seen"] = time.time()
+
+        sink.add(_job_subscriber)
+
+    if ENABLE_CONSOLE_PROGRESS:
+        console_subscriber, remove_console_task = _make_console_progress_subscriber(description)
+        sink.add(console_subscriber)
+        cleanup_fns.append(remove_console_task)
+
+    def _log_subscriber(percent, message=None):
+        if message:
+            log.debug(f"Progress {percent:.0f}% - {message}")
+        else:
+            log.debug(f"Progress {percent:.0f}%")
+
+    sink.add(_log_subscriber)
+
+    def cleanup():
+        for fn in cleanup_fns:
+            try:
+                fn()
+            except Exception:
+                log.exception("Error cleaning up progress sink")
+
+    return sink, cleanup
 
 
 # --- Check for FFmpeg ---
@@ -680,14 +803,7 @@ def _background_job_runner(
         if job is not None:
             job["status"] = "downloading"
 
-    def _job_progress_hook(percent, message=None):
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-            if job is not None:
-                job["percent"] = percent
-                if message:
-                    job["message"] = message
-                job["last_seen"] = time.time()
+    sink, cleanup_progress = _build_progress_sink(f"Job {job_id[:8]}", job_id=job_id)
 
     try:
         result_path = _run_download_deduped(
@@ -697,7 +813,7 @@ def _background_job_runner(
             target_format,
             target_audio_params,
             target_video_params,
-            progress_hook=_job_progress_hook,
+            progress_hook=sink,
             job_id=job_id,
         )
         with _jobs_lock:
@@ -726,6 +842,8 @@ def _background_job_runner(
                 job["status"] = "error"
                 job["error"] = str(e)
                 job["finished_at"] = time.time()
+    finally:
+        cleanup_progress()
 
 
 def _parse_download_request(data):
@@ -860,40 +978,13 @@ def download():
     target_audio_params = params["target_audio_params"]
     target_video_params = params["target_video_params"]
 
-    progress = None
-    progress_task_id = None
-
-    def progress_hook(percent, message=None):
-        if progress:
-            if message:
-                progress.update(progress_task_id, completed=percent, description=message)
-            else:
-                progress.update(progress_task_id, completed=percent)
-        else:
-            if message:
-                log.info(f"Progress {percent:.0f}% - {message}")
-            else:
-                log.info(f"Progress {percent:.0f}%")
+    progress_hook, cleanup_progress = _build_progress_sink("Preparing")
 
     final_filepath = None
     # Keep original blocking download route for compatibility, but recommend
     # using /download_start for background downloads. This route will still
     # perform the download synchronously and return the file (blocking).
     try:
-        # Show local rich progress if available
-        if Progress is not None and \
-           SpinnerColumn is not None and TextColumn is not None and \
-           BarColumn is not None and TimeRemainingColumn is not None:
-            progress = Progress(
-                SpinnerColumn(),
-                TextColumn("{task.description}"),
-                BarColumn(bar_width=None),
-                TextColumn("{task.completed:>3.0f}%"),
-                TimeRemainingColumn(),
-            )
-            progress.start()
-            progress_task_id = progress.add_task("Preparing", total=100)
-
         progress_hook(5, "Request validated")
         log.info(
             f"Processing download request for URL: {url} (A_ID: {audio_format_id}, V_ID: {video_format_id}, Target: {target_format}), TargetAudioParams: {target_audio_params}), TargetVideoParams: {target_video_params})"
@@ -978,8 +1069,7 @@ def download():
         )
         return jsonify({"error": "An unexpected server error occurred."}), 500
     finally:
-        if progress:
-            progress.stop()
+        cleanup_progress()
         # Ensure the file is queued for deletion even if send_file fails?
         # No, send_file failure means the client didn't get it, maybe don't delete yet?
         # The current logic queues *before* send_file, which seems reasonable.

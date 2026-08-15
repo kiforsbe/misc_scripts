@@ -36,9 +36,15 @@ def mod():
     original_auto_cancel = m.AUTO_CANCEL_ON_HEARTBEAT_LOSS
     original_heartbeat_timeout = m.JOB_HEARTBEAT_TIMEOUT_SECONDS
     original_reaper_interval = m.JOB_REAPER_INTERVAL_SECONDS
+    original_enable_console_progress = m.ENABLE_CONSOLE_PROGRESS
 
     m._active_downloads.clear()
     m._jobs.clear()
+    # Real console progress spins up a Rich Live terminal renderer, which is
+    # unnecessary and flaky under pytest; console-subscriber wiring itself
+    # is covered separately (with _make_console_progress_subscriber faked
+    # out) in test_flask_ws_progress.py.
+    m.ENABLE_CONSOLE_PROGRESS = False
 
     yield m
 
@@ -46,6 +52,7 @@ def mod():
     m.AUTO_CANCEL_ON_HEARTBEAT_LOSS = original_auto_cancel
     m.JOB_HEARTBEAT_TIMEOUT_SECONDS = original_heartbeat_timeout
     m.JOB_REAPER_INTERVAL_SECONDS = original_reaper_interval
+    m.ENABLE_CONSOLE_PROGRESS = original_enable_console_progress
     m._active_downloads.clear()
     m._jobs.clear()
 
