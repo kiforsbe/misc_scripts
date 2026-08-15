@@ -8,32 +8,26 @@ logger = logging.getLogger(__name__)
 
 
 def sanitize_filename(filename: str) -> str:
-    """Sanitize filename for cross-platform compatibility, focusing on Windows."""
+    """Sanitize filename for cross-platform compatibility, focusing on Windows.
+
+    Always produces a single flat filename component - it strips every
+    path separator rather than trying to sanitize-while-preserving a
+    multi-segment path, since the latter is what let a crafted video
+    title (e.g. starting with '\\') survive as a drive-relative path and
+    escape the intended output directory when joined onto it.
+    """
     if not filename:  # Handle empty input
         return "_untitled_"
 
-    # Remove invalid characters (Windows)
-    filename = re.sub(r'[<>:"/\|?*]', "_", filename)
+    # Remove invalid characters (Windows), including both path separators.
+    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
     # Remove all control characters (0-31) and DEL (127). Tab, newline, and
     # carriage return are invalid in filenames (notably on Windows, where they
     # trigger WinError 123), so they must be stripped too.
     filename = re.sub(r"[\x00-\x1F\x7F]", "", filename)
 
-    # Handle path separators carefully if the input might be a path
-    if os.path.sep in filename:
-        parts = filename.split(os.path.sep)
-        sanitized_parts = []
-        for part in parts:
-            sanitized_parts.append(_sanitize_part(part))
-        filename = os.path.sep.join(sanitized_parts)
-        # Limit the length of the final component (basename)
-        dirname, basename = os.path.split(filename)
-        basename = _limit_component_length(basename)
-        filename = os.path.join(dirname, basename) if dirname else basename
-    else:
-        # Input is just a filename component
-        filename = _sanitize_part(filename)
-        filename = _limit_component_length(filename)
+    filename = _sanitize_part(filename)
+    filename = _limit_component_length(filename)
 
     # Ensure it's not empty after sanitization
     if not filename or filename.isspace():
