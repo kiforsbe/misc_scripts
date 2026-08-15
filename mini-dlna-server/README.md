@@ -155,7 +155,7 @@ contentdirectoryhandler.py — Browse/Search, DIDL-Lite generation
 ssdpserver.py           — SSDP multicast listener and announcer
 resourcemonitor.py      — CPU/memory/network tracking
 network_utils.py        — Local IP detection
-../video_thumbnail_generator.py — ffmpeg thumbnail generation (shared module)
+../common/video_thumbnail_generator.py — ffmpeg thumbnail generation (shared module)
 ```
 
 ## Windows 11 Notes

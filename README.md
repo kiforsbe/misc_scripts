@@ -7,6 +7,7 @@ Miscellaneous scripts to automate common tasks.
   - [myanimelist-addtolist-improved.user-script.js](#myanimelist-addtolist-improveduser-scriptjs): Adds quick MyAnimeList watch-status dropdowns directly to anime pages.
 - [Libraries](#libraries): Reusable helper modules shared by multiple scripts in this repository.
   - [browser_utils.py](#browser_utilspy): Cross-platform browser launcher with popup, new-window, and maximized modes.
+  - [common](#common): Shared file grouping, presentation, and thumbnail-generation helpers.
   - [metadatacommon](#metadatacommon): Shared metadata provider package (anime, IMDb, Plex, MyAnimeList) used across several tools.
 - [Projects](#projects): Larger multi-file tools with dedicated packages, helpers, tests, or service components.
   - [plex_db_tool](#plex_db_tool): Package-backed Plex database transfer and playlist sync CLI with root shim.
@@ -70,6 +71,15 @@ These user scripts enhance the webservice functionality by integrating download 
 A Tampermonkey script that adds simple triangle indicators to Plex playlist items, showing their watch status (watched/unwatched) based on metadata from the Plex API.
 It fetches the watch status of each item in a Plex playlist and displays a triangle icon next to each item, indicating whether it has been watched or not. The script is designed to enhance the user experience by providing quick visual feedback on the watch status of playlist items.
 
+#### Usage
+1. Install Tampermonkey or a similar userscript manager in your browser.
+2. Import the script into Tampermonkey.
+3. Make sure your local IP addresses are whitelisted in the script.
+4. Navigate to your Plex playlist page, open a playlist and see the watch status indicators appear next to each item thumbnail.
+
+#### Requires
+- Tampermonkey or a similar userscript manager
+
 ### myanimelist-addtolist-improved.user-script.js
 A Tampermonkey script that augments every watch-status button on MyAnimeList season and anime pages with a quick-status chevron dropdown, allowing you to set or change the watch status of any title without leaving the page.
 
@@ -115,259 +125,38 @@ A cross-platform browser launcher library with support for different window mode
 #### Requires
 - Platform-specific: winreg (Windows), ctypes (Windows)
 
+### common
+Shared helper modules used by multiple scripts in this repository: `file_grouper.py`, `presentation.py`, `netflix_title_parser.py`, and `video_thumbnail_generator.py`.
+
+See [common/README.md](common/README.md) for module details and requirements.
+
 ### metadatacommon
-Shared metadata provider package used by `video-optimizer-v2`, `common/file_grouper.py`, and several other tools (`netflix_watch_status`, `series_completeness_checker`, `latest_episodes_viewer`, `series_bundler.py`) to look up show/movie metadata and MyAnimeList watch status.
+Shared metadata provider package (anime, IMDb, Plex, MyAnimeList) used by `video-optimizer-v2`, `common/file_grouper.py`, and several other tools to look up show/movie metadata and MyAnimeList watch status. Also bundles the standalone `metadata_cache_manager.py` and `validate_mal_xml.py` utility scripts.
 
-#### Modules
-- `metadata_provider.py` — Base metadata provider class (`BaseMetadataProvider`, `MetadataManager`, `TitleInfo`, `EpisodeInfo`, `MatchResult`) that defines the interface for metadata retrieval services and manages metadata formatting for video files.
-- `anime_metadata.py` — Metadata retrieval from anime databases such as AniList and MyAnimeList, including episode information, season data, air dates, and anime-specific details like studio information and Japanese titles.
-- `imdb_metadata.py` — Metadata retrieval from the Internet Movie Database (IMDb), including cast information, directors, release dates, ratings, and plot summaries.
-- `plex_metadata.py` — Metadata retrieval from a local or remote Plex Media Server, including titles, descriptions, genres, ratings, and artwork.
-- `myanimelist_watch_status.py` — Reads MyAnimeList watch-status data for tagging and completeness workflows.
-
-#### Requires
-Consuming tools declare `metadatacommon`'s runtime dependencies (`requests`, `rapidfuzz`, `zstandard`, `tqdm`) in their own requirements.txt, matching the pattern already used for `common/`.
+See [metadatacommon/README.md](metadatacommon/README.md) for the module list, utility scripts, and requirements.
 
 ## Projects
 Larger tools in this repository that have their own subfolders, packages, helpers, or tests.
 
 ### plex_db_tool
-A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. The user provides source and target locations, and the tool discovers `com.plexapp.plugins.library.db` by exact filename under those locations, validates that each file is a usable Plex SQLite database, and then performs watch-history or playlist operations without relying on media paths.
+A CLI for transferring Plex watch history and playlists between Plex library databases, matching items by exact filename basename only. Supports watch-history and playlist transfer, metadata-driven playlist sync, and database recovery/repair. The main entrypoint is the root shim `plex_db_tool.py` (forwards into the `plex_db_tool` package); `python -m plex_db_tool` also works.
 
-The main entrypoint is the root shim `plex_db_tool.py`, which forwards into the `plex_db_tool` package. You can also run the package directly with `python -m plex_db_tool`. The older root script `plex_watch_status_transfer.py` is still available as a compatibility alias.
-
-#### Features
-- `transfer-watch-status`, `transfer-playlists`, `sync-metadata-playlists`, `list-playlists`, `list-libraries`, and `list-accounts` subcommands for transfer and inspection workflows
-- `recover-database` for rebuilding malformed Plex library databases, plus a file-backed `Date Added` audit/repair mode that checks drift against file timestamps and can repair flagged rows in place after making a backup
-- Accepts source and target locations instead of requiring the full DB filename path
-- Locates `com.plexapp.plugins.library.db` by exact filename and verifies the schema before continuing
-- Exact basename matching only; no partial filename matching
-- Optional source and target library section filters by library name
-- Separate source and target account ids for account-scoped read and write operations
-- Interactive mode when required transfer inputs are omitted, including library, account, and playlist selection from the discovered source and target DB contents
-- Smart interactive defaults for shared named accounts and existing CLI-provided values
-- Dry-run by default with table, CSV, or JSON console output and JSON, CSV, or table report output
-- Configurable table columns with compact labels, right-aligned numeric columns, truncation, and optional `column:width` overrides
-- Dry-run filters for `all`, `warnings`, and `errors`
-- Conservative merge behavior for existing target history with optional overwrite or skip policies
-- Planned mutations are only created when the target actually needs to change; in-sync and target-ahead rows are left untouched unless conflict policy explicitly allows overwrite behavior
-- Guarded write path that inspects the target `metadata_item_views` schema before inserting history rows
-- Updates Plex account-scoped watch state in both `metadata_item_views` and `metadata_item_settings` when supported by the target schema
-- Playlist listing supports library scoping, optional inclusion of empty playlists, and shows playlist ownership via `account_id` when available
-- Playlist transfer uses the same filename-based matching strategy as watch transfer for playlist members
-- Playlist transfer supports selecting specific playlists by id or exact name and conflict handling via `unique`, `merge`, `replace`, or `skip`
-- Metadata-playlist sync creates or updates one Plex playlist per selected JSON group from grouped metadata exports such as `series_completeness_checker.py`
-- Metadata-playlist sync supports the same `--status-filter`, `--modified`, `--episodes-found`, `--episodes-expected`, and `--sort` group filters used by `series_archiver.py`
-- Metadata-playlist sync supports `--playlist-prefix` and `--playlist-suffix` so generated playlists can be namespaced without changing the source JSON
-- Metadata-playlist sync supports `--playlist-status-prefix` to derive prefixes automatically from each group's status, such as `[Incomplete]` or `[Complete]`
-- Metadata-playlist sync supports `--playlist-status-suffix` to derive suffixes automatically from each group's status instead of putting the status at the front
-- Metadata-playlist sync also supports `--playlist-complete-suffix` so playlists can be labeled differently when all expected episodes are available for the season
-- Metadata-playlist sync supports JSON, CSV, and table console output plus matching JSON, CSV, or table report files
-- Metadata-playlist sync tracks previously generated playlists by the stored source `group_key`, so changing or removing a prefix/suffix updates the same playlist instead of creating a duplicate when the group identity still matches
-- Empty playlists are excluded by default for both `list-playlists` and `transfer-playlists` unless `--include-empty-playlists` is used
-- Playlist transfer requires an explicit `--target-account-id` in non-interactive mode so created or updated target playlists are assigned to the intended Plex account
-- Apply mode blocks until Plex Media Server is no longer running
-
-#### Usage Examples
-```bash
-# Show top-level help through the main root shim
-python plex_db_tool.py --help
-
-# Preview transfer results without writing changes
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.json
-
-# Restrict transfer to named libraries and apply changes
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --source-account-id 1 --target-account-id 1 --apply
-
-# Show a compact console table during dry-run
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --console-format table --columns status,dry_run_status,source_watch_count,target_watch_count,source_filename,target_filename
-
-# Export a CSV review report
-python plex_db_tool.py transfer-watch-status --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-account-id 1 --target-account-id 1 --report transfer-report.csv
-
-# Inspect available libraries and accounts before transferring
-python plex_db_tool.py list-libraries --path "C:\Users\you\AppData\Local\Plex Media Server"
-python plex_db_tool.py list-accounts --path "C:\Users\you\AppData\Local\Plex Media Server"
-
-# List playlists in a DB and show owner account ids when available
-python plex_db_tool.py list-playlists --path "C:\Users\you\AppData\Local\Plex Media Server" --library TV --console-format table
-
-# Preview transferring selected playlists into a target account
-python plex_db_tool.py transfer-playlists --source-path "C:\Users\you\AppData\Local\Plex Media Server" --target-path "D:\Backup\Plex Media Server" --source-library TV --target-library TV --target-account-id 1 --playlist "Favorites" --playlist-conflict-policy merge
-
-# Build or refresh one Plex playlist per filtered JSON group
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --target-path "C:\Users\you\AppData\Local\Plex Media Server" --target-library "TV Shows" --target-account-id 1 --status-filter "+incomplete +watched_partial" --episodes-found ">=2" --sort
-
-# Namespace generated playlist names and write a JSON review report
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Incomplete] " --playlist-suffix " [Review]" --console-format json --report .\sync-playlists.json
-
-# Automatically prefix playlist names from each group's status
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-prefix
-
-# Automatically suffix playlist names from each group's status
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-status-suffix
-
-# Append an extra suffix only when a season is complete
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --playlist-prefix "[Anime] " --playlist-complete-suffix " [Complete]"
-
-# Combine every selected episodes_expected=1 group into one playlist
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --one-of-one-playlist "[A] One Of One"
-
-# Export a compact table report with custom columns
-python plex_db_tool.py sync-metadata-playlists --input-json ".\series-results.json" --console-format table --columns target_playlist,status,matched_item_count,unmatched_item_count,notes --report .\sync-playlists.txt --report-format table
-
-# Audit episode Date Added drift against file timestamps without modifying the DB
-python plex_db_tool.py recover-database --path "C:\Users\you\AppData\Local\Plex Media Server" --check-episode-date-added --episode-date-added-max-drift-hours 24
-
-# Back up the source DB and repair flagged Date Added rows in place
-python plex_db_tool.py recover-database --path "C:\Users\you\AppData\Local\Plex Media Server" --in-place --apply-episode-date-added-fix --episode-date-added-max-drift-hours 24
-
-# Omit required transfer values to use the interactive workflow
-python plex_db_tool.py transfer-watch-status
-
-# Or run the package directly
-python -m plex_db_tool --help
-
-# Or use the older compatibility script name
-python plex_watch_status_transfer.py --help
-```
-
-#### Notes
-- In apply mode the script waits until Plex Media Server has fully stopped before it starts writing.
-- Dry-run mode can be used while Plex is still running, but copied DBs are still safer.
-- If the provided location contains multiple matching DB files, the script refuses to guess and asks for a narrower path.
-- If multiple target records share the same basename, the tool uses secondary metadata to decide whether the match is safe enough to apply.
-- If you omit the subcommand entirely, the CLI defaults to `transfer-watch-status`.
-- Interactive transfer mode first performs a dry-run, shows only rows with planned mutations by default, and then asks whether to apply the changes.
-- By default, rows that are already in sync or where the target is already ahead do not produce planned mutations.
-- Depending on the Plex schema version, source and target account ids may be required for account-scoped reads and writes.
-- Playlist discovery can read both legacy/custom playlist rows and metadata-backed Plex playlists.
-- `transfer-playlists` excludes empty playlists by default and prints a notice explaining how to include them.
-- `transfer-playlists` requires `--target-account-id` in non-interactive mode; interactive mode can prompt for it.
-- `sync-metadata-playlists` defaults `--playlist-conflict-policy` to `replace`, so rerunning it refreshes existing playlists from the current JSON selection.
-- `sync-metadata-playlists` also removes previously synced playlists when their stored `group_key` is no longer present in the current metadata selection for the chosen target account and library scope.
-- `sync-metadata-playlists` uses the standard `%LOCALAPPDATA%\Plex Media Server` folder as the target when `--target-path` is omitted.
-- `sync-metadata-playlists` requires `--target-library` and `--target-account-id` in non-interactive mode; if you omit them in an interactive terminal session, the command prompts you to choose them.
-- `sync-metadata-playlists` table output supports `--columns` with `column` or `column:width` entries; mandatory columns are `status` and `target_playlist`.
-- `--one-of-one-playlist` collapses all selected groups whose original metadata reports `episodes_expected=1` into one synthetic playlist, which is useful when movie-like metadata should still be synced as a single mixed collection.
-- If a playlist was previously created with a prefix or suffix, later syncs can rename it to the new configured name as long as the stored metadata `group_key` still identifies the same JSON group.
-- `--playlist-status-prefix` turns a group's stored status value into a prefix automatically, so `incomplete` becomes `[Incomplete]` and `complete_with_extras` becomes `[Complete With Extras]`.
-- `--playlist-status-suffix` does the same at the end of the playlist name instead of the beginning.
-- Prefix options are mutually exclusive with each other, and suffix options are mutually exclusive with each other, so each sync run can use at most one prefix mode and one suffix mode.
-- `--playlist-complete-suffix` is applied when `episodes_found >= episodes_expected` for groups with a known expected count; if no expected count is present, `complete` and `complete_with_extras` statuses are treated as complete.
+See [plex_db_tool/README.md](plex_db_tool/README.md) for the full command reference, usage examples, and architecture notes.
 
 ### video-optimizer-v2
-A script that allows for quick and easy optimization of videos. Just supply a list of videos on the command line or drag and drop them onto the script. You get a list of choices based on the contents of the videos such as which subtitles to make default, and which audio to make default along with target quality and resolution.
+A tool for quick and easy video optimization: supply a list of videos on the command line or drag and drop them onto the script for choices about subtitle/audio defaults and target quality/resolution. Made for transcoding legacy TV-show media, and looks up metadata from anime databases and IMDb via the shared [metadatacommon](#metadatacommon) providers.
 
-It is made specifically for transcoding for example tv-shows from your legacy media in a quick and simple way. Just drag a whole season onto the script and easily convert it for use on your phone.
-
-It now also supports lookup of meta data from common anime databases and imdb via the shared [metadatacommon](#metadatacommon) providers. It will automatically download the metadata and add it to the video.
-
-Check out branch mediaoptimizer_v1 for the old version.
-
-#### Requires
-Use the video-optimizer-v2/requirements.txt file to install the requirements.
-- ffmpeg-python
-- requests
-- pandas
-- tqdm
-- rapidfuzz
-- inquirer
-- mutagen
+See [video-optimizer-v2/README.md](video-optimizer-v2/README.md) for usage and requirements.
 
 ### youtube-video-downloader
-A collection of youtube download scripts using the `ytdl_helper` library.
-It includes a command-line interface and a text-based user interface (TUI) for downloading YouTube videos and audio. It also includes a Flask web service for downloading YouTube videos and audio via a web interface, and a user script for adding a download button to YouTube pages.
-Now integrates with `music_style_classifier.py` to classify the music style of downloaded audio files.
+A collection of YouTube download scripts using the `ytdl_helper` library: a CLI, a TUI, a Flask web service with companion userscript, and integration with `music_style_classifier.py` for classifying downloaded audio.
 
-#### Project Files
-##### ytdl_helper library
-This library provides functionalities for downloading YouTube videos and audio efficiently. Users can fetch video information (metadata, available formats) and download content directly. The library supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
-It is used by both the command-line and TUI scripts.
-
-##### youtube-video-downloader-cli.py
-A command-line tool for downloading YouTube videos and audio using the `ytdl_helper` library. It allows fetching video information (metadata, available formats) as JSON or downloading content directly. Users can specify desired resolution, audio bitrate, output format (e.g., mp4, mp3), and target directory via command-line arguments. Download progress is displayed using `tqdm` progress bars.
-
-###### Usage (Examples)
-```bash
-# Get video info as JSON
-python youtube-video-downloader-cli.py info "VIDEO_URL"
-
-# Download best available video+audio (defaults to mp4)
-python youtube-video-downloader-cli.py download "VIDEO_URL"
-
-# Download audio only as mp3 to a specific directory
-python youtube-video-downloader-cli.py download "VIDEO_URL" -a --format mp3 -o ./downloads
-
-# Download 720p video (closest) with 192k audio (closest) as mkv
-python youtube-video-downloader-cli.py download "VIDEO_URL" -r 720p -b 192k -f mkv
-```
-###### Requires
-- ytdl_helper (and its dependencies, likely yt-dlp)
-- tqdm
-- ffmpeg (must be installed and in the system PATH)
-- music_style_classifier.py
-
-##### youtube-video-downloader-gui.py
-A Text-based User Interface (TUI) built with urwid for downloading YouTube videos. It takes video URLs as command-line arguments, fetches their information asynchronously using ytdl_helper, and displays them in an interactive list. Users can select items, choose specific video and audio formats via a detailed dialog, and initiate downloads. The TUI shows status updates and progress bars for each item. Batch pre-selection of best audio or video is possible via command-line flags (--audio-only, --video).
-
-###### Features
-- Interactive TUI powered by urwid.
-- Handles multiple URLs provided via command line.
-- Displays video title, duration, status, and progress.
-- Item selection using +/- keys.
-- Detailed format selection dialog (Enter key) allowing choice of:
-- Mode (Video+Audio, Video Only, Audio Only).
-- Specific video streams (resolution, codec, etc.).
-- Specific audio streams (bitrate, codec, etc.).
-- Initiates downloads for selected items (d key).
-- Real-time status and progress updates.
-- Batch mode flags (--audio-only, --video) for quick downloads.
-- Logs activity to logs/youtube_downloader.log.
-
-###### Requires
-- ytdl_helper (and its dependencies, likely yt-dlp)
-- urwid
-- ffmpeg (must be installed and in the system PATH)
-- music_style_classifier.py
-- **Note! (Windows specific):** ctypes (standard library, used for console setup)
-
-##### youtube-video-downloader-flask-ws.py & youtube-video-downloader.user-script.js
-A Flask web service that allows downloading YouTube videos and audio via a web interface. It accepts video URLs via POST requests, fetches metadata, and downloads the content. The service supports various output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory. It returns download progress and status updates in JSON format. To use it, run the Flask web service and send POST requests with the video URL and desired parameters. The web service can be accessed via a user script (e.g., Tampermonkey) that adds a button to download videos directly from YouTube pages.
-The user script can be installed in a browser extension like Tampermonkey, which allows users to add custom scripts to web pages. The script adds a button to YouTube video pages, enabling users to download videos directly from the page.
-
-###### Usage (Examples)
-```bash
-# Start the Flask web service
-python youtube-video-downloader-flask-ws.py
-
-# Send a POST request to download a video
-curl -X POST -H "Content-Type: application/json" -d '{"url": "VIDEO_URL", "format": "mp4", "resolution": "720p", "audio_bitrate": "192k", "output_dir": "./downloads"}' http://localhost:5000/download
-```
-
-###### Features
-- Accepts video URLs via POST requests.
-- Fetches metadata and downloads content in various formats.
-- Provides download progress and status updates in JSON format.
-- Supports output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
-- Returns download progress and status updates in JSON format.
-- Logs activity to logs/youtube_downloader.log.
-
-###### Requires
-- Flask
-- ytdl_helper (and its dependencies, likely yt-dlp)
-- ffmpeg (must be installed and in the system PATH)
-- music_style_classifier.py
+See [youtube-video-downloader/README.md](youtube-video-downloader/README.md) for each component's usage and requirements.
 
 ### mini-dlna-server
-A script that runs a local dlna server instance on the computer, taking as input a command line argument pointing out the folder to serve to clients.
+A DLNA/UPnP media server targeting Samsung TVs (2022+) and Windows 11 hosts, with automatic thumbnail generation, hot-reload config, and SSDP discovery. Still under active development.
 
-It is intended if I get time to do it, to stabilize it to properly handle conenctions, work better with Windows 11, and transcode media to the client using ffmpeg.
-
-**Note!** Currently it is extremely unstable and mostly doesn't work. If anyone wants to refactor it and fix some of the remaining issues that would be cool. :)
-
-#### Requires
-- mutagen
+See [mini-dlna-server/README.md](mini-dlna-server/README.md) for configuration, supported formats, and architecture.
 
 ## Scripts
 
@@ -420,29 +209,9 @@ python cbr_to_cbz_converter.py /path/to/comics --keep-original -j 4 -v
   - rarfile requires UnRAR tool installed and on PATH
 
 ### password_generator.py
-A small CLI for generating strong, easy-to-remember passwords.
+A small CLI for generating strong, easy-to-remember passwords, with `random`, `pronounceable`, and `diceware` (wordlist) modes.
 
-Features
-- Secure random generation using the `secrets` module
-- Modes: `random`, `pronounceable` (syllable-based), and `diceware` (wordlist)
-- Options to exclude ambiguous characters (0/O, 1/l, etc.), include/exclude digits and symbols
-- Enforces at least two characters from each enabled subset (upper/lower/digits/symbols)
-- Built-in small wordlist plus support for the EFF large diceware list (downloadable)
-
-Usage examples
-```bash
-# Random 12-char password (mixed case, digits)
-python password_generator/password_generator.py --length 12
-
-# Pronounceable password using 4 syllables
-python password_generator/password_generator.py --mode pronounceable --pronounceable-syllables 4 --length 12
-
-# Diceware using bundled builtin wordlist (3 words)
-python password_generator/password_generator.py --mode diceware --wordlist builtin --dice-words 3
-
-# Install the recommended EFF wordlist for diceware mode
-python password_generator/password_generator.py --install-wordlist
-``` 
+See [password_generator/README.md](password_generator/README.md) for usage and features.
 
 
 ### compare_package_versions.py
@@ -527,25 +296,7 @@ Windows 10 or Windows 11 (uses PowerShell and `taskkill`/`tasklist`).
 ### simple_scraper_proxy.py
 A standalone scraping proxy that fetches an upstream HTML page, extracts feed data using a local YAML selector template, and returns an RSS 2.0 feed.
 
-#### Features
-- Keeps the original `simple_http_proxy.py` untouched while reusing its simple local server model
-- Fetches a remote HTML page and parses it with BeautifulSoup
-- Loads scraping rules from local YAML templates in `simple_scraper_proxy_templates`
-- Renders RSS 2.0 output with an `atom:self` link and optional `nyaa:*` namespaced fields
-- Includes an example Nyaa template that maps torrent table rows into RSS items
-
-#### Usage Examples
-```bash
-# Start the scraper proxy
-python simple_scraper_proxy/simple_scraper_proxy.py --port 8081
-
-# Request RSS using the bundled Nyaa template
-http://localhost:8081/?url=<url>&template=nyaa_rss
-```
-
-#### Requires
-- beautifulsoup4
-- PyYAML
+See [simple_scraper_proxy/README.md](simple_scraper_proxy/README.md) for usage and requirements.
 
 ### imdb_title_query.py
 A simple CLI for querying IMDb `title.*.tsv.gz` datasets using the declared dataset schemas, substring search, basic filters, and plain-text table output. It can read a specific file, scan a directory for the matching dataset, or use the same default cache folder as the `metadatacommon` IMDb provider.
@@ -580,10 +331,9 @@ python imdb_title_query.py --show-schema title.episode
 - No external dependencies required (uses only Python standard libraries)
 
 ### metadata_cache_manager.py
-CLI helper for the `metadatacommon` providers to inspect and control cache TTLs. Supports `status`, `refresh`, `invalidate`, and `set-expiry` (accepts long form like "3 days" or short form like `2m7d`). TTL is persisted per provider (IMDb, Anime) and `invalidate` forces TTL to 0 so cache refreshes on next access. Optional `--no-color` disables colored output.
+CLI helper for the `metadatacommon` providers to inspect and control cache TTLs (`status`, `refresh`, `invalidate`, `set-expiry`).
 
-#### Requires
-- colorama (optional, for colored output)
+See [metadatacommon/README.md](metadatacommon/README.md#metadata_cache_managerpy) for usage and requirements.
 
 ### media-to-mp3.py
 Converts one or more media files to `.mp3` in the same folder, always using the first audio track from each input. Shows a per-file conversion progress bar and keeps FFmpeg's default MP3 encoding settings.
@@ -608,47 +358,9 @@ python media-to-mp3.py --force file1.mkv file2.mp4
 - tqdm (optional, for a richer progress bar)
 
 ### smartls.py
-A smart directory explorer for querying files and folders with composable filters, metadata-aware sorting, and multiple output modes. It scans a filesystem tree once, aggregates directory metadata, and can render the filtered result set as a tree, flat list, JSON, or CSV.
+A smart directory explorer for querying files and folders with composable filters, metadata-aware sorting, and multiple output modes (tree, flat list, JSON, CSV, self-contained HTML report).
 
-#### Features
-- Recursive traversal with optional depth limiting
-- Composable filters for direct child counts, recursive file counts, direct directory counts, sizes, ages, names, extensions, entry type, and depth
-- Numeric expression syntax for exact matches, inequalities, ranges, enumerations, modulo checks, and approximate values
-- Directory metadata including direct file and directory counts, recursive file counts, total descendant size, empty and sparse flags, and deepest nesting
-- File metadata including size, timestamps, MIME type, symlink details, and optional MD5 or SHA256 hashing
-- Output modes for tree view, flat list, formatted console tables, JSON, CSV, self-contained HTML web reports, and summary statistics
-- Sorting, limiting, grouping, relative or absolute paths, human-readable or raw byte sizes, optional icons, and ANSI color control
-
-#### Usage Examples
-```bash
-# All directories with no files anywhere below them
-python smartls/smartls.py --type d --files =0 --long
-
-# Directories with 1 to 3 recursive files, sorted by total size descending
-python smartls/smartls.py --type d --files 1..3 --sort -size --stats
-
-# Large files modified within the last week
-python smartls/smartls.py --type f --size >=50MB --mtime <7d --flat
-
-# Python and JavaScript files excluding test names
-python smartls/smartls.py ./src --ext py,js --not --name "*test*" --long
-
-# Export matching directories to JSON
-python smartls/smartls.py --type d --files =0 --json
-
-# Render console output in aligned columns like the web report
-python smartls/smartls.py --type f --flat --columns type,size,modified,relative-path --bytes
-
-# Export a self-contained HTML report
-python smartls/smartls.py --type f --size >=10MB --export-html smartls-report.html
-```
-
-#### Notes
-- `--or` separates filter groups and `--not` negates only the next filter
-- In tree mode, matching descendants keep their ancestor path visible for context
-- `--columns` takes a comma-separated list of metadata columns: `type`, `size`, `modified`, `created`, `accessed`, `children`, `recursive_files`, `mime`, `extension`, `relative_path`, `full_path`, `owner`, `group`, `permissions`
-- The HTML export is self-contained and can be opened directly in a browser without external assets
-- Presets, config files, and parallel traversal are not included in this implementation
+See [smartls/README.md](smartls/README.md) for the full filter syntax, usage examples, and notes.
 
 ### series_info_tool.py
 A comprehensive tool to extract and display series information for video files, with MyAnimeList integration. Groups video files by series title, retrieves metadata from anime and movie databases, and provides convenient ways to access online information. Designed for Windows shell:sendto and drag-drop operations.
@@ -714,31 +426,9 @@ series_info_tool.py --log-level DEBUG2 file1.mkv
 - browser_utils (local module)
 
 ### netflix_watch_status.py
-Reads a Netflix viewing history CSV, classifies entries as movies or series episodes, resolves metadata from IMDb and anime providers when available, and generates both console and standalone HTML watch-status reports. It also produces a CSV template of titles that still need IMDb-oriented override mappings.
+Reads a Netflix viewing history CSV, classifies entries as movies or series episodes, resolves metadata from IMDb and anime providers when available, and generates both console and standalone HTML watch-status reports.
 
-#### Features
-- Parses Netflix viewing-history CSV exports with fallback CSV encodings and basic mojibake repair
-- Uses Netflix-specific title parsing plus optional metadata lookups to improve movie/series classification and resolve season, episode, year, runtime, genres, rating, vote count, and source IDs
-- Multiple output modes:
-  - **default**: Text summary of unique movies and series
-  - **json**: Machine-readable export of the summary and resolved entries
-  - **table**: Treegrid-style console table grouped by title, season, and episode
-  - **webapp**: Self-contained HTML report with filtering, selection details, and artwork thumbnails
-- Table and webapp rows can show watched progress such as watched/total episodes when provider episode lists are available, including synthetic unwatched episode rows in the grouped view
-- Supports CSV-based episode title overrides via `netflix_episode_title_overrides.csv` and `--episode-title-overrides`, including canonical title, year, source ID, and episode-title remapping
-- Automatically exports an `*_unmapped_imdb_titles.csv` helper file to make missing override mappings easier to review and fill in
-- Webapp export caches thumbnails locally and prefers direct IMDb-backed poster URLs when available
-
-#### Usage Examples
-```bash
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --json
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --table
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --table --columns title,year,episode,views,average_rating
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --webapp-export netflix-watch-status.html
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --episode-title-overrides my_overrides.csv
-python netflix_watch_status/netflix_watch_status.py path/to/NetflixViewingHistory.csv --no-metadata
-```
+See [netflix_watch_status/README.md](netflix_watch_status/README.md) for features and usage examples.
 
 ### srt_to_transcript.py
 Saves contents of the specified `.srt` files to a plain text transcripts.
@@ -825,76 +515,9 @@ If the user approves them, the user simply responds "y", or "yes" or presses ent
 - traceback
 
 ### file_metadata_scanner.py
-A comprehensive tool for extracting metadata from files and folders with support for various file types. Scans directories recursively or non-recursively, extracts basic file information (size, timestamps, attributes) and optional extended metadata (audio/video properties via ffmpeg, image dimensions, comic archive contents), and exports results to CSV, JSON, and an interactive HTML webapp. Supports thumbnail generation for video files and provides flexible filtering options.
+A comprehensive tool for extracting metadata from files and folders, with optional extended metadata (audio/video via ffmpeg, image dimensions, comic archive contents), thumbnail generation, and export to CSV, JSON, and an interactive HTML webapp.
 
-#### Features
-- Recursive and non-recursive directory scanning with progress tracking
-- Basic metadata extraction:
-  - File/directory name, type, size (bytes and human-readable)
-  - Timestamps (created, modified, accessed)
-  - File attributes (hidden, readonly, system)
-  - File extensions
-- Extended metadata extraction (optional):
-  - **Video/Audio**: Duration, bitrate, codec, resolution, frame rate, audio channels, sample rate
-  - **Images**: Dimensions, format, color mode, DPI
-  - **Comic Archives (CBR/CBZ)**: Page count, image formats, dimensions
-- Thumbnail generation for video files using `video_thumbnail_generator`:
-  - Static thumbnails (3x3 grid of frames)
-  - Animated WEBM thumbnails
-  - Configurable minimum duration filter
-  - Batch processing with progress tracking
-- Flexible filtering and exclusion:
-  - Filter by file extensions (e.g., only .mp4, .mkv)
-  - Exclude specific paths or directories
-- Multiple export formats:
-  - **CSV**: Tabular data for spreadsheet analysis
-  - **JSON**: Structured data for programmatic use
-  - **HTML Webapp**: Standalone interactive file explorer with search, filtering, and thumbnail viewing
-- Customizable export location for metadata bundles
-- Regenerate webapp from existing metadata without rescanning
-- CBR processing can be skipped to improve performance (RAR extraction is slow)
-
-#### Usage Examples
-```bash
-# Basic scan of current directory (exports to ./metadata/)
-python file_metadata_scanner/file_metadata_scanner.py .
-
-# Recursive scan with custom export location
-python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --export-bundle /output/location
-
-# Scan only video files with extended metadata and thumbnails
-python file_metadata_scanner/file_metadata_scanner.py /path/to/videos -r -e mp4,mkv,avi --extended --thumbnails
-
-# Exclude specific paths (node_modules, cache directories, etc.)
-python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --exclude node_modules,__pycache__,.git
-
-# Full scan with all features and custom export location
-python file_metadata_scanner/file_metadata_scanner.py /path/to/media -r --extended --thumbnails --export-bundle C:\MyMetadata
-
-# Skip slow CBR processing, only process CBZ comic archives
-python file_metadata_scanner/file_metadata_scanner.py /path/to/comics -r --extended --skip-cbr
-
-# Set minimum video duration for thumbnail generation (e.g., 10 minutes)
-python file_metadata_scanner/file_metadata_scanner.py /path/to/videos -r --thumbnails --min-duration 600
-
-# Regenerate webapp from existing metadata bundle
-python file_metadata_scanner/file_metadata_scanner.py --regenerate-bundle /path/to/bundle
-
-# Regenerate webapp with missing thumbnails
-python file_metadata_scanner/file_metadata_scanner.py --regenerate-bundle /path/to/bundle --thumbnails
-
-# Verbose logging for troubleshooting
-python file_metadata_scanner/file_metadata_scanner.py /path/to/folder -r --extended --log-level DEBUG
-```
-
-#### Requires
-- tqdm (for progress bars)
-- Pillow (for image metadata extraction)
-- video_thumbnail_generator (local module, for thumbnail generation)
-- ffmpeg and ffprobe (system binaries, for extended video/audio metadata)
-- libarchive-c or rarfile (for CBR comic archive extraction)
-  - libarchive-c (preferred): Requires libarchive DLL
-  - rarfile (fallback): Requires UnRAR tool on PATH
+See [file_metadata_scanner/README.md](file_metadata_scanner/README.md) for features, usage examples, and requirements.
 
 ### m3u8-to-mp4-flask-webservice.py
 A flask web service that takes a m3u8 file as input and converts it into an MP4 file.
@@ -965,47 +588,9 @@ Simple merge a bunch of audio files into one single output file. Just drag all t
 - tqdm
 
 ### udio-flask-webservice.py (udio-download_ext-button.user.js)
-A flask web service that adds metadata including cover art to your song files downloaded from Udio. It comes with a user script (e.g. Tampermonkey) that simplifies this process by adding a new button to the song pages "Download with metadata" that calls the webservice.
-This webservice now also supports Riffusion and .m4a audio files.
+A flask web service that adds metadata including cover art to song files downloaded from Udio or Riffusion. Comes with user scripts (e.g. Tampermonkey) that add a "Download with metadata" button to the song pages, calling the webservice.
 
-The webservice exposes the following interfaces:
-
-| Interface | Methods | Functions | Parameters |
-| --- | --- | --- | --- |
-| /api/download_ext | POST & GET | download_ext | mp3_url, image_url, title, artist, album, genre, year, cannonical, lyrics |
-
-#### /api/download_ext
-Downloads the specified `.mp3` file and adds the provided metadata to it.
-
-| Parameter | Tag | Description |
-| --- | --- | --- |
-| mp3_url | ***Not used*** | The URL of the `.mp3` file to be converted. |
-| image_url | Images (Cover) | The URL of the cover art in .jpg format to use. |
-| title | Title | The title of the track. |
-| artist | Artist | Artist name(s) and/or alias(es). |
-| album | Album | The title of the album. |
-| genre | Genre | The genre of the track. |
-| year | Year | Year of release. |
-| cannonical | WWWAUDIOFILE | The source url of the track where it can be found permanently. |
-
-#### Requires
-- flask
-- requests
-- python-magic-bin
-- audio_metadata
-- bidict
-- importlib-resources
-- moviepy
-- eyed3
-- ffmpeg
-- pillow
-
-#### Optional Dependencies
-- music_style_classifier.py
-  - librosa
-  - tensorflow
-  - numpy
-  - transformers
+See [udio-flask-webservice/README.md](udio-flask-webservice/README.md) for the API reference and requirements.
 
 ### rss-feed-downloader.py
 A script to parse RSS feeds and download enclosures (e.g., audio, video, or other files) with a console-based GUI for selection and progress tracking.
@@ -1033,32 +618,9 @@ It is intended to be used as a command line tool, but it can also be used as a l
 - transformers
 
 ### md_to_docx.py
-A script that converts Markdown files to Microsoft Word DOCX format. It processes Markdown content by first converting it to HTML using mistletoe, then parsing the HTML with BeautifulSoup to create properly formatted Word documents. The converter handles various Markdown elements including headings, paragraphs, lists (ordered and unordered with nesting), tables, bold/italic text, code blocks, links, and blockquotes. Tables are automatically formatted with proper styling and column widths.
+Converts Markdown files to Microsoft Word DOCX format, handling headings, lists, tables, inline formatting, and blockquotes with proper Word styling.
 
-The script can be used from the command line by specifying an input Markdown file and optionally an output DOCX file. If no output filename is provided, it will generate one based on the input filename and avoid overwriting existing files.
-
-#### Usage (Examples)
-```bash
-# Convert README.md to README.docx
-python md_to_docx/md_to_docx.py README.md
-
-# Convert with specific output filename
-python md_to_docx/md_to_docx.py input.md output.docx
-```
-
-#### Features
-- Converts Markdown to properly formatted Word documents
-- Handles headings (H1-H9), paragraphs, lists, and tables
-- Supports inline formatting (bold, italic, code)
-- Processes nested lists with appropriate indentation
-- Formats tables with automatic column sizing and styling
-- Generates debug HTML file for troubleshooting
-- Automatic output filename generation to avoid overwriting
-
-#### Requires
-- mistletoe
-- beautifulsoup4
-- python-docx
+See [md_to_docx/README.md](md_to_docx/README.md) for features, usage examples, and requirements.
 
 ### gog_galaxy_exporter.py
 A script that exports game library data from GOG Galaxy 2.0 database to CSV, JSON, and Excel formats. It extracts comprehensive game information including titles, platforms, playtime, purchase dates, ratings, features, and enhanced metadata from the GamePieces system.
@@ -1095,169 +657,19 @@ python gog_galaxy_exporter.py csv
 - openpyxl (optional, for Excel export functionality)
 
 ### gog_csv_to_html.py
-A Python script that converts GOG Galaxy CSV export files into a modern, interactive HTML game library viewer. It creates a responsive web application with game browsing, filtering, search functionality, rich media integration, and advanced AI-powered game analysis including clustering visualization and similarity recommendations.
+Converts GOG Galaxy CSV export files into a modern, interactive HTML game library viewer, with rich media integration and optional AI-powered game analysis (axis scoring, clustering, similarity recommendations via Ollama).
 
-The script automatically fetches additional media content from online sources and caches it locally for improved performance. It provides a professional game library interface similar to modern gaming platforms, with detailed game information, ratings, playtime tracking, visual elements, and intelligent game analysis features.
-
-#### Features
-- **Modern Interactive Interface**: Responsive React-based web application with dual-pane layout
-- **Rich Media Integration**:
-  - Automatic YouTube trailer and gameplay video embedding
-  - Game screenshot galleries with carousel navigation and modal view
-  - Cover art and background images from game metadata
-- **Advanced Filtering & Search**:
-  - Real-time search across titles, descriptions, genres, and tags
-  - Filter by played/unplayed games and recently played titles
-  - Platform-based filtering and sorting options
-- **Game Information Display**:
-  - Comprehensive game details including playtime, ratings, release dates
-  - Developer/publisher information and genre classifications
-  - Platform badges and compatibility information
-  - Purchase and last played date tracking
-- **AI-Powered Game Analysis** (Enhanced):
-  - **14-axis game scoring system** using Ollama and deepseek-r1 model for analyzing:
-    - Core mechanics complexity and count
-    - Player agency and world impact
-    - Narrative density and integration
-    - Scope, pacing, and replayability
-    - Technical execution and aesthetics
-  - **Interactive cluster visualization** using t-SNE and K-means clustering
-  - **Game similarity recommendations** based on comprehensive vector analysis
-  - **Visual axis comparison** in compact grid format for quick game assessment
-- **Machine Learning Features**:
-  - **MiniLM text embeddings** for semantic game similarity analysis
-  - **Hybrid vector space** combining structured axis data with semantic embeddings
-  - **Real-time clustering** with meaningful cluster naming and analysis
-  - **Intelligent game recommendations** using euclidean distance in high-dimensional space
-- **Performance Optimizations**:
-  - Local SQLite database for media content and axis scoring caching
-  - React virtualization for smooth scrolling of large game libraries
-  - Lazy loading of images and content
-  - Standardized vector preprocessing for improved clustering results
-- **Professional Presentation**:
-  - Modern gradient backgrounds and card-based layouts
-  - Star rating displays and playtime formatting
-  - Responsive design for desktop and mobile viewing
-  - Bootstrap-based styling with custom enhancements
-- **Game Analysis Integration** (Optional):
-  - AI-powered game axis scoring using Ollama and deepseek-r1 model
-  - 14-axis game comparison system for analyzing game mechanics, narrative, and design
-  - Cached scoring results for improved performance on repeated runs
-
-#### Usage (Examples)
-```bash
-# Convert CSV to HTML with full AI analysis (recommended)
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv
-
-# Convert with custom output filename
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv -o my_game_library.html
-
-# Skip media fetching for faster processing (disables AI features)
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --no-media
-
-# Disable media caching
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --no-cache
-
-# Open result in browser automatically
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --open
-
-# Show cache statistics including AI analysis data
-python gog_csv_to_html/gog_csv_to_html.py --cache-stats
-
-# Use custom Ollama host for AI analysis
-python gog_csv_to_html/gog_csv_to_html.py gog_export.csv --ollama-host http://192.168.1.100:11434
-```
-
-#### AI Analysis Features
-The script now includes sophisticated AI-powered game analysis:
-
-- **Axis Scoring**: Each game is analyzed across 14 dimensions using the deepseek-r1 model
-- **Cluster Analysis**: Games are automatically grouped using machine learning clustering algorithms
-- **Similarity Engine**: Find games similar to your favorites using hybrid semantic + structured analysis
-- **Visual Analytics**: Interactive t-SNE plots show your game library's structure and patterns
-
-#### Template Dependency
-- **gog_csv_to_html_template.html**: Jinja2 template file containing the HTML structure, CSS styling, and React-based JavaScript application with ML clustering features. Must be present in the same directory as the Python script.
-- **gog_csv_to_html_template.css**: CSS styling file with responsive design and clustering modal styles.
-
-#### Requires
-- requests
-- beautifulsoup4
-- jinja2
-- **ollama** (for AI-powered game axis scoring - requires deepseek-r1 model)
-- **pydantic** (for structured output validation with Ollama)
-
-##### Optional Dependencies
-- **Image Processing**: gzip, zlib, brotli (for handling compressed web responses)
-- **Web Browser Integration**: webbrowser (standard library, for --open flag)
-- **AI Game Analysis**: Ollama server with deepseek-r1 model (for axis scoring and clustering features)
-
-#### Setup for AI Features
-To enable the full AI analysis capabilities:
-
-1. **Install Ollama**: Download from [ollama.ai](https://ollama.ai)
-2. **Install deepseek-r1 model**: `ollama pull deepseek-r1`
-3. **Start Ollama server**: `ollama serve`
-4. **Run with AI features**: `python gog_csv_to_html/gog_csv_to_html.py your_games.csv`
-
-The script will automatically detect Ollama availability and enable advanced features when the server and model are accessible.
+See [gog_csv_to_html/README.md](gog_csv_to_html/README.md) for features, usage examples, AI setup, and requirements.
 
 ### file_grouper.py
-A script that organizes files in a directory by grouping them based on their filenames using intelligent pattern matching. It identifies files that belong together (such as episodes of a TV series, parts of a multi-part archive, or related documents) and creates subdirectories to organize them logically.
+Organizes files in a directory by grouping them based on filename pattern matching (e.g. TV episodes, multi-part archives), with MyAnimeList integration for anime metadata and watch-status tracking. Part of the [common](common/README.md) module.
 
-The script uses advanced string matching algorithms to detect patterns in filenames, handle various naming conventions, and group related files while preserving the original file structure. It's particularly useful for organizing large collections of media files, software downloads, or document archives.
-
-Now integrates with **MyAnimeList** as the primary source for anime information, providing enhanced metadata and series validation. Supports public MyAnimeList lists and exported lists for tracking watch status and completion data.
-
-#### Features
-- Intelligent filename pattern detection and grouping
-- Support for various naming conventions (TV shows, movies, archives, documents)
-- MyAnimeList integration for anime metadata and series validation
-- Watch status tracking via public or exported MyAnimeList lists
-- Configurable grouping sensitivity and pattern matching
-- Recursive directory processing with configurable depth
-- Detailed logging and progress reporting
-
-#### Requires
-- rapidfuzz
-- pathlib
+See [common/README.md](common/README.md#file_grouperpy) for features and requirements.
 
 ### series_completeness_checker.py
-A script that analyzes TV series collections to identify missing episodes, gaps in seasons, and incomplete series. It scans directory structures and filenames to build a comprehensive view of your media library, highlighting what episodes or seasons might be missing from your collection.
+Analyzes TV series collections to identify missing episodes, season gaps, and incomplete series, using MyAnimeList as the primary source for anime metadata and episode counts.
 
-The script supports various TV series naming conventions and provides detailed reports on series completeness, making it easy to identify and fill gaps in your media collection. It can also suggest potential naming inconsistencies and provide recommendations for organizing your series.
-
-Now features **MyAnimeList** as the primary source for anime information, providing accurate episode counts, season data, and series metadata. Supports integration with public MyAnimeList lists and exported lists to track watch status and completion progress.
-
-#### Features
-- Comprehensive TV series analysis and gap detection
-- Support for multiple naming conventions and formats
-- MyAnimeList integration for accurate anime metadata and episode validation
-- Watch status integration with public or exported MyAnimeList lists
-- Season and episode numbering validation
-- Missing episode identification with detailed reporting
-- Series metadata integration for enhanced accuracy
-- Export results to various formats (JSON, HTML reports)
-- Integration with metadata providers for series validation
-- Batch processing of multiple series directories
-
-#### Usage (Examples)
-```bash
-# Check completeness of series in current directory
-python series_completeness_checker/series_completeness_checker.py
-
-# Generate JSON report
-python series_completeness_checker/series_completeness_checker.py /path/to/series --export series.json
-
-# Generate HTML webapp
-python series_completeness_checker/series_completeness_checker.py /path/to/series --webapp-export series.html
-```
-
-#### Requires
-- rapidfuzz
-- requests
-- pandas
-- pathlib
+See [series_completeness_checker/README.md](series_completeness_checker/README.md) for features, usage examples, and requirements.
 
 ### series_archiver.py
 A script that archives anime series files based on series completeness checker output. It organizes files into structured folders with standardized naming patterns and provides both command-line interface and programmatic access for integration with other tools.
@@ -1482,28 +894,10 @@ The script features intelligent performance optimizations, only updating the dis
 - requests
 - concurrent.futures (standard library)
 
-#### Usage
-1. Install Tampermonkey or a similar userscript manager in your browser.
-2. Import the script into Tampermonkey.
-3. Make sure your local IP addresses are whitelisted in the script.
-4. Navigate to your Plex playlist page, open a playlist and see the watch status indicators appear next to each item thumbnail.
-
-#### Requires
-- Tampermonkey or a similar userscript manager
-
 ### latest_episodes_viewer.py
-A script that generates a simple HTML page listing the latest episodes from a collection of TV series. It scans a specified directory for video files, extracts metadata using guessit and some custom metadata providers, and creates an organized list of the most recent episodes based on their air dates. The generated HTML page includes links to the episodes, making it easy to access and view the latest content.
+Generates a simple HTML page listing the latest episodes from a collection of TV series, based on metadata extracted via guessit and custom metadata providers.
 
-#### Features
-- Scans a specified directory for video files
-- Extracts metadata using guessit and custom metadata providers
-- Generates an organized HTML page listing the latest episodes
-- Includes links to the episodes for easy access
-
-#### Requires
-- guessit
-- requests
-- tqdm
+See [latest_episodes_viewer/README.md](latest_episodes_viewer/README.md) for features and requirements.
 
 ### serve_local.py
 Serve a file or folder as a simple local webhost with optional live-reload and a small file-proxy helper.

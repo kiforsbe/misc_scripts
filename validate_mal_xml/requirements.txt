@@ -1,2 +1,0 @@
-# validate_mal_xml.py
-lxml

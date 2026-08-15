@@ -4,12 +4,12 @@
 -r gog_csv_to_html/requirements.txt
 -r latest_episodes_viewer/requirements.txt
 -r md_to_docx/requirements.txt
+-r metadatacommon/requirements.txt
 -r mini-dlna-server/requirements.txt
 -r netflix_watch_status/requirements.txt
 -r plex_db_tool/requirements.txt
 -r series_completeness_checker/requirements.txt
 -r simple_scraper_proxy/requirements.txt
 -r udio-flask-webservice/requirements.txt
--r validate_mal_xml/requirements.txt
 -r video-optimizer-v2/requirements.txt
 -r youtube-video-downloader/requirements.txt
