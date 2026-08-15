@@ -585,30 +585,20 @@ async def _process_download(
         RuntimeError,
         asyncio.CancelledError,
     ) as e:
-        log_msg = f"Error processing download for {url}: {e}"
-        # Avoid logging full trace here if it's a known DownloadError type,
-        # as ytdl_core likely logged it already. Log trace for unexpected ones.
-        log.error(
-            log_msg,
-            exc_info=not isinstance(
-                e,
-                (
-                    yt_dlp.utils.DownloadError,
-                    ValueError,
-                    FileNotFoundError,
-                    asyncio.CancelledError,
-                ),
-            ),
-        )
-        # Ensure item status reflects error if item exists
+        # This is just re-raised to whichever caller invoked
+        # _run_download_deduped (the /download route or
+        # _background_job_runner), which each log the failure exactly once
+        # at the point it's finally handled - log at DEBUG here so a
+        # failure isn't logged multiple times at ERROR level.
+        log.debug(f"Error processing download for {url}: {e}")
         if item:
             item.status = "Error"
             item.error = str(e)
-        # Re-raise the exception to be caught by the Flask route
         raise
     except Exception as e:
-        # Catch any other unexpected exceptions
-        log.error(f"Unexpected error processing download for {url}: {e}", exc_info=True)
+        # Same reasoning as above - the caller's own catch-all logs
+        # unexpected exceptions (with a traceback) exactly once.
+        log.debug(f"Unexpected error processing download for {url}: {e}", exc_info=True)
         if item:
             item.status = "Error"
             item.error = f"Unexpected: {str(e)}"

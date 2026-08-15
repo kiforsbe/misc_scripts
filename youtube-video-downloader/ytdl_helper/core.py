@@ -85,6 +85,48 @@ RATE_LIMIT_SECONDS: float = float(os.environ.get("YTDL_RATE_LIMIT_SECONDS", "2")
 # Backoff maximum used to configure yt-dlp's `max_sleep_interval`
 RATE_LIMIT_BACKOFF_MAX: float = float(os.environ.get("YTDL_RATE_LIMIT_BACKOFF_MAX", "10"))
 
+# Automatic retry for download failures that look transient (a signed CDN
+# URL rejected with 403/429/5xx, a flaky edge server, a dropped connection)
+# rather than permanent (private/unavailable video, bad format selection).
+# These commonly succeed moments later on a fresh extraction - which is
+# what re-running the whole download does today, manually. Set
+# YTDL_DOWNLOAD_RETRY_ATTEMPTS=0 to disable.
+DOWNLOAD_RETRY_ATTEMPTS: int = int(os.environ.get("YTDL_DOWNLOAD_RETRY_ATTEMPTS", "3"))
+DOWNLOAD_RETRY_DELAY_SECONDS: float = float(
+    os.environ.get("YTDL_DOWNLOAD_RETRY_DELAY_SECONDS", "3")
+)
+
+_TRANSIENT_DOWNLOAD_ERROR_MARKERS = (
+    "403",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "forbidden",
+    "too many requests",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "connection reset",
+    "connection aborted",
+    "timed out",
+    "temporary failure",
+    "remote end closed connection",
+)
+
+
+def _is_likely_transient_download_error(e: "yt_dlp.utils.DownloadError") -> bool:
+    """
+    Heuristic for whether a DownloadError is worth automatically retrying:
+    True for network/HTTP-level failures that often resolve themselves on a
+    fresh attempt; False for failures a retry can't fix (private/unavailable
+    video, invalid format selection, missing FFmpeg, etc.) where retrying
+    would just waste time and repeat the same log noise.
+    """
+    message = str(e).lower()
+    return any(marker in message for marker in _TRANSIENT_DOWNLOAD_ERROR_MARKERS)
+
 
 def _yt_dlp_verbose_enabled() -> bool:
     """Enable yt-dlp verbose output when debug logging is enabled."""
@@ -802,8 +844,32 @@ async def download_item(
                         )
 
                 if not downloaded:
-                    # Fallback path: let yt-dlp re-extract from URL.
-                    await loop.run_in_executor(None, ydl.download, [item.url])
+                    # Fallback path: let yt-dlp re-extract from URL. A
+                    # transient-looking failure here (e.g. a signed CDN URL
+                    # rejected with a 403) gets a few automatic retries -
+                    # each retry re-extracts, so it gets a fresh URL rather
+                    # than repeating the exact request that just failed.
+                    attempt = 1
+                    while True:
+                        try:
+                            await loop.run_in_executor(None, ydl.download, [item.url])
+                            break
+                        except yt_dlp.utils.DownloadError as e:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise
+                            if (
+                                attempt > DOWNLOAD_RETRY_ATTEMPTS
+                                or not _is_likely_transient_download_error(e)
+                            ):
+                                raise
+                            delay = DOWNLOAD_RETRY_DELAY_SECONDS * attempt
+                            logger.warning(
+                                f"Transient-looking download error for '{item.title}' "
+                                f"(attempt {attempt}/{DOWNLOAD_RETRY_ATTEMPTS + 1}): "
+                                f"{e}. Retrying in {delay:.0f}s."
+                            )
+                            await asyncio.sleep(delay)
+                            attempt += 1
 
             # --- Post-Download Processing (Finding and Moving) ---
             _update_status("Processing")
@@ -878,7 +944,10 @@ async def download_item(
         # Temp directory cleaned up automatically
 
     except FileNotFoundError as e:
-        logger.error(f"Download failed for '{item.title}': {e}", exc_info=False)
+        # Callers up the stack (each entry point in the Flask app) log this
+        # again at the point it's finally handled - keep this one at DEBUG
+        # so a failure isn't logged multiple times at ERROR level.
+        logger.debug(f"Download failed for '{item.title}': {e}", exc_info=False)
         _update_status("Error", str(e))
         raise e
     except yt_dlp.utils.DownloadCancelled as e:
@@ -887,7 +956,7 @@ async def download_item(
         raise
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e).split(":")[-1].strip()  # Get cleaner error message
-        logger.error(
+        logger.debug(
             f"yt-dlp DownloadError during download for '{item.title}': {error_msg}",
             exc_info=False,
         )
@@ -899,7 +968,7 @@ async def download_item(
         raise  # Re-raise CancelledError so the caller knows
     except Exception as e:
         error_msg = str(e)
-        logger.error(
+        logger.debug(
             f"Unexpected download error for '{item.title}': {error_msg}", exc_info=True
         )
         _update_status("Error", f"Unexpected: {error_msg[:100]}")
