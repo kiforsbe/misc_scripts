@@ -661,37 +661,43 @@ def _run_download_deduped(
         target_video_params,
     )
 
-    cancel_requested_early = False
-    if job_id is not None:
-        with _jobs_lock:
+    # Read cancel_requested and register into the dedup entry as one
+    # atomic step (nesting _active_downloads_lock inside _jobs_lock) - if
+    # these were two separate critical sections, a /download/cancel
+    # request landing in the gap between them would find no dedup entry
+    # yet, no-op, and the cancellation would be silently lost while the
+    # job's own status still flipped to "cancelled".
+    with _jobs_lock:
+        cancel_requested_early = False
+        if job_id is not None:
             job = _jobs.get(job_id)
             if job is not None:
                 cancel_requested_early = bool(job.get("cancel_requested"))
 
-    with _active_downloads_lock:
-        entry = _active_downloads.get(dedup_key)
-        is_owner = entry is None
-        if is_owner:
-            entry = {
-                "event": threading.Event(),
-                "result": None,
-                "error": None,
-                "cancel_event": threading.Event(),
-                "job_ids": set(),
-                "percent": 0.0,
-                "message": "",
-            }
-            _active_downloads[dedup_key] = entry
-        if job_id is not None:
-            if cancel_requested_early:
-                # Cancelled before this job's download work even started
-                # (e.g. the user clicked Cancel within milliseconds of
-                # starting). Don't register it as interested; if it would
-                # have been the sole owner, cancel immediately.
-                if is_owner and not entry["job_ids"]:
-                    entry["cancel_event"].set()
-            else:
-                entry["job_ids"].add(job_id)
+        with _active_downloads_lock:
+            entry = _active_downloads.get(dedup_key)
+            is_owner = entry is None
+            if is_owner:
+                entry = {
+                    "event": threading.Event(),
+                    "result": None,
+                    "error": None,
+                    "cancel_event": threading.Event(),
+                    "job_ids": set(),
+                    "percent": 0.0,
+                    "message": "",
+                }
+                _active_downloads[dedup_key] = entry
+            if job_id is not None:
+                if cancel_requested_early:
+                    # Cancelled before this job's download work even started
+                    # (e.g. the user clicked Cancel within milliseconds of
+                    # starting). Don't register it as interested; if it would
+                    # have been the sole owner, cancel immediately.
+                    if is_owner and not entry["job_ids"]:
+                        entry["cancel_event"].set()
+                else:
+                    entry["job_ids"].add(job_id)
 
     def _tracked_progress_hook(percent, message=None):
         with _active_downloads_lock:
