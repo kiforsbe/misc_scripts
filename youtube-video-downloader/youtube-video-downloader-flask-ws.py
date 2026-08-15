@@ -27,6 +27,7 @@ try:
     from .ytdl_helper import models as ytdl_models
     from .ytdl_helper.utils import check_ffmpeg
     from .ytdl_helper.progress_sink import ProgressSink
+    from .ytdl_helper.download_queue import DownloadQueue
 except ImportError:
     current_dir = pathlib.Path(__file__).parent
     ytdl_helper_path = current_dir / "ytdl_helper"
@@ -37,6 +38,7 @@ except ImportError:
             from ytdl_helper import models as ytdl_models
             from ytdl_helper.utils import check_ffmpeg
             from ytdl_helper.progress_sink import ProgressSink
+            from ytdl_helper.download_queue import DownloadQueue
         except ImportError as e:
             print(
                 f"ERROR: Failed to import ytdl_helper from {current_dir}. Error: {e}",
@@ -50,6 +52,7 @@ except ImportError:
             from ytdl_helper import models as ytdl_models
             from ytdl_helper.utils import check_ffmpeg
             from ytdl_helper.progress_sink import ProgressSink
+            from ytdl_helper.download_queue import DownloadQueue
         except ImportError:
             print(
                 "ERROR: Could not find ytdl_helper locally or as an installed package.",
@@ -173,6 +176,17 @@ _active_downloads: dict = {}
 _active_downloads_lock = threading.Lock()
 
 
+# --- Download Concurrency Queue ---
+# Caps how many real downloads (i.e. _process_download calls) run at once,
+# independent of the dedup system above. Dedup collapses duplicate requests
+# for the same item into one; this queue limits how many distinct items may
+# be downloading simultaneously. Only a dedup "owner" ever calls
+# download_queue.acquire()/release() - a "waiter" shares the owner's
+# already-acquired slot instead of claiming one of its own.
+MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("YTDL_MAX_CONCURRENT_DOWNLOADS", "1"))
+download_queue = DownloadQueue(max_concurrent=MAX_CONCURRENT_DOWNLOADS)
+
+
 # --- Async Job Tracking (for /download/start, /download/status, /download/cancel) ---
 # A "job" is one client's request for a download; several jobs can point at the
 # same in-flight download (see dedup above) when multiple clients ask for the
@@ -180,7 +194,9 @@ _active_downloads_lock = threading.Lock()
 # downloading -> complete/error/cancelled/dropped) plus a heartbeat timestamp
 # refreshed by /download/status polls, so an abandoned job (client crashed,
 # tab closed without a clean unload, network lost) can be detected even
-# without an explicit cancel request.
+# without an explicit cancel request. A job stays "queued" both before it's
+# picked up at all and while its owner is waiting on a download_queue slot
+# (see above) - it only becomes "downloading" once that slot is granted.
 JOB_HEARTBEAT_TIMEOUT_SECONDS = float(
     os.environ.get("YTDL_JOB_HEARTBEAT_TIMEOUT_SECONDS", "15")
 )
@@ -610,6 +626,7 @@ def _run_download_deduped(
     target_video_params: str | None,
     progress_hook=None,
     job_id: str | None = None,
+    on_downloading_started=None,
 ) -> pathlib.Path:
     """
     Runs _process_download for this request, but if an identical request
@@ -620,10 +637,21 @@ def _run_download_deduped(
     that arrives while it is in flight blocks on the owner's completion and
     then returns (or re-raises) exactly what the owner produced.
 
+    The owner must also claim a slot from the process-wide download_queue
+    before it may actually call _process_download, so at most
+    YTDL_MAX_CONCURRENT_DOWNLOADS real downloads run at once - a waiter
+    never claims a slot of its own, since it isn't starting a new download.
+
     If job_id is given, it is registered against the underlying download so
     that a later /download/cancel request or a lost heartbeat can ask for
     cancellation (see _deregister_job) - the download is only actually
     cancelled once no registered job_id is left wanting the result.
+
+    on_downloading_started, if given, is called once this call's underlying
+    download is actually running: immediately for a waiter (it shares an
+    already-in-progress or about-to-run download), or for the owner only
+    after it has claimed a download_queue slot - which may be well after
+    this function was entered if the queue was full.
     """
     dedup_key = (
         ytdl_core.clean_youtube_url(url),
@@ -679,6 +707,8 @@ def _run_download_deduped(
             f"Download already in progress for {dedup_key}; "
             "waiting for it to finish instead of starting a duplicate."
         )
+        if on_downloading_started:
+            on_downloading_started()
         if progress_hook:
             progress_hook(10, "Waiting for an in-progress download of this item to finish")
         if entry["event"].wait(timeout=DOWNLOAD_WAIT_TIMEOUT_SECONDS):
@@ -712,23 +742,39 @@ def _run_download_deduped(
             target_video_params,
             progress_hook=progress_hook,
             job_id=job_id,
+            on_downloading_started=on_downloading_started,
         )
 
+    ticket_id = uuid.uuid4().hex
     try:
-        result = asyncio.run(
-            _process_download(
-                url,
-                audio_format_id,
-                video_format_id,
-                target_format,
-                target_audio_params,
-                target_video_params,
-                progress_hook=_tracked_progress_hook,
-                cancel_event=entry["cancel_event"],
-            )
+        acquired = download_queue.acquire(
+            ticket_id,
+            cancel_event=entry["cancel_event"],
+            on_waiting=lambda position: _tracked_progress_hook(
+                0, f"Queued for download (position {position})"
+            ),
         )
-        entry["result"] = result
-        return result
+        if not acquired:
+            raise asyncio.CancelledError("Cancelled while queued for a download slot")
+        try:
+            if on_downloading_started:
+                on_downloading_started()
+            result = asyncio.run(
+                _process_download(
+                    url,
+                    audio_format_id,
+                    video_format_id,
+                    target_format,
+                    target_audio_params,
+                    target_video_params,
+                    progress_hook=_tracked_progress_hook,
+                    cancel_event=entry["cancel_event"],
+                )
+            )
+            entry["result"] = result
+            return result
+        finally:
+            download_queue.release(ticket_id)
     except Exception as e:
         entry["error"] = e
         raise
@@ -831,12 +877,19 @@ def _background_job_runner(
     target_video_params: str | None,
 ) -> None:
     """Runs a /download/start job in the background and records its outcome."""
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-        if job is not None:
-            job["status"] = "downloading"
-
     sink, cleanup_progress = _build_progress_sink(f"Job {job_id[:8]}", job_id=job_id)
+
+    def _mark_downloading():
+        # Fired by _run_download_deduped once this job's underlying download
+        # is actually running - for an owner, that's only after it has
+        # claimed a download_queue slot, so the job stays "queued" for as
+        # long as it's waiting on a concurrency slot, not just at creation.
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is not None and job["status"] not in (
+                "complete", "error", "cancelled", "dropped",
+            ):
+                job["status"] = "downloading"
 
     try:
         result_path = _run_download_deduped(
@@ -848,6 +901,7 @@ def _background_job_runner(
             target_video_params,
             progress_hook=sink,
             job_id=job_id,
+            on_downloading_started=_mark_downloading,
         )
         with _jobs_lock:
             job = _jobs.get(job_id)
