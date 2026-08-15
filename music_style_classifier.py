@@ -7,6 +7,7 @@ import ffmpeg # ffmpeg-python library
 import tempfile
 import os
 import sys
+import threading
 import warnings
 import logging # Import the logging library
 
@@ -19,6 +20,7 @@ MODEL_NAME = "mtg-upf/discogs-maest-30s-pw-73e-ts"
 _pipeline = None
 _device = None
 _device_name = "Unknown"
+_pipeline_lock = threading.Lock()
 
 # --- Helper Functions ---
 
@@ -37,9 +39,18 @@ def _get_device():
     return _device
 
 def _init_pipeline():
-    """Initializes the classification pipeline lazily."""
+    """
+    Initializes the classification pipeline (normally lazily, on first use;
+    see warm_up() for eager initialization). Safe to call from multiple
+    threads concurrently - e.g. a startup warm-up thread racing a real
+    classification request - without loading the model twice.
+    """
     global _pipeline
-    if _pipeline is None:
+    if _pipeline is not None:
+        return _pipeline
+    with _pipeline_lock:
+        if _pipeline is not None:  # Re-check: another thread may have won the race.
+            return _pipeline
         device_id = _get_device()
         try:
             logging.info(f"Initializing audio classification pipeline ({MODEL_NAME}) on {_device_name}...")
@@ -61,6 +72,20 @@ def _init_pipeline():
                 logging.error("If using GPU, ensure CUDA drivers and toolkit are compatible with your PyTorch installation.")
             _pipeline = None # Ensure it's None if init fails
     return _pipeline
+
+
+def warm_up() -> bool:
+    """
+    Eagerly initializes the classification pipeline instead of waiting for
+    the first real call to get_music_genre(). Intended to be called once
+    at application startup (when genre recognition is enabled) so the
+    model download/load - which can take anywhere from seconds to minutes
+    on first run - happens up front instead of silently stalling whichever
+    request happens to need it first.
+
+    Returns True if the pipeline is ready to use.
+    """
+    return _init_pipeline() is not None
 
 def list_audio_tracks(file_path):
     """Lists available audio tracks in a media file using ffmpeg."""

@@ -18,7 +18,7 @@ import yt_dlp.utils
 
 from .models import DownloadItem, FormatInfo
 from .utils import sanitize_filename, check_ffmpeg
-from .ffmpeg_genre_pp import FFmpegGenrePP
+from .ffmpeg_genre_pp import FFmpegGenrePP, warm_up_genre_classifier
 
 # Set up module-level logger
 logger = logging.getLogger(__name__)
@@ -51,6 +51,28 @@ try:
 except Exception as e:
     logging.warning(f"FFmpegGenrePP postprocessor unavailable: {e}")
     ENABLE_CUSTOM_GENRE_PP = False
+
+
+def warm_up_genre_classifier_if_enabled() -> bool:
+    """
+    If music style (genre) recognition is enabled, eagerly loads its
+    underlying ML model now instead of lazily on the first download that
+    needs it - that first-run load can take anywhere from seconds to
+    minutes, which would otherwise silently stall whichever download
+    happens to trigger it. Safe to call even when genre recognition is
+    disabled or its dependencies aren't installed (a no-op then).
+
+    Returns True if the classifier is ready to use afterward.
+    """
+    if not ENABLE_CUSTOM_GENRE_PP:
+        return False
+    logger.info("Music style recognition is enabled; warming up classifier...")
+    ready = warm_up_genre_classifier()
+    if ready:
+        logger.info("Music style classifier warmed up and ready.")
+    else:
+        logger.warning("Music style classifier warm-up did not complete successfully.")
+    return ready
 
 # Define callback types for clarity
 ProgressCallbackType = Callable[[DownloadItem, Dict[str, Any]], None]  # Progress callback

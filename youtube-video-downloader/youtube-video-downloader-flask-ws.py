@@ -322,6 +322,26 @@ def _build_progress_sink(description: str, job_id: str | None = None):
     return sink, cleanup
 
 
+def _maybe_warm_up_genre_classifier():
+    """
+    If music style recognition is enabled, starts a background thread that
+    eagerly loads its ML model so the first real download doesn't pay that
+    (potentially minutes-long, first-run) cost inline. Returns the started
+    thread, or None if genre recognition isn't enabled. Split out of the
+    __main__ block (rather than inlined there) so it's directly callable
+    from tests and reusable if another entry point needs the same warm-up.
+    """
+    if not ytdl_core.ENABLE_CUSTOM_GENRE_PP:
+        return None
+    thread = threading.Thread(
+        target=ytdl_core.warm_up_genre_classifier_if_enabled,
+        name="GenreClassifierWarmup",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 # --- Check for FFmpeg ---
 FFMPEG_PATH = None
 try:
@@ -1349,6 +1369,10 @@ if __name__ == "__main__":
         target=_job_reaper_loop, name="JobReaperThread", daemon=True
     )
     reaper_thread.start()
+
+    # If music style recognition is enabled, warm up its ML model now
+    # rather than lazily during the first download that needs it.
+    _maybe_warm_up_genre_classifier()
 
     # Run Flask app
     # Use host='0.0.0.0' to make it accessible on the local network

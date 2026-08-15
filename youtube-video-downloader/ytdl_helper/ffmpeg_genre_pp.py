@@ -139,6 +139,35 @@ logger = logging.getLogger(__name__) # Use the logger defined in the module
 # classifier_logger.setLevel(logging.WARNING) # Set level as needed
 
 
+def is_classifier_available() -> bool:
+    """True if music_style_classifier was found and imported successfully
+    (its dependencies - transformers/torch/librosa/ffmpeg-python - are
+    installed), i.e. genre detection can actually run rather than silently
+    no-op via the fallback stub."""
+    return classifier_found
+
+
+def warm_up_genre_classifier() -> bool:
+    """
+    Eagerly loads the genre classifier's underlying ML model, if the
+    classifier module is available. Intended to be called once at server
+    startup when genre detection is enabled, so the (potentially slow,
+    first-run) model download/load happens up front instead of stalling
+    the first real download that needs it. A no-op returning False when
+    the classifier module couldn't be imported (e.g. its dependencies
+    aren't installed) - genre detection is then already going to no-op
+    via the fallback stub, so there is nothing to warm up.
+    """
+    if not is_classifier_available():
+        return False
+    try:
+        from music_style_classifier import warm_up as _warm_up_classifier
+        return _warm_up_classifier()
+    except Exception:
+        logging.exception("Failed to warm up music style classifier.")
+        return False
+
+
 class FFmpegGenrePP(FFmpegPostProcessor):
     """
     Post processor that uses music_style_classifier.py to determine
