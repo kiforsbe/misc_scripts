@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, asdict
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.video_thumbnail_generator import VideoThumbnailGenerator
 from common.file_grouper import FileGrouper, CustomJSONEncoder
-from common.presentation import Colors, Format, Icons
+from common.presentation import Colors, Format
 from common.series_summary import build_series_summary_table
 try:
     from metadatacommon.myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
@@ -44,7 +44,6 @@ class MALStatus(str, Enum):
     PLAN_TO_WATCH = 'Plan to Watch'
     COMPLETED_SEASON = 'Completed (Season)'
 
-# Status emoji mapping was moved to presentation.EMOJI_MAP; use get_emoji() below.
 
 # Dataclasses for complex data structures
 @dataclass
