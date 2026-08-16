@@ -88,7 +88,24 @@ def test_table_render_missing_values_render_blank():
     rows = [{"name": "alpha"}]
     columns = [TableColumn(name="name", width=10), TableColumn(name="missing", width=5)]
     result = Table(columns, style="grid").render(rows)
-    assert result == "name  | missing\n------+--------\nalpha |        "
+    assert result == "name  | mi...\n------+------\nalpha |      "
+
+
+def test_table_render_explicit_width_truncates_header_below_label_width():
+    # An explicit width is a hard cap, even when narrower than the column's own
+    # label -- callers (e.g. a CLI --column-width override) rely on this to
+    # squeeze a column to fit, not on the header silently overriding them.
+    rows = [{"relative_path": "very-long-folder-name/sample.txt"}]
+    columns = [TableColumn(name="relative_path", label="Relative path", width=12)]
+    result = Table(columns, style="grid").render(rows)
+    assert result == "Relative ...\n------------\nvery-long..."
+
+
+def test_table_incremental_header_truncates_below_label_width():
+    columns = [TableColumn(name="relative_path", label="Relative path", width=12)]
+    table = Table(columns, style="grid")
+    header = table.render_header()
+    assert header == "Relative ...\n------------"
 
 
 def test_table_render_markdown_style_wraps_in_pipes():

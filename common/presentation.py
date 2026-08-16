@@ -394,9 +394,18 @@ class Table:
 
     @property
     def _max_widths(self) -> List[int]:
+        """Each column's hard width cap.
+
+        An explicit ``TableColumn.width`` is authoritative — even when it's
+        narrower than the column's own label, since callers rely on it as a
+        real cap (e.g. a CLI ``--column-width`` override squeezing a column
+        to fit a narrow terminal). Only an *unset* ``width`` falls back to
+        auto-sizing to fit the label (there's no caller intent to override in
+        that case).
+        """
         labels = self._labels
         return [
-            max(TerminalText.width(labels[i]), c.width if c.width is not None else self.fallback_width)
+            c.width if c.width is not None else max(TerminalText.width(labels[i]), self.fallback_width)
             for i, c in enumerate(self.columns)
         ]
 
@@ -451,7 +460,11 @@ class Table:
         return self._render_row_line(cells)
 
     def _render_header_lines(self) -> str:
-        header = Table._format_row(self._labels, self._widths, self._alignments, style=self.style)
+        labels = [
+            TerminalText.truncate(label, self._widths[i], self.ellipsis)
+            for i, label in enumerate(self._labels)
+        ]
+        header = Table._format_row(labels, self._widths, self._alignments, style=self.style)
         if self.style == 'plain':
             return header
         separator = Table._format_separator(self._widths, self._alignments, style=self.style)
