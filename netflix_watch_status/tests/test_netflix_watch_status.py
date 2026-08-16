@@ -1181,3 +1181,27 @@ def test_series_runtime_aggregates_from_metadata_season_rows():
     series_row = next(row for row in rows if row.item_type == "series" and row.title == "Show")
 
     assert series_row.runtime_minutes == "48m"
+
+
+import io
+from contextlib import redirect_stdout
+
+from netflix_watch_status import render_watch_table
+
+
+def test_render_watch_table_indents_child_rows_and_uses_markdown_style(monkeypatch):
+    rows = [
+        WatchTableRow(level=0, title="Show One", year="2020"),
+        WatchTableRow(level=1, title="Season 1", year=""),
+    ]
+    monkeypatch.setattr("netflix_watch_status.build_watch_table_rows", lambda entries: rows)
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        render_watch_table(entries=[], selected_columns=["title", "year"])
+
+    lines = stdout.getvalue().splitlines()
+    assert lines[0].startswith("| Title")
+    assert lines[1].startswith("| :")
+    assert lines[2].startswith("| Show One")
+    assert lines[3].startswith("|   Season 1")

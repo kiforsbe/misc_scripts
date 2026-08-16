@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.netflix_title_parser import ParsedNetflixTitle, adapt_lookup_titles, parse_netflix_title
+from common.presentation import Table, TableColumn
 
 tqdm_progress: Any
 
@@ -1426,31 +1427,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def visible_text_width(text: str) -> int:
-    return len(text)
-
-
-def pad_console_cell(text: str, width: int, align: str) -> str:
-    padding = max(0, width - visible_text_width(text))
-    if align == "right":
-        return f"{' ' * padding}{text}"
-    if align == "center":
-        left_padding = padding // 2
-        right_padding = padding - left_padding
-        return f"{' ' * left_padding}{text}{' ' * right_padding}"
-    return f"{text}{' ' * padding}"
-
-
-def truncate_console_text(text: str, max_width: int) -> str:
-    if max_width <= 0:
-        return ""
-    if len(text) <= max_width:
-        return text
-    if max_width <= 3:
-        return text[:max_width]
-    return f"{text[:max_width - 3]}..."
-
-
 def safe_write_line(text: str = "") -> None:
     try:
         print(text)
@@ -2696,58 +2672,19 @@ def render_watch_table(entries: List[NetflixHistoryEntry], selected_columns: Lis
     if not rows:
         return
 
-    headers = [TABLE_COLUMN_DEFINITIONS[column]["header"] for column in selected_columns]
-    alignments = [TABLE_COLUMN_DEFINITIONS[column]["align"] for column in selected_columns]
-    max_widths = [TABLE_COLUMN_DEFINITIONS[column]["max_width"] for column in selected_columns]
-    widths = [min(len(header), max_widths[index]) for index, header in enumerate(headers)]
-    row_cells: List[List[str]] = []
-    for row in rows:
-        row_values = {
-            "title": f"{'  ' * row.level}{row.title}",
-            "year": row.year,
-            "source_id": row.source_id,
-            "title_type": row.title_type,
-            "runtime_minutes": row.runtime_minutes,
-            "genres": row.genres,
-            "average_rating": row.average_rating,
-            "num_votes": row.num_votes,
-            "season": row.season,
-            "season_title": row.season_title,
-            "episode": row.episode,
-            "episode_title": row.episode_title,
-            "views": row.views,
-            "watch_dates": row.watch_dates,
-        }
-        cells = [row_values[column] for column in selected_columns]
-        row_cells.append(cells)
-        for index, cell in enumerate(cells):
-            widths[index] = min(max(widths[index], len(cell)), max_widths[index])
-
-    header_line = _render_table_line(headers, widths, alignments)
-    separator_line = _render_table_separator(widths, alignments)
-    safe_write_line(header_line)
-    safe_write_line(separator_line)
-    for cells in row_cells:
-        safe_write_line(_render_table_line(cells, widths, alignments))
-
-
-def _render_table_line(values: tuple[str, ...] | List[str], widths: tuple[int, ...] | List[int], alignments: tuple[str, ...] | List[str]) -> str:
-    rendered_cells = []
-    for index, value in enumerate(values):
-        fitted = pad_console_cell(truncate_console_text(value, widths[index]), widths[index], alignments[index])
-        rendered_cells.append(fitted)
-    return f"| {' | '.join(rendered_cells)} |"
-
-
-def _render_table_separator(widths: tuple[int, ...] | List[int], alignments: tuple[str, ...] | List[str]) -> str:
-    segments: List[str] = []
-    for width, alignment in zip(widths, alignments):
-        segment_width = max(3, width)
-        if alignment == "right":
-            segments.append(f"{'-' * (segment_width - 1)}:")
-        else:
-            segments.append(f":{'-' * (segment_width - 1)}")
-    return f"| {' | '.join(segments)} |"
+    columns = [
+        TableColumn(
+            name=column,
+            label=TABLE_COLUMN_DEFINITIONS[column]["header"],
+            width=TABLE_COLUMN_DEFINITIONS[column]["max_width"],
+            align=TABLE_COLUMN_DEFINITIONS[column]["align"],
+            formatter=(lambda row: f"{'  ' * row.level}{row.title}") if column == "title" else None,
+        )
+        for column in selected_columns
+    ]
+    table = Table(columns, style="markdown")
+    for line in table.render(rows).splitlines():
+        safe_write_line(line)
 
 
 def print_text_summary(results: Dict[str, Any]) -> None:
