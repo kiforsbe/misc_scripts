@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Protocol
 sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
-from common.presentation import Colors, Icons
+from common.presentation import Colors, Format, Icons
 from common.series_summary import build_series_summary_table
 
 try:
@@ -667,34 +667,6 @@ class SeriesArchiver:
                 file_progress.close()
 
         return f"{crc & 0xffffffff:08X}"
-    
-    def _format_episode_ranges(self, episodes: List[int]) -> str:
-        """Format episode list as smart ranges (e.g., [1,2,3,5,6,8] -> '1-3, 5-6, 8')."""
-        if not episodes:
-            return ""
-        
-        sorted_episodes = sorted(episodes)
-        ranges = []
-        start = sorted_episodes[0]
-        end = start
-        
-        for i in range(1, len(sorted_episodes)):
-            if sorted_episodes[i] == end + 1:
-                end = sorted_episodes[i]
-            else:
-                if start == end:
-                    ranges.append(str(start))
-                else:
-                    ranges.append(f"{start}-{end}")
-                start = end = sorted_episodes[i]
-        
-        # Add the last range
-        if start == end:
-            ranges.append(str(start))
-        else:
-            ranges.append(f"{start}-{end}")
-        
-        return f"{', '.join(ranges)}"
     
     def _get_group_episode_numbers(self, group_data: Dict) -> List[int]:
         """Extract episode numbers from group data files."""
@@ -3184,13 +3156,13 @@ def cmd_list(args):
 
             print(f"    Episodes: {details['episodes_found']}/{details['episodes_expected']} ({details['status']})")
             if watched_episodes:
-                print(f"    Watched: {archiver._format_episode_ranges(watched_episodes)}")
+                print(f"    Watched: {Format.episode_ranges(watched_episodes)}")
             if archiver._get_watch_status_classification(group_data) == 'plan_to_watch':
                 print("    Plan to Watch")
             if missing_episodes:
-                print(f"    Missing: {archiver._format_episode_ranges(missing_episodes)}")
+                print(f"    Missing: {Format.episode_ranges(missing_episodes)}")
             if extra_episodes:
-                print(f"    Extra: {archiver._format_episode_ranges(extra_episodes)}")
+                print(f"    Extra: {Format.episode_ranges(extra_episodes)}")
             if 'folder_name' in details:
                 print(f"    Output folder: {details['folder_name']}")
             if args.verbose > 1:

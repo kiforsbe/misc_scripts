@@ -1247,34 +1247,6 @@ class SeriesCompletenessChecker:
         else:
             result.status = SeriesStatus.COMPLETE_WITH_EXTRAS
 
-    def _format_episode_ranges(self, episodes: List[int]) -> str:
-        """Format episode list as smart ranges (e.g., [1,2,3,5,6,8] -> '[1-3, 5-6, 8]')."""
-        if not episodes:
-            return ""
-        
-        sorted_episodes = sorted(episodes)
-        ranges = []
-        start = sorted_episodes[0]
-        end = start
-        
-        for i in range(1, len(sorted_episodes)):
-            if sorted_episodes[i] == end + 1:
-                end = sorted_episodes[i]
-            else:
-                if start == end:
-                    ranges.append(str(start))
-                else:
-                    ranges.append(f"{start}-{end}")
-                start = end = sorted_episodes[i]
-        
-        # Add the last range
-        if start == end:
-            ranges.append(str(start))
-        else:
-            ranges.append(f"{start}-{end}")
-        
-        return f"[{', '.join(ranges)}]"
-    
     def export_results(self, results: Dict[str, Any], output_path: str) -> None:
         """Export analysis results to JSON file."""
         with open(output_path, 'w', encoding='utf-8') as f:
