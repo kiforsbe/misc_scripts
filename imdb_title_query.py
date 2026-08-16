@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from common.presentation import Table, TableColumn
+
 
 @dataclass(frozen=True)
 class ColumnDef:
@@ -332,35 +334,10 @@ def query_rows(
     return QueryResult(rows=rows, matched_count=matched_count)
 
 
-def truncate_text(text: str, width: int) -> str:
-    if width < 1:
-        return ""
-    if len(text) <= width:
-        return text
-    if width == 1:
-        return text[:1]
-    return text[: width - 1] + "…"
-
-
 def format_table(rows: Sequence[Dict[str, Any]], columns: Sequence[str], max_width: int) -> str:
-    widths: Dict[str, int] = {column: min(len(column), max_width) for column in columns}
-    rendered_rows: List[List[str]] = []
-
-    for row in rows:
-        rendered_row: List[str] = []
-        for column in columns:
-            cell = truncate_text(stringify_value(row.get(column)), max_width)
-            widths[column] = min(max(widths[column], len(cell)), max_width)
-            rendered_row.append(cell)
-        rendered_rows.append(rendered_row)
-
-    def render_line(values: Sequence[str]) -> str:
-        return " | ".join(value.ljust(widths[column]) for column, value in zip(columns, values))
-
-    header = render_line(columns)
-    separator = "-+-".join("-" * widths[column] for column in columns)
-    body = [render_line(row) for row in rendered_rows]
-    return "\n".join([header, separator, *body])
+    string_rows = [{column: stringify_value(row.get(column)) for column in columns} for row in rows]
+    table_columns = [TableColumn(name=column, width=max_width) for column in columns]
+    return Table(table_columns, fallback_width=max_width, ellipsis="…").render(string_rows)
 
 
 def prompt_for_download(dataset: DatasetSchema, destination: Path, force_download: bool) -> bool:
