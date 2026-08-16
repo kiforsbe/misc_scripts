@@ -10,7 +10,8 @@ from dataclasses import dataclass, field, asdict
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.video_thumbnail_generator import VideoThumbnailGenerator
 from common.file_grouper import FileGrouper, CustomJSONEncoder
-from common.presentation import Presenter, Colors, get_emoji, format_size
+from common.presentation import Colors, Format, Icons
+from common.series_summary import build_series_summary_table
 try:
     from metadatacommon.myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
 except ImportError:
@@ -1427,7 +1428,7 @@ class SeriesCompletenessChecker:
         print(f"{Colors.BRIGHT_BLACK}Episodes expected:{Colors.RESET} {summary['total_episodes_expected']}")
         total_size_bytes = summary.get('total_size_bytes', 0)
         if total_size_bytes > 0:
-            print(f"{Colors.BRIGHT_BLACK}Total size:{Colors.RESET} {Colors.BOLD}{format_size(total_size_bytes)}{Colors.RESET}")
+            print(f"{Colors.BRIGHT_BLACK}Total size:{Colors.RESET} {Colors.BOLD}{Format.size(total_size_bytes)}{Colors.RESET}")
         
         if summary['total_episodes_expected'] > 0:
             completion_rate = (summary['total_episodes_found'] / summary['total_episodes_expected']) * 100
@@ -1462,9 +1463,10 @@ class SeriesCompletenessChecker:
         # One-line summary for each series
         if verbosity >= 1:
             print(f"\n{Colors.BOLD}{Colors.CYAN}=== Series ==={Colors.RESET}")
-            presenter = Presenter(use_colors=True)
+            summary_table = build_series_summary_table(title_length=60, use_colors=True)
+            print(summary_table.render_header())
             for group_key, analysis in sorted(results['groups'].items()):
-                presenter.print_one_line_summary(analysis, show_metadata_fields, title_length=60)
+                print(summary_table.render_row(analysis))
 
     def _copy_thumbnails_from_global_cache(self, target_dir: str, files: List[Path], verbosity: int) -> int:
         """Copy existing thumbnails from global cache to target directory.
