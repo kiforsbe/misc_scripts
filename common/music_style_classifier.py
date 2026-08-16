@@ -1,15 +1,21 @@
+"""Music genre classification via a pre-trained Hugging Face audio-classification
+pipeline (mtg-upf/discogs-maest-30s-pw-73e-ts). Loads a short random segment of
+an audio/video file's audio track and classifies its genre.
+
+The pipeline is lazily initialized on first use (a real model download/load,
+seconds to minutes on first run); call warm_up() at startup to do that eagerly
+instead of stalling the first real request that needs it.
+"""
 from transformers import pipeline
 import librosa
-import argparse
 import torch
 import random
-import ffmpeg # ffmpeg-python library
+import ffmpeg  # ffmpeg-python library
 import tempfile
 import os
-import sys
 import threading
 import warnings
-import logging # Import the logging library
+import logging
 
 # --- Constants ---
 TARGET_SR = 16000
@@ -22,21 +28,21 @@ _device = None
 _device_name = "Unknown"
 _pipeline_lock = threading.Lock()
 
-# --- Helper Functions ---
 
 def _get_device():
     """Determines the appropriate device (CUDA or CPU) and stores it."""
     global _device, _device_name
     if _device is None:
         if torch.cuda.is_available():
-            _device = 0 # Use GPU 0
+            _device = 0  # Use GPU 0
             _device_name = f"CUDA ({torch.cuda.get_device_name(0)})"
             logging.info(f"CUDA available. Using device: {_device_name}")
         else:
-            _device = -1 # Use CPU
+            _device = -1  # Use CPU
             _device_name = "CPU"
             logging.info("CUDA not available. Using device: CPU.")
     return _device
+
 
 def _init_pipeline():
     """
@@ -54,23 +60,20 @@ def _init_pipeline():
         device_id = _get_device()
         try:
             logging.info(f"Initializing audio classification pipeline ({MODEL_NAME}) on {_device_name}...")
-            # Suppress specific Hugging Face warnings if desired via logging level later
-            # warnings.filterwarnings("ignore", message=".*Using default sampling rate.*")
-            # warnings.filterwarnings("ignore", message=".*is shorter than 30s.*")
             _pipeline = pipeline(
                 "audio-classification",
                 model=MODEL_NAME,
                 device=device_id,
-                use_safetensors=True, # Use safetensors if available
-                trust_remote_code=True, # Trust remote code for model loading
+                use_safetensors=True,  # Use safetensors if available
+                trust_remote_code=True,  # Trust remote code for model loading
             )
             logging.info("Pipeline initialized successfully.")
         except Exception as e:
-            logging.exception(f"Error initializing Hugging Face pipeline: {e}") # Use logging.exception to include traceback
+            logging.exception(f"Error initializing Hugging Face pipeline: {e}")
             logging.error("Please ensure you have 'torch' and 'transformers' installed correctly.")
             if _device == 0:
                 logging.error("If using GPU, ensure CUDA drivers and toolkit are compatible with your PyTorch installation.")
-            _pipeline = None # Ensure it's None if init fails
+            _pipeline = None  # Ensure it's None if init fails
     return _pipeline
 
 
@@ -87,47 +90,6 @@ def warm_up() -> bool:
     """
     return _init_pipeline() is not None
 
-def list_audio_tracks(file_path):
-    """Lists available audio tracks in a media file using ffmpeg."""
-    logging.info(f"Probing audio tracks for: {file_path}")
-    try:
-        probe = ffmpeg.probe(file_path)
-        audio_streams = [s for s in probe.get('streams', []) if s.get('codec_type') == 'audio']
-
-        if not audio_streams:
-            logging.warning("No audio streams found in this file.") # Use warning level
-            # Still print to stdout for this specific user action
-            print("No audio streams found in this file.")
-            return False
-
-        print("\nAvailable audio tracks:")
-        print("-" * 25)
-        for stream in audio_streams:
-            index = stream.get('index', 'N/A')
-            codec = stream.get('codec_name', 'N/A')
-            lang_tags = stream.get('tags', {})
-            lang = lang_tags.get('language', lang_tags.get('LANGUAGE', 'N/A'))
-            channels = stream.get('channels', 'N/A')
-            channel_layout = stream.get('channel_layout', 'N/A')
-            bit_rate_kb = int(stream.get('bit_rate', 0)) // 1000 if stream.get('bit_rate') else 'N/A'
-            sample_rate = stream.get('sample_rate', 'N/A')
-
-            print(f"  Track Index: {index}")
-            print(f"    Codec:       {codec}")
-            print(f"    Language:    {lang}")
-            print(f"    Channels:    {channels} ({channel_layout})")
-            print(f"    Sample Rate: {sample_rate} Hz")
-            print(f"    Bitrate:     {bit_rate_kb} kb/s" if bit_rate_kb != 'N/A' else "    Bitrate:     N/A")
-            print("-" * 25)
-        return True
-    except ffmpeg.Error as e:
-        err_msg = e.stderr.decode(errors='ignore') if e.stderr else str(e) # Decode stderr safely
-        logging.error(f"Error probing file with ffmpeg: {err_msg}")
-        logging.error("Please ensure ffmpeg is installed and in your system's PATH.")
-        return False
-    except Exception as e:
-        logging.exception(f"An unexpected error occurred during probing: {e}") # Log exception with traceback
-        return False
 
 def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION_SECONDS, track_index=None):
     """
@@ -145,7 +107,7 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
     """
     temp_audio_file = None
     input_path_for_librosa = file_path
-    selected_stream_map = None # For ffmpeg extraction
+    selected_stream_map = None  # For ffmpeg extraction
 
     try:
         # 1. Probe the file to get stream info and validate track_index
@@ -158,7 +120,7 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
             return None, None
 
         valid_indices = [s['index'] for s in audio_streams]
-        default_stream_index = audio_streams[0]['index'] # Use the first audio stream by default
+        default_stream_index = audio_streams[0]['index']  # Use the first audio stream by default
 
         if track_index is not None:
             if track_index not in valid_indices:
@@ -181,8 +143,6 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
         # We extract to a temporary WAV file for reliable loading with librosa,
         # especially for complex formats or specific track selection.
         logging.info(f"Extracting audio track (index {selected_stream_index}) to temporary WAV file...")
-        # Create a temporary file that will be deleted automatically on context exit if possible,
-        # but manage deletion manually due to potential errors.
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
             temp_audio_file = tmpfile.name
 
@@ -192,21 +152,21 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
                 ffmpeg
                 .input(file_path)
                 .output(temp_audio_file,
-                        map=selected_stream_map, # Select the specific stream
-                        acodec='pcm_s16le',      # Output codec: 16-bit PCM
-                        ac=1,                    # Output channels: 1 (mono)
-                        ar=target_sr,            # Output sample rate
-                        **{'loglevel': 'error'}  # Suppress verbose ffmpeg output
+                        map=selected_stream_map,  # Select the specific stream
+                        acodec='pcm_s16le',       # Output codec: 16-bit PCM
+                        ac=1,                     # Output channels: 1 (mono)
+                        ar=target_sr,             # Output sample rate
+                        **{'loglevel': 'error'}   # Suppress verbose ffmpeg output
                     )
                 .overwrite_output()
-                .run_async(pipe_stderr=True) # Run async to capture stderr
+                .run_async(pipe_stderr=True)  # Run async to capture stderr
             )
-            _, stderr = process.communicate() # Wait for completion and get stderr
+            _, stderr = process.communicate()  # Wait for completion and get stderr
             if process.returncode != 0:
-                raise ffmpeg.Error('ffmpeg', stdout=None, stderr=stderr) # Raise error if ffmpeg failed
+                raise ffmpeg.Error('ffmpeg', stdout=None, stderr=stderr)  # Raise error if ffmpeg failed
 
             input_path_for_librosa = temp_audio_file
-            logging.info(f"Successfully extracted track {selected_stream_index} to temporary file.") # Don't log temp file path by default
+            logging.info(f"Successfully extracted track {selected_stream_index} to temporary file.")
 
         except ffmpeg.Error as e:
             err_msg = e.stderr.decode(errors='ignore') if e.stderr else str(e)
@@ -214,11 +174,10 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
             return None, None
 
         # 3. Get duration of the extracted audio track
-        # Use librosa.get_duration on the temporary WAV file
         total_duration = librosa.get_duration(path=input_path_for_librosa)
         logging.info(f"Duration of extracted track: {total_duration:.2f} seconds")
 
-        if total_duration < 0.1: # Check for very short/empty audio
+        if total_duration < 0.1:  # Check for very short/empty audio
             logging.error("Extracted audio track is too short or empty.")
             return None, None
 
@@ -230,22 +189,20 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
             # Select a random start time ensuring the segment fits
             max_start_time = total_duration - max_duration
             start_time = random.uniform(0, max_start_time)
-            load_duration = max_duration # Load exactly max_duration
+            load_duration = max_duration  # Load exactly max_duration
             logging.info(f"Track longer than {max_duration}s. Loading random {max_duration:.1f}s segment starting at {start_time:.2f}s.")
         else:
             logging.info(f"Track duration ({total_duration:.2f}s) <= {max_duration}s. Loading full extracted duration.")
 
         # 5. Load the audio segment using librosa from the temporary file
         logging.info(f"Loading audio segment with Librosa (offset={start_time:.2f}s, duration={load_duration:.2f}s)...")
-        # Since we extracted to target SR and mono, librosa just needs to load it.
-        # Explicitly setting sr and mono is still good practice.
         with warnings.catch_warnings():
             # Suppress librosa warnings about audioread/soundfile backends if they occur
-            warnings.simplefilter("ignore") # Suppress potential librosa backend warnings
+            warnings.simplefilter("ignore")
             audio_array, sr = librosa.load(
                 input_path_for_librosa,
-                sr=target_sr, # Ensure target sample rate
-                mono=True,    # Ensure mono
+                sr=target_sr,  # Ensure target sample rate
+                mono=True,     # Ensure mono
                 offset=start_time,
                 duration=load_duration
             )
@@ -254,9 +211,6 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
         # Final check on sample rate
         if sr != target_sr:
             logging.warning(f"Loaded audio SR ({sr}) differs from target SR ({target_sr}). This might indicate an issue.")
-            # Optionally, force resampling again, though ffmpeg should have handled it.
-            # audio_array = librosa.resample(y=audio_array, orig_sr=sr, target_sr=target_sr)
-            # sr = target_sr
 
         return audio_array, sr
 
@@ -266,12 +220,12 @@ def load_audio_segment(file_path, target_sr=TARGET_SR, max_duration=MAX_DURATION
     except FileNotFoundError:
         logging.error(f"Input file not found at '{file_path}'")
         return None, None
-    except ffmpeg.Error as e: # Catch potential probing errors here too
+    except ffmpeg.Error as e:  # Catch potential probing errors here too
         err_msg = e.stderr.decode(errors='ignore') if e.stderr else str(e)
         logging.error(f"ffmpeg error during probing or processing: {err_msg}")
         return None, None
     except Exception as e:
-        logging.exception(f"An unexpected error occurred during audio loading") # Log full traceback
+        logging.exception(f"An unexpected error occurred during audio loading")
         return None, None
     finally:
         # 6. Clean up the temporary file if it was created
@@ -302,14 +256,13 @@ def classify_audio(audio_array, sample_rate):
     pipe = _init_pipeline()
     if pipe is None:
         logging.error("Classification pipeline is not available.")
-        return None # Pipeline initialization failed earlier
+        return None  # Pipeline initialization failed earlier
 
     try:
         logging.info(f"Running classification on {audio_array.shape[0] / sample_rate:.2f}s of audio...")
         # The pipeline expects raw waveform and sampling rate
-        # Use context manager to potentially suppress warnings during inference
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=UserWarning) # Suppress common user warnings
+            warnings.simplefilter("ignore", category=UserWarning)  # Suppress common user warnings
             result = pipe({"raw": audio_array, "sampling_rate": sample_rate})
 
         # Result format is typically: [{'score': 0.99, 'label': 'Techno'}, ...]
@@ -325,8 +278,9 @@ def classify_audio(audio_array, sample_rate):
         return genre
 
     except Exception as e:
-        logging.exception(f"Error during classification pipeline inference") # Log full traceback
+        logging.exception(f"Error during classification pipeline inference")
         return None
+
 
 # --- Public API Function ---
 
@@ -371,7 +325,7 @@ def get_music_genre(file_path: str, track_index: int = None) -> str | None:
 
     # 2. Classify the loaded audio
     genre = classify_audio(audio_array, sr)
-    
+
     # 3. Replace any '---' with spaces in the genre label
     genre = genre.replace('---', ' ') if genre else None
 
@@ -379,97 +333,3 @@ def get_music_genre(file_path: str, track_index: int = None) -> str | None:
         logging.error("--- Classification Failed: Inference Error ---")
 
     return genre
-
-# --- Command Line Interface Logic ---
-
-def main():
-    parser = argparse.ArgumentParser(
-        description=f"Classify the music genre of an audio file (or track within a video file) using the {MODEL_NAME} model. Loads a random max {MAX_DURATION_SECONDS}s segment.",
-        formatter_class=argparse.RawTextHelpFormatter # Preserve newline formatting in help
-        )
-    parser.add_argument(
-        "file_path",
-        help="Path to the input audio or video file (e.g., mp3, wav, ogg, m4a, mp4, mkv)."
-        )
-    parser.add_argument(
-        "-l", "--list-tracks",
-        action="store_true",
-        help="List available audio tracks to stdout and exit. (Logs to stderr)"
-        )
-    parser.add_argument(
-        "-s", "--select-track",
-        type=int,
-        default=None,
-        metavar="INDEX",
-        help="Select a specific audio track index to classify.\nUse --list-tracks to see available indices.\nDefaults to the first audio track found."
-        )
-    parser.add_argument(
-        "--log-level",
-        default="ERROR", # Default to INFO level
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Set the logging level (default: ERROR)."
-        )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose (DEBUG level) logging to stderr."
-        )
-
-    # Handle case where no arguments are given
-    if len(sys.argv) == 1:
-        parser.print_help(sys.stderr)
-        sys.exit(1)
-
-    args = parser.parse_args()
-
-    # Get the numeric level corresponding to the chosen string
-    numeric_level = getattr(logging, args.log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        raise ValueError(f'Invalid log level: {args.log_level}')
-
-    # Get the root logger and set its level
-    # We reconfigure basicConfig here to ensure the level is set correctly
-    # Note: basicConfig can only be called once effectively. If logging was used
-    # before this point (e.g., by imported libraries), this might not reconfigure
-    # everything. For more complex scenarios, more advanced logging setup is needed.
-    # However, for this script's structure, this should work.
-    logging.basicConfig(
-        level=numeric_level, # Set level from args
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        stream=sys.stderr,
-        force=True # Add force=True to allow reconfiguration
-    )
-    logging.info(f"Logging level set to: {args.log_level}")
-
-    # Adjust logging level if verbose flag is set
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-        logging.debug("Verbose logging enabled.")
-
-    # Validate input file path
-    if not os.path.isfile(args.file_path):
-        logging.error(f"Input file not found or is not a file: {args.file_path}")
-        sys.exit(1)
-
-    # Handle --list-tracks functionality
-    if args.list_tracks:
-        if not list_audio_tracks(args.file_path):
-            sys.exit(1) # Exit with error if probing failed
-        sys.exit(0) # Exit successfully after listing
-
-    # --- Main script execution: Classify the file ---
-    # Use the public API function for the core logic
-    predicted_genre = get_music_genre(args.file_path, track_index=args.select_track)
-
-    # Exit with appropriate status code
-    if predicted_genre:
-        print(predicted_genre)
-        sys.exit(0)
-    else:
-        # Failure message already logged to stderr by get_music_genre or its sub-functions
-        logging.error("Music genre classification failed.")
-        sys.exit(1) # Exit with non-zero status code
-
-if __name__ == "__main__":
-    main()
-    

@@ -30,7 +30,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-import music_style_classifier
+from common import music_style_classifier
 from ytdl_helper import core as ytdl_core
 from ytdl_helper import ffmpeg_genre_pp
 

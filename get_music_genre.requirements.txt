@@ -1,4 +1,4 @@
-# music_style_classifier.py
+# get_music_genre.py
 ffmpeg-python
 librosa
 safetensors

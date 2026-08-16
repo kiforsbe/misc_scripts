@@ -24,7 +24,7 @@ Miscellaneous scripts to automate common tasks.
     - [insanely-fast-whisper.py](#insanely-fast-whisperpy): Minimal Whisper transcription script for fast speech-to-text generation.
     - [mp4-to-mp3-converter-with-origin.py](#mp4-to-mp3-converter-with-originpy): Converts MP4 files to tagged MP3s with thumbnail and source metadata.
     - [merge-audio-files-to-one-output.py](#merge-audio-files-to-one-outputpy): Interactive tool for merging multiple audio files into one output.
-    - [music_style_classifier.py](#music_style_classifierpy): Classifies music genre from audio or video files.
+    - [get_music_genre.py](#get_music_genrepy): Classifies music genre from audio or video files.
   - Metadata, Cataloging & Reports
     - [compare_package_versions.py](#compare_package_versionspy): Compares proposed package versions against installed ones, highlighting upgrades and downgrades.
     - [imdb_title_query.py](#imdb_title_querypy): Queries IMDb TSV datasets with filtering, column selection, and downloads.
@@ -149,7 +149,7 @@ A tool for quick and easy video optimization: supply a list of videos on the com
 See [video-optimizer-v2/README.md](video-optimizer-v2/README.md) for usage and requirements.
 
 ### youtube-video-downloader
-A collection of YouTube download scripts using the `ytdl_helper` library: a CLI, a TUI, a Flask web service with companion userscript, and integration with `music_style_classifier.py` for classifying downloaded audio.
+A collection of YouTube download scripts using the `ytdl_helper` library: a CLI, a TUI, a Flask web service with companion userscript, and integration with `common/music_style_classifier.py` for classifying downloaded audio.
 
 See [youtube-video-downloader/README.md](youtube-video-downloader/README.md) for each component's usage and requirements.
 
@@ -606,16 +606,16 @@ A script to parse RSS feeds and download enclosures (e.g., audio, video, or othe
 - urllib
 - json
 
-### music_style_classifier.py
+### get_music_genre.py
 A script that takes as imput an audio/video file to classify the music style of the file. It uses a pre-trained model to classify the music style and outputs the result.
-It is intended to be used as a command line tool, but it can also be used as a library (get_music_genre(file_path: str, track_index: int = None) -> str | None:).
+It is a command line tool; the underlying classifier (get_music_genre(file_path: str, track_index: int = None) -> str | None, warm_up()) lives in [common/music_style_classifier.py](common/music_style_classifier.py) as a library, reused by `udio-flask-webservice`, `youtube-video-downloader`, and `set_music_genre.py`.
 
 #### Requires
 - librosa
-- tensorflow
-- numpy
-- ffmpeg
+- torch
+- safetensors
 - transformers
+- ffmpeg (the executable, installed separately and on PATH; ffmpeg-python is the pip package)
 
 ### md_to_docx.py
 Converts Markdown files to Microsoft Word DOCX format, handling headings, lists, tables, inline formatting, and blockquotes with proper Word styling.

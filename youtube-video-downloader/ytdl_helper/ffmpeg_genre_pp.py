@@ -4,99 +4,24 @@ import shutil
 import tempfile
 import logging
 import uuid # Import uuid for generating unique names
+from pathlib import Path
 
-# --- Find and Import the Genre Classifier ---
+# --- Import the Genre Classifier ---
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 classifier_found = False
-classifier_path_found = None
-expected_locations = []
-
 try:
-    # Get the directory containing the current script (ffmpeg_genre_pp.py)
-    current_script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Get the parent directory
-    parent_dir = os.path.dirname(current_script_dir)
-    # Get the parent's parent directory
-    grandparent_dir = os.path.dirname(parent_dir)
-
-    # Define the name of the module file we are looking for
-    module_filename = "music_style_classifier.py"
-    module_name = "music_style_classifier" # Name used for import
-
-    # List of directories to search, starting from the parent's parent
-    # We prioritize finding it further up, assuming that's the intended structure.
-    # You could reverse this list if you prefer checking closer directories first.
-    search_dirs = [grandparent_dir, parent_dir, current_script_dir]
-
-    for search_dir in search_dirs:
-        # Ensure we have a valid directory path (os.path.dirname can return empty strings)
-        if not search_dir:
-            continue
-
-        potential_path = os.path.join(search_dir, module_filename)
-        expected_locations.append(potential_path) # Track searched paths for error messages
-
-        if os.path.isfile(potential_path):
-            # Found the file! Add its directory to sys.path if not already present.
-            if search_dir not in sys.path:
-                sys.path.insert(0, search_dir) # Insert at beginning for priority
-                # print(f"DEBUG: Added '{search_dir}' to sys.path") # Optional debug print
-
-            # Attempt the import now that the path is set
-            try:
-                # Use the module name derived from the filename
-                from music_style_classifier import (
-                    get_music_genre as imported_get_music_genre,
-                    main as classifier_main, # Keep importing main if needed
-                )
-                # Assign the imported function to the main variable name
-                get_music_genre = imported_get_music_genre
-                classifier_path_found = potential_path
-                classifier_found = True
-                logging.info(f"Successfully imported {module_name} from {search_dir}")
-                break # Stop searching once successfully imported
-            except ImportError as import_err:
-                # This might happen if the file exists but has internal import errors
-                logging.warning(f"Found '{potential_path}' but failed to import: {import_err}")
-                
-                # Remove the path if we added it and it caused an error? Optional.
-                # if search_dir == sys.path[0]:
-                #     sys.path.pop(0)
-                continue # Continue searching other locations
-
-    if not classifier_found:
-        # If the loop finishes without finding and importing the module
-        raise ImportError("Module not found in search paths.")
-
-# --- Handle Import Failure Gracefully ---
+    from common.music_style_classifier import get_music_genre
+    classifier_found = True
+    logging.info("Successfully imported common.music_style_classifier.")
 except ImportError as e:
-    # Construct a helpful error message showing where we looked
-    error_msg = (
-        f"Could not find or import '{module_name}'.\n"
-        f"Searched for '{module_filename}' in the following locations relative to this script:\n"
+    logging.error(
+        f"Could not import common.music_style_classifier: {e}. "
+        "Ensure its dependencies (torch, transformers, librosa, ffmpeg-python) are installed."
     )
-    # Use unique locations in the error message
-    unique_locations = sorted(list(set(expected_locations)))
-    for loc in unique_locations:
-        error_msg += f"  - {loc}\n"
-    error_msg += (
-        f"Ensure '{module_filename}' exists in one of these directories "
-        "or is installed/accessible via PYTHONPATH.\n"
-    )
-    if str(e) != "Module not found in search paths.": # Add original error if it wasn't ours
-         error_msg += f"Specific import error encountered: {e}"
-    logging.error(error_msg)
 
-    # Define a dummy function so the PP doesn't crash immediately
-    def get_music_genre_fallback(*args, **kwargs):
-        logging.warning(f"{module_name} not found or failed to import. Cannot determine genre.")
+    def get_music_genre(*args, **kwargs):
+        logging.warning("common.music_style_classifier not available. Cannot determine genre.")
         return None
-
-    # Assign the fallback to the main function name
-    get_music_genre = get_music_genre_fallback
-    # Define dummy main as well if needed
-    def classifier_main(*args, **kwargs):
-        logging.warning(f"{module_name} not found or failed to import. Cannot run its main function.")
-        pass
 
 # --- Continue with other imports ---
 
@@ -131,7 +56,7 @@ def warm_up_genre_classifier() -> bool:
     if not is_classifier_available():
         return False
     try:
-        from music_style_classifier import warm_up as _warm_up_classifier
+        from common.music_style_classifier import warm_up as _warm_up_classifier
         return _warm_up_classifier()
     except Exception:
         logging.exception("Failed to warm up music style classifier.")
@@ -140,7 +65,7 @@ def warm_up_genre_classifier() -> bool:
 
 class FFmpegGenrePP(FFmpegPostProcessor):
     """
-    Post processor that uses music_style_classifier.py to determine
+    Post processor that uses common.music_style_classifier to determine
     the genre of the downloaded file and embed it as metadata.
     """
 

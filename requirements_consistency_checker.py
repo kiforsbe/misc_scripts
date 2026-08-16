@@ -36,7 +36,6 @@ IGNORED_MODULES = {"_typeshed"}
 KNOWN_LOCAL_MODULES = {
     "guessit_wrapper",
     "browser_utils",
-    "music_style_classifier",
 }
 
 

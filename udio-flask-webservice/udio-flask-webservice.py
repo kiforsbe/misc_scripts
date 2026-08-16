@@ -26,13 +26,13 @@ eyed3.log.setLevel("ERROR")
 
 # --- Import the music genre classifier ---
 try:
-    # music_style_classifier.py lives at repo root (not moved into this tool's folder)
+    # common/ lives at repo root (not moved into this tool's folder)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from music_style_classifier import get_music_genre
+    from common.music_style_classifier import get_music_genre
     MUSIC_CLASSIFIER_AVAILABLE = True
-    logging.info("Successfully imported music_style_classifier.")
+    logging.info("Successfully imported common.music_style_classifier.")
 except ImportError as e:
-    logging.warning(f"Could not import music_style_classifier: {e}. Genre auto-detection will be disabled.")
+    logging.warning(f"Could not import common.music_style_classifier: {e}. Genre auto-detection will be disabled.")
     MUSIC_CLASSIFIER_AVAILABLE = False
     # Define a dummy function if import fails to avoid NameError later
     def get_music_genre(file_path: str, track_index: int = None) -> str | None:

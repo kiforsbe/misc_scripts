@@ -6,16 +6,15 @@ import sys
 import ffmpeg # ffmpeg-python library
 import tempfile # For in-place modification
 import shutil # For safer file replacement
+from pathlib import Path
 
-# --- Import from your classifier script ---
-# Assuming music_style_classifier.py is in the same directory or accessible
+sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 try:
-    import music_style_classifier
+    from common import music_style_classifier
 except ImportError:
-    logging.critical("Error: Could not import 'music_style_classifier.py'. "
-                     "Ensure it's in the same directory or accessible in PYTHONPATH.")
+    logging.critical("Error: Could not import common.music_style_classifier. "
+                     "Ensure its dependencies (torch, transformers, librosa) are installed.")
     sys.exit(1)
-# ---
 
 def setup_logging(log_level_str):
     """Configures logging based on the provided level string."""
@@ -130,7 +129,7 @@ def main():
         default=None,
         metavar="INDEX",
         help="Select a specific audio track index to classify (optional).\n"
-             "Use music_style_classifier.py --list-tracks to find indices."
+             "Use get_music_genre.py --list-tracks to find indices."
     )
 
     args = parser.parse_args()

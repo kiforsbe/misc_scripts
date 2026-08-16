@@ -43,11 +43,12 @@ Downloads the specified `.mp3` file and adds the provided metadata to it.
 - pillow
 
 ## Optional Dependencies
-- music_style_classifier.py
+- common/music_style_classifier.py (music genre auto-detection)
   - librosa
-  - tensorflow
-  - numpy
+  - torch
   - transformers
+  - safetensors
+  - ffmpeg-python
 
 ## User Scripts
 - `udio-download_ext-button.user.js`: Adds a "Download with metadata" button to Udio song pages
