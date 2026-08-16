@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Protocol
 sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
-from common.presentation import Presenter, color_text, get_emoji, Colors
+from common.presentation import Colors, Icons
+from common.series_summary import build_series_summary_table
 
 try:
     from tqdm import tqdm
@@ -387,7 +388,7 @@ class SeriesArchiver:
     
     def _color(self, text: str, color: str = "") -> str:
         """Apply color to text if colors are enabled."""
-        return color_text(text, color, use_colors=self.use_colors)
+        return Colors.wrap(text, color, enabled=self.use_colors)
     
     def load_data(self, json_file_path: str) -> bool:
         """Load series data from JSON file."""
@@ -2417,7 +2418,7 @@ class SeriesArchiver:
             
             action_word = "Would process" if dry_run else "Processing"
             group_title = group_data.get('title', 'Unknown')
-            folder_emoji = get_emoji('folder') or "📁"
+            folder_emoji = Icons.get('folder') or "📁"
             _safe_console_print(f"\n{folder_emoji} {action_word} group: {self._color(group_title, Colors.CYAN + Colors.BOLD)}")
             self._log(f"   Destination: {self._color(folder_name, Colors.CYAN)}")
             
@@ -3141,15 +3142,16 @@ def cmd_list(args):
         print("No groups found matching the filter criteria.")
         return 0
     
-    presenter = Presenter(use_colors=use_colors)
+    summary_table = build_series_summary_table(title_length, use_colors)
 
     print("Available series groups:")
     print("=" * (title_length+30))  # Consistent width
+    print(summary_table.render_header())
 
     for original_index, group_key, details in indexed_groups:
         group_data = details.get('data', {})
 
-        # Build an analysis-like dict compatible with Presenter
+        # Build an analysis-like dict compatible with build_series_summary_table
         analysis = {
             'status': details.get('status'),
             'title': group_data.get('title', details.get('title')),
@@ -3167,11 +3169,11 @@ def cmd_list(args):
         if args.verbose == 0:
             # Compact one-line summary
             print(f"{original_index:4d}.", end=" ")
-            presenter.print_one_line_summary(analysis, title_length=title_length)
+            print(summary_table.render_row(analysis))
         else:
             # Verbose: print one-line summary then detailed info
             print(f"{original_index:4d}.", end=" ")
-            presenter.print_one_line_summary(analysis, title_length=title_length)
+            print(summary_table.render_row(analysis))
             # Additional details
             watched_episodes = archiver._get_watched_episodes(group_data)
             missing_episodes = group_data.get('missing_episodes', [])
