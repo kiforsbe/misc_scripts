@@ -251,7 +251,7 @@ class PlexFilenameParser:
         if not cls._guessit_loaded:
             cls._guessit_loaded = True
             try:
-                from guessit_wrapper import guessit_wrapper
+                from common.guessit_wrapper import guessit_wrapper
             except Exception:
                 cls._guessit_wrapper = None
             else:

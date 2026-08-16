@@ -33,10 +33,10 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    from browser_utils import BrowserLauncher
+    from common.browser_utils import BrowserLauncher
 except ImportError:
-    # Fallback if browser_utils is not available
-    logging.warning("browser_utils module not found. Browser features may be limited.")
+    # Fallback if common.browser_utils is not available
+    logging.warning("common.browser_utils module not found. Browser features may be limited.")
     BrowserLauncher = None
 
 

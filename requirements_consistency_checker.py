@@ -33,10 +33,7 @@ IGNORED_MODULES = {"_typeshed"}
 
 # Repo-internal modules imported across a folder boundary (via a sys.path bootstrap)
 # rather than being a sibling file/package of the importing tool. Not PyPI packages.
-KNOWN_LOCAL_MODULES = {
-    "guessit_wrapper",
-    "browser_utils",
-}
+KNOWN_LOCAL_MODULES = set()
 
 
 @dataclass

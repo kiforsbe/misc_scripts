@@ -40,7 +40,7 @@ except ImportError:
             # Simple implementation for fallback
             pass
 
-from guessit_wrapper import guessit_wrapper
+from common.guessit_wrapper import guessit_wrapper
 from common.file_grouper import FileGrouper
 try:
     from metadatacommon.myanimelist_watch_status import resolve_myanimelist_xml_path

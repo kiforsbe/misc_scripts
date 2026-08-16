@@ -2,7 +2,7 @@ import re
 import json
 import os
 # Use the new wrapper
-from guessit_wrapper import guessit_wrapper
+from common.guessit_wrapper import guessit_wrapper
 
 
 def color_text(text, color):

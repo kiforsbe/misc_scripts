@@ -6,8 +6,7 @@ Miscellaneous scripts to automate common tasks.
   - [plex-playlist-watch-status.user.js](#plex-playlist-watch-statususerjs): Shows Plex playlist watch status with simple triangle indicators.
   - [myanimelist-addtolist-improved.user-script.js](#myanimelist-addtolist-improveduser-scriptjs): Adds quick MyAnimeList watch-status dropdowns directly to anime pages.
 - [Libraries](#libraries): Reusable helper modules shared by multiple scripts in this repository.
-  - [browser_utils.py](#browser_utilspy): Cross-platform browser launcher with popup, new-window, and maximized modes.
-  - [common](#common): Shared file grouping, presentation, and thumbnail-generation helpers.
+  - [common](#common): Shared file grouping, presentation, thumbnail-generation, browser-launching, and filename-parsing helpers.
   - [metadatacommon](#metadatacommon): Shared metadata provider package (anime, IMDb, Plex, MyAnimeList) used across several tools.
 - [Projects](#projects): Larger multi-file tools with dedicated packages, helpers, tests, or service components.
   - [plex_db_tool](#plex_db_tool): Package-backed Plex database transfer and playlist sync CLI with root shim.
@@ -101,32 +100,8 @@ A Tampermonkey script that augments every watch-status button on MyAnimeList sea
 
 ## Libraries
 
-### browser_utils.py
-A cross-platform browser launcher library with support for different window modes. Provides functionality to open URLs in the default browser with control over window size, position, and behavior. Used by other scripts to provide consistent browser interaction across platforms.
-
-#### Features
-- Automatic detection of default browser on Windows, macOS, and Linux
-- Multiple window modes:
-  - **Default**: Opens in new tab or reuses existing window
-  - **New Window**: Opens in a new browser window
-  - **Popup**: Chromeless window, half screen width, centered
-  - **Maximized**: Full screen window
-- Custom window size and position support
-- Platform-specific optimizations for Chrome, Firefox, Edge, Safari
-- Screen dimension detection for popup positioning
-
-#### API
-- `BrowserLauncher` class with methods:
-  - `get_screen_dimensions()`: Detect primary screen size
-  - `get_browser_command()`: Find default browser executable
-  - `open_urls(urls, new_window, popup, maximized, window_size, window_position)`: Open URLs with specified mode
-- Convenience function: `open_urls_in_browser(urls, ...)`
-
-#### Requires
-- Platform-specific: winreg (Windows), ctypes (Windows)
-
 ### common
-Shared helper modules used by multiple scripts in this repository: `file_grouper.py`, `presentation.py`, `netflix_title_parser.py`, and `video_thumbnail_generator.py`.
+Shared helper modules used by multiple scripts in this repository: `file_grouper.py`, `presentation.py`, `netflix_title_parser.py`, `video_thumbnail_generator.py`, `browser_utils.py`, and `guessit_wrapper.py`.
 
 See [common/README.md](common/README.md) for module details and requirements.
 
@@ -382,7 +357,7 @@ A comprehensive tool to extract and display series information for video files, 
   - Display MyAnimeList URLs
   - Copy URLs to clipboard (Windows)
   - Open URLs in browser with window mode control
-- Browser window modes via browser_utils:
+- Browser window modes via common/browser_utils.py:
   - **default**: New tab/window
   - **popup**: Chromeless, half-width, centered
   - **maximized**: Full screen
@@ -422,8 +397,8 @@ series_info_tool.py --log-level DEBUG2 file1.mkv
 ```
 
 #### Requires
-- file_grouper (local module)
-- browser_utils (local module)
+- common/file_grouper.py
+- common/browser_utils.py
 
 ### netflix_watch_status.py
 Reads a Netflix viewing history CSV, classifies entries as movies or series episodes, resolves metadata from IMDb and anime providers when available, and generates both console and standalone HTML watch-status reports.

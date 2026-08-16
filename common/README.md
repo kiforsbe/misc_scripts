@@ -33,5 +33,17 @@ Parses Netflix viewing-history title strings into structured components (series/
 ### video_thumbnail_generator.py
 Generates static and animated (WEBP) video thumbnails via ffmpeg, with batch processing and progress tracking. Used by `file_metadata_scanner.py`, `latest_episodes_viewer.py`, `series_completeness_checker.py`, and `mini-dlna-server`.
 
+### browser_utils.py
+Cross-platform browser launcher (`BrowserLauncher` class, `open_urls_in_browser()` convenience function) with support for opening URLs in a new tab, a new window, a chromeless popup, or maximized, including per-platform default-browser detection (Windows registry, macOS/Linux common paths) and screen-dimension-aware popup sizing. Used by `series_info_tool.py`.
+
+#### Requires
+- Platform-specific: winreg (Windows), ctypes (Windows)
+
+### guessit_wrapper.py
+Wraps the `guessit` library with a set of fast-path regex patterns for common anime/TV release-naming conventions, falling back to `guessit.guessit()` for anything the patterns don't match. Used by `common/file_grouper.py`, `series_bundler.py`, `plex_db_tool/infrastructure.py`, `video-optimizer-v2`, and the `metadatacommon` test scripts.
+
+#### Requires
+- guessit
+
 ## Requires
 Consuming tools declare `common`'s runtime dependencies in their own requirements.txt.

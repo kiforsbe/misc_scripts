@@ -144,7 +144,7 @@ python plex_watch_status_transfer.py --help
     - `MatchCandidate`/`MatchResult`: Structures used by the matching engine to score and report on how items from different databases correlate.
 - **`infrastructure.py`**: Handles low-level system interactions:
     - `PlexDatabase`: A wrapper around `sqlite3` providing high-level methods like `list_accounts()`, `build_media_inventory()`, and `list_playlists()`.
-    - `PlexFilenameParser`: Provides normalization logic for titles and basenames, and integrates with `guessit_wrapper` to extract structured identity from filenames.
+    - `PlexFilenameParser`: Provides normalization logic for titles and basenames, and integrates with `common.guessit_wrapper` to extract structured identity from filenames.
     - `PlexDatabaseLocator`: Utility to resolve various path formats (folders vs. direct DB files) into valid SQLite paths.
 - **`planners.py`**: Contains the "intelligence" of the tool:
     - `PlexMatcher`: Implements a weighted scoring system for matching media items across databases based on basename, file size, duration, year, and parsed identity (season/episode).

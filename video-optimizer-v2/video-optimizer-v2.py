@@ -11,7 +11,7 @@ import threading
 from mutagen.mp4 import MP4, MP4Cover
 from typing import Dict, Any, List
 
-# guessit_wrapper and metadatacommon live in the repository root, one level above this script
+# common and metadatacommon live in the repository root, one level above this script
 REPO_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT_DIR not in sys.path:
     sys.path.append(REPO_ROOT_DIR)
@@ -21,13 +21,13 @@ from metadatacommon.anime_metadata import AnimeDataProvider
 from metadatacommon.imdb_metadata import IMDbDataProvider
 
 try:
-    from guessit_wrapper import guessit_wrapper
+    from common.guessit_wrapper import guessit_wrapper
 except ModuleNotFoundError as exc:
-    if exc.name == 'guessit_wrapper':
-        print("Error: guessit_wrapper.py was not found in the repository root")
+    if exc.name == 'common.guessit_wrapper':
+        print("Error: common/guessit_wrapper.py was not found in the repository root's common/ folder")
     else:
         print(
-            f"Error: guessit_wrapper.py could not be imported because dependency '{exc.name}' is missing. "
+            f"Error: common/guessit_wrapper.py could not be imported because dependency '{exc.name}' is missing. "
             f"Install it with: pip install {exc.name}"
         )
     input("Press Enter to exit...")
