@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Sequence, cast
+from typing import Callable, Iterable, NamedTuple, Sequence, cast
 
 from common.presentation import Colors, Format, Icons, Table, TableColumn
 
@@ -938,6 +938,13 @@ def make_entry_line(entry: Entry, root: Path, args: argparse.Namespace, include_
     return f"{icon}{label}  [{' | '.join(parts)}]"
 
 
+class NameCell(NamedTuple):
+    """Compound value for the 'name' column only -- tree indent depth and
+    the entry it labels are one visual fact, not a peek at other columns."""
+    level: int
+    entry: Entry
+
+
 class OutputRenderer:
     def __init__(self, scan_result: ScanResult, args: argparse.Namespace):
         self.scan_result = scan_result
@@ -1020,13 +1027,14 @@ class OutputRenderer:
         if not rows:
             return
         name_width = self.args.column_widths.get("name", NAME_COLUMN_MAX_WIDTH)
+        formatters = self._column_cell_formatters()
         columns = [
             TableColumn(
                 name="name",
                 label="Name",
                 width=name_width,
-                formatter=lambda row: self._format_name_cell(row["entry"], row["level"]),
-                color=lambda row: SMARTLS_DIRECTORY_COLOR if row["entry"].entry_type == "d" else None,
+                formatter=lambda cell: self._format_name_cell(cell.entry, cell.level),
+                color=lambda cell: SMARTLS_DIRECTORY_COLOR if cell.entry.entry_type == "d" else None,
             ),
             *(
                 TableColumn(
@@ -1034,14 +1042,23 @@ class OutputRenderer:
                     label=str(CONSOLE_COLUMN_SPECS[key]["header"]),
                     width=self.args.column_widths.get(key, cast(int, CONSOLE_COLUMN_SPECS[key]["max_width"])),
                     align=str(CONSOLE_COLUMN_SPECS[key]["align"]),
-                    formatter=lambda row, key=key: self._format_column_cell(row["entry"], key),
+                    formatter=formatters[key],
                 )
                 for key in self.args.columns
             ),
         ]
         table = Table(columns, style="markdown", use_colors=self.use_color)
-        row_data = [{"entry": entry, "level": level} for level, entry in rows]
+        row_data = self._build_row_data(rows)
         print(table.render(row_data))
+
+    def _build_row_data(self, rows: Sequence[tuple[int, Entry]]) -> list[dict[str, object]]:
+        row_data = []
+        for level, entry in rows:
+            row: dict[str, object] = {"name": NameCell(level, entry)}
+            for key in self.args.columns:
+                row[key] = self._column_raw_value(entry, key)
+            row_data.append(row)
+        return row_data
 
     def _format_name_cell(self, entry: Entry, level: int) -> str:
         indent = "" if self.args.flat else "  " * level
@@ -1049,36 +1066,61 @@ class OutputRenderer:
         label = entry.name or normalize_console_path(str(entry.path))
         return f"{indent}{icon}{label}"
 
-    def _format_column_cell(self, entry: Entry, key: str) -> str:
+    @staticmethod
+    def _column_raw_value(entry: Entry, key: str) -> object:
+        """The single fact each column needs from an entry -- nothing more.
+        'relative_path' and 'permissions' carry a small tuple because that
+        column's own display text needs both parts (path + is-dir, or
+        text + octal); it is still one column's own value, not a row peek."""
         if key == "type":
-            return "Directory" if entry.entry_type == "d" else "File"
+            return entry.entry_type
         if key == "size":
-            return Format.size(entry.size_bytes, self.args.human_sizes)
+            return entry.size_bytes
         if key == "modified":
-            return Format.timestamp(entry.modified_ts)
+            return entry.modified_ts
         if key == "created":
-            return Format.timestamp(entry.created_ts)
+            return entry.created_ts
         if key == "accessed":
-            return Format.timestamp(entry.accessed_ts)
+            return entry.accessed_ts
         if key == "children":
-            return str(entry.direct_children)
+            return entry.direct_children
         if key == "recursive_files":
-            return str(entry.recursive_files)
+            return entry.recursive_files
         if key == "mime":
-            return entry.mime_type or "-"
+            return entry.mime_type
         if key == "extension":
-            return entry.path.suffix.lower() or "-"
+            return entry.path.suffix.lower()
         if key == "relative_path":
-            return normalize_console_path(display_path(entry.path, self.scan_result.root, absolute=False, is_dir=entry.entry_type == "d"))
+            return (entry.path, entry.entry_type == "d")
         if key == "full_path":
-            return normalize_console_path(str(entry.path))
+            return entry.path
         if key == "owner":
-            return entry.owner or "-"
+            return entry.owner
         if key == "group":
-            return entry.group or "-"
+            return entry.group
         if key == "permissions":
-            return entry.permissions_text or entry.permissions_octal or "-"
+            return (entry.permissions_text, entry.permissions_octal)
         raise ValueError(f"Unsupported console column: {key}")
+
+    def _column_cell_formatters(self) -> dict[str, Callable[[object], str]]:
+        return {
+            "type": lambda entry_type: "Directory" if entry_type == "d" else "File",
+            "size": lambda size_bytes: Format.size(size_bytes, self.args.human_sizes),
+            "modified": Format.timestamp,
+            "created": Format.timestamp,
+            "accessed": Format.timestamp,
+            "children": str,
+            "recursive_files": str,
+            "mime": lambda mime_type: mime_type or "-",
+            "extension": lambda extension: extension or "-",
+            "relative_path": lambda value: normalize_console_path(
+                display_path(value[0], self.scan_result.root, absolute=False, is_dir=value[1])
+            ),
+            "full_path": lambda path: normalize_console_path(str(path)),
+            "owner": lambda owner: owner or "-",
+            "group": lambda group: group or "-",
+            "permissions": lambda perms: perms[0] or perms[1] or "-",
+        }
 
     def _render_json(self, matched_entries: Sequence[Entry]) -> None:
         payload = [entry.to_dict(self.scan_result.root, absolute=not self.args.relative_paths) for entry in matched_entries]

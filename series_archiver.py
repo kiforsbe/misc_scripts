@@ -15,8 +15,25 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Protocol
 sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
-from common.presentation import Colors, Format, Icons
-from common.series_summary import build_series_summary_table
+from common.presentation import Colors, Icons, Table, TableColumn
+from common.series_analysis_cells import (
+    EPISODE_RANGE_WIDTH,
+    EPISODES_WIDTH,
+    MAL_STATUS_WIDTH,
+    MODIFIED_WIDTH,
+    SIZE_WIDTH,
+    STATUS_WIDTH,
+    build_display_row,
+    episode_range_cell,
+    episodes_cell,
+    mal_status_cell,
+    mal_status_color,
+    modified_cell,
+    size_cell,
+    status_cell,
+    status_color,
+    title_cell,
+)
 
 try:
     from tqdm import tqdm
@@ -3114,61 +3131,59 @@ def cmd_list(args):
         print("No groups found matching the filter criteria.")
         return 0
     
-    summary_table = build_series_summary_table(title_length, use_colors)
+    columns = [
+        TableColumn(name='index', label='#', width=5, align='right',
+                    formatter=lambda i: f"{i}." if i is not None else ''),
+        TableColumn(name='status', label='Status', width=STATUS_WIDTH,
+                    formatter=status_cell, color=status_color),
+        # Approved exception (two-argument formatter): title/season stay
+        # separate SeriesDisplayRow fields so a future Title/Season column
+        # split needs no row-shape change -- see
+        # common/series_analysis_cells.py's SeriesDisplayRow docstring.
+        TableColumn(name='title', label='Title', width=title_length,
+                    formatter=lambda title, row: title_cell(title, row.season, title_length, use_colors)),
+        # Approved exception (two-argument formatter): same reasoning as
+        # 'title' above, for episodes_found/episodes_expected.
+        TableColumn(name='episodes_found', label='Episodes', width=EPISODES_WIDTH,
+                    formatter=lambda found, row: episodes_cell(found, row.episodes_expected, use_colors)),
+        TableColumn(name='watched', label='Watched', width=EPISODE_RANGE_WIDTH,
+                    formatter=lambda eps: episode_range_cell(eps, Colors.BRIGHT_GREEN, use_colors)),
+        TableColumn(name='missing', label='Missing', width=EPISODE_RANGE_WIDTH,
+                    formatter=lambda eps: episode_range_cell(eps, Colors.RED, use_colors)),
+        TableColumn(name='extra', label='Extra', width=EPISODE_RANGE_WIDTH,
+                    formatter=lambda eps: episode_range_cell(eps, Colors.YELLOW, use_colors)),
+        TableColumn(name='mal_status', label='MAL Status', width=MAL_STATUS_WIDTH,
+                    formatter=mal_status_cell, color=mal_status_color),
+        TableColumn(name='modified', label='Modified', width=MODIFIED_WIDTH,
+                    formatter=modified_cell),
+        TableColumn(name='size', label='Size', align='right', width=SIZE_WIDTH,
+                    formatter=size_cell),
+    ]
+    summary_table = Table(columns, style='plain', use_colors=use_colors)
 
-    print("Available series groups:")
-    print("=" * (title_length+30))  # Consistent width
-    # Each row is prefixed with "NNNN. " (an f"{index:4d}." plus one space, 6
-    # chars) before the table content -- pad the header by the same amount so
-    # its column labels line up with the actual columns beneath them.
-    print(f"{'':6s}{summary_table.render_header()}")
-
-    for original_index, group_key, details in indexed_groups:
+    rows = []
+    for original_index, _group_key, details in indexed_groups:
         group_data = details.get('data', {})
 
-        # Build an analysis-like dict compatible with build_series_summary_table
         analysis = {
             'status': details.get('status'),
             'title': group_data.get('title', details.get('title')),
             'season': group_data.get('season'),
             'episodes_found': details.get('episodes_found', 0),
             'episodes_expected': details.get('episodes_expected', 0),
-            'watch_status': group_data.get('watch_status', {}),
             'files': group_data.get('files', []),
             'missing_episodes': group_data.get('missing_episodes', []),
             'extra_episodes': group_data.get('extra_episodes', []),
             'group_metadata': group_data.get('group_metadata', {}),
-            'myanimelist_watch_status': group_data.get('myanimelist_watch_status')
+            'myanimelist_watch_status': group_data.get('myanimelist_watch_status'),
+            'total_size_bytes': sum(f.get('file_size', 0) for f in group_data.get('files', [])),
         }
+        rows.append(build_display_row(analysis, index=original_index))
 
-        if args.verbose == 0:
-            # Compact one-line summary
-            print(f"{original_index:4d}.", end=" ")
-            print(summary_table.render_row(analysis))
-        else:
-            # Verbose: print one-line summary then detailed info
-            print(f"{original_index:4d}.", end=" ")
-            print(summary_table.render_row(analysis))
-            # Additional details
-            watched_episodes = archiver._get_watched_episodes(group_data)
-            missing_episodes = group_data.get('missing_episodes', [])
-            extra_episodes = group_data.get('extra_episodes', [])
+    print("Available series groups:")
+    print("=" * (title_length+30))  # Consistent width
+    print(summary_table.render(rows))
 
-            print(f"    Episodes: {details['episodes_found']}/{details['episodes_expected']} ({details['status']})")
-            if watched_episodes:
-                print(f"    Watched: {Format.episode_ranges(watched_episodes)}")
-            if archiver._get_watch_status_classification(group_data) == 'plan_to_watch':
-                print("    Plan to Watch")
-            if missing_episodes:
-                print(f"    Missing: {Format.episode_ranges(missing_episodes)}")
-            if extra_episodes:
-                print(f"    Extra: {Format.episode_ranges(extra_episodes)}")
-            if 'folder_name' in details:
-                print(f"    Output folder: {details['folder_name']}")
-            if args.verbose > 1:
-                print(f"    Key: {group_key}")
-            print()
-    
     return 0
 
 

@@ -127,14 +127,35 @@ def test_table_render_plain_style_has_no_separator_glyph_or_dash_line():
     )
 
 
-def test_table_render_uses_column_formatter_and_color_override():
+def test_table_render_formatter_receives_only_its_own_extracted_value():
+    # A single-argument formatter must never see other columns' data -- only
+    # what Table extracted for its own column via `name`.
+    rows = [{"name": "dir1", "is_dir": True}, {"name": "file1", "is_dir": False}]
+    columns = [TableColumn(name="name", width=10, formatter=lambda name: name.upper())]
+    result = Table(columns, style="grid").render(rows)
+    assert result == "name \n-----\nDIR1 \nFILE1"
+
+
+def test_table_render_color_receives_only_its_own_extracted_value():
+    rows = [{"status": "ok"}]
+    seen = []
+    columns = [TableColumn(name="status", width=6, color=lambda status: seen.append(status) or Colors.CYAN)]
+    Table(columns, style="grid").render(rows)
+    assert seen == ["ok"]
+
+
+def test_table_render_two_argument_formatter_receives_value_and_row():
+    # The escape hatch: a formatter declared with a second parameter also
+    # gets the whole row, for cases a single column's value can't express
+    # (e.g. tree-depth indentation) -- opt-in via the formatter's own
+    # signature, not a separate constructor field.
     rows = [{"name": "dir1", "is_dir": True}, {"name": "file1", "is_dir": False}]
     columns = [
         TableColumn(
             name="name",
             width=10,
-            formatter=lambda row: row["name"].upper(),
-            color=lambda row: Colors.CYAN if row["is_dir"] else None,
+            formatter=lambda name, row: name.upper(),
+            color=lambda name, row: Colors.CYAN if row["is_dir"] else None,
         )
     ]
     result = Table(columns, style="grid").render(rows)
@@ -144,6 +165,24 @@ def test_table_render_uses_column_formatter_and_color_override():
         f"{Colors.CYAN}DIR1{Colors.RESET} \n"
         "FILE1"
     )
+
+
+def test_table_render_formatter_cannot_see_other_columns_data():
+    # Regression test for the bug this design fixes: a column's formatter
+    # must not be able to reach fields belonging to other columns.
+    rows = [{"name": "dir1", "secret": "should-not-leak"}]
+    columns = [
+        TableColumn(name="name", width=20, formatter=lambda name: f"seen:{name}"),
+        TableColumn(name="secret", width=20),
+    ]
+    result = Table(columns, style="grid").render(rows)
+    assert "should-not-leak" not in result.split("\n")[-1].split(" | ")[0]
+
+
+def test_table_accepts_row_treats_uninspectable_builtin_as_single_value():
+    columns = [TableColumn(name="name", width=10, formatter=str)]
+    result = Table(columns, style="grid").render([{"name": 123}])
+    assert result == "name\n----\n123 "
 
 
 def test_table_render_color_override_is_skipped_when_colors_disabled():

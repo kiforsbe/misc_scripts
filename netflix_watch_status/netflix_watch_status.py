@@ -2678,7 +2678,10 @@ def render_watch_table(entries: List[NetflixHistoryEntry], selected_columns: Lis
             label=TABLE_COLUMN_DEFINITIONS[column]["header"],
             width=TABLE_COLUMN_DEFINITIONS[column]["max_width"],
             align=TABLE_COLUMN_DEFINITIONS[column]["align"],
-            formatter=(lambda row: f"{'  ' * row.level}{row.title}") if column == "title" else None,
+            # Approved exception (two-argument formatter): indentation
+            # depth is a per-render tree-depth concern (row.level), not a
+            # fact that belongs folded into a compound "title" value.
+            formatter=(lambda title, row: f"{'  ' * row.level}{title}") if column == "title" else None,
         )
         for column in selected_columns
     ]

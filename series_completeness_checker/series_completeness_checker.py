@@ -10,8 +10,25 @@ from dataclasses import dataclass, field, asdict
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.video_thumbnail_generator import VideoThumbnailGenerator
 from common.file_grouper import FileGrouper, CustomJSONEncoder
-from common.presentation import Colors, Format
-from common.series_summary import build_series_summary_table
+from common.presentation import Colors, Format, Table, TableColumn
+from common.series_analysis_cells import (
+    EPISODE_RANGE_WIDTH,
+    EPISODES_WIDTH,
+    MAL_STATUS_WIDTH,
+    MODIFIED_WIDTH,
+    SIZE_WIDTH,
+    STATUS_WIDTH,
+    build_display_row,
+    episode_range_cell,
+    episodes_cell,
+    mal_status_cell,
+    mal_status_color,
+    modified_cell,
+    size_cell,
+    status_cell,
+    status_color,
+    title_cell,
+)
 try:
     from metadatacommon.myanimelist_watch_status import resolve_myanimelist_xml_path, MyAnimeListWatchStatusProvider, MyAnimeListWatchStatus
 except ImportError:
@@ -1434,10 +1451,37 @@ class SeriesCompletenessChecker:
         # One-line summary for each series
         if verbosity >= 1:
             print(f"\n{Colors.BOLD}{Colors.CYAN}=== Series ==={Colors.RESET}")
-            summary_table = build_series_summary_table(title_length=60, use_colors=True)
-            print(summary_table.render_header())
-            for group_key, analysis in sorted(results['groups'].items()):
-                print(summary_table.render_row(analysis))
+            title_length = 60
+            use_colors = True
+            columns = [
+                TableColumn(name='status', label='Status', width=STATUS_WIDTH,
+                            formatter=status_cell, color=status_color),
+                # Approved exception (two-argument formatter): title/season
+                # stay separate SeriesDisplayRow fields so a future
+                # Title/Season column split needs no row-shape change -- see
+                # common/series_analysis_cells.py's SeriesDisplayRow docstring.
+                TableColumn(name='title', label='Title', width=title_length,
+                            formatter=lambda title, row: title_cell(title, row.season, title_length, use_colors)),
+                # Approved exception (two-argument formatter): same
+                # reasoning as 'title' above, for episodes_found/episodes_expected.
+                TableColumn(name='episodes_found', label='Episodes', width=EPISODES_WIDTH,
+                            formatter=lambda found, row: episodes_cell(found, row.episodes_expected, use_colors)),
+                TableColumn(name='watched', label='Watched', width=EPISODE_RANGE_WIDTH,
+                            formatter=lambda eps: episode_range_cell(eps, Colors.BRIGHT_GREEN, use_colors)),
+                TableColumn(name='missing', label='Missing', width=EPISODE_RANGE_WIDTH,
+                            formatter=lambda eps: episode_range_cell(eps, Colors.RED, use_colors)),
+                TableColumn(name='extra', label='Extra', width=EPISODE_RANGE_WIDTH,
+                            formatter=lambda eps: episode_range_cell(eps, Colors.YELLOW, use_colors)),
+                TableColumn(name='mal_status', label='MAL Status', width=MAL_STATUS_WIDTH,
+                            formatter=mal_status_cell, color=mal_status_color),
+                TableColumn(name='modified', label='Modified', width=MODIFIED_WIDTH,
+                            formatter=modified_cell),
+                TableColumn(name='size', label='Size', align='right', width=SIZE_WIDTH,
+                            formatter=size_cell),
+            ]
+            summary_table = Table(columns, style='plain', use_colors=use_colors)
+            rows = [build_display_row(analysis) for _group_key, analysis in sorted(results['groups'].items())]
+            print(summary_table.render(rows))
 
     def _copy_thumbnails_from_global_cache(self, target_dir: str, files: List[Path], verbosity: int) -> int:
         """Copy existing thumbnails from global cache to target directory.

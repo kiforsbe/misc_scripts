@@ -1,4 +1,5 @@
 import datetime
+import inspect
 import os
 import re
 import sys
@@ -331,19 +332,36 @@ class TableColumn:
     caps how wide the column may grow before truncating (defaults to the table's
     ``fallback_width``).
 
-    ``formatter``, when given, receives the whole row and returns the cell's
-    plain display text (no ANSI codes — colors are applied by the table after
-    truncating, via ``color``). ``color``, when given, receives the whole row
-    and returns an ANSI color code to wrap the cell in, or ``None``/``''`` for
-    no color. Both let a column's presentation be fully declarative, so callers
-    never need to format or color individual cells themselves.
+    ``formatter``, when given, is called with this column's own extracted
+    value — ``row[name]`` (mapping) or ``getattr(row, name)`` (object) — and
+    returns the cell's plain display text (no ANSI codes — colors are
+    applied by the table after truncating, via ``color``). A formatter
+    declared with a SECOND parameter also receives the whole row as that
+    second argument, e.g. ``def cell(value, row): ...`` — for the rare case
+    a cell's content genuinely depends on more than its own column (Table
+    decides which form to call based on the formatter's own signature, via
+    ``inspect.signature``, computed once at construction).
+
+    THIS IS NOT THE DEFAULT WAY TO SOLVE A FORMATTING PROBLEM. Prefer
+    combining whatever facts a column needs into one compound value (a
+    small dataclass/NamedTuple works fine) at the point the row is built,
+    and keep the formatter single-argument. Writing a two-argument
+    formatter is a deliberate, visible-in-the-diff choice — treat each one
+    as requiring its own sign-off, not something to reach for by default.
+
+    ``color``, when given, follows the same rule: it receives this column's
+    own extracted value (and, if declared with a second parameter, the same
+    row), and returns an ANSI color code to wrap the cell in, or
+    ``None``/``''`` for no color — independent of what ``formatter``
+    returned. Both let a column's presentation be fully declarative, so
+    callers never need to format or color individual cells themselves.
     """
     name: str
     label: Optional[str] = None
     width: Optional[int] = None
     align: str = 'left'  # 'left' | 'right'
-    formatter: Optional[Callable[[Any], Any]] = None
-    color: Optional[Callable[[Any], Optional[str]]] = None
+    formatter: Optional[Callable[..., Any]] = None
+    color: Optional[Callable[..., Optional[str]]] = None
 
 
 class Table:
@@ -383,6 +401,21 @@ class Table:
         self.ellipsis = ellipsis
         self.use_colors = use_colors
         self._widths: Optional[List[int]] = None
+        # Whether each column's formatter/color wants the whole row (a
+        # second parameter) rather than just its own extracted value.
+        # Computed once here, not per row/cell -- inspect.signature() isn't
+        # cheap enough to call for every row of a large table.
+        self._formatter_wants_row = [Table._accepts_row(c.formatter) for c in self.columns]
+        self._color_wants_row = [Table._accepts_row(c.color) for c in self.columns]
+
+    @staticmethod
+    def _accepts_row(func: Optional[Callable]) -> bool:
+        if func is None:
+            return False
+        try:
+            return len(inspect.signature(func).parameters) >= 2
+        except (TypeError, ValueError):
+            return False  # builtins etc. without an inspectable signature: treat as single-value
 
     @property
     def _labels(self) -> List[str]:
@@ -409,21 +442,30 @@ class Table:
             for i, c in enumerate(self.columns)
         ]
 
-    def _cell_text(self, row: Any, column: TableColumn) -> str:
+    @staticmethod
+    def _extract(row: Any, name: str) -> Any:
+        if isinstance(row, Mapping):
+            return row.get(name)
+        return getattr(row, name, None)
+
+    def _cell_text(self, row: Any, raw_value: Any, column: TableColumn, wants_row: bool) -> str:
         if column.formatter is not None:
-            value = column.formatter(row)
-        elif isinstance(row, Mapping):
-            value = row.get(column.name)
+            value = column.formatter(raw_value, row) if wants_row else column.formatter(raw_value)
         else:
-            value = getattr(row, column.name, None)
+            value = raw_value
         return '' if value is None else str(value)
 
     def _row_cells(self, row: Any, max_widths: Sequence[int]) -> List[str]:
         cells = []
         for i, column in enumerate(self.columns):
-            text = TerminalText.truncate(self._cell_text(row, column), max_widths[i], self.ellipsis)
+            raw_value = Table._extract(row, column.name)
+            text = TerminalText.truncate(
+                self._cell_text(row, raw_value, column, self._formatter_wants_row[i]),
+                max_widths[i],
+                self.ellipsis,
+            )
             if self.use_colors and column.color is not None:
-                color = column.color(row)
+                color = column.color(raw_value, row) if self._color_wants_row[i] else column.color(raw_value)
                 if color:
                     text = Colors.wrap(text, color, True)
             cells.append(text)
