@@ -1,0 +1,2 @@
+# requirements_consistency_checker.py
+# No required third-party packages (uses only the Python standard library).
