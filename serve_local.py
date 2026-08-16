@@ -1,4 +1,4 @@
-"""Serve a file or folder as a simple local webhost.
+r"""Serve a file or folder as a simple local webhost.
 
 Usage:
   - Drag-and-drop a file or folder onto this script in Windows Explorer, or
