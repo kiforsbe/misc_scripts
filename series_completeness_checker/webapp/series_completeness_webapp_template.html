@@ -85,13 +85,20 @@
                                 <option value="plan-to-watch">Plan to Watch</option>
                                 <option value="no-mal-data">No MAL Data</option>
                             </select>
-                        </div>
-                        <div class="filter-row">
                             <select id="watch-status-filter" class="filter-select">
                                 <option value="all">All Watch Status</option>
                                 <option value="not-watched">Not Watched</option>
                                 <option value="partially-watched">Partially Watched</option>
                                 <option value="fully-watched">Fully Watched</option>
+                            </select>
+                            <select id="show-rating-filter" class="filter-select">
+                                <option value="all">All Show Ratings</option>
+                                <option value="gte_9">Show Rating 9+</option>
+                                <option value="gte_8">Show Rating 8+</option>
+                                <option value="gte_7">Show Rating 7+</option>
+                                <option value="gte_6">Show Rating 6+</option>
+                                <option value="lt_6">Show Rating Under 6</option>
+                                <option value="unrated">Unrated Shows</option>
                             </select>
                         </div>
                     </div>
@@ -101,6 +108,20 @@
                             <option value="status">Group by Status</option>
                             <option value="mal-status">Group by MAL Status</option>
                         </select>
+                        <select id="sort-by-select" class="group-by-select">
+                            <option value="title-asc">Title (A-Z)</option>
+                            <option value="title-desc">Title (Z-A)</option>
+                            <option value="completion-asc">Completion % (Low-High)</option>
+                            <option value="completion-desc">Completion % (High-Low)</option>
+                        </select>
+                        <div class="modified-filter-wrap">
+                            <input type="text" id="modified-filter" class="group-by-select modified-filter-input"
+                                placeholder="Modified..."
+                                title="Filter by last-modified date. Examples:&#10;2024-01-01 / 2024-01 / 2024 (day, month, or year)&#10;&gt;2024-01-01 (after) / &lt;2024-06-01 (before)&#10;&gt;2024-01-01 &lt;2024-06-01 (range)&#10;2024-01-01..2024-06-01 (range shorthand)&#10;7d / &lt;30d / &gt;6m (relative: within/older than)">
+                            <button type="button" id="modified-filter-clear" class="modified-filter-clear" aria-label="Clear modified filter" style="display: none;">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div class="series-list" id="series-list">
@@ -136,6 +157,7 @@
                 <div id="popup-mal-status" class="popup-meta-item" style="display: none;"></div>
             </div>
             <div id="popup-ratings" class="popup-ratings-container" style="display: none;"></div>
+            <div id="popup-tags" class="popup-tags" style="display: none;"></div>
         </div>
     </div>
 

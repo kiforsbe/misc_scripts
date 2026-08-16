@@ -74,7 +74,18 @@ class SeriesCompletenessApp {
         this.statusFilter = 'all';
         this.malStatusFilter = 'all';
         this.watchStatusFilter = 'all';
+        this.showRatingFilter = 'all';
+        this.modifiedFilterQuery = '';
+        this.modifiedFilterClauses = null;
+        this.modifiedFilterDebounceMs = 300;
+        this.modifiedFilterDebounceTimer = null;
         this.groupBy = 'none';
+        this.sortBy = 'title-asc';
+        this.collapsedGroups = new Set();
+        this.groupHeaderHoldDelayMs = 500;
+        this.groupHeaderHoldTimer = null;
+        this.groupHeaderHoldTarget = null;
+        this.didHandleGroupHeaderHold = false;
         this.seriesTitles = [];
         this.seriesTags = [];
         this.seriesGenres = [];
@@ -461,12 +472,52 @@ class SeriesCompletenessApp {
             this.watchStatusFilter = e.target.value;
             this.filterAndDisplaySeries();
         });
-        
+
+        const showRatingFilter = document.getElementById('show-rating-filter');
+        showRatingFilter.addEventListener('change', (e) => {
+            this.showRatingFilter = e.target.value;
+            this.filterAndDisplaySeries();
+        });
+
         const groupBySelect = document.getElementById('group-by-select');
         groupBySelect.addEventListener('change', (e) => {
             this.groupBy = e.target.value;
             this.filterAndDisplaySeries();
         });
+
+        const sortBySelect = document.getElementById('sort-by-select');
+        sortBySelect.addEventListener('change', (e) => {
+            this.sortBy = e.target.value;
+            this.filterAndDisplaySeries();
+        });
+
+        const modifiedFilterInput = document.getElementById('modified-filter');
+        const modifiedFilterClearBtn = document.getElementById('modified-filter-clear');
+        if (modifiedFilterInput) {
+            modifiedFilterInput.addEventListener('input', (e) => {
+                this.handleModifiedFilterInput(e.target.value);
+            });
+        }
+        if (modifiedFilterClearBtn) {
+            modifiedFilterClearBtn.addEventListener('click', () => {
+                modifiedFilterInput.value = '';
+                this.applyModifiedFilterNow('');
+                modifiedFilterInput.focus();
+            });
+        }
+
+        const seriesListEl = document.getElementById('series-list');
+        if (seriesListEl) {
+            seriesListEl.addEventListener('mousedown', (e) => {
+                this.handleSeriesListPressStart(e);
+            });
+            seriesListEl.addEventListener('touchstart', (e) => {
+                this.handleSeriesListPressStart(e);
+            }, { passive: true });
+            seriesListEl.addEventListener('click', (e) => {
+                this.handleSeriesListClick(e);
+            });
+        }
 
         const filterToggle = document.getElementById('filter-toggle');
         if (filterToggle) {
@@ -493,6 +544,13 @@ class SeriesCompletenessApp {
                 this.showMainOnMobile();
             }
         }, { passive: true });
+
+        window.addEventListener('mouseup', () => {
+            this.cancelGroupHeaderHold();
+        });
+        window.addEventListener('touchend', () => {
+            this.cancelGroupHeaderHold();
+        });
 
         document.addEventListener('click', (e) => {
             if (!e.target.closest('.search-container')) {
@@ -552,6 +610,39 @@ class SeriesCompletenessApp {
         this.searchDebounceTimer = window.setTimeout(() => {
             this.applySearchNow(value);
         }, this.searchDebounceMs);
+    }
+
+    syncModifiedFilterContainerState(rawValue) {
+        const wrap = document.querySelector('.modified-filter-wrap');
+        const clearBtn = document.getElementById('modified-filter-clear');
+        const hasValue = Boolean((rawValue || '').trim());
+        if (wrap) {
+            wrap.classList.toggle('has-value', hasValue);
+        }
+        if (clearBtn) {
+            clearBtn.style.display = hasValue ? 'inline-flex' : 'none';
+        }
+    }
+
+    applyModifiedFilterNow(value) {
+        if (this.modifiedFilterDebounceTimer) {
+            window.clearTimeout(this.modifiedFilterDebounceTimer);
+            this.modifiedFilterDebounceTimer = null;
+        }
+        this.modifiedFilterQuery = value || '';
+        this.modifiedFilterClauses = this.parseModifiedFilterQuery(this.modifiedFilterQuery);
+        this.syncModifiedFilterContainerState(value);
+        this.filterAndDisplaySeries();
+    }
+
+    handleModifiedFilterInput(value) {
+        this.syncModifiedFilterContainerState(value);
+        if (this.modifiedFilterDebounceTimer) {
+            window.clearTimeout(this.modifiedFilterDebounceTimer);
+        }
+        this.modifiedFilterDebounceTimer = window.setTimeout(() => {
+            this.applyModifiedFilterNow(value);
+        }, this.modifiedFilterDebounceMs);
     }
 
     getHighlightedText(value, inputValue) {
@@ -799,26 +890,196 @@ class SeriesCompletenessApp {
         const terms = this.combinedQuery.split(/\s+/).filter(Boolean);
         return terms.every((term) => series._filterSearchIndex.includes(term));
     }
-    
+
+    // Ported from latest_episodes_viewer's show-rating filter.
+    getSeriesRatingValue(series) {
+        const titleMetadata = this.getTitleMetadata(series);
+        const rating = Number(titleMetadata.rating);
+        return Number.isFinite(rating) && rating > 0 ? rating : null;
+    }
+
+    matchesShowRatingFilter(series) {
+        if (this.showRatingFilter === 'all') {
+            return true;
+        }
+
+        const rating = this.getSeriesRatingValue(series);
+
+        if (this.showRatingFilter === 'unrated') {
+            return rating == null;
+        }
+
+        if (rating == null) {
+            return false;
+        }
+
+        switch (this.showRatingFilter) {
+            case 'gte_9':
+                return rating >= 9;
+            case 'gte_8':
+                return rating >= 8;
+            case 'gte_7':
+                return rating >= 7;
+            case 'gte_6':
+                return rating >= 6;
+            case 'lt_6':
+                return rating < 6;
+            default:
+                return true;
+        }
+    }
+
+    // Parses the "Modified" filter text into an array of AND-ed predicate
+    // functions over a unix-seconds timestamp, or null when the query is
+    // empty/unparseable (meaning "no filter applied"). Clauses are separated
+    // by whitespace or commas. Each clause is either:
+    //   - an absolute date at day/month/year granularity (2024-01-01,
+    //     2024-01, or 2024), optionally prefixed with >, >=, <, <= (bare
+    //     matches that whole day/month/year; e.g. ">2024-01-01" means from
+    //     the next day on, ">2024" means from 2025 on)
+    //   - a "from..to" date range shorthand (either side may be any granularity)
+    //   - a relative "age" shorthand like 7d/2w/6m/1y, optionally prefixed
+    //     with an operator (bare "7d" means "within the last 7 days",
+    //     ">30d" means "older than 30 days", "<7d" means "newer than 7 days")
+    parseModifiedFilterQuery(text) {
+        const raw = (text || '').trim();
+        if (!raw) {
+            return null;
+        }
+
+        const RELATIVE_UNIT_SECONDS = { d: 86400, w: 604800, m: 2629800, y: 31557600 };
+        const nowSec = Date.now() / 1000;
+
+        const parseDateBoundary = (dateStr) => {
+            const yearOnly = /^(\d{4})$/.exec(dateStr);
+            if (yearOnly) {
+                const year = Number(yearOnly[1]);
+                return {
+                    start: new Date(year, 0, 1).getTime() / 1000,
+                    end: new Date(year + 1, 0, 1).getTime() / 1000
+                };
+            }
+
+            const yearMonth = /^(\d{4})-(\d{2})$/.exec(dateStr);
+            if (yearMonth) {
+                const year = Number(yearMonth[1]);
+                const monthIndex = Number(yearMonth[2]) - 1;
+                return {
+                    start: new Date(year, monthIndex, 1).getTime() / 1000,
+                    end: new Date(year, monthIndex + 1, 1).getTime() / 1000
+                };
+            }
+
+            const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+            if (!match) {
+                return null;
+            }
+            const start = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime() / 1000;
+            if (!Number.isFinite(start)) {
+                return null;
+            }
+            return { start, end: start + 86400 };
+        };
+
+        const parseClause = (token) => {
+            if (token.includes('..')) {
+                const [fromStr, toStr] = token.split('..').map((part) => part.trim());
+                const from = fromStr ? parseDateBoundary(fromStr) : null;
+                const to = toStr ? parseDateBoundary(toStr) : null;
+                if (!from && !to) {
+                    return null;
+                }
+                return (ts) => (!from || ts >= from.start) && (!to || ts < to.end);
+            }
+
+            const opMatch = /^(>=|<=|>|<)?\s*(.+)$/.exec(token);
+            if (!opMatch) {
+                return null;
+            }
+            const op = opMatch[1] || '=';
+            const value = opMatch[2];
+
+            const relMatch = /^(\d+(?:\.\d+)?)\s*([dwmy])$/i.exec(value);
+            if (relMatch) {
+                const amount = Number(relMatch[1]);
+                const unitSeconds = RELATIVE_UNIT_SECONDS[relMatch[2].toLowerCase()];
+                const boundary = nowSec - amount * unitSeconds;
+                // Age semantics: older (>) means further in the past (smaller timestamp).
+                switch (op) {
+                    case '>': return (ts) => ts < boundary;
+                    case '>=': return (ts) => ts <= boundary;
+                    case '<': return (ts) => ts > boundary;
+                    default: return (ts) => ts >= boundary; // bare/<=: within the last N
+                }
+            }
+
+            const boundary = parseDateBoundary(value);
+            if (!boundary) {
+                return null;
+            }
+            switch (op) {
+                case '>': return (ts) => ts >= boundary.end;
+                case '>=': return (ts) => ts >= boundary.start;
+                case '<': return (ts) => ts < boundary.start;
+                case '<=': return (ts) => ts < boundary.end;
+                default: return (ts) => ts >= boundary.start && ts < boundary.end; // bare: that whole day
+            }
+        };
+
+        const clauses = raw.split(/[\s,]+/).filter(Boolean).map(parseClause).filter(Boolean);
+        return clauses.length > 0 ? clauses : null;
+    }
+
+    matchesModifiedFilter(series) {
+        if (!this.modifiedFilterClauses) {
+            return true;
+        }
+        const ts = Number(series.group_metadata && series.group_metadata.avg_modified_time);
+        if (!Number.isFinite(ts)) {
+            return false;
+        }
+        return this.modifiedFilterClauses.every((clause) => clause(ts));
+    }
+
+    getSeriesCompletionRatio(series) {
+        // episodes_found / episodes_expected is unreliable for movies/OVAs/specials,
+        // whose matched metadata often has a nonsensical expected count (e.g. found=10,
+        // expected=1). watch_status.completion_percent is a clean, pre-clamped 0-100
+        // value - it's also already shown as the "%" badge on every card, so sorting
+        // by it matches what's visibly on screen.
+        return (series.watch_status && series.watch_status.completion_percent) || 0;
+    }
+
     async filterAndDisplaySeries() {
         const groups = this.data.groups;
         this.filteredSeries = [];
-        
+
         for (const [key, series] of Object.entries(groups)) {
             const matchesSearch = this.matchesCombinedQuery(series);
             const matchesStatus = this.statusFilter === 'all' || series._filterStatus === this.statusFilter;
             const matchesWatch = this.watchStatusFilter === 'all' || series._filterWatchStatus === this.watchStatusFilter;
             const matchesMalStatus = this.malStatusFilter === 'all' || series._filterMalStatus === this.malStatusFilter;
+            const matchesRating = this.matchesShowRatingFilter(series);
+            const matchesModified = this.matchesModifiedFilter(series);
 
-            if (matchesSearch && matchesStatus && matchesWatch && matchesMalStatus) {
+            if (matchesSearch && matchesStatus && matchesWatch && matchesMalStatus && matchesRating && matchesModified) {
                 this.filteredSeries.push({ key, ...series });
             }
         }
-        
+
         this.filteredSeries.sort((a, b) => {
-            return a._displayTitle.localeCompare(b._displayTitle);
+            if (this.sortBy === 'completion-asc' || this.sortBy === 'completion-desc') {
+                const diff = this.getSeriesCompletionRatio(a) - this.getSeriesCompletionRatio(b);
+                if (diff !== 0) {
+                    return this.sortBy === 'completion-desc' ? -diff : diff;
+                }
+                return a._displayTitle.localeCompare(b._displayTitle);
+            }
+
+            const titleDiff = a._displayTitle.localeCompare(b._displayTitle);
+            return this.sortBy === 'title-desc' ? -titleDiff : titleDiff;
         });
-        
+
         await this.renderSeriesList();
 
         if (this.selectedSeriesKey) {
@@ -906,11 +1167,15 @@ class SeriesCompletenessApp {
             // Render all groups in parallel
             const groupHtmlPairs = await Promise.all(
                 Object.entries(groups).map(async ([groupName, seriesList]) => {
-                    const itemsHtml = await this.renderSeriesItems(seriesList);
+                    const isCollapsed = this.isGroupCollapsed(groupName);
+                    const itemsHtml = isCollapsed ? '' : await this.renderSeriesItems(seriesList);
                     return `
-                        <div class="series-group">
-                            <div class="series-group-header">
-                                <span class="series-group-title">${this.escapeHtml(groupName)}</span>
+                        <div class="series-group ${isCollapsed ? 'collapsed' : ''}">
+                            <div class="series-group-header" data-group-name="${this.escapeHtml(groupName)}" aria-expanded="${isCollapsed ? 'false' : 'true'}">
+                                <div class="series-group-heading">
+                                    <i class="bi bi-chevron-down series-group-chevron"></i>
+                                    <span class="series-group-title">${this.escapeHtml(groupName)}</span>
+                                </div>
                                 <span class="series-group-count">${seriesList.length}</span>
                             </div>
                             ${itemsHtml}
@@ -951,7 +1216,97 @@ class SeriesCompletenessApp {
         
         return groups;
     }
-    
+
+    // --- Collapsible group handlers (ported from latest_episodes_viewer) ---
+    handleSeriesListClick(event) {
+        const groupHeader = event.target.closest('.series-group-header[data-group-name]');
+        if (!groupHeader) {
+            return;
+        }
+
+        if (this.didHandleGroupHeaderHold) {
+            this.didHandleGroupHeaderHold = false;
+            return;
+        }
+
+        this.toggleGroup(groupHeader.getAttribute('data-group-name') || '');
+    }
+
+    handleSeriesListPressStart(event) {
+        if (event.button != null && event.button !== 0) {
+            return;
+        }
+
+        const groupHeader = event.target.closest('.series-group-header[data-group-name]');
+        if (!groupHeader) {
+            return;
+        }
+
+        this.cancelGroupHeaderHold();
+        this.groupHeaderHoldTarget = groupHeader;
+        this.didHandleGroupHeaderHold = false;
+
+        const groupName = groupHeader.getAttribute('data-group-name') || '';
+        const shouldCollapse = !this.isGroupCollapsed(groupName);
+
+        this.groupHeaderHoldTimer = setTimeout(() => {
+            if (this.groupHeaderHoldTarget !== groupHeader) {
+                return;
+            }
+
+            this.didHandleGroupHeaderHold = true;
+            this.toggleAllGroups(shouldCollapse);
+            this.groupHeaderHoldTimer = null;
+        }, this.groupHeaderHoldDelayMs);
+    }
+
+    cancelGroupHeaderHold() {
+        if (this.groupHeaderHoldTimer) {
+            clearTimeout(this.groupHeaderHoldTimer);
+            this.groupHeaderHoldTimer = null;
+        }
+
+        this.groupHeaderHoldTarget = null;
+    }
+
+    isGroupCollapsed(groupName) {
+        return Boolean(groupName) && this.collapsedGroups.has(groupName);
+    }
+
+    setGroupCollapsed(groupName, shouldCollapse) {
+        if (!groupName) {
+            return;
+        }
+
+        if (shouldCollapse) {
+            this.collapsedGroups.add(groupName);
+        } else {
+            this.collapsedGroups.delete(groupName);
+        }
+    }
+
+    toggleGroup(groupName) {
+        if (!groupName || this.groupBy === 'none') {
+            return;
+        }
+
+        this.setGroupCollapsed(groupName, !this.isGroupCollapsed(groupName));
+        this.renderSeriesList();
+    }
+
+    toggleAllGroups(shouldCollapse) {
+        if (this.groupBy === 'none') {
+            return;
+        }
+
+        const groups = this.groupSeries(this.filteredSeries);
+        Object.keys(groups).forEach((groupName) => {
+            this.setGroupCollapsed(groupName, shouldCollapse);
+        });
+
+        this.renderSeriesList();
+    }
+
     async renderSeriesItems(seriesList) {
         const items = await Promise.all(seriesList.map(async (series) => {
             const titleWithSeason = series._displayTitle;
@@ -988,11 +1343,8 @@ class SeriesCompletenessApp {
                 malStatusDisplay = `<span class="mal-status" title="MyAnimeList: ${malStatus.my_status}">${icon} ${malStatus.my_status}</span>`;
             }
 
-            const quickMeta = [`<span class="watch-count">${watchStatus.watched_episodes || 0} watched</span>`, episodeDisplay, `<span>${watchedPercent.toFixed(0)}%</span>`].join('');
-            const tags = (series._filterTags || []).slice(0, 3);
-            const tagMarkup = tags.length > 0
-                ? `<div class="series-tags-inline">${tags.map((tag) => `<span class="series-tag-pill">${this.escapeHtml(tag)}</span>`).join('')}</div>`
-                : '';
+            const sizeDisplay = series.total_size_bytes > 0 ? `<span>${this.formatFileSize(series.total_size_bytes)}</span>` : '';
+            const quickMeta = [`<span class="watch-count">${watchStatus.watched_episodes || 0} watched</span>`, episodeDisplay, `<span>${watchedPercent.toFixed(0)}%</span>`, sizeDisplay].filter(Boolean).join('');
 
             const thumb = firstFile ? await this.getThumbnailData(firstFile) : null;
             const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : '';
@@ -1027,7 +1379,6 @@ class SeriesCompletenessApp {
                         <div class="series-meta">
                             ${quickMeta}
                         </div>
-                        ${tagMarkup}
                     </div>
                 </div>
             `;
@@ -1190,17 +1541,9 @@ class SeriesCompletenessApp {
                     ${this.renderCompletionInfo(series)}
                 </div>
                 
-                <div class="details-card">
-                    <h4 class="card-title">
-                        <i class="bi bi-eye"></i>
-                        Watch Progress
-                    </h4>
-                    ${this.renderWatchProgress(series)}
-                </div>
-                
+                ${this.renderWatchProgressAndMalCard(series)}
+
                 ${this.renderSeriesInfo(series)}
-                
-                ${this.renderMalInfo(series)}
             </div>
             
             ${await this.renderEpisodeGrid(series)}
@@ -1375,18 +1718,33 @@ class SeriesCompletenessApp {
         `;
     }
     
-    renderMalInfo(series) {
+    renderWatchProgressAndMalCard(series) {
+        const malSection = this.renderMalInfoSection(series);
+
+        return `
+            <div class="details-card">
+                <h4 class="card-title">
+                    <i class="bi bi-eye"></i>
+                    Watch Progress
+                </h4>
+                ${this.renderWatchProgress(series)}
+                ${malSection}
+            </div>
+        `;
+    }
+
+    renderMalInfoSection(series) {
         const malStatus = series.myanimelist_watch_status;
-        
+
         if (!malStatus || !malStatus.my_status) {
-            return ''; // Don't show the card if no MAL data
+            return ''; // Don't show the section if no MAL data
         }
-        
+
         const seasonSpecificStatus = malStatus.my_status;
         const seasonSpecificIcon = malStatus.my_status;
         const seasonSpecificColor = malStatus.my_status;
         const preferredInfoSource = this.getPreferredInfoSource(series);
-        
+
         const statusIcons = {
             'Watching': '👁️',
             'Completed': '✅',
@@ -1395,48 +1753,47 @@ class SeriesCompletenessApp {
             'Dropped': '❌',
             'Plan to Watch': '📋'
         };
-        
+
         const statusColors = {
             'Watching': 'text-primary',
-            'Completed': 'text-success', 
+            'Completed': 'text-success',
             'Completed (Season)': 'text-success',
             'On-Hold': 'text-warning',
             'Dropped': 'text-danger',
             'Plan to Watch': 'text-info'
         };
-        
+
         const icon = statusIcons[seasonSpecificIcon] || '❓';
         const colorClass = statusColors[seasonSpecificColor] || 'text-muted';
-        
+
         return `
-            <div class="details-card">
-                <h4 class="card-title">
-                    <i class="bi bi-star"></i>
-                    MyAnimeList Status
-                </h4>
-                <div class="mal-info">
-                    <div class="mal-status-large ${colorClass}">
-                        <span class="mal-icon">${icon}</span>
-                        <span class="mal-status-text">${seasonSpecificStatus}</span>
-                    </div>
-                    ${preferredInfoSource ? `<div class="external-links"><a href="${preferredInfoSource.url}" target="_blank" rel="noopener noreferrer" class="external-link ${preferredInfoSource.name === 'MyAnimeList' ? 'mal-link' : (preferredInfoSource.name === 'IMDb' ? 'imdb-link' : '')}">Open on ${this.escapeHtml(preferredInfoSource.name)}</a></div>` : ''}
-                    ${malStatus.my_score > 0 ? `
-                    <div class="mal-score">
-                        <strong>Score:</strong> <span class="score-value">${malStatus.my_score}/10</span>
-                    </div>
-                    ` : ''}
-                    ${malStatus.my_watched_episodes !== undefined && malStatus.my_watched_episodes >= 0 ? `
-                    <div class="mal-episodes">
-                        <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes}${malStatus.series_episodes ? ` / ${malStatus.series_episodes}` : ''}
-                    </div>
-                    ` : ''}
-                    ${malStatus.comments ? `
-                    <div class="mal-comments mt-3">
-                        <strong>Your Review:</strong>
-                        <div class="mal-comments-text">${this.escapeHtml(malStatus.comments)}</div>
-                    </div>
-                    ` : ''}
+            <hr class="details-card-divider">
+            <h5 class="card-subtitle">
+                <i class="bi bi-star"></i>
+                MyAnimeList Status
+            </h5>
+            <div class="mal-info">
+                <div class="mal-status-large ${colorClass}">
+                    <span class="mal-icon">${icon}</span>
+                    <span class="mal-status-text">${seasonSpecificStatus}</span>
                 </div>
+                ${preferredInfoSource ? `<div class="external-links"><a href="${preferredInfoSource.url}" target="_blank" rel="noopener noreferrer" class="external-link ${preferredInfoSource.name === 'MyAnimeList' ? 'mal-link' : (preferredInfoSource.name === 'IMDb' ? 'imdb-link' : '')}">Open on ${this.escapeHtml(preferredInfoSource.name)}</a></div>` : ''}
+                ${malStatus.my_score > 0 ? `
+                <div class="mal-score">
+                    <strong>Score:</strong> <span class="score-value">${malStatus.my_score}/10</span>
+                </div>
+                ` : ''}
+                ${malStatus.my_watched_episodes !== undefined && malStatus.my_watched_episodes >= 0 ? `
+                <div class="mal-episodes">
+                    <strong>MAL Episodes Watched:</strong> ${malStatus.my_watched_episodes}${malStatus.series_episodes ? ` / ${malStatus.series_episodes}` : ''}
+                </div>
+                ` : ''}
+                ${malStatus.comments ? `
+                <div class="mal-comments mt-3">
+                    <strong>Your Review:</strong>
+                    <div class="mal-comments-text">${this.escapeHtml(malStatus.comments)}</div>
+                </div>
+                ` : ''}
             </div>
         `;
     }
@@ -1534,10 +1891,13 @@ class SeriesCompletenessApp {
                 if (file.access_time) {
                     timestamps.push(`Accessed: ${this.formatTimestamp(file.access_time)}`);
                 }
+                if (file.size) {
+                    timestamps.push(`Size: ${this.formatFileSize(file.size)}`);
+                }
                 if (timestamps.length > 0) {
                     enhancedTitle += '&#10;' + timestamps.join('&#10;');
                 }
-                
+
                 const thumb = await this.getThumbnailData(file);
                 const staticUrl = thumb && thumb.static_thumbnail ? thumb.static_thumbnail.replace(/\\/g, '/') : null;
                 const animUrl = thumb && thumb.animated_thumbnail ? thumb.animated_thumbnail.replace(/\\/g, '/') : null;
@@ -1778,7 +2138,8 @@ class SeriesCompletenessApp {
         
         const statusIcon = this.getStatusIcon(series.status);
         const statusLabel = this.formatStatus(series.status);
-        document.getElementById('popup-status-info').textContent = `${statusIcon} ${statusLabel} - ${series.episodes_found}/${series.episodes_expected || '?'} episodes`;
+        const sizeSuffix = series.total_size_bytes > 0 ? ` - ${this.formatFileSize(series.total_size_bytes)}` : '';
+        document.getElementById('popup-status-info').textContent = `${statusIcon} ${statusLabel} - ${series.episodes_found}/${series.episodes_expected || '?'} episodes${sizeSuffix}`;
         
         // Set watch progress
         const watchStatus = series.watch_status || {};
@@ -1843,7 +2204,17 @@ class SeriesCompletenessApp {
         } else {
             ratingsContainer.style.display = 'none';
         }
-        
+
+        // Set tags
+        const tagsContainer = document.getElementById('popup-tags');
+        const tags = series._filterTags || [];
+        if (tags.length > 0) {
+            tagsContainer.innerHTML = this.renderTagsWithPopup(tags, 4);
+            tagsContainer.style.display = 'block';
+        } else {
+            tagsContainer.style.display = 'none';
+        }
+
         // Position popup
         const seriesItem = event.currentTarget;
         const seriesRect = seriesItem.getBoundingClientRect();
