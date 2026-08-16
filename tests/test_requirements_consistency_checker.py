@@ -1,8 +1,11 @@
 from pathlib import Path
 
 from requirements_consistency_checker import (
+    check_installed_versions,
+    check_version_consistency,
     fix_undeclared_imports,
     fix_unused_declarations,
+    fix_version_inconsistencies,
     run_checks,
     run_fix_command,
     update_root_requirements,
@@ -330,3 +333,178 @@ def test_no_recursive_check_reports_declaration_unused_when_only_used_via_shared
     result = run_checks(tmp_path, recursive=False)
 
     assert any("requests" in msg and "unused" in msg.lower() for msg in result.warnings)
+
+
+def test_version_consistency_flags_conflicting_pins_across_files(tmp_path):
+    tool_a = tmp_path / "toolA"
+    tool_a.mkdir()
+    (tool_a / "requirements.txt").write_text("requests>=2.28\n", encoding="utf-8")
+    tool_b = tmp_path / "toolB"
+    tool_b.mkdir()
+    (tool_b / "requirements.txt").write_text("requests==2.20.0\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text(
+        "-r toolA/requirements.txt\n-r toolB/requirements.txt\n", encoding="utf-8"
+    )
+
+    failures = check_version_consistency(tmp_path)
+
+    assert any(
+        "requests" in f and ">=2.28" in f and "==2.20.0" in f and "toolA/requirements.txt" in f
+        and "toolB/requirements.txt" in f
+        for f in failures
+    )
+
+    result = run_checks(tmp_path)
+    assert not result.ok
+    assert any("requests" in f for f in result.hard_failures)
+
+
+def test_version_consistency_ignores_matching_pins(tmp_path):
+    tool_a = tmp_path / "toolA"
+    tool_a.mkdir()
+    (tool_a / "requirements.txt").write_text("requests>=2.28\n", encoding="utf-8")
+    tool_b = tmp_path / "toolB"
+    tool_b.mkdir()
+    (tool_b / "requirements.txt").write_text("requests>=2.28\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text(
+        "-r toolA/requirements.txt\n-r toolB/requirements.txt\n", encoding="utf-8"
+    )
+
+    assert check_version_consistency(tmp_path) == []
+
+
+def test_version_consistency_ignores_unpinned_declarations(tmp_path):
+    tool_a = tmp_path / "toolA"
+    tool_a.mkdir()
+    (tool_a / "requirements.txt").write_text("requests>=2.28\n", encoding="utf-8")
+    tool_b = tmp_path / "toolB"
+    tool_b.mkdir()
+    (tool_b / "requirements.txt").write_text("requests\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text(
+        "-r toolA/requirements.txt\n-r toolB/requirements.txt\n", encoding="utf-8"
+    )
+
+    assert check_version_consistency(tmp_path) == []
+
+
+def test_installed_version_check_flags_unsatisfied_pin_for_installed_package(tmp_path):
+    tool_dir = tmp_path / "faketool"
+    tool_dir.mkdir()
+    # pytest is guaranteed installed (it's running this test); pin an
+    # impossible version so the mismatch is unambiguous.
+    (tool_dir / "requirements.txt").write_text("pytest<1.0\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("-r faketool/requirements.txt\n", encoding="utf-8")
+
+    warnings = check_installed_versions(tmp_path)
+
+    assert any("pytest" in w and "faketool/requirements.txt" in w for w in warnings)
+
+
+def test_installed_version_check_is_silent_when_pin_is_satisfied(tmp_path):
+    tool_dir = tmp_path / "faketool"
+    tool_dir.mkdir()
+    (tool_dir / "requirements.txt").write_text("pytest>=1.0\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("-r faketool/requirements.txt\n", encoding="utf-8")
+
+    assert check_installed_versions(tmp_path) == []
+
+
+def test_installed_version_check_is_silent_for_package_not_installed(tmp_path):
+    tool_dir = tmp_path / "faketool"
+    tool_dir.mkdir()
+    (tool_dir / "requirements.txt").write_text(
+        "totally-fake-package-that-does-not-exist-xyz>=1.0\n", encoding="utf-8"
+    )
+    (tmp_path / "requirements.txt").write_text("-r faketool/requirements.txt\n", encoding="utf-8")
+
+    assert check_installed_versions(tmp_path) == []
+
+
+def _make_version_conflict_scenario(tmp_path):
+    tool_a = tmp_path / "toolA"
+    tool_a.mkdir()
+    (tool_a / "requirements.txt").write_text("mutagen>=1.45.0\n", encoding="utf-8")
+    tool_b = tmp_path / "toolB"
+    tool_b.mkdir()
+    (tool_b / "requirements.txt").write_text("mutagen>=1.45.1\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text(
+        "-r toolA/requirements.txt\n-r toolB/requirements.txt\n", encoding="utf-8"
+    )
+    return tool_a, tool_b
+
+
+def test_fix_version_inconsistencies_heuristic_picks_highest_version(tmp_path):
+    tool_a, tool_b = _make_version_conflict_scenario(tmp_path)
+
+    changes = fix_version_inconsistencies(tmp_path)
+
+    assert any("mutagen>=1.45.1" in c and "toolA/requirements.txt" in c and "1.45.0" in c for c in changes)
+    assert (tool_a / "requirements.txt").read_text(encoding="utf-8") == "mutagen>=1.45.1\n"
+    assert (tool_b / "requirements.txt").read_text(encoding="utf-8") == "mutagen>=1.45.1\n"
+
+    result = run_checks(tmp_path)
+    assert result.ok
+    assert not any("mutagen" in f for f in result.hard_failures)
+
+
+def test_fix_version_inconsistencies_dry_run_does_not_write(tmp_path):
+    tool_a, tool_b = _make_version_conflict_scenario(tmp_path)
+    original_a = (tool_a / "requirements.txt").read_text(encoding="utf-8")
+
+    changes = fix_version_inconsistencies(tmp_path, dry_run=True)
+
+    assert any("mutagen>=1.45.1" in c for c in changes)
+    assert (tool_a / "requirements.txt").read_text(encoding="utf-8") == original_a
+    assert not check_version_consistency(tmp_path) == []
+
+
+def test_run_fix_command_default_level_resolves_version_conflicts(tmp_path):
+    tool_a, tool_b = _make_version_conflict_scenario(tmp_path)
+
+    exit_code = run_fix_command(tmp_path, use_color=False)
+
+    assert exit_code == 0
+    assert (tool_a / "requirements.txt").read_text(encoding="utf-8") == "mutagen>=1.45.1\n"
+
+
+def test_fix_version_inconsistencies_interactive_uses_prompted_choice(tmp_path, monkeypatch):
+    tool_a, tool_b = _make_version_conflict_scenario(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "1")  # picks the first listed spec
+
+    changes = fix_version_inconsistencies(tmp_path, interactive=True)
+
+    assert len(changes) == 1
+    winning_content = (tool_a / "requirements.txt").read_text(encoding="utf-8")
+    assert winning_content == (tool_b / "requirements.txt").read_text(encoding="utf-8")
+    assert winning_content in ("mutagen>=1.45.0\n", "mutagen>=1.45.1\n")
+
+
+def test_fix_version_inconsistencies_interactive_skip_leaves_conflict_unresolved(tmp_path, monkeypatch):
+    tool_a, tool_b = _make_version_conflict_scenario(tmp_path)
+    original_a = (tool_a / "requirements.txt").read_text(encoding="utf-8")
+    original_b = (tool_b / "requirements.txt").read_text(encoding="utf-8")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "s")
+
+    changes = fix_version_inconsistencies(tmp_path, interactive=True)
+
+    assert changes == []
+    assert (tool_a / "requirements.txt").read_text(encoding="utf-8") == original_a
+    assert (tool_b / "requirements.txt").read_text(encoding="utf-8") == original_b
+    assert not check_version_consistency(tmp_path) == []
+
+
+def test_fix_version_inconsistencies_interactive_falls_back_to_heuristic_when_not_a_tty(tmp_path, monkeypatch):
+    tool_a, tool_b = _make_version_conflict_scenario(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    def _unexpected_input(prompt):
+        raise AssertionError("input() should never be called when stdin is not a tty")
+
+    monkeypatch.setattr("builtins.input", _unexpected_input)
+
+    changes = fix_version_inconsistencies(tmp_path, interactive=True)
+
+    assert any("mutagen>=1.45.1" in c for c in changes)
+    assert (tool_a / "requirements.txt").read_text(encoding="utf-8") == "mutagen>=1.45.1\n"

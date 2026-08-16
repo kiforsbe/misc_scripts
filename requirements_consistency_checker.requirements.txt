@@ -1,2 +1,4 @@
 # requirements_consistency_checker.py
-# No required third-party packages (uses only the Python standard library).
+# Only required for the 'check against what's installed' version comparison;
+# everything else uses only the Python standard library.
+packaging
