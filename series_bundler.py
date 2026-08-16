@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
 sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
-from common.presentation import get_emoji, color_text, Presenter, Colors
+from common.presentation import Colors, Icons
 
 try:
     from tqdm import tqdm
@@ -94,17 +94,6 @@ class SeriesBundler:
         else:
             self._log("Warning: MetadataManager not available - MAL lookups will not work", 1)
     
-    def _get_emoji(self, emoji_type: str) -> str:
-        """Get emoji with fallback support.
-        
-        Args:
-            emoji_type: Type of emoji ('complete', 'incomplete', 'warning', 'check', 'cross', 'folder', 'file', 'calendar', 'package', 'chart', 'star')
-            
-        Returns:
-            Emoji character or ASCII fallback
-        """
-        return get_emoji(emoji_type)
-        
     def _log(self, message: str, level: int = 1):
         """Log message if verbosity level is sufficient."""
         if self.verbose >= level:
@@ -112,7 +101,7 @@ class SeriesBundler:
     
     def _color(self, text: str, color: str = "") -> str:
         """Apply color to text if colors are enabled."""
-        return color_text(text, color, use_colors=self.use_colors)
+        return Colors.wrap(text, color, enabled=self.use_colors)
     
     def _clean_filename(self, name: str) -> str:
         """Clean filename/folder name for filesystem compatibility."""
@@ -629,14 +618,14 @@ class SeriesBundler:
         summary = self.get_summary()
         
         print(self._color("\n=== Series Bundler Summary ===", Colors.CYAN + Colors.BOLD))
-        file_emoji = self._get_emoji('file')
+        file_emoji = Icons.get('file')
         print(f"Total files: {file_emoji} {self._color(str(summary['total_files']), Colors.GREEN)}")
-        folder_emoji = self._get_emoji('folder')
+        folder_emoji = Icons.get('folder')
         print(f"Total groups: {folder_emoji} {self._color(str(summary['total_groups']), Colors.GREEN)}")
-        package_emoji = self._get_emoji('package')
+        package_emoji = Icons.get('package')
         size_text = f"{summary['total_size_mb']} MB"
         print(f"Total size: {package_emoji} {self._color(size_text, Colors.GREEN)}")
-        star_emoji = self._get_emoji('star')
+        star_emoji = Icons.get('star')
         print(f"Average files per group: {star_emoji} {self._color(str(summary['average_files_per_group']), Colors.YELLOW)}")
         largest_text = f"{summary['largest_group_size']} files"
         print(f"  Largest group: {self._color(largest_text, Colors.MAGENTA)}")
@@ -719,13 +708,13 @@ class SeriesBundler:
                         
                         found_episodes = len(set(episodes))
                         is_complete = found_episodes >= total_episodes and total_episodes > 0
-                        completeness_emoji = self._get_emoji('complete') if is_complete else self._get_emoji('incomplete')
+                        completeness_emoji = Icons.get('complete') if is_complete else Icons.get('incomplete')
                         completeness_text = "Complete" if is_complete else f"Incomplete ({found_episodes}/{total_episodes})"
                         
                         print(f"    MAL: {my_status} | Watched: {my_watched}/{total_episodes} | Score: {my_score}")
                         print(f"    Bundle: {completeness_emoji} {completeness_text}")
             
-            print(f"    {self._get_emoji('folder')} {folder_name}")
+            print(f"    {Icons.get('folder')} {folder_name}")
 
 
 def discover_video_files(paths: List[str], recursive: bool = False) -> List[Path]:
@@ -864,7 +853,7 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
     destination = first_file_dir
     
     print(bundler._color("\n=== Proposed Structure ===", Colors.BRIGHT_CYAN))
-    folder_emoji = bundler._get_emoji('folder')
+    folder_emoji = Icons.get('folder')
     print(f"Destination: {folder_emoji} {bundler._color(str(destination), Colors.CYAN)}")
     print()
     
@@ -899,8 +888,8 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         newest_date_str = datetime.fromtimestamp(newest_file_time).strftime('%Y-%m-%d') if newest_file_time else "Unknown"
         
         # Print folder and files
-        folder_emoji = bundler._get_emoji('folder')
-        calendar_emoji = bundler._get_emoji('calendar')
+        folder_emoji = Icons.get('folder')
+        calendar_emoji = Icons.get('calendar')
         print(bundler._color(f"{folder_emoji} {folder_name}/ ({newest_date_str})", Colors.BRIGHT_CYAN))
         
         # Collect present episodes for missing episode detection
@@ -968,8 +957,8 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
                 max_check = max_ep
             
             # Build display with missing episode markers
-            file_emoji = bundler._get_emoji('file')
-            cross_emoji = bundler._get_emoji('cross')
+            file_emoji = Icons.get('file')
+            cross_emoji = Icons.get('cross')
             
             # Create a sorted list of all episodes to display (integers + bonus episodes)
             all_episodes = []
@@ -1017,7 +1006,7 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
                         print(bundler._color(f"   {cross_emoji} {title} - {int(ep):02d}", Colors.DIM + Colors.RED))
         else:
             # No episode info, just display files normally
-            file_emoji = bundler._get_emoji('file')
+            file_emoji = Icons.get('file')
             for metadata in group_metadata:
                 filename = metadata['filename']
                 source_path = Path(metadata['filepath'])
@@ -1056,25 +1045,25 @@ def interactive_bundle_mode(files: List[Path], bundler: SeriesBundler) -> int:
         )
         
         if results:
-            complete_emoji = bundler._get_emoji('complete')
+            complete_emoji = Icons.get('complete')
             print(bundler._color(f"\n{complete_emoji} Successfully created {len(results)} bundle folders!", Colors.BRIGHT_GREEN))
             print(f"Files have been organized in: {bundler._color(str(destination), Colors.CYAN)}")
-            calendar_emoji = bundler._get_emoji('calendar')
+            calendar_emoji = Icons.get('calendar')
             print(bundler._color(f"\n{calendar_emoji} Folder dates set to newest file:", Colors.YELLOW))
             for group_key, result_info in results.items():
                 folder_name = Path(result_info['folder_path']).name
                 newest_date = result_info.get('newest_file_date', 'Unknown')
-                folder_emoji = bundler._get_emoji('folder')
+                folder_emoji = Icons.get('folder')
                 print(f"  {folder_emoji} {bundler._color(folder_name, Colors.CYAN)}: {bundler._color(newest_date, Colors.DIM + Colors.WHITE)}")
         else:
-            cross_emoji = bundler._get_emoji('cross')
+            cross_emoji = Icons.get('cross')
             print(bundler._color(f"{cross_emoji} No files were bundled.", Colors.RED))
             print("\nPress Enter to exit...")
             input()
             return 1
             
     except Exception as e:
-        cross_emoji = bundler._get_emoji('cross')
+        cross_emoji = Icons.get('cross')
         print(bundler._color(f"{cross_emoji} Error during bundling: {e}", Colors.RED))
         print("\nPress Enter to exit...")
         input()
