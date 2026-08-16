@@ -4,7 +4,9 @@ Miscellaneous scripts to automate common tasks.
 ## Table of Contents
 - [User Scripts](#user-scripts): Tampermonkey userscripts that enhance supported sites with faster actions and metadata helpers.
   - [plex-playlist-watch-status.user.js](#plex-playlist-watch-statususerjs): Shows Plex playlist watch status with simple triangle indicators.
+  - [plex-library-play-status.userscript.js](#plex-library-play-statususerscriptjs): Adds an unplayed-item pip indicator to Plex library table view.
   - [myanimelist-addtolist-improved.user-script.js](#myanimelist-addtolist-improveduser-scriptjs): Adds quick MyAnimeList watch-status dropdowns directly to anime pages.
+  - [reddit-video-link-webservice-redirector.user.js](#reddit-video-link-webservice-redirectoruserjs): Redirects Reddit video links into the local m3u8-to-mp4 webservice for conversion.
 - [Libraries](#libraries): Reusable helper modules shared by multiple scripts in this repository.
   - [common](#common): Shared file grouping, presentation, thumbnail-generation, browser-launching, and filename-parsing helpers.
   - [metadatacommon](#metadatacommon): Shared metadata provider package (anime, IMDb, Plex, MyAnimeList) used across several tools.
@@ -62,9 +64,7 @@ Miscellaneous scripts to automate common tasks.
   - [lyrics-timing-generator.py](#lyrics-timing-generatorpy): Experimental timed-lyrics generator built from transcription and LLM formatting.
 
 ## User Scripts
-These user scripts enhance the webservice functionality by integrating download buttons directly into the respective web interfaces. They automatically capture song metadata and cover art, then send this information to the webservice for processing, making the download process seamless and efficient. They have been tested with Tampermonkey on Chrome.
-- `udio-download_ext-button.user.js`: Adds a "Download with metadata" button to Udio song pages
-- `riffusion-download_ext-button.user.js`: Adds a "Download with metadata" button to Riffusion song pages
+Tampermonkey userscripts that enhance supported sites with faster actions and metadata helpers. Live in [userscripts/](userscripts/). (`udio-flask-webservice/` and `youtube-video-downloader/` each bundle their own companion userscript alongside their code -- see those tools' READMEs.)
 
 ### plex-playlist-watch-status.user.js
 A Tampermonkey script that adds simple triangle indicators to Plex playlist items, showing their watch status (watched/unwatched) based on metadata from the Plex API.
@@ -75,6 +75,19 @@ It fetches the watch status of each item in a Plex playlist and displays a trian
 2. Import the script into Tampermonkey.
 3. Make sure your local IP addresses are whitelisted in the script.
 4. Navigate to your Plex playlist page, open a playlist and see the watch status indicators appear next to each item thumbnail.
+
+#### Requires
+- Tampermonkey or a similar userscript manager
+
+### plex-library-play-status.userscript.js
+A Tampermonkey script that adds a pip indicator to the left of the filename for unplayed items in Plex's library table view, reusing the same watch-status logic as `plex-playlist-watch-status.user.js` but scoped to the library listing instead of playlists.
+
+#### Matches
+- `https://app.plex.tv/*`
+- `http://localhost:32400/web/*`
+- `http://127.0.0.1:32400/web/*`
+- `http://*.plex.direct:32400/web/*`
+- `https://*.plex.direct:32400/web/*`
 
 #### Requires
 - Tampermonkey or a similar userscript manager
@@ -97,6 +110,16 @@ A Tampermonkey script that augments every watch-status button on MyAnimeList sea
 #### Matches
 - `https://myanimelist.net/anime/season/*`
 - `https://myanimelist.net/anime/*`
+
+### reddit-video-link-webservice-redirector.user.js
+A Tampermonkey script for old.reddit.com that rewrites `v.redd.it` video thumbnail/title links so clicking one sends the video's HLS playlist to a local webservice for conversion instead of opening Reddit's own player. Highlights matched links in yellow. Points at `http://localhost:5000/convert`, matching the `/convert` endpoint of [m3u8-to-mp4-flask-webservice.py](#m3u8-to-mp4-flask-webservicepy) -- that service needs to be running locally for the redirect target to work.
+
+#### Matches
+- `https://old.reddit.com/*`
+
+#### Requires
+- Tampermonkey or a similar userscript manager
+- m3u8-to-mp4-flask-webservice.py running locally on port 5000
 
 ## Libraries
 
