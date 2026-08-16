@@ -7,6 +7,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, TextIO
 
+from common.presentation import Table, TableColumn
+
 from .models import MatchResult, PlannedMutation, TableColumnSpec
 
 
@@ -248,7 +250,7 @@ class PlexReportWriter:
 
             if console_format == "table":
                 resolved_columns = self.resolve_table_columns(columns)
-                self._write_table(sys.stdout, rows, resolved_columns)
+                self.write_table_rows(sys.stdout, rows, resolved_columns)
                 sys.stdout.flush()
                 return
         except OSError as exc:
@@ -286,7 +288,7 @@ class PlexReportWriter:
 
         if resolved_format == "table":
             with report_path.open("w", encoding="utf-8") as handle:
-                self._write_table(handle, rows, self.resolve_table_columns(columns))
+                self.write_table_rows(handle, rows, self.resolve_table_columns(columns))
             return
 
         raise RuntimeError(f"Unsupported report format: {resolved_format}")
@@ -328,22 +330,6 @@ class PlexReportWriter:
         return resolved
 
     @staticmethod
-    def _stringify_cell(value: Any) -> str:
-        if value is None:
-            return ""
-        return str(value)
-
-    @staticmethod
-    def _truncate_cell(value: str, width: int) -> str:
-        if width < 1:
-            raise RuntimeError("Table column width must be at least 1.")
-        if len(value) <= width:
-            return value
-        if width <= 3:
-            return "." * width
-        return value[: width - 3] + "..."
-
-    @staticmethod
     def _is_broken_pipe_error(exc: OSError) -> bool:
         return exc.errno in {errno.EPIPE, errno.EINVAL, errno.ECONNRESET}
 
@@ -380,49 +366,20 @@ class PlexReportWriter:
 
     @classmethod
     def write_table_rows(cls, handle: TextIO, rows: Sequence[Dict[str, Any]], columns: Sequence[TableColumnSpec]) -> None:
-        cls._write_table(handle, rows, columns)
-
-    @classmethod
-    def _write_table(cls, handle: TextIO, rows: Sequence[Dict[str, Any]], columns: Sequence[TableColumnSpec]) -> None:
         if not columns:
             raise RuntimeError("Table output requires at least one column.")
 
-        labels = {column.name: cls.TABLE_COLUMN_LABELS.get(column.name, column.name) for column in columns}
-        max_widths = {
-            column.name: max(
-                len(labels[column.name]),
-                column.width if column.width is not None else cls.TABLE_FALLBACK_MAX_WIDTH,
+        table_columns = [
+            TableColumn(
+                name=column.name,
+                label=cls.TABLE_COLUMN_LABELS.get(column.name, column.name),
+                width=column.width,
+                align="right" if column.name in cls.TABLE_NUMERIC_COLUMNS else "left",
             )
             for column in columns
-        }
-        widths = {column.name: len(labels[column.name]) for column in columns}
-        string_rows: List[Dict[str, str]] = []
-        for row in rows:
-            string_row = {}
-            for column in columns:
-                value = cls._truncate_cell(cls._stringify_cell(row.get(column.name)), max_widths[column.name])
-                string_row[column.name] = value
-                widths[column.name] = max(widths[column.name], len(value))
-            string_rows.append(string_row)
-
-        header = " | ".join(labels[column.name].ljust(widths[column.name]) for column in columns)
-        separator = "-+-".join("-" * widths[column.name] for column in columns)
-        handle.write(header + "\n")
-        handle.write(separator + "\n")
-        for row in string_rows:
-            handle.write(
-                " | ".join(
-                    cls._format_table_cell(row[column.name], widths[column.name], column.name)
-                    for column in columns
-                )
-                + "\n"
-            )
-
-    @classmethod
-    def _format_table_cell(cls, value: str, width: int, column_name: str) -> str:
-        if column_name in cls.TABLE_NUMERIC_COLUMNS:
-            return value.rjust(width)
-        return value.ljust(width)
+        ]
+        handle.write(Table(table_columns, fallback_width=cls.TABLE_FALLBACK_MAX_WIDTH).render(rows))
+        handle.write("\n")
 
     @staticmethod
     def parse_columns(columns_value: Optional[str]) -> Optional[List[TableColumnSpec]]:

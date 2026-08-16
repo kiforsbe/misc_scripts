@@ -7,22 +7,7 @@ import subprocess
 import logging
 import json
 
-class Colors:
-    """ANSI color codes for terminal output."""
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    DIM = '\033[2m'
-    
-    # Foreground colors
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
-    CYAN = '\033[96m'
-    WHITE = '\033[97m'
-    GRAY = '\033[90m'
-
+from common.presentation import Colors
 
 class LogOutputTracker(logging.Handler):
     """Custom logging handler to track if any log output was produced."""
@@ -193,9 +178,9 @@ class SeriesInfoTool:
             
             # Header
             if use_colors:
-                print(f"\n{Colors.CYAN}{Colors.BOLD}{'=' * 70}{Colors.RESET}")
-                print(f"{Colors.CYAN}{Colors.BOLD}  {title}{Colors.RESET}")
-                print(f"{Colors.CYAN}{Colors.BOLD}{'=' * 70}{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_CYAN}{Colors.BOLD}{'=' * 70}{Colors.RESET}")
+                print(f"{Colors.BRIGHT_CYAN}{Colors.BOLD}  {title}{Colors.RESET}")
+                print(f"{Colors.BRIGHT_CYAN}{Colors.BOLD}{'=' * 70}{Colors.RESET}")
             else:
                 print(f"\n{'=' * 70}")
                 print(f"  {title}")
@@ -253,7 +238,7 @@ class SeriesInfoTool:
                 max_label_len = min(max(len(label) for label, _ in displayed_fields), 20)
                 for label, value in displayed_fields:
                     if use_colors:
-                        print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                        print(f"{Colors.BRIGHT_YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
                     else:
                         print(f"{label.rjust(max_label_len)}: {value}")
             else:
@@ -287,7 +272,7 @@ class SeriesInfoTool:
                         max_label_len = min(max(len(label) for label, _ in other_fields), 20)
                         for label, value in other_fields:
                             if use_colors:
-                                print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                                print(f"{Colors.BRIGHT_YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
                             else:
                                 print(f"{label.rjust(max_label_len)}: {value}")
                     else:
@@ -367,7 +352,7 @@ class SeriesInfoTool:
         
         if mal_info_found:
             if use_colors:
-                print(f"\n{Colors.MAGENTA}{Colors.BOLD}--- MyAnimeList Information ---{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_MAGENTA}{Colors.BOLD}--- MyAnimeList Information ---{Colors.RESET}")
             else:
                 print(f"\n--- MyAnimeList Information ---")
             
@@ -375,7 +360,7 @@ class SeriesInfoTool:
                 max_label_len = max(len(label) for label, _ in mal_fields_to_display)
                 for label, value in mal_fields_to_display:
                     if use_colors:
-                        print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                        print(f"{Colors.BRIGHT_YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
                     else:
                         print(f"{label.rjust(max_label_len)}: {value}")
             else:
@@ -383,7 +368,7 @@ class SeriesInfoTool:
                     print(f"{label}: {value}")
         else:
             if use_colors:
-                print(f"\n{Colors.MAGENTA}{Colors.BOLD}--- MyAnimeList Information ---{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_MAGENTA}{Colors.BOLD}--- MyAnimeList Information ---{Colors.RESET}")
                 print(f"{Colors.DIM}(No MyAnimeList information available){Colors.RESET}")
             else:
                 print(f"\n--- MyAnimeList Information ---")
@@ -405,7 +390,7 @@ class SeriesInfoTool:
         
         if imdb_fields_to_display:
             if use_colors:
-                print(f"\n{Colors.BLUE}{Colors.BOLD}--- IMDb Information ---{Colors.RESET}")
+                print(f"\n{Colors.BRIGHT_BLUE}{Colors.BOLD}--- IMDb Information ---{Colors.RESET}")
             else:
                 print(f"\n--- IMDb Information ---")
             
@@ -413,7 +398,7 @@ class SeriesInfoTool:
                 max_label_len = max(len(label) for label, _ in imdb_fields_to_display)
                 for label, value in imdb_fields_to_display:
                     if use_colors:
-                        print(f"{Colors.YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
+                        print(f"{Colors.BRIGHT_YELLOW}{label.rjust(max_label_len)}{Colors.RESET}: {value}")
                     else:
                         print(f"{label.rjust(max_label_len)}: {value}")
             else:
@@ -426,24 +411,24 @@ class SeriesInfoTool:
         if sources:
             if extended_metadata:
                 if use_colors:
-                    print(f"\n{Colors.GREEN}{Colors.BOLD}--- Source URLs ---{Colors.RESET}")
+                    print(f"\n{Colors.BRIGHT_GREEN}{Colors.BOLD}--- Source URLs ---{Colors.RESET}")
                 else:
                     print(f"\n--- Source URLs ---")
                 for source_url in sources:
                     if use_colors:
-                        print(f"  {Colors.CYAN}•{Colors.RESET} {source_url}")
+                        print(f"  {Colors.BRIGHT_CYAN}•{Colors.RESET} {source_url}")
                     else:
                         print(f"  • {source_url}")
             else:
                 mal_sources = [s for s in sources if 'myanimelist' in s.lower()]
                 if mal_sources:
                     if use_colors:
-                        print(f"\n{Colors.GREEN}{Colors.BOLD}--- Source URLs ---{Colors.RESET}")
+                        print(f"\n{Colors.BRIGHT_GREEN}{Colors.BOLD}--- Source URLs ---{Colors.RESET}")
                     else:
                         print(f"\n--- Source URLs ---")
                     for source_url in mal_sources:
                         if use_colors:
-                            print(f"  {Colors.CYAN}•{Colors.RESET} {source_url}")
+                            print(f"  {Colors.BRIGHT_CYAN}•{Colors.RESET} {source_url}")
                         else:
                             print(f"  • {source_url}")
     
@@ -451,7 +436,7 @@ class SeriesInfoTool:
         """Display files section."""
         file_count = len(info['files'])
         if use_colors:
-            print(f"\n{Colors.GREEN}{Colors.BOLD}--- Files ({file_count}) ---{Colors.RESET}")
+            print(f"\n{Colors.BRIGHT_GREEN}{Colors.BOLD}--- Files ({file_count}) ---{Colors.RESET}")
         else:
             print(f"\n--- Files ({file_count}) ---")
         
@@ -463,13 +448,13 @@ class SeriesInfoTool:
                 elif isinstance(file_path, str):
                     file_path = Path(file_path).name
                 if use_colors:
-                    print(f"  {Colors.CYAN}•{Colors.RESET} {file_path}")
+                    print(f"  {Colors.BRIGHT_CYAN}•{Colors.RESET} {file_path}")
                 else:
                     print(f"  • {file_path}")
             else:
                 filename = file_info.get('filename', 'Unknown')
                 if use_colors:
-                    print(f"  {Colors.CYAN}•{Colors.RESET} {filename}")
+                    print(f"  {Colors.BRIGHT_CYAN}•{Colors.RESET} {filename}")
                 else:
                     print(f"  • {filename}")
         
