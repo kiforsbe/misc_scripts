@@ -1,10 +1,10 @@
 """Checks that per-tool, per-script, and root requirements.txt files stay in sync.
 
 Usage:
-  python requirements_consistency_checker.py check [--repo-root PATH] [--color|--no-color]
+  python requirements_consistency_checker.py check [--repo-root PATH] [--color|--no-color] [--no-recursive]
   python requirements_consistency_checker.py update [--repo-root PATH] [--color|--no-color] [--dry-run]
   python requirements_consistency_checker.py fix [--repo-root PATH] [--color|--no-color] [--dry-run]
-      [--level {error,warning,all}] [--types root undeclared unused ...]
+      [--level {error,warning,all}] [--types root undeclared unused ...] [--no-recursive]
 
 `check` (the default when no subcommand is given) exits non-zero if any
 tool's requirements.txt or root-level script's <script>.requirements.txt is
@@ -13,6 +13,18 @@ references a requirements file that no longer exists. Undeclared-import and
 unused-declaration findings are best-effort static analysis and are only
 ever reported as warnings. `check` never writes anything, so it has no
 --dry-run option.
+
+Undeclared-import and unused-declaration checks are recursive by default:
+for a tool that imports a repo-local shared library directory (see
+SHARED_LIBRARY_DIRS, e.g. `from common.presentation import Table`), the
+scan also follows into that shared directory's own imports (transitively,
+if it in turn imports another shared directory). This means a package a
+tool only needs because of what `common`/`metadatacommon` actually does
+is correctly attributed to that tool, rather than being wrongly flagged
+as "undeclared" (missed because it's only imported inside the shared
+code) or "unused" (missed because the checker only looked at the tool's
+own folder). Pass --no-recursive to check only each tool's own folder,
+matching the old non-recursive behavior.
 
 `update` rewrites the root requirements.txt to add '-r' lines for orphaned
 requirements files and remove '-r' lines that point at files that no longer
@@ -69,6 +81,14 @@ IGNORED_MODULES = {"_typeshed"}
 # Repo-internal modules imported across a folder boundary (via a sys.path bootstrap)
 # rather than being a sibling file/package of the importing tool. Not PyPI packages.
 KNOWN_LOCAL_MODULES = set()
+
+# Top-level directories at the repo root that hold shared code imported across
+# folder boundaries (e.g. `from common.presentation import Table`) rather than
+# being a tool's own sibling files. Recursive checking (the default) follows a
+# tool's imports of these directories into their own source, so a package a
+# tool only needs because of what its `common`/`metadatacommon` calls actually
+# do isn't wrongly flagged as undeclared or unused.
+SHARED_LIBRARY_DIRS = {"common", "metadatacommon"}
 
 # Issue types the 'fix' command knows how to resolve, from safest to riskiest.
 #   root       - root requirements.txt '-r' line sync (orphaned/stale references)
@@ -218,7 +238,10 @@ def update_root_requirements(repo_root: Path, dry_run: bool = False) -> list[str
     return changes
 
 
-def extract_top_level_imports(py_file: Path) -> set[str]:
+def _parse_import_refs(py_file: Path) -> set[str]:
+    """Full dotted module references from this file's absolute imports
+    ('import a.b', 'from a.b import X'; relative imports are skipped, since
+    they can only resolve within the importing file's own package)."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
@@ -226,15 +249,19 @@ def extract_top_level_imports(py_file: Path) -> set[str]:
     except (SyntaxError, UnicodeDecodeError, OSError):
         return set()
 
-    modules = set()
+    refs = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                modules.add(alias.name.split(".")[0])
+                refs.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level == 0 and node.module:
-                modules.add(node.module.split(".")[0])
-    return modules
+                refs.add(node.module)
+    return refs
+
+
+def extract_top_level_imports(py_file: Path) -> set[str]:
+    return {ref.split(".")[0] for ref in _parse_import_refs(py_file)}
 
 
 def local_sibling_modules(tool_dir: Path) -> set[str]:
@@ -243,6 +270,49 @@ def local_sibling_modules(tool_dir: Path) -> set[str]:
     names |= {p.parent.name for p in tool_dir.rglob("__init__.py")}
     names.add(tool_dir.name)
     return names
+
+
+def _resolve_module_file(repo_root: Path, dotted: str) -> Path | None:
+    """Best-effort resolution of an absolute dotted import (e.g.
+    'common.presentation') to its source file under repo_root."""
+    base = repo_root.joinpath(*dotted.split("."))
+    candidate = base.with_suffix(".py")
+    if candidate.is_file():
+        return candidate
+    candidate = base / "__init__.py"
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _resolve_shared_dependency_files(repo_root: Path, tool_dir: Path) -> set[Path]:
+    """Repo-local shared-library files (see SHARED_LIBRARY_DIRS) that
+    tool_dir transitively imports, resolved at the specific submodule level
+    -- not the whole shared directory -- so a tool that only imports e.g.
+    'common.presentation' isn't blamed for unrelated modules elsewhere
+    under common/. Follows into further shared-dir submodules referenced
+    by an already-resolved file (e.g. common.foo importing metadatacommon.bar)."""
+    tool_refs: set[str] = set()
+    for py_file in tool_dir.rglob("*.py"):
+        tool_refs |= _parse_import_refs(py_file)
+
+    resolved_files: set[Path] = set()
+    visited_refs: set[str] = set()
+    pending = [ref for ref in tool_refs if ref.split(".")[0] in SHARED_LIBRARY_DIRS]
+    while pending:
+        ref = pending.pop()
+        if ref in visited_refs:
+            continue
+        visited_refs.add(ref)
+        module_file = _resolve_module_file(repo_root, ref)
+        if module_file is None:
+            continue
+        resolved_files.add(module_file)
+        pending.extend(
+            r for r in _parse_import_refs(module_file)
+            if r.split(".")[0] in SHARED_LIBRARY_DIRS and r not in visited_refs
+        )
+    return resolved_files
 
 
 def _line_declared_package(line: str) -> str | None:
@@ -281,13 +351,17 @@ class UndeclaredImport:
     recognized: bool
 
 
-def find_undeclared_imports(tool_dir: Path) -> list[UndeclaredImport]:
+def find_undeclared_imports(repo_root: Path, tool_dir: Path, recursive: bool = True) -> list[UndeclaredImport]:
     requirements_path = tool_dir / "requirements.txt"
     declared_normalized = {normalize_for_compare(p) for p in declared_packages(requirements_path)}
-    locals_ = local_sibling_modules(tool_dir) | {"common", "metadatacommon"} | KNOWN_LOCAL_MODULES
+    locals_ = local_sibling_modules(tool_dir) | SHARED_LIBRARY_DIRS | KNOWN_LOCAL_MODULES
+
+    py_files = set(tool_dir.rglob("*.py"))
+    if recursive:
+        py_files |= _resolve_shared_dependency_files(repo_root, tool_dir)
 
     found = []
-    for py_file in sorted(tool_dir.rglob("*.py")):
+    for py_file in sorted(py_files):
         for module in sorted(extract_top_level_imports(py_file)):
             if module in STDLIB_MODULES or module in locals_ or module in IGNORED_MODULES:
                 continue
@@ -299,33 +373,39 @@ def find_undeclared_imports(tool_dir: Path) -> list[UndeclaredImport]:
     return found
 
 
-def check_undeclared_imports(tool_dir: Path) -> list[str]:
+def check_undeclared_imports(repo_root: Path, tool_dir: Path, recursive: bool = True) -> list[str]:
     warnings = []
-    for item in find_undeclared_imports(tool_dir):
-        rel = item.py_file.relative_to(tool_dir)
+    for item in find_undeclared_imports(repo_root, tool_dir, recursive=recursive):
+        rel = item.py_file.relative_to(repo_root).as_posix()
         if item.recognized:
             warnings.append(
-                f"Undeclared import: '{tool_dir.name}/{rel}' imports '{item.module}' "
+                f"Undeclared import: '{rel}' imports '{item.module}' "
                 f"(package '{item.package_name}') not listed in '{tool_dir.name}/requirements.txt'"
             )
         else:
             warnings.append(
-                f"Unrecognized import: '{tool_dir.name}/{rel}' imports '{item.module}', "
-                f"verify manually whether it needs a requirements.txt entry"
+                f"Unrecognized import: '{rel}' imports '{item.module}', "
+                f"verify manually whether '{tool_dir.name}/requirements.txt' needs an entry"
             )
     return warnings
 
 
-def find_unused_declarations(tool_dir: Path) -> list[str]:
+def find_unused_declarations(repo_root: Path, tool_dir: Path, recursive: bool = True) -> list[str]:
     """Package names declared in this tool's requirements.txt with no
-    matching import found anywhere under the tool_dir tree."""
+    matching import found anywhere under the tool_dir tree (and, if
+    recursive, anywhere in the specific shared-library submodules it
+    transitively imports -- see SHARED_LIBRARY_DIRS)."""
     requirements_path = tool_dir / "requirements.txt"
     declared = declared_packages(requirements_path)
     if not declared:
         return []
 
+    py_files = set(tool_dir.rglob("*.py"))
+    if recursive:
+        py_files |= _resolve_shared_dependency_files(repo_root, tool_dir)
+
     imported_modules: set[str] = set()
-    for py_file in tool_dir.rglob("*.py"):
+    for py_file in py_files:
         imported_modules |= extract_top_level_imports(py_file)
     imported_normalized = {normalize_for_compare(IMPORT_TO_PACKAGE.get(m, m)) for m in imported_modules}
 
@@ -335,11 +415,12 @@ def find_unused_declarations(tool_dir: Path) -> list[str]:
     )
 
 
-def check_unused_declarations(tool_dir: Path) -> list[str]:
+def check_unused_declarations(repo_root: Path, tool_dir: Path, recursive: bool = True) -> list[str]:
+    scope = f"'{tool_dir.name}/' or the shared library code it depends on" if recursive else f"'{tool_dir.name}/'"
     return [
         f"Unused declaration: '{tool_dir.name}/requirements.txt' lists '{package}' but no "
-        f"import was found under '{tool_dir.name}/' (may be an indirect or subprocess dependency)"
-        for package in find_unused_declarations(tool_dir)
+        f"import was found under {scope} (may be an indirect or subprocess dependency)"
+        for package in find_unused_declarations(repo_root, tool_dir, recursive=recursive)
     ]
 
 
@@ -370,7 +451,7 @@ def _remove_declared_package(requirements_path: Path, package_name: str, dry_run
     requirements_path.write_text(text, encoding="utf-8")
 
 
-def fix_undeclared_imports(repo_root: Path, dry_run: bool = False) -> list[str]:
+def fix_undeclared_imports(repo_root: Path, dry_run: bool = False, recursive: bool = True) -> list[str]:
     """Appends the missing package to a tool's requirements.txt for every
     'recognized' undeclared import (see UndeclaredImport.recognized).
     Ambiguous ('Unrecognized import') findings and unused-declaration
@@ -388,7 +469,7 @@ def fix_undeclared_imports(repo_root: Path, dry_run: bool = False) -> list[str]:
     for tool_dir in find_tool_dirs(repo_root):
         requirements_path = tool_dir / "requirements.txt"
         seen = set()
-        for item in find_undeclared_imports(tool_dir):
+        for item in find_undeclared_imports(repo_root, tool_dir, recursive=recursive):
             if not item.recognized or item.package_name in seen:
                 continue
             seen.add(item.package_name)
@@ -398,7 +479,7 @@ def fix_undeclared_imports(repo_root: Path, dry_run: bool = False) -> list[str]:
     return changes
 
 
-def fix_unused_declarations(repo_root: Path, dry_run: bool = False) -> list[str]:
+def fix_unused_declarations(repo_root: Path, dry_run: bool = False, recursive: bool = True) -> list[str]:
     """Removes each 'Unused declaration' package from its tool's requirements.txt.
 
     Riskier than fix_undeclared_imports: an apparently-unused declaration may
@@ -414,14 +495,14 @@ def fix_unused_declarations(repo_root: Path, dry_run: bool = False) -> list[str]
     changes = []
     for tool_dir in find_tool_dirs(repo_root):
         requirements_path = tool_dir / "requirements.txt"
-        for package in find_unused_declarations(tool_dir):
+        for package in find_unused_declarations(repo_root, tool_dir, recursive=recursive):
             _remove_declared_package(requirements_path, package, dry_run=dry_run)
             rel = requirements_path.relative_to(repo_root).as_posix()
             changes.append(f"- {package} -> {rel}")
     return changes
 
 
-def run_checks(repo_root: Path) -> CheckResult:
+def run_checks(repo_root: Path, recursive: bool = True) -> CheckResult:
     result = CheckResult()
 
     orphaned, stale = check_orphaned_and_stale(repo_root)
@@ -429,8 +510,8 @@ def run_checks(repo_root: Path) -> CheckResult:
     result.hard_failures.extend(stale)
 
     for tool_dir in find_tool_dirs(repo_root):
-        result.warnings.extend(check_undeclared_imports(tool_dir))
-        result.warnings.extend(check_unused_declarations(tool_dir))
+        result.warnings.extend(check_undeclared_imports(repo_root, tool_dir, recursive=recursive))
+        result.warnings.extend(check_unused_declarations(repo_root, tool_dir, recursive=recursive))
 
     return result
 
@@ -456,8 +537,8 @@ def _colorize_finding(msg: str, label_color: str, token_color: str, use_color: b
     return f"{colored_label} {colored_rest}"
 
 
-def run_check_command(repo_root: Path, use_color: bool) -> int:
-    result = run_checks(repo_root)
+def run_check_command(repo_root: Path, use_color: bool, recursive: bool = True) -> int:
+    result = run_checks(repo_root, recursive=recursive)
 
     if result.hard_failures:
         print(Colors.wrap("FAILURES:", Colors.BOLD + Colors.BRIGHT_RED, use_color))
@@ -535,13 +616,15 @@ def _colorize_root_change(change: str, use_color: bool) -> str:
 
 
 def run_fix_command(
-    repo_root: Path, use_color: bool, dry_run: bool = False, types: set = None,
+    repo_root: Path, use_color: bool, dry_run: bool = False, types: set = None, recursive: bool = True,
 ) -> int:
     types = types if types is not None else FIX_LEVEL_TYPES["warning"]
 
     root_changes = update_root_requirements(repo_root, dry_run=dry_run) if "root" in types else []
-    import_changes = fix_undeclared_imports(repo_root, dry_run=dry_run) if "undeclared" in types else []
-    unused_changes = fix_unused_declarations(repo_root, dry_run=dry_run) if "unused" in types else []
+    import_changes = fix_undeclared_imports(repo_root, dry_run=dry_run, recursive=recursive) \
+        if "undeclared" in types else []
+    unused_changes = fix_unused_declarations(repo_root, dry_run=dry_run, recursive=recursive) \
+        if "unused" in types else []
 
     total = len(root_changes) + len(import_changes) + len(unused_changes)
     if total:
@@ -577,7 +660,7 @@ def run_fix_command(
         ))
         return 0
 
-    result = run_checks(repo_root)
+    result = run_checks(repo_root, recursive=recursive)
     if result.warnings:
         print(Colors.wrap(
             "Remaining warnings (could not be auto-fixed, review manually):",
@@ -605,6 +688,20 @@ def _add_write_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_recursive_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-recursive", action="store_false", dest="recursive", default=True,
+        help=(
+            "Only scan each tool's own folder for imports, without following "
+            "into shared library directories it depends on (see "
+            "SHARED_LIBRARY_DIRS, e.g. 'common', 'metadatacommon'). Recursive "
+            "scanning is the default, since a tool's requirements.txt has to "
+            "cover what the shared code it calls into actually imports, not "
+            "just its own top-level source files."
+        ),
+    )
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Check and maintain requirements.txt consistency across tool folders and root-level scripts."
@@ -614,6 +711,7 @@ def main(argv=None) -> int:
 
     check_parser = subparsers.add_parser("check", help="Report inconsistencies (default).")
     _add_common_args(check_parser)
+    _add_recursive_args(check_parser)
 
     update_parser = subparsers.add_parser(
         "update", help="Add missing '-r' lines and remove stale ones in the root requirements.txt."
@@ -626,6 +724,7 @@ def main(argv=None) -> int:
     )
     _add_common_args(fix_parser)
     _add_write_args(fix_parser)
+    _add_recursive_args(fix_parser)
     fix_parser.add_argument(
         "--level", choices=("error", "warning", "all"), default="warning",
         help=(
@@ -652,13 +751,14 @@ def main(argv=None) -> int:
     command = args.command or "check"
     use_color = Colors.should_use(args.use_color)
     dry_run = getattr(args, "dry_run", False)
+    recursive = getattr(args, "recursive", True)
 
     if command == "update":
         return run_update_command(repo_root, use_color, dry_run=dry_run)
     if command == "fix":
         types = set(args.types) if getattr(args, "types", None) else FIX_LEVEL_TYPES[args.level]
-        return run_fix_command(repo_root, use_color, dry_run=dry_run, types=types)
-    return run_check_command(repo_root, use_color)
+        return run_fix_command(repo_root, use_color, dry_run=dry_run, types=types, recursive=recursive)
+    return run_check_command(repo_root, use_color, recursive=recursive)
 
 
 if __name__ == "__main__":

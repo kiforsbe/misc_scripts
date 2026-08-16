@@ -272,3 +272,61 @@ def test_run_fix_command_types_override_restricts_to_named_types(tmp_path):
     tool_content = (tool_dir / "requirements.txt").read_text(encoding="utf-8")
     assert "requests" not in tool_content  # 'undeclared' type not selected
     assert "tqdm" not in tool_content  # 'unused' type selected, so this was removed
+
+
+def _make_shared_module_scenario(tmp_path, declare_requests: bool):
+    common_dir = tmp_path / "common"
+    common_dir.mkdir()
+    (common_dir / "presentation.py").write_text("import requests\n", encoding="utf-8")
+    (common_dir / "unrelated.py").write_text("import somelib\n", encoding="utf-8")
+
+    tool_dir = tmp_path / "faketool"
+    tool_dir.mkdir()
+    requirements_content = "requests\n" if declare_requests else "# faketool has no deps yet\n"
+    (tool_dir / "requirements.txt").write_text(requirements_content, encoding="utf-8")
+    (tool_dir / "faketool.py").write_text("from common.presentation import X\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("-r faketool/requirements.txt\n", encoding="utf-8")
+    return tool_dir
+
+
+def test_recursive_check_flags_undeclared_import_pulled_in_via_shared_module(tmp_path):
+    _make_shared_module_scenario(tmp_path, declare_requests=False)
+
+    result = run_checks(tmp_path)
+
+    assert any(
+        "requests" in msg and "common/presentation.py" in msg and "faketool/requirements.txt" in msg
+        for msg in result.warnings
+    )
+
+
+def test_recursive_check_does_not_follow_shared_submodule_the_tool_never_imports(tmp_path):
+    _make_shared_module_scenario(tmp_path, declare_requests=False)
+
+    result = run_checks(tmp_path)
+
+    assert not any("somelib" in msg for msg in result.warnings)
+
+
+def test_no_recursive_check_ignores_imports_inside_shared_modules(tmp_path):
+    _make_shared_module_scenario(tmp_path, declare_requests=False)
+
+    result = run_checks(tmp_path, recursive=False)
+
+    assert not any("requests" in msg for msg in result.warnings)
+
+
+def test_recursive_check_treats_shared_module_import_as_satisfying_declaration(tmp_path):
+    _make_shared_module_scenario(tmp_path, declare_requests=True)
+
+    result = run_checks(tmp_path)
+
+    assert not any("requests" in msg and "unused" in msg.lower() for msg in result.warnings)
+
+
+def test_no_recursive_check_reports_declaration_unused_when_only_used_via_shared_module(tmp_path):
+    _make_shared_module_scenario(tmp_path, declare_requests=True)
+
+    result = run_checks(tmp_path, recursive=False)
+
+    assert any("requests" in msg and "unused" in msg.lower() for msg in result.warnings)
