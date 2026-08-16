@@ -23,3 +23,5 @@ Can also be run directly: `python latest_episodes_viewer/latest_episodes_viewer.
 - guessit
 - requests
 - tqdm
+- libarchive-c (comic archive thumbnails, via the shared thumbnail generator)
+- rarfile (comic archive thumbnails, via the shared thumbnail generator)

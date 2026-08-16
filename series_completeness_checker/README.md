@@ -42,3 +42,5 @@ python -m series_completeness_checker --help
 - requests
 - pandas
 - pathlib
+- libarchive-c (comic archive thumbnails, via the shared thumbnail generator)
+- rarfile (comic archive thumbnails, via the shared thumbnail generator)

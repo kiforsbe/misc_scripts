@@ -3,3 +3,4 @@ tqdm
 rapidfuzz
 zstandard
 lxml
+guessit

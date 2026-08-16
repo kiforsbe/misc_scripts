@@ -5,3 +5,5 @@ requests
 rapidfuzz
 tqdm
 zstandard
+libarchive-c
+rarfile

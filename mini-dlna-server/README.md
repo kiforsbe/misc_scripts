@@ -32,7 +32,9 @@ pip install -r requirements.txt
 | `psutil` | Resource monitoring |
 | `netifaces` | Multi-interface network detection |
 | `whoosh` | Full-text search (content directory search) |
-| `ffmpeg-python` | ffmpeg bindings (ffmpeg binary also required) |
+| `libarchive-c` | Comic archive (CBR) thumbnails, via the shared thumbnail generator |
+| `rarfile` | Comic archive (CBR) thumbnails, via the shared thumbnail generator |
+| `tqdm` | Progress reporting during batch thumbnail generation |
 
 ## Configuration
 

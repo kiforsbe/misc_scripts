@@ -24,3 +24,4 @@ Use the video-optimizer-v2/requirements.txt file to install the requirements.
 - rapidfuzz
 - inquirer
 - mutagen
+- guessit

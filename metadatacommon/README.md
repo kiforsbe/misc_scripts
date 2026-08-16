@@ -41,4 +41,4 @@ python metadatacommon/validate_mal_xml.py animelist.xml --xsd custom_schema.xsd
 - lxml
 
 ## Requires
-Install `metadatacommon`'s runtime dependencies with `pip install -r metadatacommon/requirements.txt`: `requests`, `tqdm`, `rapidfuzz`, `zstandard`, `lxml`.
+Install `metadatacommon`'s runtime dependencies with `pip install -r metadatacommon/requirements.txt`: `requests`, `tqdm`, `rapidfuzz`, `zstandard`, `lxml`. `guessit` is also listed -- it's only needed to run `metadatacommon`'s own test suite (via `common/guessit_wrapper.py`), not by the providers themselves.
