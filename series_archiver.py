@@ -3146,7 +3146,10 @@ def cmd_list(args):
 
     print("Available series groups:")
     print("=" * (title_length+30))  # Consistent width
-    print(summary_table.render_header())
+    # Each row is prefixed with "NNNN. " (an f"{index:4d}." plus one space, 6
+    # chars) before the table content -- pad the header by the same amount so
+    # its column labels line up with the actual columns beneath them.
+    print(f"{'':6s}{summary_table.render_header()}")
 
     for original_index, group_key, details in indexed_groups:
         group_data = details.get('data', {})
