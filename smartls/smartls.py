@@ -15,30 +15,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence, cast
 
+from common.presentation import Colors, Format, Icons, Table, TableColumn
+
 try:
-    from .utils import (
-        Colors,
-        colorize,
-        display_path,
-        format_age,
-        format_permissions,
-        format_size,
-        format_timestamp,
-        icon_for_entry,
-        should_use_color,
-    )
+    from .utils import display_path, format_permissions
 except ImportError:
-    from utils import (
-        Colors,
-        colorize,
-        display_path,
-        format_age,
-        format_permissions,
-        format_size,
-        format_timestamp,
-        icon_for_entry,
-        should_use_color,
-    )
+    from utils import display_path, format_permissions
 
 try:
     import grp
@@ -114,9 +96,9 @@ class Entry:
             "created_ts": self.created_ts,
             "modified_ts": self.modified_ts,
             "accessed_ts": self.accessed_ts,
-            "created": format_timestamp(self.created_ts),
-            "modified": format_timestamp(self.modified_ts),
-            "accessed": format_timestamp(self.accessed_ts),
+            "created": Format.timestamp(self.created_ts),
+            "modified": Format.timestamp(self.modified_ts),
+            "accessed": Format.timestamp(self.accessed_ts),
             "permissions_octal": self.permissions_octal,
             "permissions_text": self.permissions_text,
             "owner": self.owner,
@@ -154,7 +136,6 @@ class SummaryStats:
     largest_file: str | None
 
 
-ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 NAME_COLUMN_MAX_WIDTH = 64
 SMARTLS_DIRECTORY_COLOR = Colors.CYAN
 CONSOLE_COLUMN_SPECS: dict[str, dict[str, object]] = {
@@ -705,31 +686,6 @@ def normalize_console_path(text: str) -> str:
     return text.replace("\\", "/")
 
 
-def strip_ansi(text: str) -> str:
-    return ANSI_ESCAPE_RE.sub("", text)
-
-
-def visible_text_width(text: str) -> int:
-    return len(strip_ansi(text))
-
-
-def pad_console_cell(text: str, width: int, align: str) -> str:
-    padding = max(0, width - visible_text_width(text))
-    if align == "right":
-        return f"{' ' * padding}{text}"
-    return f"{text}{' ' * padding}"
-
-
-def truncate_console_text(text: str, max_width: int) -> str:
-    if max_width <= 0:
-        return ""
-    if len(text) <= max_width:
-        return text
-    if max_width <= 3:
-        return text[:max_width]
-    return f"{text[:max_width - 3]}..."
-
-
 def parse_console_columns(value: str) -> tuple[list[str], dict[str, int]]:
     columns: list[str] = []
     seen: set[str] = set()
@@ -821,7 +777,7 @@ def group_entries(entries: Sequence[Entry], group_by: str | None) -> list[tuple[
         elif group_by == "ext":
             key = entry.path.suffix.lower() or "[no extension]"
         else:
-            key = format_timestamp(entry.modified_ts).split(" ")[0]
+            key = Format.timestamp(entry.modified_ts).split(" ")[0]
         buckets.setdefault(key, []).append(entry)
     return [(key, buckets[key]) for key in sorted(buckets)]
 
@@ -934,42 +890,42 @@ def export_webapp_report(scan_result: ScanResult, matched_entries: Sequence[Entr
 def make_entry_line(entry: Entry, root: Path, args: argparse.Namespace, include_path: bool = True) -> str:
     absolute = not args.relative_paths
     label = display_path(entry.path, root, absolute=absolute, is_dir=entry.entry_type == "d") if include_path else entry.name
-    icon = icon_for_entry(entry.entry_type, entry.path.suffix.lower(), args.icons)
-    use_color = should_use_color(args.use_color)
+    icon = Icons.for_file(entry.entry_type, entry.path.suffix.lower(), args.icons)
+    use_color = Colors.should_use(args.use_color)
 
     if args.short:
         text = f"{icon}{label}"
         if entry.entry_type == "d":
-            return colorize(text, SMARTLS_DIRECTORY_COLOR, use_color)
+            return Colors.wrap(text, SMARTLS_DIRECTORY_COLOR, use_color)
         return text
 
     if entry.entry_type == "d":
-        parts = [f"{entry.direct_files} files", f"{entry.direct_dirs} dirs", format_size(entry.size_bytes, args.human_sizes)]
+        parts = [f"{entry.direct_files} files", f"{entry.direct_dirs} dirs", Format.size(entry.size_bytes, args.human_sizes)]
         if entry.is_empty:
             parts.append("empty")
         elif entry.is_sparse:
             parts.append("sparse")
-        parts.append(f"modified {format_age(entry.modified_ts)}")
+        parts.append(f"modified {Format.age(entry.modified_ts)}")
         if args.long:
             parts.extend([
                 f"recursive_files {entry.recursive_files}",
                 f"deepest {entry.deepest_nesting}",
-                f"created {format_timestamp(entry.created_ts)}",
+                f"created {Format.timestamp(entry.created_ts)}",
             ])
             if entry.permissions_text:
                 parts.append(f"perm {entry.permissions_text}")
         text = f"{icon}{label}  [{' | '.join(parts)}]"
-        return colorize(text, SMARTLS_DIRECTORY_COLOR, use_color)
+        return Colors.wrap(text, SMARTLS_DIRECTORY_COLOR, use_color)
 
-    parts = [format_size(entry.size_bytes, args.human_sizes)]
+    parts = [Format.size(entry.size_bytes, args.human_sizes)]
     if entry.path.suffix:
         parts.append(entry.path.suffix.lower())
-    parts.append(f"modified {format_age(entry.modified_ts)}")
+    parts.append(f"modified {Format.age(entry.modified_ts)}")
     if args.long:
         parts.extend([
             f"mime {entry.mime_type or '-'}",
-            f"created {format_timestamp(entry.created_ts)}",
-            f"accessed {format_timestamp(entry.accessed_ts)}",
+            f"created {Format.timestamp(entry.created_ts)}",
+            f"accessed {Format.timestamp(entry.accessed_ts)}",
         ])
         if entry.permissions_text:
             parts.append(f"perm {entry.permissions_text}")
@@ -986,7 +942,7 @@ class OutputRenderer:
     def __init__(self, scan_result: ScanResult, args: argparse.Namespace):
         self.scan_result = scan_result
         self.args = args
-        self.use_color = should_use_color(args.use_color)
+        self.use_color = Colors.should_use(args.use_color)
 
     def render(self, matched_entries: Sequence[Entry]) -> None:
         if self.args.json:
@@ -1063,69 +1019,33 @@ class OutputRenderer:
     def _print_table_rows(self, rows: Sequence[tuple[int, Entry]]) -> None:
         if not rows:
             return
-        headers = ["Name", *(str(CONSOLE_COLUMN_SPECS[key]["header"]) for key in self.args.columns)]
-        alignments = ["left", *(str(CONSOLE_COLUMN_SPECS[key]["align"]) for key in self.args.columns)]
-        max_widths = [
-            self.args.column_widths.get("name", NAME_COLUMN_MAX_WIDTH),
+        name_width = self.args.column_widths.get("name", NAME_COLUMN_MAX_WIDTH)
+        columns = [
+            TableColumn(
+                name="name",
+                label="Name",
+                width=name_width,
+                formatter=lambda row: self._format_name_cell(row["entry"], row["level"]),
+                color=lambda row: SMARTLS_DIRECTORY_COLOR if row["entry"].entry_type == "d" else None,
+            ),
             *(
-                self.args.column_widths.get(key, cast(int, CONSOLE_COLUMN_SPECS[key]["max_width"]))
+                TableColumn(
+                    name=key,
+                    label=str(CONSOLE_COLUMN_SPECS[key]["header"]),
+                    width=self.args.column_widths.get(key, cast(int, CONSOLE_COLUMN_SPECS[key]["max_width"])),
+                    align=str(CONSOLE_COLUMN_SPECS[key]["align"]),
+                    formatter=lambda row, key=key: self._format_column_cell(row["entry"], key),
+                )
                 for key in self.args.columns
             ),
         ]
-        row_models = [
-            {
-                "entry": entry,
-                "cells": [self._format_name_cell(entry, level), *(self._format_column_cell(entry, key) for key in self.args.columns)],
-            }
-            for level, entry in rows
-        ]
-        widths = [min(visible_text_width(header), max_widths[index]) for index, header in enumerate(headers)]
-        for row in row_models:
-            for index, cell in enumerate(row["cells"]):
-                widths[index] = min(max(widths[index], len(cell)), max_widths[index])
-
-        print(self._render_table_line(headers, widths, alignments))
-        print(self._render_table_separator(widths, alignments))
-        for row in row_models:
-            formatted_cells: list[str] = []
-            for index, cell in enumerate(row["cells"]):
-                fitted = pad_console_cell(truncate_console_text(cell, widths[index]), widths[index], alignments[index])
-                if index == 0 and row["entry"].entry_type == "d":
-                    fitted = colorize(fitted, SMARTLS_DIRECTORY_COLOR, self.use_color)
-                formatted_cells.append(fitted)
-            print(self._render_table_line(formatted_cells, widths, alignments, preformatted=True))
-
-    def _render_table_line(
-        self,
-        values: Sequence[str],
-        widths: Sequence[int],
-        alignments: Sequence[str],
-        *,
-        preformatted: bool = False,
-    ) -> str:
-        cells = []
-        for index, value in enumerate(values):
-            if preformatted:
-                cells.append(value)
-            else:
-                fitted = pad_console_cell(truncate_console_text(value, widths[index]), widths[index], alignments[index])
-                cells.append(fitted)
-        return f"| {' | '.join(cells)} |"
-
-    def _render_table_separator(self, widths: Sequence[int], alignments: Sequence[str]) -> str:
-        segments: list[str] = []
-        for width, alignment in zip(widths, alignments):
-            segment_width = max(3, width)
-            if alignment == "right":
-                segment = f"{'-' * (segment_width - 1)}:"
-            else:
-                segment = f":{'-' * (segment_width - 1)}"
-            segments.append(segment)
-        return f"| {' | '.join(segments)} |"
+        table = Table(columns, style="markdown", use_colors=self.use_color)
+        row_data = [{"entry": entry, "level": level} for level, entry in rows]
+        print(table.render(row_data))
 
     def _format_name_cell(self, entry: Entry, level: int) -> str:
         indent = "" if self.args.flat else "  " * level
-        icon = icon_for_entry(entry.entry_type, entry.path.suffix.lower(), self.args.icons)
+        icon = Icons.for_file(entry.entry_type, entry.path.suffix.lower(), self.args.icons)
         label = entry.name or normalize_console_path(str(entry.path))
         return f"{indent}{icon}{label}"
 
@@ -1133,13 +1053,13 @@ class OutputRenderer:
         if key == "type":
             return "Directory" if entry.entry_type == "d" else "File"
         if key == "size":
-            return format_size(entry.size_bytes, self.args.human_sizes)
+            return Format.size(entry.size_bytes, self.args.human_sizes)
         if key == "modified":
-            return format_timestamp(entry.modified_ts)
+            return Format.timestamp(entry.modified_ts)
         if key == "created":
-            return format_timestamp(entry.created_ts)
+            return Format.timestamp(entry.created_ts)
         if key == "accessed":
-            return format_timestamp(entry.accessed_ts)
+            return Format.timestamp(entry.accessed_ts)
         if key == "children":
             return str(entry.direct_children)
         if key == "recursive_files":
@@ -1205,7 +1125,7 @@ class OutputRenderer:
         print(f"  Folders scanned : {summary.folders_scanned}")
         print(f"  Folders matched : {summary.folders_matched}")
         print(f"  Files listed    : {summary.files_listed}")
-        print(f"  Total size      : {format_size(summary.total_size_bytes, self.args.human_sizes)}")
+        print(f"  Total size      : {Format.size(summary.total_size_bytes, self.args.human_sizes)}")
         print(f"  Avg files/folder: {summary.avg_files_per_folder:.1f}")
         print(f"  Emptiest folder : {summary.emptiest_folder or '-'}")
         print(f"  Largest file    : {summary.largest_file or '-'}")
