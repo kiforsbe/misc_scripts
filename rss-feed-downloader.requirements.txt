@@ -1,0 +1,3 @@
+# rss-feed-downloader.py
+# Windows only: the stdlib curses module needs the windows-curses package to work.
+windows-curses

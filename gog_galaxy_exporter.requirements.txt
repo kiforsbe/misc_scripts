@@ -1,0 +1,3 @@
+# gog_galaxy_exporter.py
+# Optional: enables Excel (.xlsx) export.
+openpyxl

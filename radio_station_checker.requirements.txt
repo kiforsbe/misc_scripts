@@ -1,0 +1,3 @@
+# radio_station_checker.py
+requests
+rich

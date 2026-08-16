@@ -1,0 +1,4 @@
+# insanely-fast-whisper.py
+click
+torch
+transformers

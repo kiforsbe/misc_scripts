@@ -1,0 +1,3 @@
+# clipboard-monitor.py
+pywin32
+# Windows only. pywin32 provides the win32clipboard module this script imports.

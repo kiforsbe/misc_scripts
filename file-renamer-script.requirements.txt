@@ -1,0 +1,2 @@
+# file-renamer-script.py
+# No required third-party packages (uses only the Python standard library).

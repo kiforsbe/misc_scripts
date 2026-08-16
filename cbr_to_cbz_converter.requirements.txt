@@ -1,0 +1,6 @@
+# cbr_to_cbz_converter.py
+tqdm
+libarchive-c
+rarfile
+# libarchive-c requires the libarchive DLL/shared library installed on the system.
+# rarfile is a fallback and requires the UnRAR tool installed and available on PATH.

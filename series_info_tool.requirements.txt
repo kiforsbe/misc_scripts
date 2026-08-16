@@ -1,0 +1,4 @@
+# series_info_tool.py
+guessit
+# Optional: install for progress bars in common/file_grouper.py.
+tqdm

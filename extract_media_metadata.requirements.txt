@@ -1,0 +1,3 @@
+# extract_media_metadata.py
+ffmpeg-python
+# Requires the ffmpeg executable to be installed separately and available on PATH.

@@ -1,0 +1,10 @@
+# lyrics-timing-generator.py
+demucs
+librosa
+mutagen
+numpy
+requests
+soundfile
+torch
+tqdm
+whisperx

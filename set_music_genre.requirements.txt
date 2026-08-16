@@ -1,0 +1,7 @@
+# set_music_genre.py
+ffmpeg-python
+librosa
+safetensors
+torch
+transformers
+# Requires the ffmpeg executable to be installed separately and available on PATH.

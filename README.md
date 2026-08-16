@@ -442,6 +442,7 @@ python transcribe_audio.py meeting.wav --no-srt-speaker-tags
 - faster-whisper
 - whisperx==3.7.6
 - torch
+- torchaudio
 - speechbrain
 - scikit-learn
 - numpy
@@ -450,6 +451,7 @@ python transcribe_audio.py meeting.wav --no-srt-speaker-tags
 Minimalistic script to generate transcription using Whisper.
 
 #### Requires
+- click
 - torch
 - transformers
 
@@ -467,15 +469,14 @@ The converted MP3-files include:
 #### Requires
 Windows 10 or Windows 11.
 - moviepy
-- eyed3
+- eyeD3
 
 ### clipboard-monitor.py
 Monitors the clipboard for changes and appends the contents to "`clipboard.csv`" file. It plays a sound when a change is detected and saved to the file.
 
 #### Requires
 Windows 10 or Windows 11.
-- winsound
-- win32clipboard
+- pywin32 (provides the win32clipboard module)
 
 ### file-renamer-script.py
 Takes a "`clipboard.csv`" file as input and uses the first column as a file_id that it tries to find in the files in the same folder as the script. If it finds the file, it is added to the list, with the proposed filename in the second column.
@@ -485,9 +486,7 @@ It then outputs the full list of proposed changes as file "`rename_mappings.csv`
 If the user approves them, the user simply responds "y", or "yes" or presses enter to confirm that they want to rename the files in the folder with the proposed filenames.
 
 #### Requires
-- csv
-- logging
-- traceback
+- No external dependencies required (uses only Python standard libraries)
 
 ### file_metadata_scanner.py
 A comprehensive tool for extracting metadata from files and folders, with optional extended metadata (audio/video via ffmpeg, image dimensions, comic archive contents), thumbnail generation, and export to CSV, JSON, and an interactive HTML webapp.
@@ -529,6 +528,7 @@ Converts an input m3u8 file into a MP4 file. The input is sent as a multipart/fo
 - requests
 - m3u8
 - ollama
+- ffmpeg (the executable, installed separately and on PATH)
 
 ### m3u8-to-mp4-flask-webservice-simple.py
 A flask web service that takes a m3u8 file as input and converts it into an MP4 file.
@@ -553,6 +553,7 @@ Streams a m3u8 to save it as a mp4, real-time saving only, so will take as long 
 - flask
 - requests
 - m3u8
+- ffmpeg (the executable, installed separately and on PATH)
 
 ### merge-audio-files-to-one-output.py
 Simple merge a bunch of audio files into one single output file. Just drag all the input files onto the script and it will be output in the same folder as the first file with the name "`combined_output.<ext>`". The script will ask what format, bitrate etc the output shall get.
@@ -577,9 +578,7 @@ A script to parse RSS feeds and download enclosures (e.g., audio, video, or othe
 - Saves downloaded files to a specified directory and generates a mapping file in JSON format.
 
 #### Requires
-- curses
-- urllib
-- json
+- windows-curses (Windows only; the stdlib `curses` module doesn't work on Windows without it)
 
 ### get_music_genre.py
 A script that takes as imput an audio/video file to classify the music style of the file. It uses a pre-trained model to classify the music style and outputs the result.
@@ -762,9 +761,6 @@ crc_results = archiver.check_files_crc(['/path/to/file1.mkv', '/path/to/file2.mk
 - Torrent-backed verification and repair are piece-based and can reuse already valid local torrent pieces during in-situ repair.
 
 #### Requires
-- pathlib
-- shutil
-- json
 - tqdm (for progress bars)
 
 #### Optional Dependencies
@@ -919,14 +915,13 @@ Intended to generate timed lyrics for audio files (.lrc). Uses whisper library t
 But it is not good. Really not good. It's a start, but not quite there yet. Need to restart from a known base to generate the timed subtitles which is a known working thing, and then convert that to lyrics, using an llm to format them.
 
 #### Requires
-- pydub
+- demucs
+- librosa
 - mutagen
 - numpy
-- librosa
-- tensorflow
-- spleeter
+- requests
 - soundfile
-- whisper
+- torch
 - tqdm
-- dataclasses
+- whisperx
 

@@ -1,0 +1,8 @@
+# transcribe_audio.py
+faster-whisper
+whisperx==3.7.6
+torch
+torchaudio
+speechbrain
+scikit-learn
+numpy

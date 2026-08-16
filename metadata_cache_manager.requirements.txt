@@ -1,0 +1,3 @@
+# metadata_cache_manager.py
+# Optional: enables colored output.
+colorama

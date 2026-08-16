@@ -1,0 +1,2 @@
+# simple_http_proxy.py
+# No required third-party packages (uses only the Python standard library).

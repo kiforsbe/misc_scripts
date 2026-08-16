@@ -10,3 +10,4 @@ safetensors>=0.7.0
 tqdm>=4.50.0
 
 # System dependency (not installable via pip): ffmpeg
+pytest

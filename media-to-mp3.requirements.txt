@@ -1,0 +1,4 @@
+# media-to-mp3.py
+# Optional: install for a richer progress bar.
+tqdm
+# Requires the ffmpeg and ffprobe executables to be installed separately and available on PATH.

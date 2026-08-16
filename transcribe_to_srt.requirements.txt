@@ -1,0 +1,3 @@
+# transcribe_to_srt.py
+subsai
+# https://github.com/abdeladim-s/subsai - uses the m-bain/whisperX model.
