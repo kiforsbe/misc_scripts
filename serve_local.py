@@ -98,6 +98,67 @@ def _watch_file_for_changes(path: str) -> None:
         SSE_WATCHER_STOP.wait(1)
 
 
+class _RangeNotSatisfiable(Exception):
+    """Raised when a Range header requests bytes outside the file."""
+
+
+def _parse_byte_range(range_header: str | None, file_size: int) -> tuple[int, int] | None:
+    """Parse a single-range 'Range: bytes=start-end' header.
+
+    Returns an inclusive (start, end) byte range to serve, or None if the
+    header is absent or malformed (caller should fall back to a full-file
+    response, per RFC 7233). Raises _RangeNotSatisfiable if the range is
+    out of bounds for `file_size`.
+    """
+    if not range_header or not range_header.startswith('bytes='):
+        return None
+    spec = range_header[len('bytes='):].split(',', 1)[0].strip()
+    start_s, sep, end_s = spec.partition('-')
+    if not sep:
+        return None
+    if start_s == '' and end_s == '':
+        return None
+    if start_s == '':
+        try:
+            suffix_len = int(end_s)
+        except ValueError:
+            return None
+        if suffix_len <= 0:
+            raise _RangeNotSatisfiable()
+        start = max(0, file_size - suffix_len)
+        end = file_size - 1
+    else:
+        try:
+            start = int(start_s)
+            end = int(end_s) if end_s != '' else file_size - 1
+        except ValueError:
+            return None
+        if start < 0 or start >= file_size or end < start:
+            raise _RangeNotSatisfiable()
+        end = min(end, file_size - 1)
+    return start, end
+
+
+class _RangeFile:
+    """Wrap a file object to expose only `length` bytes from its current position."""
+
+    def __init__(self, f, length: int):
+        self._f = f
+        self._remaining = length
+
+    def read(self, size: int = -1) -> bytes:
+        if self._remaining <= 0:
+            return b''
+        if size < 0 or size > self._remaining:
+            size = self._remaining
+        chunk = self._f.read(size)
+        self._remaining -= len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self._f.close()
+
+
 class CustomHandler(SimpleHTTPRequestHandler):
     """HTTP handler that can force an index file and render a richer listing.
 
@@ -165,13 +226,33 @@ class CustomHandler(SimpleHTTPRequestHandler):
             try:
                 ctype = mimetypes.guess_type(abs_path)[0] or 'application/octet-stream'
                 fs = os.path.getsize(abs_path)
-                self.send_response(HTTPStatus.OK)
-                self.send_header('Content-type', ctype)
-                self.send_header('Content-Length', str(fs))
-                self.end_headers()
+                try:
+                    byte_range = _parse_byte_range(self.headers.get('Range'), fs)
+                except _RangeNotSatisfiable:
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    self.send_header('Content-Range', f'bytes */{fs}')
+                    self.end_headers()
+                    return
                 try:
                     with open(abs_path, 'rb') as f:
-                        shutil.copyfileobj(f, self.wfile)
+                        if byte_range is not None:
+                            start, end = byte_range
+                            length = end - start + 1
+                            f.seek(start)
+                            self.send_response(HTTPStatus.PARTIAL_CONTENT)
+                            self.send_header('Content-type', ctype)
+                            self.send_header('Content-Range', f'bytes {start}-{end}/{fs}')
+                            self.send_header('Content-Length', str(length))
+                            self.send_header('Accept-Ranges', 'bytes')
+                            self.end_headers()
+                            shutil.copyfileobj(_RangeFile(f, length), self.wfile)
+                        else:
+                            self.send_response(HTTPStatus.OK)
+                            self.send_header('Content-type', ctype)
+                            self.send_header('Content-Length', str(fs))
+                            self.send_header('Accept-Ranges', 'bytes')
+                            self.end_headers()
+                            shutil.copyfileobj(f, self.wfile)
                     return
                 except OSError as e:
                     # Client likely disconnected while we were streaming.
@@ -272,19 +353,18 @@ class CustomHandler(SimpleHTTPRequestHandler):
         logging.getLogger("serve_local").info("%s - - %s", self.client_address[0], format % args)
 
     def send_head(self):
-        """Serve a file, injecting a small live-reload client when serving the forced index."""
+        """Serve a file, injecting a small live-reload client when serving the forced index.
+
+        Supports HTTP Range requests (RFC 7233) so clients can resume interrupted
+        downloads, except when live-reload script injection applies (small HTML
+        forced-index file; not a download-resume scenario).
+        """
         # Defer to base behavior for directories and non-file responses
         path = self.translate_path(self.path)
         if os.path.isdir(path):
             return super().send_head()
 
         ctype = self.guess_type(path)
-        try:
-            with open(path, 'rb') as f:
-                content = f.read()
-        except OSError:
-            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
-            return None
 
         # If this request is for the forced index file and live reload is enabled, inject SSE client script
         try:
@@ -292,22 +372,25 @@ class CustomHandler(SimpleHTTPRequestHandler):
         except Exception:
             forced = None
 
-        inject_script = b''
-        if forced and getattr(self, '_live', False):
+        is_forced_index = False
+        if forced:
             try:
                 forced_basename = os.path.basename(forced)
                 requested = os.path.abspath(path)
                 forced_path = os.path.abspath(os.path.join(self.directory or os.getcwd(), forced_basename))
-                if requested == forced_path:
-                    inject_script = b"\n<script>/* live-reload */(function(){try{if(typeof EventSource!=='undefined'){var s=new EventSource('/__watch');s.addEventListener('message',function(e){if(e.data&&e.data.trim()==='reload'){location.reload(true);}});s.addEventListener('error',function(){});} }catch(e){} })();</script>\n"
+                is_forced_index = requested == forced_path
             except Exception:
-                pass
+                is_forced_index = False
 
-        if inject_script:
+        if is_forced_index and getattr(self, '_live', False):
             try:
-                logging.getLogger('serve_local').info('Injecting live-reload script into served index %s', forced_basename)
-            except Exception:
-                pass
+                with open(path, 'rb') as f:
+                    content = f.read()
+            except OSError:
+                self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+                return None
+            inject_script = b"\n<script>/* live-reload */(function(){try{if(typeof EventSource!=='undefined'){var s=new EventSource('/__watch');s.addEventListener('message',function(e){if(e.data&&e.data.trim()==='reload'){location.reload(true);}});s.addEventListener('error',function(){});} }catch(e){} })();</script>\n"
+            logging.getLogger('serve_local').info('Injecting live-reload script into served index %s', forced_basename)
             body = content + inject_script
             self.send_response(HTTPStatus.OK)
             self.send_header('Content-type', ctype)
@@ -315,12 +398,45 @@ class CustomHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return io.BytesIO(body)
 
-        # No injection; send file as-is
+        # No injection; serve the file directly, honoring Range requests for resume support
+        try:
+            file_size = os.path.getsize(path)
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return None
+
+        try:
+            byte_range = _parse_byte_range(self.headers.get('Range'), file_size)
+        except _RangeNotSatisfiable:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header('Content-Range', f'bytes */{file_size}')
+            self.end_headers()
+            return None
+
+        try:
+            f = open(path, 'rb')
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return None
+
+        if byte_range is not None:
+            start, end = byte_range
+            length = end - start + 1
+            f.seek(start)
+            self.send_response(HTTPStatus.PARTIAL_CONTENT)
+            self.send_header('Content-type', ctype)
+            self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+            self.send_header('Content-Length', str(length))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.end_headers()
+            return _RangeFile(f, length)
+
         self.send_response(HTTPStatus.OK)
         self.send_header('Content-type', ctype)
-        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Content-Length', str(file_size))
+        self.send_header('Accept-Ranges', 'bytes')
         self.end_headers()
-        return io.BytesIO(content)
+        return f
 
     def translate_path(self, path: str) -> str:
         """Translate a /-separated PATH to the local filename.
