@@ -165,6 +165,12 @@ class CustomHandler(SimpleHTTPRequestHandler):
     This uses the `directory` passed to the handler to sandbox served paths.
     """
 
+    # Disable Nagle's algorithm and enable persistent connections: avoids
+    # Nagle/delayed-ACK stalls and repeated TCP handshakes on real (non-loopback)
+    # networks during large-file transfers.
+    disable_nagle_algorithm = True
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *args, directory: str | None = None, index_file: str | None = None, **kwargs):
         self._forced_index = index_file
         # live reload enabled flag (injected via handler_factory)
