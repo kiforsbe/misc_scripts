@@ -17,7 +17,7 @@ from typing import Callable
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Select, Switch, Tree
 
@@ -114,7 +114,7 @@ class SettingsScreen(ModalScreen[ScanParams | None]):
         self._params = params
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="settings-dialog"):
+        with VerticalScroll(id="settings-dialog"):
             yield Label("Rescan settings (rescanning discards unsaved keep/discard choices)")
             yield Label("Recursive")
             yield Switch(value=self._params.recursive, id="recursive")

@@ -33,6 +33,13 @@ Tree > .tree--cursor {
     height: auto;
 }
 
+/* Settings has more fields than a terminal is guaranteed to be tall enough
+   to show at once, so it scrolls internally within the viewport rather than
+   growing past it -- Apply/Cancel must always stay reachable. */
+#settings-dialog {
+    max-height: 100%;
+}
+
 Button {
     background: white;
     color: blue;
