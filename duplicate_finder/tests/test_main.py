@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from duplicate_finder.main import build_arg_parser, main
+
+# duplicate_finder/__init__.py does `from .main import main`, which rebinds the
+# `main` attribute on the `duplicate_finder` package to the function itself
+# (shadowing the submodule). `importlib.import_module` reads straight from
+# sys.modules, so it reliably returns the actual `duplicate_finder.main`
+# module object to monkeypatch attributes on, regardless of that shadowing.
+main_module = importlib.import_module("duplicate_finder.main")
 
 
 def _write(root: Path, relative_path: str, size_bytes: int = 10) -> Path:
@@ -74,3 +83,33 @@ def test_main_applies_cli_exclude_keyword_flag_in_dry_run(tmp_path, capsys):
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "No likely duplicates found" in output
+
+
+def test_main_summary_uses_post_rescan_output_dir(tmp_path, monkeypatch, capsys):
+    """If the user changes the output dir via the F2 settings dialog mid-session,
+    the final summary must name the folder files actually moved to (app.params
+    .output_dir, which run_review's app tracks live), not the pre-launch local
+    variable computed before the app ran.
+    """
+    _write(tmp_path, "movie.mp4")
+    _write(tmp_path, "movie_copy.mp4")
+
+    default_output_dir = tmp_path / "_duplicates"
+    changed_output_dir = tmp_path / "custom_output"
+
+    class FakeApp:
+        moved_count = 2
+        move_errors: list[str] = []
+        params = SimpleNamespace(output_dir=changed_output_dir)
+
+    def fake_run_review(root, groups, params, rescan):
+        return FakeApp()
+
+    monkeypatch.setattr(main_module, "run_review", fake_run_review)
+
+    exit_code = main([str(tmp_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert str(changed_output_dir) in output
+    assert str(default_output_dir) not in output

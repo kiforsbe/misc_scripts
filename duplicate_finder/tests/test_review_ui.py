@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import Input, Tree
+from textual.widgets import Input, Select, Tree
 
 from duplicate_finder.review_ui import DuplicateReviewApp, ScanParams
 from duplicate_finder.similarity_engine import DuplicateGroup, FileRecord
@@ -323,3 +323,59 @@ async def test_settings_apply_with_invalid_threshold_keeps_dialog_open(tmp_path)
         assert app.screen.query_one("#threshold", Input) is threshold_input
         assert calls == []
         assert app.params is original_params
+
+
+@pytest.mark.asyncio
+async def test_settings_dialog_with_out_of_preset_min_group_size_does_not_crash(tmp_path):
+    """Regression test: --min-group-size accepts any int >= 2, but the F2
+    dialog's Select only lists presets 2-6. Textual's Select raises
+    InvalidSelectValueError if constructed with a value outside its option
+    list, which previously tore down the whole app on mount whenever the
+    scan was started with e.g. --min-group-size 10.
+    """
+    group, _, _ = _make_two_file_group(tmp_path)
+    params = _make_params(tmp_path)
+    params.min_group_size = 10
+    app = DuplicateReviewApp(root=tmp_path, groups=[group], params=params, rescan=_no_op_rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("f2")
+        await pilot.pause()
+
+        min_group_select = app.screen.query_one("#min-group-size", Select)
+        assert min_group_select.value == "10"
+
+
+@pytest.mark.asyncio
+async def test_rescan_failure_notifies_and_preserves_existing_state(tmp_path):
+    group, _, _ = _make_two_file_group(tmp_path)
+
+    def raising_rescan(params: ScanParams) -> list[DuplicateGroup]:
+        raise OSError("simulated scan failure")
+
+    original_params = _make_params(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=[group], params=original_params, rescan=raising_rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("down", "down")  # root -> group -> first file leaf
+        await pilot.press("enter")
+        await pilot.pause()
+
+        state_before = next(iter(app._states.values()))
+        assert state_before.resolved is True
+
+        await pilot.press("f2")
+        await pilot.pause()
+        await pilot.click("#apply")
+        await pilot.pause()
+
+        # The app must still be running with the prior review session intact
+        # rather than crashing out on the OSError from the failed rescan.
+        assert app.params is original_params
+        state_after = next(iter(app._states.values()))
+        assert state_after is state_before
+        assert state_after.resolved is True
+        tree = app.query_one("#group-tree", Tree)
+        assert len(list(tree.root.children)) == 1

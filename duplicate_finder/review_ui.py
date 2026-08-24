@@ -32,7 +32,6 @@ def _human_size(num_bytes: int) -> str:
         if size < 1024 or unit == "TB":
             return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
-    return f"{size:.1f} TB"
 
 
 def _unique_target(target: Path) -> Path:
@@ -133,7 +132,7 @@ class SettingsScreen(ModalScreen[ScanParams | None]):
             )
             yield Label("Minimum group size")
             yield Select(
-                [(preset, preset) for preset in self.MIN_GROUP_SIZE_PRESETS],
+                [(preset, preset) for preset in self._min_group_size_options()],
                 value=str(self._params.min_group_size),
                 id="min-group-size",
             )
@@ -151,15 +150,27 @@ class SettingsScreen(ModalScreen[ScanParams | None]):
         percent = self._params.size_tolerance_percent
         if percent is None:
             return "Disabled"
-        preset = f"{int(percent)}%"
+        preset = f"{percent:g}%"
         return preset if preset in self.SIZE_TOLERANCE_PRESETS else "Custom..."
 
     def _initial_tolerance_custom_value(self) -> str:
         percent = self._params.size_tolerance_percent
         if percent is None:
             return ""
-        preset = f"{int(percent)}%"
+        preset = f"{percent:g}%"
         return "" if preset in self.SIZE_TOLERANCE_PRESETS else str(percent)
+
+    def _min_group_size_options(self) -> list[str]:
+        # --min-group-size accepts any int >= 2 on the CLI, but the dialog
+        # only presets 2-6. If the scan was started outside that range,
+        # constructing Select with a value missing from its option list
+        # raises InvalidSelectValueError and tears down the whole app, so
+        # the current value is unioned in as an extra option instead of
+        # being silently clamped or dropped.
+        current = str(self._params.min_group_size)
+        if current in self.MIN_GROUP_SIZE_PRESETS:
+            return self.MIN_GROUP_SIZE_PRESETS
+        return [*self.MIN_GROUP_SIZE_PRESETS, current]
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -238,6 +249,7 @@ class DuplicateReviewApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.sub_title = "Enter: toggle keep/discard"
         self._rebuild_tree()
 
     def _rebuild_tree(self) -> None:
@@ -318,15 +330,22 @@ class DuplicateReviewApp(App):
     def _handle_settings_result(self, new_params: ScanParams | None) -> None:
         if new_params is None:
             return
+        try:
+            new_groups = self._rescan(new_params)
+        except (OSError, ValueError) as exc:
+            self.notify(f"Rescan failed: {exc}", severity="error")
+            return
         self.params = new_params
-        new_groups = self._rescan(new_params)
         self._load_groups(new_groups)
         self._rebuild_tree()
+        if not new_groups:
+            self.notify("Rescan found no duplicate groups.")
 
     def action_commit(self) -> None:
         resolved = [state for state in self._states.values() if state.resolved]
         if not resolved:
             self.bell()
+            self.notify("No reviewed groups to commit.")
             return
         self.push_screen(CommitConfirmScreen(resolved, self.params.output_dir), self._handle_commit_result)
 

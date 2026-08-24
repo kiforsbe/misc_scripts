@@ -42,7 +42,7 @@ python -m duplicate_finder <root> [options]
   unsaved keep/discard choices)
 - `Ctrl+S` — commit: move every "discard" file in every reviewed group to
   the output directory, after a confirmation screen
-- `Q` — quit without making any filesystem changes
+- `q` — quit without making any filesystem changes
 
 ## Requires
 - rapidfuzz

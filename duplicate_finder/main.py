@@ -84,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
     )
 
+    print(f"Scanning {root}...")
     files = scan(root, params.recursive, params.include_keywords, params.exclude_keywords, params.output_dir)
     groups = find_duplicate_groups(files, params.name_threshold, params.size_tolerance_percent, params.min_group_size)
 
@@ -100,9 +101,14 @@ def main(argv: list[str] | None = None) -> int:
 
     app = run_review(root, groups, params, _make_rescan(root))
 
-    print(f"Moved {app.moved_count} file(s) to {output_dir}.")
-    if app.move_errors:
-        print("Errors:")
-        for error in app.move_errors:
-            print(f"  {error}")
+    if app.moved_count or app.move_errors:
+        # app.params.output_dir (not the pre-launch `output_dir` local) is used
+        # because the F2 settings dialog can change the output dir mid-session.
+        print(f"Moved {app.moved_count} file(s) to {app.params.output_dir}.")
+        if app.move_errors:
+            print("Errors:")
+            for error in app.move_errors:
+                print(f"  {error}")
+    else:
+        print("No changes made.")
     return 0
