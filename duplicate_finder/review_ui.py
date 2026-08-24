@@ -165,24 +165,36 @@ class SettingsScreen(ModalScreen[ScanParams | None]):
         if event.button.id == "cancel":
             self.dismiss(None)
             return
-        self.dismiss(self._collect_params())
+        try:
+            params = self._collect_params()
+        except ValueError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.dismiss(params)
 
     def _keywords_from(self, widget_id: str) -> list[str]:
         raw = self.query_one(f"#{widget_id}", Input).value
         return [keyword.strip() for keyword in raw.split(",") if keyword.strip()]
+
+    def _parse_float_field(self, widget_id: str, field_label: str) -> float:
+        raw = self.query_one(f"#{widget_id}", Input).value
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError(f"{field_label} must be a number (got {raw!r})") from None
 
     def _collect_params(self) -> ScanParams:
         tolerance_choice = self.query_one("#tolerance-select", Select).value
         if tolerance_choice == "Disabled":
             tolerance = None
         elif tolerance_choice == "Custom...":
-            tolerance = float(self.query_one("#tolerance-custom", Input).value)
+            tolerance = self._parse_float_field("tolerance-custom", "Custom size tolerance")
         else:
             tolerance = float(str(tolerance_choice).rstrip("%"))
 
         return ScanParams(
             recursive=self.query_one("#recursive", Switch).value,
-            name_threshold=float(self.query_one("#threshold", Input).value),
+            name_threshold=self._parse_float_field("threshold", "Name similarity threshold"),
             size_tolerance_percent=tolerance,
             min_group_size=int(str(self.query_one("#min-group-size", Select).value)),
             include_keywords=self._keywords_from("include-keywords"),

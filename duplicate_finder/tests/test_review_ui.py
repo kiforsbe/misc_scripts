@@ -257,3 +257,69 @@ async def test_rescan_discards_uncommitted_decisions(tmp_path):
         state_after = next(iter(app._states.values()))
         assert state_after.resolved is False
         assert state_after.keep == {0, 1}
+
+
+@pytest.mark.asyncio
+async def test_settings_dialog_apply_reachable_at_80x24(tmp_path):
+    """Regression test for the VerticalScroll/max-height fix in review_ui.tcss:
+    at the common 80x24 terminal size the settings dialog's fields overflow
+    the viewport, so Apply/Cancel must be reachable by scrolling the dialog
+    rather than sitting off-screen and unclickable. If the dialog's outer
+    container ever regresses to a plain, unbounded Vertical, scrolling it
+    becomes a no-op and the click below fails with a Pilot OutOfBounds error.
+    """
+    group, _, _ = _make_two_file_group(tmp_path)
+    calls: list[ScanParams] = []
+
+    def rescan(params: ScanParams) -> list[DuplicateGroup]:
+        calls.append(params)
+        return [group]
+
+    app = DuplicateReviewApp(root=tmp_path, groups=[group], params=_make_params(tmp_path), rescan=rescan)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await pilot.press("f2")
+        await pilot.pause()
+
+        # Simulate a user scrolling the dialog down to reach Apply, the same
+        # way mouse-wheel/PageDown/End scrolling would.
+        dialog = app.screen.query_one("#settings-dialog")
+        dialog.scroll_end(animate=False)
+        await pilot.pause()
+
+        await pilot.click("#apply")
+        await pilot.pause()
+
+        assert calls, "Apply should have triggered a rescan"
+        assert app.params.name_threshold == 85.0
+
+
+@pytest.mark.asyncio
+async def test_settings_apply_with_invalid_threshold_keeps_dialog_open(tmp_path):
+    group, _, _ = _make_two_file_group(tmp_path)
+    calls: list[ScanParams] = []
+
+    def rescan(params: ScanParams) -> list[DuplicateGroup]:
+        calls.append(params)
+        return [group]
+
+    original_params = _make_params(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=[group], params=original_params, rescan=rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("f2")
+        await pilot.pause()
+
+        threshold_input = app.screen.query_one("#threshold", Input)
+        threshold_input.value = "not-a-number"
+
+        await pilot.click("#apply")
+        await pilot.pause()
+
+        # Apply must not crash the app or dismiss the dialog on bad input --
+        # the settings screen should still be open with the field queryable.
+        assert app.screen.query_one("#threshold", Input) is threshold_input
+        assert calls == []
+        assert app.params is original_params
