@@ -1,0 +1,50 @@
+/* duplicate_finder/review_ui.tcss */
+Screen {
+    background: blue;
+    color: white;
+}
+
+Header {
+    background: white;
+    color: blue;
+}
+
+Footer {
+    background: white;
+    color: blue;
+}
+
+Tree {
+    background: blue;
+    color: white;
+}
+
+Tree > .tree--cursor {
+    background: white;
+    color: blue;
+}
+
+#settings-dialog, #commit-dialog {
+    background: blue;
+    color: white;
+    border: solid white;
+    padding: 1 2;
+    width: 64;
+    height: auto;
+}
+
+Button {
+    background: white;
+    color: blue;
+    border: solid blue;
+}
+
+Button:focus {
+    background: yellow;
+    color: blue;
+}
+
+Input, Select, Switch {
+    background: white;
+    color: blue;
+}

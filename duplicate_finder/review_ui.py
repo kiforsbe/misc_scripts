@@ -1,0 +1,255 @@
+"""Interactive DOS-styled review UI for duplicate-file groups.
+
+Key Tree-widget facts this module relies on (verified against the installed
+textual version during planning, not assumed): `Space` is Tree's own
+expand/collapse binding, so per-file toggling is wired through the
+`on_tree_node_selected` message handler (fires on Enter or click) instead of
+a competing keybinding. Labels are built as `rich.text.Text` objects, not raw
+strings, so literal `[x]`/`[ ]` prefixes render as-is instead of being parsed
+as Rich console markup.
+"""
+from __future__ import annotations
+
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.containers import Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Button, Footer, Header, Label, Tree
+
+from .similarity_engine import DuplicateGroup, FileRecord
+
+RescanFn = Callable[["ScanParams"], list[DuplicateGroup]]
+
+
+def _human_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def _unique_target(target: Path) -> Path:
+    if not target.exists():
+        return target
+    stem, suffix = target.stem, target.suffix
+    counter = 1
+    while True:
+        candidate = target.with_name(f"{stem} ({counter}){suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+@dataclass
+class ScanParams:
+    recursive: bool
+    name_threshold: float
+    size_tolerance_percent: float | None
+    min_group_size: int
+    include_keywords: list[str]
+    exclude_keywords: list[str]
+    output_dir: Path
+
+
+@dataclass
+class _GroupState:
+    group: DuplicateGroup
+    keep: set[int] = field(default_factory=set)
+    touched: bool = False
+
+    def __post_init__(self) -> None:
+        self.keep = set(range(len(self.group.files)))
+
+    @property
+    def resolved(self) -> bool:
+        return self.touched and len(self.keep) < len(self.group.files)
+
+    def status_text(self) -> str:
+        if not self.touched:
+            return "unreviewed"
+        if len(self.keep) == len(self.group.files):
+            return "keep all"
+        if not self.keep:
+            return "discard all"
+        return "resolved"
+
+    def discarded_files(self) -> list[FileRecord]:
+        return [f for i, f in enumerate(self.group.files) if i not in self.keep]
+
+
+class CommitConfirmScreen(ModalScreen[bool]):
+    def __init__(self, resolved_states: list[_GroupState], output_dir: Path):
+        super().__init__()
+        self._resolved_states = resolved_states
+        self._output_dir = output_dir
+
+    def compose(self) -> ComposeResult:
+        total_files = sum(len(s.discarded_files()) for s in self._resolved_states)
+        total_bytes = sum(f.size for s in self._resolved_states for f in s.discarded_files())
+        with Vertical(id="commit-dialog"):
+            yield Label(
+                f"{total_files} file(s) across {len(self._resolved_states)} group(s) "
+                f"will be moved to {self._output_dir}, totalling {_human_size(total_bytes)}."
+            )
+            yield Button("Confirm", id="confirm", variant="primary")
+            yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm")
+
+
+class DuplicateReviewApp(App):
+    CSS_PATH = "review_ui.tcss"
+    BINDINGS = [
+        ("f2", "open_settings", "Settings"),
+        ("ctrl+s", "commit", "Commit"),
+        ("k", "keep_all_in_group", "Keep all in group"),
+        ("d", "discard_all_in_group", "Discard all in group"),
+        ("q", "quit", "Quit"),
+    ]
+
+    def __init__(
+        self,
+        root: Path,
+        groups: list[DuplicateGroup],
+        params: ScanParams,
+        rescan: RescanFn,
+    ):
+        super().__init__()
+        self._root = root
+        self.params = params
+        self._rescan = rescan
+        self._states: dict[str, _GroupState] = {}
+        self._load_groups(groups)
+        self.moved_count = 0
+        self.move_errors: list[str] = []
+
+    def _load_groups(self, groups: list[DuplicateGroup]) -> None:
+        self._states = {f"group-{i}": _GroupState(group=group) for i, group in enumerate(groups)}
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Tree("Duplicate groups", id="group-tree")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._rebuild_tree()
+
+    def _rebuild_tree(self) -> None:
+        tree = self.query_one("#group-tree", Tree)
+        tree.clear()
+        tree.root.expand()
+        for key, state in self._states.items():
+            group_node = tree.root.add(self._group_label(state), data={"kind": "group", "key": key}, expand=True)
+            for index in range(len(state.group.files)):
+                group_node.add_leaf(
+                    self._file_label(state, index),
+                    data={"kind": "file", "key": key, "index": index},
+                )
+
+    def _group_label(self, state: _GroupState) -> Text:
+        return Text(f"{state.group.label} ({len(state.group.files)} files) [{state.status_text()}]")
+
+    def _file_label(self, state: _GroupState, index: int) -> Text:
+        file = state.group.files[index]
+        mark = "x" if index in state.keep else " "
+        try:
+            relative = file.path.resolve().relative_to(self._root.resolve())
+        except ValueError:
+            relative = file.path
+        return Text(f"[{mark}] {file.name}  {_human_size(file.size)}  {relative}")
+
+    def _current_group_key(self) -> str | None:
+        tree = self.query_one("#group-tree", Tree)
+        node = tree.cursor_node
+        if node is None or node.data is None:
+            return None
+        return node.data.get("key")
+
+    def _refresh_group(self, key: str) -> None:
+        tree = self.query_one("#group-tree", Tree)
+        state = self._states[key]
+        for node in tree.root.children:
+            if node.data and node.data.get("key") == key:
+                node.set_label(self._group_label(state))
+                for index, child in enumerate(node.children):
+                    child.set_label(self._file_label(state, index))
+                break
+
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        node = event.node
+        if node.data is None or node.data.get("kind") != "file":
+            return
+        key, index = node.data["key"], node.data["index"]
+        state = self._states[key]
+        if index in state.keep:
+            state.keep.discard(index)
+        else:
+            state.keep.add(index)
+        state.touched = True
+        self._refresh_group(key)
+
+    def action_keep_all_in_group(self) -> None:
+        key = self._current_group_key()
+        if key is None:
+            return
+        state = self._states[key]
+        state.keep = set(range(len(state.group.files)))
+        state.touched = True
+        self._refresh_group(key)
+
+    def action_discard_all_in_group(self) -> None:
+        key = self._current_group_key()
+        if key is None:
+            return
+        state = self._states[key]
+        state.keep = set()
+        state.touched = True
+        self._refresh_group(key)
+
+    def action_open_settings(self) -> None:
+        pass  # implemented in Task 4
+
+    def action_commit(self) -> None:
+        resolved = [state for state in self._states.values() if state.resolved]
+        if not resolved:
+            self.bell()
+            return
+        self.push_screen(CommitConfirmScreen(resolved, self.params.output_dir), self._handle_commit_result)
+
+    def _handle_commit_result(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        resolved = [state for state in self._states.values() if state.resolved]
+        for state in resolved:
+            for file in state.discarded_files():
+                try:
+                    relative = file.path.resolve().relative_to(self._root.resolve())
+                except ValueError:
+                    relative = Path(file.name)
+                target = _unique_target(self.params.output_dir / relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.move(str(file.path), str(target))
+                    self.moved_count += 1
+                except OSError as exc:
+                    self.move_errors.append(f"{file.path}: {exc}")
+        self.exit()
+
+
+def run_review(
+    root: Path,
+    groups: list[DuplicateGroup],
+    params: ScanParams,
+    rescan: RescanFn,
+) -> DuplicateReviewApp:
+    app = DuplicateReviewApp(root=root, groups=groups, params=params, rescan=rescan)
+    app.run()
+    return app
