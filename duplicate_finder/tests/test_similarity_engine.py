@@ -141,3 +141,14 @@ def test_keyword_filter_shrinking_group_to_one_member_is_not_a_duplicate_group(t
     groups = find_duplicate_groups(records, name_threshold=50, size_tolerance_percent=None)
 
     assert groups == []
+
+
+def test_find_duplicate_groups_rejects_min_group_size_less_than_2():
+    import pytest
+    files = [_record("solo_file.mp4")]
+
+    with pytest.raises(ValueError, match="min_group_size must be at least 2"):
+        find_duplicate_groups(files, name_threshold=50, size_tolerance_percent=None, min_group_size=1)
+
+    with pytest.raises(ValueError, match="min_group_size must be at least 2"):
+        find_duplicate_groups(files, name_threshold=50, size_tolerance_percent=None, min_group_size=0)

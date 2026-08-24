@@ -83,6 +83,9 @@ def find_duplicate_groups(
     size_tolerance_percent: float | None,
     min_group_size: int = 2,
 ) -> list[DuplicateGroup]:
+    if min_group_size < 2:
+        raise ValueError("min_group_size must be at least 2 (a duplicate group needs at least two files)")
+
     buckets: dict[str, list[int]] = {}
     unknown_indices: list[int] = []
     for index, record in enumerate(files):
