@@ -1,5 +1,6 @@
 # Root aggregator: installs every tool's own requirements.txt.
 # Each tool folder owns its dependency list; this file only references them.
+-r duplicate_finder/requirements.txt
 -r file_metadata_scanner/requirements.txt
 -r gog_csv_to_html/requirements.txt
 -r latest_episodes_viewer/requirements.txt

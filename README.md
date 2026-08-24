@@ -15,6 +15,7 @@ Miscellaneous scripts to automate common tasks.
   - [video-optimizer-v2](#video-optimizer-v2): Multi-file video transcoder using shared metadata providers, with tests.
   - [youtube-video-downloader](#youtube-video-downloader): Bundle of CLI, TUI, web, userscript, and helper download tools.
   - [mini-dlna-server](#mini-dlna-server): Experimental DLNA server project with multiple networking and service modules.
+  - [duplicate_finder](#duplicate_finder): Interactive filename-similarity duplicate finder with a DOS-styled review UI.
 - [Scripts](#scripts): Standalone utilities for media, metadata, downloads, reports, and local tooling.
   - Media Conversion & Transcription
     - [cbr_to_cbz_converter.py](#cbr_to_cbz_converterpy): Converts CBR archives to CBZ files using parallel in-memory processing.
@@ -155,6 +156,11 @@ See [youtube-video-downloader/README.md](youtube-video-downloader/README.md) for
 A DLNA/UPnP media server targeting Samsung TVs (2022+) and Windows 11 hosts, with automatic thumbnail generation, hot-reload config, and SSDP discovery. Still under active development.
 
 See [mini-dlna-server/README.md](mini-dlna-server/README.md) for configuration, supported formats, and architecture.
+
+### duplicate_finder
+A CLI that finds likely-duplicate files by filename similarity (not content) — with optional file-size tolerance and keyword include/exclude filters — and lets you interactively choose which copy to keep per group in a DOS-styled full-screen terminal UI (`textual`). Discarded files are always moved to a review folder, never deleted.
+
+See [duplicate_finder/README.md](duplicate_finder/README.md) for usage and the full interactive control reference.
 
 ## Scripts
 
