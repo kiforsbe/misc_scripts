@@ -19,7 +19,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Label, Tree
+from textual.widgets import Button, Footer, Header, Input, Label, Select, Switch, Tree
 
 from .similarity_engine import DuplicateGroup, FileRecord
 
@@ -103,6 +103,92 @@ class CommitConfirmScreen(ModalScreen[bool]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "confirm")
+
+
+class SettingsScreen(ModalScreen[ScanParams | None]):
+    SIZE_TOLERANCE_PRESETS = ["Disabled", "5%", "10%", "15%", "20%", "25%", "Custom..."]
+    MIN_GROUP_SIZE_PRESETS = ["2", "3", "4", "5", "6"]
+
+    def __init__(self, params: ScanParams):
+        super().__init__()
+        self._params = params
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="settings-dialog"):
+            yield Label("Rescan settings (rescanning discards unsaved keep/discard choices)")
+            yield Label("Recursive")
+            yield Switch(value=self._params.recursive, id="recursive")
+            yield Label("Name similarity threshold (0-100)")
+            yield Input(value=str(self._params.name_threshold), id="threshold")
+            yield Label("Size tolerance")
+            yield Select(
+                [(preset, preset) for preset in self.SIZE_TOLERANCE_PRESETS],
+                value=self._initial_tolerance_option(),
+                id="tolerance-select",
+            )
+            yield Input(
+                value=self._initial_tolerance_custom_value(),
+                placeholder="custom %",
+                id="tolerance-custom",
+            )
+            yield Label("Minimum group size")
+            yield Select(
+                [(preset, preset) for preset in self.MIN_GROUP_SIZE_PRESETS],
+                value=str(self._params.min_group_size),
+                id="min-group-size",
+            )
+            yield Label("Include keywords (comma-separated)")
+            yield Input(value=", ".join(self._params.include_keywords), id="include-keywords")
+            yield Label("Exclude keywords (comma-separated)")
+            yield Input(value=", ".join(self._params.exclude_keywords), id="exclude-keywords")
+            yield Label("Output directory")
+            yield Input(value=str(self._params.output_dir), id="output-dir")
+            with Vertical():
+                yield Button("Apply && Rescan", id="apply", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def _initial_tolerance_option(self) -> str:
+        percent = self._params.size_tolerance_percent
+        if percent is None:
+            return "Disabled"
+        preset = f"{int(percent)}%"
+        return preset if preset in self.SIZE_TOLERANCE_PRESETS else "Custom..."
+
+    def _initial_tolerance_custom_value(self) -> str:
+        percent = self._params.size_tolerance_percent
+        if percent is None:
+            return ""
+        preset = f"{int(percent)}%"
+        return "" if preset in self.SIZE_TOLERANCE_PRESETS else str(percent)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        self.dismiss(self._collect_params())
+
+    def _keywords_from(self, widget_id: str) -> list[str]:
+        raw = self.query_one(f"#{widget_id}", Input).value
+        return [keyword.strip() for keyword in raw.split(",") if keyword.strip()]
+
+    def _collect_params(self) -> ScanParams:
+        tolerance_choice = self.query_one("#tolerance-select", Select).value
+        if tolerance_choice == "Disabled":
+            tolerance = None
+        elif tolerance_choice == "Custom...":
+            tolerance = float(self.query_one("#tolerance-custom", Input).value)
+        else:
+            tolerance = float(str(tolerance_choice).rstrip("%"))
+
+        return ScanParams(
+            recursive=self.query_one("#recursive", Switch).value,
+            name_threshold=float(self.query_one("#threshold", Input).value),
+            size_tolerance_percent=tolerance,
+            min_group_size=int(str(self.query_one("#min-group-size", Select).value)),
+            include_keywords=self._keywords_from("include-keywords"),
+            exclude_keywords=self._keywords_from("exclude-keywords"),
+            output_dir=Path(self.query_one("#output-dir", Input).value),
+        )
 
 
 class DuplicateReviewApp(App):
@@ -215,7 +301,15 @@ class DuplicateReviewApp(App):
         self._refresh_group(key)
 
     def action_open_settings(self) -> None:
-        pass  # implemented in Task 4
+        self.push_screen(SettingsScreen(self.params), self._handle_settings_result)
+
+    def _handle_settings_result(self, new_params: ScanParams | None) -> None:
+        if new_params is None:
+            return
+        self.params = new_params
+        new_groups = self._rescan(new_params)
+        self._load_groups(new_groups)
+        self._rebuild_tree()
 
     def action_commit(self) -> None:
         resolved = [state for state in self._states.values() if state.resolved]

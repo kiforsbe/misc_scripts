@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from textual.widgets import Tree
+from textual.widgets import Input, Tree
 
 from duplicate_finder.review_ui import DuplicateReviewApp, ScanParams
 from duplicate_finder.similarity_engine import DuplicateGroup, FileRecord
@@ -182,3 +182,78 @@ async def test_commit_records_error_and_continues_when_a_move_fails(tmp_path, mo
     assert app.moved_count == 1
     assert len(app.move_errors) == 1
     assert "movie.mp4" in app.move_errors[0]
+
+
+@pytest.mark.asyncio
+async def test_settings_dialog_prefills_and_apply_triggers_rescan(tmp_path):
+    group, file_a, file_b = _make_two_file_group(tmp_path)
+    calls: list[ScanParams] = []
+
+    def rescan(params: ScanParams) -> list[DuplicateGroup]:
+        calls.append(params)
+        return [group]
+
+    app = DuplicateReviewApp(root=tmp_path, groups=[group], params=_make_params(tmp_path), rescan=rescan)
+
+    # A taller virtual terminal than the 80x24 default: the settings dialog
+    # stacks enough labels/inputs that its Apply/Cancel buttons render below
+    # row 24 otherwise, which is out of Pilot's clickable region.
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("f2")
+        await pilot.pause()
+
+        # app.query_one() only searches the app's default screen, not a
+        # pushed modal screen, so widgets inside SettingsScreen must be
+        # queried via the current screen instead.
+        threshold_input = app.screen.query_one("#threshold", Input)
+        assert threshold_input.value == "85.0"
+
+        threshold_input.value = "50"
+        await pilot.click("#apply")
+        await pilot.pause()
+
+        assert calls[-1].name_threshold == 50.0
+        assert app.params.name_threshold == 50.0
+
+
+@pytest.mark.asyncio
+async def test_settings_cancel_leaves_params_unchanged(tmp_path):
+    group, _, _ = _make_two_file_group(tmp_path)
+    original_params = _make_params(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=[group], params=original_params, rescan=_no_op_rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("f2")
+        await pilot.pause()
+        await pilot.click("#cancel")
+        await pilot.pause()
+
+        assert app.params is original_params
+
+
+@pytest.mark.asyncio
+async def test_rescan_discards_uncommitted_decisions(tmp_path):
+    group, _, _ = _make_two_file_group(tmp_path)
+
+    def rescan(params: ScanParams) -> list[DuplicateGroup]:
+        return [group]
+
+    app = DuplicateReviewApp(root=tmp_path, groups=[group], params=_make_params(tmp_path), rescan=rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("down", "down")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert next(iter(app._states.values())).resolved is True
+
+        await pilot.press("f2")
+        await pilot.pause()
+        await pilot.click("#apply")
+        await pilot.pause()
+
+        state_after = next(iter(app._states.values()))
+        assert state_after.resolved is False
+        assert state_after.keep == {0, 1}
