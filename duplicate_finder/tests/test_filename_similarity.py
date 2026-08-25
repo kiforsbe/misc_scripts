@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from duplicate_finder.filename_similarity import (
     categories_compatible,
+    core_similarity,
+    core_title,
     extension_category,
     matches_keyword_filters,
     normalize,
@@ -79,3 +81,45 @@ def test_matches_keyword_filters_exclude_wins_over_include():
 
 def test_matches_keyword_filters_case_insensitive():
     assert matches_keyword_filters("SAMPLE.mp4", [], ["sample"]) is False
+
+
+def test_core_title_strips_single_bracketed_tag():
+    assert core_title("Otter Pets (USA).zip") == "otter pets"
+
+
+def test_core_title_strips_multiple_bracketed_tag_groups():
+    assert core_title("Otter Pets (USA) (En,Fr,De) (Rev 1).zip") == "otter pets"
+
+
+def test_core_title_strips_square_bracket_tags_too():
+    assert core_title("Otter Pets [Rev 1].zip") == "otter pets"
+
+
+def test_core_title_no_tags_present():
+    assert core_title("Otter Pets.zip") == "otter pets"
+
+
+def test_core_title_normalizes_separators_and_case_after_stripping():
+    assert core_title("Otter_Pets-Deluxe.EUROPE.zip") == "otter pets deluxe europe"
+
+
+def test_core_title_does_not_double_stem_names_with_internal_ellipsis():
+    """A real observed filename pattern: internal "..." punctuation in the
+    title must not be mistaken for a second extension by Path.stem. core_title
+    stems the real filename exactly once, before tag-stripping, so this stays
+    intact."""
+    assert core_title("3,2,1...Words Up! (Europe).zip") == "3,2,1 words up!"
+    assert core_title("3,2,1...Words Up! (USA).zip") == "3,2,1 words up!"
+
+
+def test_core_similarity_identical_core_titles_scores_100_despite_differing_tags():
+    assert core_similarity("Otter Pets (Europe).zip", "Otter Pets (USA).zip") == 100.0
+
+
+def test_core_similarity_numbered_series_entries_score_below_exact_match():
+    """Sequential series entries differ by a single character in the core
+    title, so they still score high on fuzzy similarity -- but not 100 --
+    which is why duplicate detection requires an exact core-title match
+    rather than a fuzzy threshold to tell them apart from real duplicates."""
+    score = core_similarity("Shadow Realm 1 - Rising (USA).zip", "Shadow Realm 2 - Rising (USA).zip")
+    assert 90.0 < score < 100.0

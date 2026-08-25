@@ -6,7 +6,15 @@ terminal UI.
 
 ## Features
 - Recursive (or top-level-only) directory scanning
-- Filename similarity scoring via `rapidfuzz`, with a configurable threshold
+- Duplicate detection compares "core titles" — filenames with bracketed tags
+  like `(USA)`, `(En,Fr,De)`, `[Rev 1]` stripped — via `rapidfuzz`, with a
+  configurable threshold. This correctly unifies region/language/revision
+  variants of the same release (which differ only in their tags) while
+  keeping unrelated titles and numbered series entries (e.g. `Game 1 - X`
+  vs `Game 2 - X`) apart, since those differ in the core title itself, not
+  just the tags — no similarity threshold alone can safely tell those apart
+  from genuine duplicates, since a numbered entry can be one character away
+  from its neighbor
 - Extension-category matching (video/audio/image/document/archive/subtitle) —
   cross-format matches like `movie.mp4` vs `movie.mkv` are allowed, but
   `movie.mp4` vs `movie.mp3` never are; unrecognized extensions are always
@@ -24,7 +32,9 @@ terminal UI.
 python -m duplicate_finder <root> [options]
 
   --no-recursive              only scan the top level of <root> (default: recursive)
-  --name-threshold FLOAT      0-100, default 85
+  --name-threshold FLOAT      0-100, default 100 (exact core-title match);
+                               lowering this risks merging unrelated titles
+                               or numbered series entries
   --size-tolerance-percent F  optional, default None (disabled)
   --min-group-size INT        default 2
   --include-keyword KEYWORD   repeatable; only files matching >=1 are considered

@@ -28,7 +28,7 @@ def test_build_arg_parser_defaults():
     args = parser.parse_args(["some/folder"])
 
     assert args.recursive is True
-    assert args.name_threshold == 85.0
+    assert args.name_threshold == 100.0
     assert args.size_tolerance_percent is None
     assert args.min_group_size == 2
     assert args.include_keyword == []
@@ -63,15 +63,15 @@ def test_main_reports_no_duplicates_found(tmp_path, capsys):
 
 
 def test_main_dry_run_prints_groups_without_launching_ui(tmp_path, capsys):
-    _write(tmp_path, "movie.mp4")
-    _write(tmp_path, "movie_copy.mp4")
+    _write(tmp_path, "Movie.mp4")
+    _write(tmp_path, "Movie (Alt).mp4")
 
     exit_code = main([str(tmp_path), "--dry-run"])
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "movie.mp4" in output
-    assert "movie_copy.mp4" in output
+    assert "Movie.mp4" in output
+    assert "Movie (Alt).mp4" in output
 
 
 def test_main_applies_cli_exclude_keyword_flag_in_dry_run(tmp_path, capsys):
@@ -91,8 +91,8 @@ def test_main_summary_uses_post_rescan_output_dir(tmp_path, monkeypatch, capsys)
     .output_dir, which run_review's app tracks live), not the pre-launch local
     variable computed before the app ran.
     """
-    _write(tmp_path, "movie.mp4")
-    _write(tmp_path, "movie_copy.mp4")
+    _write(tmp_path, "Movie.mp4")
+    _write(tmp_path, "Movie (Alt).mp4")
 
     default_output_dir = tmp_path / "_duplicates"
     changed_output_dir = tmp_path / "custom_output"

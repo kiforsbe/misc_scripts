@@ -103,7 +103,7 @@ def find_duplicate_groups(
                 record_a, record_b = files[i], files[j]
                 if not fs.categories_compatible(record_a.category, record_b.category):
                     continue
-                if fs.similarity(record_a.name, record_b.name) < name_threshold:
+                if fs.core_similarity(record_a.name, record_b.name) < name_threshold:
                     continue
                 if size_tolerance_percent is not None and not _size_within_tolerance(
                     record_a.size, record_b.size, size_tolerance_percent

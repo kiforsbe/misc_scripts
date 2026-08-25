@@ -12,6 +12,7 @@ from pathlib import Path
 from rapidfuzz import fuzz
 
 _SEPARATOR_RE = re.compile(r"[._\-\s]+")
+_TAG_RE = re.compile(r"[\(\[][^\)\]]*[\)\]]")
 
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
@@ -37,10 +38,27 @@ _CATEGORY_BY_EXTENSION: dict[str, str] = {
 }
 
 
-def normalize(name: str) -> str:
-    stem = Path(name).stem
-    collapsed = _SEPARATOR_RE.sub(" ", stem)
+def _collapse_and_lower(text: str) -> str:
+    collapsed = _SEPARATOR_RE.sub(" ", text)
     return collapsed.strip().lower()
+
+
+def normalize(name: str) -> str:
+    return _collapse_and_lower(Path(name).stem)
+
+
+def core_title(name: str) -> str:
+    """Normalized name with bracketed release tags -- (USA), [Rev 1], etc. --
+    removed, leaving just the title. Two files are almost always the same
+    release iff their core titles are identical; the tags are exactly what
+    varies between region/language/revision copies of the same release."""
+    stem = Path(name).stem
+    without_tags = _TAG_RE.sub(" ", stem)
+    return _collapse_and_lower(without_tags)
+
+
+def core_similarity(name_a: str, name_b: str) -> float:
+    return fuzz.WRatio(core_title(name_a), core_title(name_b))
 
 
 def extension_category(name: str) -> str:

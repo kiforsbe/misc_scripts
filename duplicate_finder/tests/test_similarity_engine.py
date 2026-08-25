@@ -152,3 +152,91 @@ def test_find_duplicate_groups_rejects_min_group_size_less_than_2():
 
     with pytest.raises(ValueError, match="min_group_size must be at least 2"):
         find_duplicate_groups(files, name_threshold=50, size_tolerance_percent=None, min_group_size=0)
+
+
+# Real-world regression cases, modeled on (but not copied from) a large
+# No-Intro-style ROM set: "Title (Region) [(Language)] [(Rev N)]" naming.
+# Names below are invented, not real game titles. Duplicate detection now
+# strips bracketed tags and requires the remaining core title to match at
+# name_threshold=100 (exact) -- the CLI's new default. No threshold below
+# 100 can separate Category B/C from genuine duplicates: coincidental word
+# overlap and single-character series numbering both fuzzy-match in the
+# high 80s/90s, in the same range as true region/language variants.
+
+
+def test_find_duplicate_groups_catches_true_region_duplicate_even_when_short_title_dilutes_full_name_score():
+    """Category A (false negative): a short title plus a region tag makes the
+    FULL-NAME fuzzy score dip below the old default threshold, even though
+    these are unambiguously the same release. e.g. real "101 Shark Pets
+    (Europe)" vs "(USA)" scored 83.72 -- below the old 85 threshold. Stripping
+    the tag and comparing core titles fixes this: "otter pets" == "otter
+    pets" is an exact match regardless of threshold."""
+    files = [_record("Otter Pets (Europe).zip", category="archive"), _record("Otter Pets (USA).zip", category="archive")]
+
+    groups = find_duplicate_groups(files, name_threshold=100, size_tolerance_percent=None)
+
+    assert len(groups) == 1
+    assert {f.name for f in groups[0].files} == {"Otter Pets (Europe).zip", "Otter Pets (USA).zip"}
+
+
+def test_find_duplicate_groups_does_not_merge_unrelated_titles_that_share_words_and_region_tag():
+    """Category B (false positive): two different games that happen to share
+    words and formatting score above the old threshold on the full name even
+    though they are not duplicates. e.g. real "AiRace (USA)" vs "Airport
+    Mania - Non-Stop Flights (USA)" scored 85.50. Their core titles ("sky
+    racer" vs "sky runner airport dash") are still similar but not identical,
+    so requiring an exact core-title match correctly keeps them apart."""
+    files = [
+        _record("Sky Racer (USA).zip", category="archive"),
+        _record("Sky Runner - Airport Dash (USA).zip", category="archive"),
+    ]
+
+    groups = find_duplicate_groups(files, name_threshold=100, size_tolerance_percent=None)
+
+    assert groups == []
+
+
+def test_find_duplicate_groups_does_not_merge_numbered_series_entries():
+    """Category C (false positive): sequential entries in a numbered series
+    differ by a single character, so fuzzy matching scores them almost as
+    high as a genuine region-variant duplicate -- no fuzzy threshold fixes
+    this, since raising it just as easily excludes real duplicates. e.g. real
+    "Anonymous Notes 1/2/3 - From The Abyss (USA)" scored 96+ against each
+    other and still incorrectly grouped even at name_threshold=92. Requiring
+    an EXACT core-title match ("shadow realm 1 rising" != "shadow realm 2
+    rising") is the only threshold-independent fix."""
+    files = [
+        _record("Shadow Realm 1 - Rising (USA).zip", category="archive"),
+        _record("Shadow Realm 2 - Rising (USA).zip", category="archive"),
+        _record("Shadow Realm 3 - Rising (USA).zip", category="archive"),
+    ]
+
+    groups = find_duplicate_groups(files, name_threshold=100, size_tolerance_percent=None)
+
+    assert groups == []
+
+
+def test_find_duplicate_groups_does_not_chain_unrelated_titles_into_one_giant_group():
+    """Category D (catastrophic chaining at scale): five unrelated titles,
+    each with one genuine region-variant pair, must resolve into five
+    correctly-sized 2-file groups -- not get transitively chained together
+    into a single oversized group via union-find, the way the real 1070-file
+    ROM folder collapsed into one 1070-file "group" at the old default."""
+    files = [
+        _record("Puzzle Farmyard Friends (Europe).zip", category="archive"),
+        _record("Puzzle Farmyard Friends (USA).zip", category="archive"),
+        _record("Sky Racer (Europe).zip", category="archive"),
+        _record("Sky Racer (USA).zip", category="archive"),
+        _record("Sky Runner - Airport Dash (Europe).zip", category="archive"),
+        _record("Sky Runner - Airport Dash (USA).zip", category="archive"),
+        _record("Turbo Trail Bowling (Europe).zip", category="archive"),
+        _record("Turbo Trail Bowling (USA).zip", category="archive"),
+        _record("Turbo Trail Mini Golf (Europe).zip", category="archive"),
+        _record("Turbo Trail Mini Golf (USA).zip", category="archive"),
+    ]
+
+    groups = find_duplicate_groups(files, name_threshold=100, size_tolerance_percent=None)
+
+    assert len(groups) == 5
+    for group in groups:
+        assert len(group.files) == 2

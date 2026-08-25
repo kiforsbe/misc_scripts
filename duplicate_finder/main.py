@@ -23,8 +23,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Only scan the top level of root (default: recursive)",
     )
     parser.add_argument(
-        "--name-threshold", type=float, default=85.0,
-        help="Minimum name similarity, 0-100 (default: 85)",
+        "--name-threshold", type=float, default=100.0,
+        help=(
+            "Minimum similarity, 0-100, between core titles (filenames with "
+            "bracketed tags like region/language/revision stripped) (default: "
+            "100 -- exact core-title match). Lowering this allows fuzzier "
+            "matches but risks merging unrelated titles or numbered series "
+            "entries that only differ by a character or two."
+        ),
     )
     parser.add_argument(
         "--size-tolerance-percent", type=float, default=None,
