@@ -52,13 +52,31 @@ Tree > .tree--cursor {
     color: blue;
 }
 
-#settings-dialog, #commit-dialog {
+/* Without this, the blanket Screen{} rule above (Screen is ModalScreen's
+   base class) overrides ModalScreen's own dimmed, translucent default
+   background, and with no `align` set the dialog box renders pinned to the
+   top-left -- together that makes every dialog look like a fullscreen page
+   swap instead of a small floating modal over the dimmed tree view. */
+SettingsScreen, CommitConfirmScreen, KeywordFilterScreen {
+    background: $background 60%;
+    align: center middle;
+}
+
+#settings-dialog, #commit-dialog, #keyword-dialog {
     background: blue;
     color: white;
     border: solid white;
     padding: 1 2;
     width: 64;
     height: auto;
+}
+
+/* Horizontal/Vertical default to height: 1fr, so a button row placed in one
+   of these auto-height dialogs would otherwise stretch to fill all
+   remaining screen space instead of hugging the buttons' own height. */
+.dialog-buttons {
+    height: auto;
+    width: auto;
 }
 
 /* Settings has more fields than a terminal is guaranteed to be tall enough

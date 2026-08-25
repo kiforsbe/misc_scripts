@@ -48,6 +48,9 @@ python -m duplicate_finder <root> [options]
 - `Enter` — toggle keep/discard on the focused file
 - `k` — mark every file in the group under the cursor as "keep"
 - `d` — mark every file in the group under the cursor as "discard"
+- `s` — keyword keep/discard: mark every file whose name matches a keyword
+  (case-insensitive substring) as "keep" or "discard", across every group at
+  once — not just the group under the cursor
 - `F2` — open the settings dialog (rescan with new parameters; discards
   unsaved keep/discard choices)
 - `Ctrl+S` — commit: move every "discard" file in every reviewed group to

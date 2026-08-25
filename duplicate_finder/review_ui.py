@@ -17,10 +17,11 @@ from typing import Callable
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Select, Switch, Tree
 
+from .filename_similarity import matches_keyword_filters
 from .similarity_engine import DuplicateGroup, FileRecord
 
 RescanFn = Callable[["ScanParams"], list[DuplicateGroup]]
@@ -97,8 +98,9 @@ class CommitConfirmScreen(ModalScreen[bool]):
                 f"{total_files} file(s) across {len(self._resolved_states)} group(s) "
                 f"will be moved to {self._output_dir}, totalling {_human_size(total_bytes)}."
             )
-            yield Button("Confirm", id="confirm", variant="primary")
-            yield Button("Cancel", id="cancel")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Confirm", id="confirm", variant="primary")
+                yield Button("Cancel", id="cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "confirm")
@@ -142,7 +144,7 @@ class SettingsScreen(ModalScreen[ScanParams | None]):
             yield Input(value=", ".join(self._params.exclude_keywords), id="exclude-keywords")
             yield Label("Output directory")
             yield Input(value=str(self._params.output_dir), id="output-dir")
-            with Vertical():
+            with Horizontal(classes="dialog-buttons"):
                 yield Button("Apply && Rescan", id="apply", variant="primary")
                 yield Button("Cancel", id="cancel")
 
@@ -214,6 +216,28 @@ class SettingsScreen(ModalScreen[ScanParams | None]):
         )
 
 
+class KeywordFilterScreen(ModalScreen[tuple[str, str] | None]):
+    def compose(self) -> ComposeResult:
+        with Vertical(id="keyword-dialog"):
+            yield Label("Keyword (case-insensitive substring match against filename)")
+            yield Input(placeholder="e.g. USA", id="keyword-input")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Keep matching", id="keyword-keep", variant="primary")
+                yield Button("Discard matching", id="keyword-discard")
+                yield Button("Cancel", id="keyword-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "keyword-cancel":
+            self.dismiss(None)
+            return
+        keyword = self.query_one("#keyword-input", Input).value.strip()
+        if not keyword:
+            self.notify("Enter a keyword first.", severity="error")
+            return
+        action = "keep" if event.button.id == "keyword-keep" else "discard"
+        self.dismiss((keyword, action))
+
+
 class DuplicateReviewApp(App):
     CSS_PATH = "review_ui.tcss"
     BINDINGS = [
@@ -221,6 +245,7 @@ class DuplicateReviewApp(App):
         ("ctrl+s", "commit", "Commit"),
         ("k", "keep_all_in_group", "Keep all in group"),
         ("d", "discard_all_in_group", "Discard all in group"),
+        ("s", "keyword_filter", "Keyword keep/discard"),
         ("q", "quit", "Quit"),
     ]
 
@@ -323,6 +348,40 @@ class DuplicateReviewApp(App):
         state.keep = set()
         state.touched = True
         self._refresh_group(key)
+
+    def action_keyword_filter(self) -> None:
+        self.push_screen(KeywordFilterScreen(), self._handle_keyword_filter_result)
+
+    def _handle_keyword_filter_result(self, result: tuple[str, str] | None) -> None:
+        if result is None:
+            return
+        keyword, action = result
+        matched_files = 0
+        matched_group_keys: list[str] = []
+        for key, state in self._states.items():
+            group_matched = False
+            for index, file in enumerate(state.group.files):
+                if not matches_keyword_filters(file.name, [keyword], []):
+                    continue
+                group_matched = True
+                matched_files += 1
+                if action == "keep":
+                    state.keep.add(index)
+                else:
+                    state.keep.discard(index)
+            if group_matched:
+                state.touched = True
+                matched_group_keys.append(key)
+
+        if not matched_group_keys:
+            self.notify(f"No files matched {keyword!r}.")
+            return
+        for key in matched_group_keys:
+            self._refresh_group(key)
+        verb = "Kept" if action == "keep" else "Discarded"
+        self.notify(
+            f"{verb} {matched_files} file(s) matching {keyword!r} across {len(matched_group_keys)} group(s)."
+        )
 
     def action_open_settings(self) -> None:
         self.push_screen(SettingsScreen(self.params), self._handle_settings_result)

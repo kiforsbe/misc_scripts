@@ -379,3 +379,143 @@ async def test_rescan_failure_notifies_and_preserves_existing_state(tmp_path):
         assert state_after.resolved is True
         tree = app.query_one("#group-tree", Tree)
         assert len(list(tree.root.children)) == 1
+
+
+def _make_region_groups(tmp_path: Path) -> list[DuplicateGroup]:
+    """Three groups spread across region tags so that both a "USA" keyword
+    search and a "Europe" keyword search each have at least one group with
+    zero matches, proving keyword actions are selective rather than touching
+    every group indiscriminately: group 0 has USA+Europe, group 1 has
+    USA+Japan (no Europe), group 2 has Europe+Japan (no USA).
+    """
+    groups = []
+    for label, tags in [
+        ("game", ["USA", "Europe"]),
+        ("other", ["USA", "Japan"]),
+        ("solo", ["Europe", "Japan"]),
+    ]:
+        files = []
+        for tag in tags:
+            file_path = _write(tmp_path, f"{label} ({tag}).mp4")
+            files.append(FileRecord(path=file_path, name=file_path.name, size=10, category="video"))
+        groups.append(DuplicateGroup(label=label, files=files))
+    return groups
+
+
+@pytest.mark.asyncio
+async def test_keyword_filter_discard_marks_matching_files_across_all_groups(tmp_path):
+    groups = _make_region_groups(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=groups, params=_make_params(tmp_path), rescan=_no_op_rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+
+        app.screen.query_one("#keyword-input", Input).value = "Europe"
+        await pilot.click("#keyword-discard")
+        await pilot.pause()
+
+        states = list(app._states.values())
+        # group 0 ("game"): USA, Europe -- Europe file discarded
+        assert states[0].keep == {0}
+        assert states[0].touched is True
+        # group 1 ("other"): USA, Japan -- no match, left completely alone
+        assert states[1].keep == {0, 1}
+        assert states[1].touched is False
+        # group 2 ("solo"): Europe, Japan -- Europe file discarded
+        assert states[2].keep == {1}
+        assert states[2].touched is True
+
+
+@pytest.mark.asyncio
+async def test_keyword_filter_keep_restores_only_matching_files(tmp_path):
+    groups = _make_region_groups(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=groups, params=_make_params(tmp_path), rescan=_no_op_rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        # Simulate every file across every group already having been
+        # discarded, to make a "keep" action's selectivity observable.
+        for state in app._states.values():
+            state.keep = set()
+            state.touched = True
+
+        await pilot.press("s")
+        await pilot.pause()
+
+        app.screen.query_one("#keyword-input", Input).value = "USA"
+        await pilot.click("#keyword-keep")
+        await pilot.pause()
+
+        states = list(app._states.values())
+        # group 0 ("game"): USA, Europe -- only the USA file comes back
+        assert states[0].keep == {0}
+        # group 1 ("other"): USA, Japan -- only the USA file comes back
+        assert states[1].keep == {0}
+        # group 2 ("solo"): Europe, Japan -- no USA file, stays fully discarded
+        assert states[2].keep == set()
+
+
+@pytest.mark.asyncio
+async def test_keyword_filter_cancel_leaves_state_unchanged(tmp_path):
+    groups = _make_region_groups(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=groups, params=_make_params(tmp_path), rescan=_no_op_rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+
+        app.screen.query_one("#keyword-input", Input).value = "USA"
+        await pilot.click("#keyword-cancel")
+        await pilot.pause()
+
+        for state in app._states.values():
+            assert state.keep == {0, 1}
+            assert state.touched is False
+
+
+@pytest.mark.asyncio
+async def test_keyword_filter_blank_keyword_keeps_dialog_open(tmp_path):
+    groups = _make_region_groups(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=groups, params=_make_params(tmp_path), rescan=_no_op_rescan)
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+
+        keyword_input = app.screen.query_one("#keyword-input", Input)
+        await pilot.click("#keyword-discard")
+        await pilot.pause()
+
+        # Empty keyword must not crash or dismiss the dialog -- same
+        # validate-and-stay pattern as the settings dialog's bad-threshold case.
+        assert app.screen.query_one("#keyword-input", Input) is keyword_input
+        for state in app._states.values():
+            assert state.keep == {0, 1}
+            assert state.touched is False
+
+
+@pytest.mark.asyncio
+async def test_keyword_filter_no_matches_notifies_and_leaves_state_unchanged(tmp_path, monkeypatch):
+    groups = _make_region_groups(tmp_path)
+    app = DuplicateReviewApp(root=tmp_path, groups=groups, params=_make_params(tmp_path), rescan=_no_op_rescan)
+
+    notifications: list[str] = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
+
+    async with app.run_test(size=(80, 50)) as pilot:
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+
+        app.screen.query_one("#keyword-input", Input).value = "no-such-tag"
+        await pilot.click("#keyword-discard")
+        await pilot.pause()
+
+        assert any("no-such-tag" in message for message in notifications)
+        for state in app._states.values():
+            assert state.keep == {0, 1}
+            assert state.touched is False
