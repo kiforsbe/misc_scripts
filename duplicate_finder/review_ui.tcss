@@ -14,6 +14,34 @@ Footer {
     color: blue;
 }
 
+/* Footer renders key hints via FooterKey, whose text is styled through the
+   footer-key--key/footer-key--description component classes rather than
+   Footer's own background/color -- without these, the built-in theme's
+   tokens win and produce low-contrast text regardless of the rule above. */
+FooterKey {
+    background: white;
+}
+
+FooterKey .footer-key--key {
+    background: white;
+    color: blue;
+    text-style: bold;
+}
+
+FooterKey .footer-key--description {
+    background: white;
+    color: blue;
+}
+
+FooterKey:hover {
+    background: yellow;
+}
+
+FooterLabel {
+    background: white;
+    color: blue;
+}
+
 Tree {
     background: blue;
     color: white;
