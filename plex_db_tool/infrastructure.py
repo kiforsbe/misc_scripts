@@ -338,11 +338,22 @@ class PlexDatabase:
         for param in params:
             rendered_sql = rendered_sql.replace("?", self._sql_literal(param), 1)
 
-        result = run_external_sqlite_command(
-            self.plex_sqlite_executable,
-            self.db_path,
-            rendered_sql,
-        )
+        # self.connection may be holding its own open write transaction (e.g. begin_immediate()
+        # from a caller's apply_mutations wrapper). That lock would block this external Plex
+        # SQLite process from writing to the same database file ("database is locked"), so
+        # release it for the duration of the external write and resume it afterward.
+        resume_transaction = self.connection.in_transaction
+        if resume_transaction:
+            self.connection.commit()
+        try:
+            result = run_external_sqlite_command(
+                self.plex_sqlite_executable,
+                self.db_path,
+                rendered_sql,
+            )
+        finally:
+            if resume_transaction:
+                self.connection.execute("BEGIN IMMEDIATE")
         if result.returncode != 0:
             raise RuntimeError(
                 f"Plex SQLite write failed: {result.stderr.strip() or result.stdout.strip()}"
