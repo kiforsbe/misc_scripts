@@ -1840,8 +1840,6 @@ def filter_sync_output_plans(
         for plan in plans
         if str(plan.get("status") or "") != "skipped_removed"
         and str(plan.get("action") or "") != "skip_removed"
-        and str(plan.get("status") or "") != "no_transferable_items"
-        and str(plan.get("action") or "") != "skip_unmatched"
     ]
 
 
