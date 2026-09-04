@@ -52,7 +52,7 @@ Miscellaneous scripts to automate common tasks.
     - [udio-flask-webservice.py](#udio-flask-webservicepy-udio-download_ext-buttonuserjs): Downloads songs with embedded metadata, cover art, and optional enrichment.
     - [rss-feed-downloader.py](#rss-feed-downloaderpy): Downloads selected RSS enclosures with terminal-based selection and progress.
     - [simple_http_proxy.py](#simple_http_proxypy): Serves remote resources through simple URL-based local proxying.
-    - [socks5_http_tunneler.py](#socks5_http_tunnelerpy): Local HTTP tunnel that forwards upstream traffic through SOCKS5.
+    - [socks5_http_tunneler.py](#socks5_http_tunnelerpy): Local HTTP tunnel that forwards upstream traffic through an HTTP, HTTPS, SOCKS4, or SOCKS5 proxy.
     - [radio_station_checker.py](#radio_station_checkerpy): Checks radio stream availability with a high-performance terminal interface.
     - [serve_local.py](#serve_localpy): Serves local files or folders with optional live-reload and file proxy.
   - File, Clipboard & Document Utilities
@@ -850,11 +850,12 @@ This is **not** a real HTTP proxy, but a tool to fetch a specific file or simila
 - No external dependencies required (uses only Python standard libraries)
 
 ### socks5_http_tunneler.py
-A one-file local HTTP tunneler that accepts a target URL via query string and forwards upstream traffic through a configured SOCKS5 proxy. It rewrites redirected and embedded upstream URLs into local proxy paths so navigation continues through the local endpoint while upstream requests still look native to the target host.
+A one-file local HTTP tunneler that accepts a target URL via query string and forwards upstream traffic through a configured HTTP, HTTPS, SOCKS4, or SOCKS5 proxy. It rewrites redirected and embedded upstream URLs into local proxy paths so navigation continues through the local endpoint while upstream requests still look native to the target host.
 
 #### Features
 - Accepts entry URLs in the form `http://localhost:8080/?url=http://example.com`
-- Forwards both HTTP and HTTPS upstream requests through a user-supplied SOCKS5 proxy
+- Forwards both HTTP and HTTPS upstream requests through a user-supplied `http://`, `https://`, `socks4://`, `socks5://`, or `socks5h://` proxy (bare `host:port` defaults to `socks5h://`)
+- `--proxy-file` accepts a mixed list of proxy URLs across all four types, testing and rotating between whichever are live
 - Rewrites `Location` headers, common HTML URL attributes, CSS `url(...)` references, `srcset`, and meta refresh redirects into local proxy paths
 - Injects a small client-side shim so browser-side `fetch`, `XMLHttpRequest`, `history`, `window.open`, and form submissions continue using the local tunnel
 - Supports verbose `--debug` logging for request resolution, upstream headers, response metadata, and rewrite previews
@@ -863,20 +864,26 @@ A one-file local HTTP tunneler that accepts a target URL via query string and fo
 #### Usage Examples
 ```bash
 # Start the tunnel through a SOCKS5 proxy
-python socks5_http_tunneler.py --socks5 127.0.0.1:1080
+python socks5_http_tunneler.py --proxy 127.0.0.1:1080
+
+# Start the tunnel through an HTTP or HTTPS proxy
+python socks5_http_tunneler.py --proxy http://127.0.0.1:8888
 
 # Enable debug logging
-python socks5_http_tunneler.py --socks5 socks5://127.0.0.1:1080 --debug
+python socks5_http_tunneler.py --proxy socks5://127.0.0.1:1080 --debug
 
 # Trust a private proxy root CA bundle for upstream HTTPS
-python socks5_http_tunneler.py --socks5 socks5://127.0.0.1:1080 --ca-bundle C:\path\to\proxy-root-ca.pem
+python socks5_http_tunneler.py --proxy socks5://127.0.0.1:1080 --ca-bundle C:\path\to\proxy-root-ca.pem
 
 # Disable upstream HTTPS verification entirely
-python socks5_http_tunneler.py --socks5 socks5://127.0.0.1:1080 --insecure
+python socks5_http_tunneler.py --proxy socks5://127.0.0.1:1080 --insecure
+
+# Rotate across a mixed list of proxies from a file
+python socks5_http_tunneler.py --proxy-file proxies.txt --rotation-interval 30m
 ```
 
 #### Requires
-- requests with SOCKS support: `pip install "requests[socks]"`
+- requests with SOCKS support: `pip install "requests[socks]"` (SOCKS4/SOCKS5 proxies need PySocks; HTTP/HTTPS-only proxies work with plain `requests`, but the script imports SOCKS support unconditionally)
 
 ### radio_station_checker.py
 A multi-threaded Python script that checks the availability of radio stations from SII, PLS, and M3U playlist files. It provides a real-time terminal interface with virtualized rendering for performance, displaying station status, response times, and metadata in an organized table format.
