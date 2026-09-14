@@ -640,6 +640,30 @@ body {
   margin-left: 5px;
 }
 
+.airing-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.airing-finished {
+  background: rgba(47, 158, 68, 0.12);
+  color: var(--success-color);
+}
+
+.airing-ongoing {
+  background: rgba(23, 162, 184, 0.12);
+  color: #117a8b;
+}
+
+.airing-upcoming {
+  background: rgba(216, 155, 20, 0.14);
+  color: #8d6300;
+}
+
 .series-group {
   margin-bottom: 0.5rem;
 }

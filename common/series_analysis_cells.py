@@ -8,6 +8,7 @@ STATUS_WIDTH = 6
 EPISODES_WIDTH = 9
 EPISODE_RANGE_WIDTH = 20  # shared by watched / missing / extra
 MAL_STATUS_WIDTH = 13
+AIRING_STATUS_WIDTH = 8  # "upcoming"
 MODIFIED_WIDTH = 10  # "YYYY-MM-DD" -- date only, no time-of-day
 SIZE_WIDTH = 9
 
@@ -25,6 +26,31 @@ _MAL_STATUS_COLORS = {
     'dropped': Colors.RED,
     'plan to watch': Colors.BRIGHT_BLACK,
 }
+
+AIRING_STATUSES = {'finished', 'ongoing', 'upcoming', 'unknown'}
+# IMDb titles report their own vocabulary; fold it into the anime one.
+_AIRING_STATUS_ALIASES = {'continuing': 'ongoing', 'ended': 'finished'}
+
+_AIRING_STATUS_COLORS = {
+    'finished': Colors.GREEN,
+    'ongoing': Colors.CYAN,
+    'upcoming': Colors.YELLOW,
+}
+
+
+def normalize_airing_status(raw_status: Any) -> str:
+    """Map a metadata status ("FINISHED", "Continuing", ...) to one of AIRING_STATUSES."""
+    status = str(raw_status or '').strip().lower()
+    status = _AIRING_STATUS_ALIASES.get(status, status)
+    return status if status in AIRING_STATUSES else 'unknown'
+
+
+def get_group_airing_status(group: Dict[str, Any], title_metadata: Dict[str, Any]) -> str:
+    """Airing status from title_metadata[metadata_id].status, falling back to group_metadata.status."""
+    metadata_id = group.get('metadata_id')
+    title_info = title_metadata.get(str(metadata_id), {}) if metadata_id else {}
+    raw_status = (title_info or {}).get('status') or (group.get('group_metadata') or {}).get('status')
+    return normalize_airing_status(raw_status)
 
 
 @dataclass
@@ -46,6 +72,7 @@ class SeriesDisplayRow:
     missing: List[int]
     extra: List[int]
     mal_status: Optional[str]
+    airing_status: str
     modified: Optional[float]
     size: Optional[int]
 
@@ -68,6 +95,11 @@ def build_display_row(analysis: Dict[str, Any], index: Optional[int] = None) -> 
     if isinstance(mal_status, str) and not mal_status.strip():
         mal_status = None
 
+    # Callers holding title_metadata pass a resolved 'airing_status';
+    # otherwise fall back to the status copied into group_metadata.
+    group_metadata = analysis.get('group_metadata') or {}
+    airing_status = normalize_airing_status(analysis.get('airing_status') or group_metadata.get('status'))
+
     return SeriesDisplayRow(
         index=index,
         status=analysis.get('status'),
@@ -79,7 +111,8 @@ def build_display_row(analysis: Dict[str, Any], index: Optional[int] = None) -> 
         missing=analysis.get('missing_episodes', []),
         extra=analysis.get('extra_episodes', []),
         mal_status=mal_status,
-        modified=(analysis.get('group_metadata') or {}).get('avg_modified_time'),
+        airing_status=airing_status,
+        modified=group_metadata.get('avg_modified_time'),
         size=analysis.get('total_size_bytes'),
     )
 
@@ -129,6 +162,14 @@ def mal_status_color(mal_status: Optional[str]) -> Optional[str]:
     if not mal_status:
         return None
     return _MAL_STATUS_COLORS.get(mal_status.strip().lower(), Colors.MAGENTA)
+
+
+def airing_status_cell(airing_status: Optional[str]) -> str:
+    return '' if not airing_status or airing_status == 'unknown' else airing_status.capitalize()
+
+
+def airing_status_color(airing_status: Optional[str]) -> Optional[str]:
+    return _AIRING_STATUS_COLORS.get(airing_status or '')
 
 
 def modified_cell(modified_at: Optional[float]) -> str:

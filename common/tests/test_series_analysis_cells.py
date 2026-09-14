@@ -2,7 +2,11 @@ import datetime
 
 from common.presentation import Colors
 from common.series_analysis_cells import (
+    airing_status_cell,
+    airing_status_color,
     build_display_row,
+    get_group_airing_status,
+    normalize_airing_status,
     episode_range_cell,
     episodes_cell,
     mal_status_cell,
@@ -86,6 +90,20 @@ def test_build_display_row_mal_status_none_when_blank_string():
     analysis = _analysis(myanimelist_watch_status={"my_status": "   "})
     row = build_display_row(analysis)
     assert row.mal_status is None
+
+
+def test_build_display_row_prefers_explicit_airing_status():
+    analysis = _analysis(airing_status="ONGOING", group_metadata={"status": "FINISHED"})
+    assert build_display_row(analysis).airing_status == "ongoing"
+
+
+def test_build_display_row_airing_status_falls_back_to_group_metadata():
+    row = build_display_row(_analysis(group_metadata={"status": "UPCOMING"}))
+    assert row.airing_status == "upcoming"
+
+
+def test_build_display_row_airing_status_unknown_when_missing():
+    assert build_display_row(_analysis()).airing_status == "unknown"
 
 
 def test_build_display_row_extracts_modified_from_group_metadata():
@@ -191,6 +209,39 @@ def test_mal_status_color_falls_back_for_unknown_status():
 
 def test_mal_status_color_none_when_no_status():
     assert mal_status_color(None) is None
+
+
+def test_normalize_airing_status_maps_anime_and_imdb_values():
+    assert normalize_airing_status("FINISHED") == "finished"
+    assert normalize_airing_status("Ended") == "finished"
+    assert normalize_airing_status("Continuing") == "ongoing"
+    assert normalize_airing_status("UPCOMING") == "upcoming"
+    assert normalize_airing_status(None) == "unknown"
+    assert normalize_airing_status("Cancelled") == "unknown"
+
+
+def test_get_group_airing_status_prefers_title_metadata_over_group_metadata():
+    group = {"metadata_id": "tt1", "group_metadata": {"status": "FINISHED"}}
+    assert get_group_airing_status(group, {"tt1": {"status": "Continuing"}}) == "ongoing"
+
+
+def test_get_group_airing_status_falls_back_to_group_metadata():
+    group = {"metadata_id": "missing", "group_metadata": {"status": "UPCOMING"}}
+    assert get_group_airing_status(group, {}) == "upcoming"
+    assert get_group_airing_status({}, {}) == "unknown"
+
+
+def test_airing_status_cell_blank_for_unknown():
+    assert airing_status_cell("unknown") == ''
+    assert airing_status_cell("ongoing") == "Ongoing"
+    assert airing_status_cell("upcoming") == "Upcoming"
+
+
+def test_airing_status_color_maps_known_statuses():
+    assert airing_status_color("finished") == Colors.GREEN
+    assert airing_status_color("ongoing") == Colors.CYAN
+    assert airing_status_color("upcoming") == Colors.YELLOW
+    assert airing_status_color("unknown") is None
 
 
 def test_modified_cell_is_date_only_no_time_of_day():

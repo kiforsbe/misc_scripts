@@ -12,15 +12,20 @@ from common.video_thumbnail_generator import VideoThumbnailGenerator
 from common.file_grouper import FileGrouper, CustomJSONEncoder
 from common.presentation import Colors, Format, Table, TableColumn
 from common.series_analysis_cells import (
+    AIRING_STATUS_WIDTH,
+    AIRING_STATUSES,
     EPISODE_RANGE_WIDTH,
     EPISODES_WIDTH,
     MAL_STATUS_WIDTH,
     MODIFIED_WIDTH,
     SIZE_WIDTH,
     STATUS_WIDTH,
+    airing_status_cell,
+    airing_status_color,
     build_display_row,
     episode_range_cell,
     episodes_cell,
+    get_group_airing_status,
     mal_status_cell,
     mal_status_color,
     modified_cell,
@@ -258,10 +263,30 @@ class ResultsFilter:
                     filtered_groups[group_key] = analysis
         
         results['groups'] = filtered_groups
-        
+
         # Recalculate summary
         self._recalculate_summary(results)
-    
+
+    def apply_airing_status_filter(self, results: Dict[str, Any], airing_status_filters: List[str]) -> None:
+        """Apply airing status filters (finished/ongoing/upcoming/unknown) to results and update summary.
+
+        Args:
+            results: Results dictionary to filter (modified in place)
+            airing_status_filters: List of airing status filter strings
+        """
+        final_airing_statuses = self.parse_filter_patterns(
+            [item.lower() for item in airing_status_filters], AIRING_STATUSES)
+        title_metadata = results.get('title_metadata', {}) or {}
+
+        results['groups'] = {
+            key: analysis
+            for key, analysis in results['groups'].items()
+            if get_group_airing_status(analysis, title_metadata) in final_airing_statuses
+        }
+
+        # Recalculate summary
+        self._recalculate_summary(results)
+
     def _recalculate_summary(self, results: Dict[str, Any]) -> None:
         """Recalculate summary statistics after filtering.
         
@@ -406,7 +431,12 @@ Refresh Operations:
                                 '-status to exclude specific statuses, or plain status names for exact match. '
                                 'Available MAL statuses: watching, completed, on-hold, dropped, plan-to-watch. '
                                 'Examples: "watching completed", "+completed +on-hold", "-dropped -plan-to-watch"')
-        
+        parser.add_argument('--airing-status', metavar='FILTERS',
+                           help='Filter results by airing status from title metadata: finished, ongoing, upcoming, unknown '
+                                '(IMDb "Continuing"/"Ended" map to ongoing/finished; series without metadata count as unknown). '
+                                'Use +status to include, -status to exclude, or plain names for exact match. '
+                                'Examples: "ongoing upcoming", --airing-status=-finished (use = when the value starts with -).')
+
         # Metadata arguments
         parser.add_argument('--show-metadata', nargs='*', metavar='FIELD',
                            help='Show metadata fields in summary lines. Available fields depend on metadata source. '
@@ -1474,13 +1504,19 @@ class SeriesCompletenessChecker:
                             formatter=lambda eps: episode_range_cell(eps, Colors.YELLOW, use_colors)),
                 TableColumn(name='mal_status', label='MAL Status', width=MAL_STATUS_WIDTH,
                             formatter=mal_status_cell, color=mal_status_color),
+                TableColumn(name='airing_status', label='Airing', width=AIRING_STATUS_WIDTH,
+                            formatter=airing_status_cell, color=airing_status_color),
                 TableColumn(name='modified', label='Modified', width=MODIFIED_WIDTH,
                             formatter=modified_cell),
                 TableColumn(name='size', label='Size', align='right', width=SIZE_WIDTH,
                             formatter=size_cell),
             ]
             summary_table = Table(columns, style='plain', use_colors=use_colors)
-            rows = [build_display_row(analysis) for _group_key, analysis in sorted(results['groups'].items())]
+            title_metadata = results.get('title_metadata', {}) or {}
+            rows = [
+                build_display_row({**analysis, 'airing_status': get_group_airing_status(analysis, title_metadata)})
+                for _group_key, analysis in sorted(results['groups'].items())
+            ]
             print(summary_table.render(rows))
 
     def _copy_thumbnails_from_global_cache(self, target_dir: str, files: List[Path], verbosity: int) -> int:
@@ -2033,7 +2069,10 @@ def main():
     if hasattr(args, 'mal_status_filter') and args.mal_status_filter:
         mal_status_filters = args.mal_status_filter.split()
         _apply_mal_status_filters(results, mal_status_filters)
-    
+
+    if getattr(args, 'airing_status', None):
+        ResultsFilter().apply_airing_status_filter(results, args.airing_status.replace(',', ' ').split())
+
     # Display results
     if verbosity >= 1:
         checker.print_summary(results, verbosity, args.show_metadata)

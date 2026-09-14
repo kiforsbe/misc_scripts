@@ -17,17 +17,22 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Protocol
 sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 from common.presentation import Colors, Icons, Table, TableColumn
 from common.series_analysis_cells import (
+    AIRING_STATUS_WIDTH,
+    AIRING_STATUSES,
     EPISODE_RANGE_WIDTH,
     EPISODES_WIDTH,
     MAL_STATUS_WIDTH,
     MODIFIED_WIDTH,
     SIZE_WIDTH,
     STATUS_WIDTH,
+    airing_status_cell,
+    airing_status_color,
     build_display_row,
     episode_range_cell,
     episodes_cell,
     mal_status_cell,
     mal_status_color,
+    get_group_airing_status,
     modified_cell,
     size_cell,
     status_cell,
@@ -2992,6 +2997,8 @@ def cmd_list(args):
         print("No groups found in the data.")
         return 0
     
+    title_metadata = (archiver.data or {}).get('title_metadata', {}) or {}
+
     # Add original indices to groups for preservation
     indexed_groups = [(i + 1, group_key, details) for i, (group_key, details) in enumerate(groups)]
     
@@ -3122,7 +3129,35 @@ def cmd_list(args):
             ):
                 filtered_indexed_groups.append((original_index, group_key, details))
         indexed_groups = filtered_indexed_groups
-    
+
+    if hasattr(args, 'airing_status') and args.airing_status:
+        include_airing, exclude_airing, plain_airing = set(), set(), set()
+        for filter_item in args.airing_status.replace(',', ' ').split():
+            target = plain_airing
+            if filter_item[0] in '+-':
+                target = include_airing if filter_item[0] == '+' else exclude_airing
+                filter_item = filter_item[1:]
+            value = filter_item.strip().lower()
+            if value not in AIRING_STATUSES:
+                print(f"Error: Invalid --airing-status value '{filter_item}'. "
+                      f"Use: {', '.join(sorted(AIRING_STATUSES))}")
+                return 1
+            target.add(value)
+
+        if plain_airing:
+            final_airing_statuses = plain_airing
+        elif include_airing:
+            final_airing_statuses = include_airing - exclude_airing
+        else:
+            final_airing_statuses = AIRING_STATUSES - exclude_airing
+
+        filtered_indexed_groups = []
+        for original_index, group_key, details in indexed_groups:
+            airing_status = get_group_airing_status(details.get('data', {}), title_metadata)
+            if airing_status in final_airing_statuses:
+                filtered_indexed_groups.append((original_index, group_key, details))
+        indexed_groups = filtered_indexed_groups
+
     # Sort alphabetically if requested while preserving original indices
     if hasattr(args, 'sort') and args.sort:
         indexed_groups.sort(key=lambda x: x[2]['title'].lower())  # Sort by title (case-insensitive)
@@ -3154,6 +3189,8 @@ def cmd_list(args):
                     formatter=lambda eps: episode_range_cell(eps, Colors.YELLOW, use_colors)),
         TableColumn(name='mal_status', label='MAL Status', width=MAL_STATUS_WIDTH,
                     formatter=mal_status_cell, color=mal_status_color),
+        TableColumn(name='airing_status', label='Airing', width=AIRING_STATUS_WIDTH,
+                    formatter=airing_status_cell, color=airing_status_color),
         TableColumn(name='modified', label='Modified', width=MODIFIED_WIDTH,
                     formatter=modified_cell),
         TableColumn(name='size', label='Size', align='right', width=SIZE_WIDTH,
@@ -3176,6 +3213,7 @@ def cmd_list(args):
             'extra_episodes': group_data.get('extra_episodes', []),
             'group_metadata': group_data.get('group_metadata', {}),
             'myanimelist_watch_status': group_data.get('myanimelist_watch_status'),
+            'airing_status': get_group_airing_status(group_data, title_metadata),
             'total_size_bytes': sum(f.get('file_size', 0) for f in group_data.get('files', [])),
         }
         rows.append(build_display_row(analysis, index=original_index))
@@ -3382,6 +3420,12 @@ def main():
     list_parser.add_argument('--episodes-expected', metavar='EXPR',
                             help='Filter by the expected episode count from metadata. Supports single expressions like "12" or "<=24", '
                                  'closed ranges like "12..24", and combined conditions like ">=12, <25".')
+    list_parser.add_argument('--airing-status', metavar='FILTERS',
+                            help='Filter by airing status from title_metadata: finished, ongoing, upcoming, unknown '
+                                 '(IMDb "Continuing"/"Ended" map to ongoing/finished; groups without metadata count as unknown). '
+                                 'Same syntax as --status-filter: '
+                                 'plain names for exact match, +status to include, -status to exclude. '
+                                 'Examples: "ongoing upcoming", --airing-status=-finished (use = when the value starts with -).')
     list_parser.add_argument('--no-color', action='store_true',
                             help='Disable color formatting in output')
     

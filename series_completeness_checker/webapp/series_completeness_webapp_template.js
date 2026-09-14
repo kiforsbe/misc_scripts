@@ -73,6 +73,7 @@ class SeriesCompletenessApp {
         this.combinedQuery = '';
         this.statusFilter = 'all';
         this.malStatusFilter = 'all';
+        this.airingStatusFilter = 'all';
         this.watchStatusFilter = 'all';
         this.showRatingFilter = 'all';
         this.modifiedFilterQuery = '';
@@ -203,6 +204,20 @@ class SeriesCompletenessApp {
         return status ? this.normalizeStatusValue(status) : 'no-mal-data';
     }
 
+    // Mirrors common/series_analysis_cells.py normalize_airing_status():
+    // title_metadata wins over group_metadata (getTitleMetadata merge order),
+    // and IMDb's "Continuing"/"Ended" fold into the anime vocabulary.
+    getNormalizedAiringStatus(titleMetadata) {
+        const aliases = { continuing: 'ongoing', ended: 'finished' };
+        const raw = String(titleMetadata.status || '').trim().toLowerCase();
+        const status = aliases[raw] || raw;
+        return ['finished', 'ongoing', 'upcoming'].includes(status) ? status : 'unknown';
+    }
+
+    getAiringStatusLabel(airingStatus) {
+        return airingStatus.charAt(0).toUpperCase() + airingStatus.slice(1);
+    }
+
     getNormalizedWatchStatus(series) {
         const watchStatus = series.watch_status || {};
         const watchedEpisodes = watchStatus.watched_episodes || 0;
@@ -234,6 +249,7 @@ class SeriesCompletenessApp {
             series.season || '',
             series.myanimelist_watch_status?.my_status || '',
             this.getNormalizedWatchStatus(series),
+            series._filterAiringStatus !== 'unknown' ? series._filterAiringStatus : '',
             filenames,
             tags,
             genres,
@@ -253,6 +269,8 @@ class SeriesCompletenessApp {
         series._filterStatusLabel = this.formatStatus(series.status);
         series._filterWatchStatus = this.getNormalizedWatchStatus(series);
         series._filterMalStatus = this.getNormalizedMalStatus(series);
+        series._filterAiringStatus = this.getNormalizedAiringStatus(titleMetadata);
+        series._filterAiringStatusLabel = this.getAiringStatusLabel(series._filterAiringStatus);
         series._filterTypeLabel = typeLabel;
         series._filterType = this.normalizeStatusValue(typeLabel);
         series._filterTags = Array.isArray(titleMetadata.tags) ? titleMetadata.tags : [];
@@ -466,7 +484,13 @@ class SeriesCompletenessApp {
             this.malStatusFilter = e.target.value;
             this.filterAndDisplaySeries();
         });
-        
+
+        const airingStatusFilter = document.getElementById('airing-status-filter');
+        airingStatusFilter.addEventListener('change', (e) => {
+            this.airingStatusFilter = e.target.value;
+            this.filterAndDisplaySeries();
+        });
+
         const watchStatusFilter = document.getElementById('watch-status-filter');
         watchStatusFilter.addEventListener('change', (e) => {
             this.watchStatusFilter = e.target.value;
@@ -1059,10 +1083,11 @@ class SeriesCompletenessApp {
             const matchesStatus = this.statusFilter === 'all' || series._filterStatus === this.statusFilter;
             const matchesWatch = this.watchStatusFilter === 'all' || series._filterWatchStatus === this.watchStatusFilter;
             const matchesMalStatus = this.malStatusFilter === 'all' || series._filterMalStatus === this.malStatusFilter;
+            const matchesAiringStatus = this.airingStatusFilter === 'all' || series._filterAiringStatus === this.airingStatusFilter;
             const matchesRating = this.matchesShowRatingFilter(series);
             const matchesModified = this.matchesModifiedFilter(series);
 
-            if (matchesSearch && matchesStatus && matchesWatch && matchesMalStatus && matchesRating && matchesModified) {
+            if (matchesSearch && matchesStatus && matchesWatch && matchesMalStatus && matchesAiringStatus && matchesRating && matchesModified) {
                 this.filteredSeries.push({ key, ...series });
             }
         }
@@ -1206,6 +1231,8 @@ class SeriesCompletenessApp {
                 groupName = s._filterStatusLabel;
             } else if (this.groupBy === 'mal-status') {
                 groupName = s.myanimelist_watch_status?.my_status || 'No MAL Data';
+            } else if (this.groupBy === 'airing-status') {
+                groupName = s._filterAiringStatusLabel;
             }
             
             if (!groups[groupName]) {
@@ -1342,6 +1369,9 @@ class SeriesCompletenessApp {
                 const icon = statusIcons[malStatus.my_status] || '❓';
                 malStatusDisplay = `<span class="mal-status" title="MyAnimeList: ${malStatus.my_status}">${icon} ${malStatus.my_status}</span>`;
             }
+            const airingStatusDisplay = !isMovie && series._filterAiringStatus !== 'unknown'
+                ? `<span class="airing-status airing-${series._filterAiringStatus}" title="Airing status">${series._filterAiringStatusLabel}</span>`
+                : '';
 
             const sizeDisplay = series.total_size_bytes > 0 ? `<span>${this.formatFileSize(series.total_size_bytes)}</span>` : '';
             const quickMeta = [`<span class="watch-count">${watchStatus.watched_episodes || 0} watched</span>`, episodeDisplay, `<span>${watchedPercent.toFixed(0)}%</span>`, sizeDisplay].filter(Boolean).join('');
@@ -1373,6 +1403,7 @@ class SeriesCompletenessApp {
                             <div class="series-meta-statuses">
                                 ${statusDisplay}
                                 ${malStatusDisplay}
+                                ${airingStatusDisplay}
                             </div>
                             <div class="series-progress-indicator">${watchedPercent.toFixed(0)}%</div>
                         </div>
@@ -1527,6 +1558,7 @@ class SeriesCompletenessApp {
                         <div class="status-badge ${statusClass}">${statusIcon} ${this.formatStatus(series.status)}</div>
                         <div class="status-badge status-${series._filterWatchStatus}">${this.getWatchStatusLabel(series._filterWatchStatus)}</div>
                         ${series.myanimelist_watch_status?.my_status ? `<div class="status-badge status-${series._filterMalStatus}">${this.escapeHtml(series.myanimelist_watch_status.my_status)}</div>` : ''}
+                        ${series._filterAiringStatus !== 'unknown' ? `<div class="status-badge airing-${series._filterAiringStatus}">${series._filterAiringStatusLabel}</div>` : ''}
                     </div>
                     ${sourceLinks}
                 </div>
