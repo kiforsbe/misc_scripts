@@ -63,6 +63,319 @@ function sha256Bytes(bytes) {
     return H.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
+// Smart filter query engine, ported from netflix_watch_status/webapp's smart
+// filter. Whitespace-separated clauses are AND-ed, "or" starts a new AND-group,
+// "not"/"!" negates the next clause, and quotes keep spaces inside one clause.
+// Field meaning lives in the app (resolveField); this block only parses syntax.
+const SmartFilterEngine = (() => {
+    function tokenizeQuery(text) {
+        const tokens = [];
+        let current = '';
+        let quote = null;
+
+        for (const character of String(text || '')) {
+            if (quote) {
+                if (character === quote) {
+                    quote = null;
+                } else {
+                    current += character;
+                }
+                continue;
+            }
+            if (character === '"' || character === "'") {
+                quote = character;
+                continue;
+            }
+            if (/\s/.test(character)) {
+                if (current) {
+                    tokens.push(current);
+                    current = '';
+                }
+                continue;
+            }
+            current += character;
+        }
+
+        if (current) {
+            tokens.push(current);
+        }
+        return tokens;
+    }
+
+    function parseNumericValue(token) {
+        return /^-?\d+$/.test(token) ? Number.parseInt(token, 10) : Number.parseFloat(token);
+    }
+
+    // Supports 8, =8, !=8, >8, >=8, <8, <=8, 1..5 (inclusive), 1,2,3 and ~10±2.
+    function parseNumericExpr(expr) {
+        const trimmed = String(expr || '').trim();
+        const approxMatch = trimmed.match(/^~\s*(-?\d+(?:\.\d+)?)\s*(?:±|\+\/-)\s*(\d+(?:\.\d+)?)$/);
+        if (approxMatch) {
+            const center = Number.parseFloat(approxMatch[1]);
+            const delta = Number.parseFloat(approxMatch[2]);
+            return (value) => center - delta <= value && value <= center + delta;
+        }
+
+        const rangeMatch = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*\.\.\s*(-?\d+(?:\.\d+)?)$/);
+        if (rangeMatch) {
+            const lower = parseNumericValue(rangeMatch[1]);
+            const upper = parseNumericValue(rangeMatch[2]);
+            if (lower > upper) {
+                throw new Error('Range lower bound cannot exceed upper bound');
+            }
+            return (value) => lower <= value && value <= upper;
+        }
+
+        if (trimmed.includes(',')) {
+            const values = new Set(trimmed.split(',').map((part) => part.trim()).filter(Boolean).map(parseNumericValue));
+            if (!values.size || [...values].some((value) => !Number.isFinite(value))) {
+                throw new Error(`Invalid number list: ${trimmed}`);
+            }
+            return (value) => values.has(value);
+        }
+
+        const comparisonMatch = trimmed.match(/^(<=|>=|!=|=|<|>)\s*(-?\d+(?:\.\d+)?)$/);
+        if (comparisonMatch) {
+            const threshold = parseNumericValue(comparisonMatch[2]);
+            switch (comparisonMatch[1]) {
+                case '=': return (value) => value === threshold;
+                case '!=': return (value) => value !== threshold;
+                case '>': return (value) => value > threshold;
+                case '>=': return (value) => value >= threshold;
+                case '<': return (value) => value < threshold;
+                default: return (value) => value <= threshold;
+            }
+        }
+
+        if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+            const exact = parseNumericValue(trimmed);
+            return (value) => value === exact;
+        }
+
+        throw new Error(`Unsupported numeric expression: ${trimmed || '(empty)'}`);
+    }
+
+    // Rewrites each operand of a numeric expression (e.g. "2GB" -> bytes) so
+    // unit-bearing fields reuse parseNumericExpr's operators.
+    function transformNumericExpr(expr, valueTransform) {
+        const trimmed = String(expr || '').trim();
+        const approxMatch = trimmed.match(/^~\s*([^±]+?)\s*(?:±|\+\/-)\s*(.+)$/);
+        if (approxMatch) {
+            return `~${valueTransform(approxMatch[1].trim())}±${valueTransform(approxMatch[2].trim())}`;
+        }
+        const rangeMatch = trimmed.match(/^(.+?)\.\.(.+)$/);
+        if (rangeMatch) {
+            return `${valueTransform(rangeMatch[1].trim())}..${valueTransform(rangeMatch[2].trim())}`;
+        }
+        const comparisonMatch = trimmed.match(/^(<=|>=|!=|=|<|>)(.+)$/);
+        if (comparisonMatch) {
+            return `${comparisonMatch[1]}${valueTransform(comparisonMatch[2].trim())}`;
+        }
+        if (trimmed.includes(',')) {
+            return trimmed.split(',').map((part) => valueTransform(part.trim())).join(',');
+        }
+        return String(valueTransform(trimmed));
+    }
+
+    function globToRegExp(pattern) {
+        const source = String(pattern || '')
+            .replace(/[|\\{}()[\]^$+.]/g, '\\$&')
+            .replace(/\*/g, '.*')
+            .replace(/\?/g, '.');
+        return new RegExp(`^${source}$`, 'i');
+    }
+
+    function normalizeStringFilterValue(value) {
+        return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    }
+
+    // "abc" = substring, "=abc" = exact, * and ? are globs in either form.
+    function createStringMatcher(rawValue) {
+        const value = String(rawValue || '').trim();
+        if (!value) {
+            throw new Error('Filter value cannot be empty');
+        }
+        if (value.startsWith('=')) {
+            const expected = normalizeStringFilterValue(value.slice(1));
+            if (!expected) {
+                throw new Error('Exact filter value cannot be empty');
+            }
+            if (expected.includes('*') || expected.includes('?')) {
+                const regex = globToRegExp(expected);
+                return (candidate) => regex.test(normalizeStringFilterValue(candidate));
+            }
+            return (candidate) => normalizeStringFilterValue(candidate) === expected;
+        }
+        if (value.includes('*') || value.includes('?')) {
+            const regex = globToRegExp(`*${value}*`);
+            return (candidate) => regex.test(String(candidate || ''));
+        }
+        const lowered = normalizeStringFilterValue(value);
+        return (candidate) => normalizeStringFilterValue(candidate).includes(lowered);
+    }
+
+    // The whitespace-delimited token under the caret, split at its first ":".
+    function currentToken(rawValue, caretIndex) {
+        const value = String(rawValue || '');
+        const caret = Number.isInteger(caretIndex) ? caretIndex : value.length;
+        let start = caret;
+        let end = caret;
+        while (start > 0 && !/\s/.test(value[start - 1])) {
+            start -= 1;
+        }
+        while (end < value.length && !/\s/.test(value[end])) {
+            end += 1;
+        }
+        const token = value.slice(start, end);
+        const separatorIndex = token.indexOf(':');
+        return {
+            start,
+            end,
+            token,
+            separatorIndex,
+            fieldName: separatorIndex > 0 ? token.slice(0, separatorIndex) : '',
+            rawValue: separatorIndex > 0 ? token.slice(separatorIndex + 1) : ''
+        };
+    }
+
+    // resolveField(fieldName, rawValue) returns a predicate, or null when the
+    // field is unknown (the token then falls back to free text). It throws on
+    // a known field with an invalid value.
+    function compile(text, { resolveField, freeText }) {
+        const tokens = tokenizeQuery(String(text || '').trim());
+        if (!tokens.length) {
+            return { predicate: () => true, clauseCount: 0, groupCount: 1 };
+        }
+
+        const groups = [[]];
+        let negateNext = false;
+        let clauseCount = 0;
+
+        for (const token of tokens) {
+            const lowered = token.toLowerCase();
+            if (lowered === 'or' || lowered === '||') {
+                if (!groups[groups.length - 1].length) {
+                    throw new Error('"or" must follow a filter term');
+                }
+                groups.push([]);
+                continue;
+            }
+            if (lowered === 'not' || lowered === '!') {
+                negateNext = !negateNext;
+                continue;
+            }
+
+            const separatorIndex = token.indexOf(':');
+            let predicate = separatorIndex > 0
+                ? resolveField(token.slice(0, separatorIndex), token.slice(separatorIndex + 1))
+                : null;
+            if (!predicate) {
+                predicate = freeText(token);
+            }
+            if (negateNext) {
+                const inner = predicate;
+                predicate = (row) => !inner(row);
+                negateNext = false;
+            }
+            groups[groups.length - 1].push(predicate);
+            clauseCount += 1;
+        }
+
+        if (negateNext) {
+            throw new Error('"not" must be followed by a filter term');
+        }
+        if (!groups.every((group) => group.length)) {
+            throw new Error('"or" cannot end a filter');
+        }
+
+        return {
+            predicate: (row) => groups.some((group) => group.every((filter) => filter(row))),
+            clauseCount,
+            groupCount: groups.length
+        };
+    }
+
+    return {
+        tokenizeQuery,
+        parseNumericExpr,
+        transformNumericExpr,
+        createStringMatcher,
+        currentToken,
+        compile
+    };
+})();
+
+const SMART_FILTER_FIELDS = [
+    { name: 'title', hint: 'Series title', aliases: ['series'] },
+    { name: 'season', hint: 'Number' },
+    { name: 'status', hint: 'Completeness', aliases: ['completeness'] },
+    { name: 'airing', hint: 'Airing status' },
+    { name: 'mal', hint: 'MAL status' },
+    { name: 'watch', hint: 'Watch progress' },
+    { name: 'type', hint: 'Text' },
+    { name: 'genre', hint: 'Text', aliases: ['genres'] },
+    { name: 'tag', hint: 'Text', aliases: ['tags'] },
+    { name: 'rating', hint: 'Number' },
+    { name: 'votes', hint: 'Number' },
+    { name: 'year', hint: 'Number' },
+    { name: 'episodes', hint: 'Found count', aliases: ['found'] },
+    { name: 'expected', hint: 'Expected count' },
+    { name: 'missing', hint: 'Missing count' },
+    { name: 'extra', hint: 'Extra count' },
+    { name: 'watched', hint: 'Watched count' },
+    { name: 'progress', hint: 'Watched %' },
+    { name: 'size', hint: 'Size (default GB)' },
+    { name: 'modified', hint: 'Date / age' },
+    { name: 'file', hint: 'Filename' },
+    { name: 'source', hint: 'Source URL' },
+    { name: 'id', hint: 'Metadata ID' }
+];
+
+// Enum fields: canonical values plus accepted aliases, all lower-case.
+const SMART_FILTER_ENUMS = {
+    status: {
+        values: ['complete', 'incomplete', 'complete_with_extras', 'no_episode_numbers', 'unknown_total_episodes',
+            'not_series', 'movie', 'no_metadata', 'no_metadata_manager', 'unknown'],
+        aliases: { extras: 'complete_with_extras' },
+        normalize: (value) => value.replace(/[-\s]+/g, '_')
+    },
+    airing: {
+        values: ['finished', 'ongoing', 'upcoming', 'unknown'],
+        aliases: { continuing: 'ongoing', ended: 'finished', airing: 'ongoing' },
+        normalize: (value) => value
+    },
+    mal: {
+        values: ['watching', 'completed', 'on-hold', 'dropped', 'plan-to-watch', 'no-mal-data'],
+        aliases: { onhold: 'on-hold', ptw: 'plan-to-watch', plan: 'plan-to-watch', none: 'no-mal-data' },
+        normalize: (value) => value.replace(/[_\s]+/g, '-')
+    },
+    watch: {
+        values: ['fully-watched', 'partially-watched', 'not-watched'],
+        aliases: {
+            fully: 'fully-watched', watched: 'fully-watched', complete: 'fully-watched',
+            partial: 'partially-watched', partially: 'partially-watched',
+            unwatched: 'not-watched', none: 'not-watched', not: 'not-watched'
+        },
+        normalize: (value) => value.replace(/[_\s]+/g, '-')
+    }
+};
+
+// Example values offered by autocomplete for fields without a fixed value list.
+const SMART_FILTER_VALUE_EXAMPLES = {
+    season: ['1', '>1'],
+    rating: ['>=8', '>=7', '<6'],
+    votes: ['>=10000'],
+    year: ['2025', '>=2020', '2010..2019'],
+    episodes: ['>=12', '1'],
+    expected: ['12', '24', '>24'],
+    missing: ['>0', '0', '1..3'],
+    extra: ['>0'],
+    watched: ['0', '>0'],
+    progress: ['0', '1..99', '100'],
+    size: ['>10GB', '<1GB', '500MB..2GB'],
+    modified: ['7d', '<30d', '>6m', '2025', '2025-01..2025-06']
+};
+
 class SeriesCompletenessApp {
     constructor() {
         this.data = SERIES_DATA;
@@ -71,6 +384,12 @@ class SeriesCompletenessApp {
         this.selectedSeriesKey = null;
         this.searchTerm = '';
         this.combinedQuery = '';
+        this.smartFilterStorageKey = 'seriesCompleteness.smartFilterEnabled';
+        this.smartFilterEnabled = this.loadSmartFilterPreference();
+        this.smartFilterPredicate = () => true;
+        this.smartFilterError = '';
+        this.smartFilterSummary = '';
+        this.smartFilterSuggestions = [];
         this.statusFilter = 'all';
         this.malStatusFilter = 'all';
         this.airingStatusFilter = 'all';
@@ -264,6 +583,7 @@ class SeriesCompletenessApp {
         const titleMetadata = this.getTitleMetadata(series);
         const typeLabel = this.getSeriesType(series, titleMetadata);
 
+        series._titleMetadata = titleMetadata;
         series._displayTitle = this.getSeriesDisplayTitle(series);
         series._filterStatus = series.status;
         series._filterStatusLabel = this.formatStatus(series.status);
@@ -399,6 +719,7 @@ class SeriesCompletenessApp {
 
     init() {
         this.setupEventListeners();
+        this.syncSmartFilterModeUi();
         this.updateHeaderStats();
         this.syncSearchContainerState('');
         this.filterAndDisplaySeries();
@@ -413,6 +734,10 @@ class SeriesCompletenessApp {
 
         searchInput.addEventListener('input', (e) => {
             this.handleSearchInput(e.target.value);
+            if (this.smartFilterEnabled) {
+                // Caret-based suggestions must track typing, not the filter debounce.
+                this.renderSmartFilterSuggestions(e.target.value);
+            }
         });
 
         searchInput.addEventListener('focus', () => {
@@ -421,12 +746,35 @@ class SeriesCompletenessApp {
                 return;
             }
 
-            this.renderSeriesSuggestions(searchInput.value);
+            this.renderActiveSuggestions(searchInput.value);
         });
 
         searchInput.addEventListener('click', () => {
-            this.renderSeriesSuggestions(searchInput.value);
+            this.renderActiveSuggestions(searchInput.value);
         });
+
+        searchInput.addEventListener('keyup', (e) => {
+            if (this.smartFilterEnabled && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+                this.renderSmartFilterSuggestions(searchInput.value);
+            }
+        });
+
+        const smartFilterToggle = document.getElementById('smart-filter-toggle');
+        if (smartFilterToggle) {
+            smartFilterToggle.addEventListener('click', () => {
+                this.setSmartFilterEnabled(!this.smartFilterEnabled);
+            });
+        }
+
+        const smartFilterHelpButton = document.getElementById('smart-filter-help-btn');
+        if (smartFilterHelpButton) {
+            smartFilterHelpButton.addEventListener('click', () => {
+                const help = document.getElementById('smart-filter-help');
+                const expand = help.hidden;
+                help.hidden = !expand;
+                smartFilterHelpButton.setAttribute('aria-expanded', expand ? 'true' : 'false');
+            });
+        }
 
         searchInput.addEventListener('blur', () => {
             window.setTimeout(() => this.hideSeriesSuggestions(), 120);
@@ -461,7 +809,7 @@ class SeriesCompletenessApp {
 
         if (dropdownIndicator) {
             dropdownIndicator.addEventListener('click', () => {
-                this.toggleSeriesSuggestions();
+                this.toggleActiveSuggestions();
             });
         }
 
@@ -616,16 +964,356 @@ class SeriesCompletenessApp {
         this.searchTerm = value || '';
         this.combinedQuery = (value || '').trim().toLowerCase();
         this.syncSearchContainerState(value);
+        if (this.smartFilterEnabled) {
+            this.compileSmartFilterQuery(this.searchTerm);
+        }
     }
 
     applySearchNow(value) {
         this.clearPendingSearchDebounce();
         this.setCombinedQuery(value);
         this.filterAndDisplaySeries();
-        this.renderSeriesSuggestions(value);
+        if (!this.smartFilterEnabled) {
+            this.renderSeriesSuggestions(value);
+        }
         if (!value.trim()) {
             this.clearInputTypeMarker();
         }
+    }
+
+    // --- Smart filter (optional omnibar mode, see SmartFilterEngine) ---
+    loadSmartFilterPreference() {
+        try {
+            return window.localStorage.getItem(this.smartFilterStorageKey) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    setSmartFilterEnabled(enabled) {
+        this.smartFilterEnabled = Boolean(enabled);
+        try {
+            window.localStorage.setItem(this.smartFilterStorageKey, this.smartFilterEnabled ? '1' : '0');
+        } catch (e) {
+            // Storage can be unavailable (private mode, file:// quirks); the toggle still works per session.
+        }
+        this.hideSeriesSuggestions();
+        this.clearInputTypeMarker();
+        this.syncSmartFilterModeUi();
+        // Re-run the current text under the new mode; simple "tag:x" queries are valid in both.
+        const searchInput = document.getElementById('search-input');
+        this.applySearchNow(searchInput ? searchInput.value : this.searchTerm);
+    }
+
+    syncSmartFilterModeUi() {
+        const enabled = this.smartFilterEnabled;
+        const searchInput = document.getElementById('search-input');
+        const toggle = document.getElementById('smart-filter-toggle');
+        const helpButton = document.getElementById('smart-filter-help-btn');
+        const help = document.getElementById('smart-filter-help');
+        const container = document.querySelector('.search-container');
+
+        if (container) {
+            container.classList.toggle('smart-mode', enabled);
+        }
+        if (searchInput) {
+            searchInput.placeholder = enabled
+                ? 'Smart filter, e.g. airing:ongoing missing:>0 rating:>=8'
+                : 'Search series, tags, genres, or type...';
+            searchInput.setAttribute('role', enabled ? 'combobox' : 'searchbox');
+        }
+        if (toggle) {
+            toggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+            toggle.classList.toggle('active', enabled);
+        }
+        if (helpButton) {
+            helpButton.hidden = !enabled;
+            if (!enabled) {
+                helpButton.setAttribute('aria-expanded', 'false');
+            }
+        }
+        if (help && !enabled) {
+            help.hidden = true;
+        }
+        this.syncSmartFilterStatus();
+    }
+
+    syncSmartFilterStatus() {
+        const searchInput = document.getElementById('search-input');
+        const status = document.getElementById('smart-filter-status');
+        const error = this.smartFilterEnabled ? this.smartFilterError : '';
+
+        if (searchInput) {
+            searchInput.classList.toggle('is-invalid', Boolean(error));
+            searchInput.setAttribute('aria-invalid', error ? 'true' : 'false');
+            searchInput.title = error;
+        }
+        if (status) {
+            const text = error || (this.smartFilterEnabled ? this.smartFilterSummary : '');
+            status.hidden = !text;
+            status.textContent = text;
+            status.classList.toggle('is-error', Boolean(error));
+        }
+    }
+
+    compileSmartFilterQuery(text) {
+        try {
+            const compiled = SmartFilterEngine.compile(text, {
+                resolveField: (fieldName, rawValue) => this.buildSmartFieldPredicate(fieldName, rawValue),
+                freeText: (token) => {
+                    const lowered = token.toLowerCase();
+                    return (series) => series._filterSearchIndex.includes(lowered);
+                }
+            });
+            this.smartFilterPredicate = compiled.predicate;
+            this.smartFilterError = '';
+            this.smartFilterSummary = compiled.clauseCount
+                ? `${compiled.clauseCount} clause${compiled.clauseCount === 1 ? '' : 's'}${compiled.groupCount > 1 ? ` in ${compiled.groupCount} "or" groups` : ''}`
+                : '';
+        } catch (error) {
+            // Keep the last valid predicate so the list doesn't flash empty while typing.
+            this.smartFilterError = error instanceof Error ? error.message : String(error);
+        }
+        this.syncSmartFilterStatus();
+    }
+
+    canonicalSmartFilterField(fieldName) {
+        const lowered = String(fieldName || '').trim().toLowerCase();
+        const field = SMART_FILTER_FIELDS.find((entry) => entry.name === lowered || (entry.aliases || []).includes(lowered));
+        return field ? field.name : '';
+    }
+
+    parseSmartEnumValues(field, rawValue) {
+        const spec = SMART_FILTER_ENUMS[field];
+        const parts = String(rawValue || '').split(',').map((part) => part.trim().toLowerCase()).filter(Boolean);
+        if (!parts.length) {
+            throw new Error(`${field}: needs a value (${spec.values.join(', ')})`);
+        }
+        return new Set(parts.map((part) => {
+            const normalized = spec.normalize(part);
+            const value = spec.aliases[part] || spec.aliases[normalized] || normalized;
+            if (!spec.values.includes(value)) {
+                throw new Error(`Unknown ${field} value "${part}". Use: ${spec.values.join(', ')}`);
+            }
+            return value;
+        }));
+    }
+
+    parseSizeToken(token) {
+        const match = String(token || '').trim().match(/^(\d+(?:\.\d+)?)\s*(b|k|kb|m|mb|g|gb|t|tb)?$/i);
+        if (!match) {
+            throw new Error(`Invalid size "${token}". Use e.g. 500MB, 2GB, 1.5TB`);
+        }
+        const unit = (match[2] || 'gb').toLowerCase().charAt(0);
+        const power = { b: 0, k: 1, m: 2, g: 3, t: 4 }[unit];
+        return Number.parseFloat(match[1]) * Math.pow(1024, power);
+    }
+
+    buildSmartFieldPredicate(fieldName, rawValue) {
+        const field = this.canonicalSmartFilterField(fieldName);
+        if (!field) {
+            return null;
+        }
+        const engine = SmartFilterEngine;
+        const numeric = (valueForSeries, parser = engine.parseNumericExpr) => {
+            const matcher = parser(rawValue);
+            return (series) => {
+                const value = valueForSeries(series);
+                return value !== null && value !== undefined && Number.isFinite(Number(value)) && matcher(Number(value));
+            };
+        };
+        const text = (valuesForSeries) => {
+            const matcher = engine.createStringMatcher(rawValue);
+            return (series) => [].concat(valuesForSeries(series) || []).some((value) => matcher(value));
+        };
+        const metadata = (series) => series._titleMetadata || {};
+
+        switch (field) {
+            case 'title': return text((series) => series._displayTitle);
+            case 'season': return numeric((series) => series.season);
+            case 'status': {
+                const values = this.parseSmartEnumValues(field, rawValue);
+                return (series) => values.has(series._filterType === 'movie' ? 'movie' : series._filterStatus)
+                    || values.has(series._filterStatus);
+            }
+            case 'airing': {
+                const values = this.parseSmartEnumValues(field, rawValue);
+                return (series) => values.has(series._filterAiringStatus);
+            }
+            case 'mal': {
+                const values = this.parseSmartEnumValues(field, rawValue);
+                // "completed" also covers season-level variants like "Completed (Season)".
+                return (series) => [...values].some((value) => series._filterMalStatus === value
+                    || series._filterMalStatus.startsWith(`${value}-`));
+            }
+            case 'watch': {
+                const values = this.parseSmartEnumValues(field, rawValue);
+                return (series) => values.has(series._filterWatchStatus);
+            }
+            case 'type': return text((series) => series._filterTypeLabel);
+            case 'genre': return text((series) => series._filterGenres);
+            case 'tag': return text((series) => series._filterTags);
+            case 'rating': return numeric((series) => this.getSeriesRatingValue(series));
+            case 'votes': return numeric((series) => metadata(series).votes);
+            case 'year': return numeric((series) => metadata(series).year || metadata(series).start_year);
+            case 'episodes': return numeric((series) => series.episodes_found);
+            case 'expected': return numeric((series) => series.episodes_expected);
+            case 'missing': return numeric((series) => (series.missing_episodes || []).length);
+            case 'extra': return numeric((series) => (series.extra_episodes || []).length);
+            case 'watched': return numeric((series) => series.watch_status?.watched_episodes || 0);
+            case 'progress': return numeric(
+                (series) => this.getSeriesCompletionRatio(series),
+                (expr) => engine.parseNumericExpr(engine.transformNumericExpr(expr, (token) => token.replace(/%/g, '')))
+            );
+            case 'size': return numeric(
+                (series) => series.total_size_bytes || 0,
+                (expr) => engine.parseNumericExpr(engine.transformNumericExpr(expr, (token) => this.parseSizeToken(token)))
+            );
+            case 'modified': {
+                // Same syntax as the Modified box; commas there mean AND, so they can't list alternatives here.
+                const clauses = this.parseModifiedFilterQuery(rawValue);
+                if (!clauses) {
+                    throw new Error(`Invalid modified value "${rawValue}". Use e.g. 7d, >30d, 2025-01, 2025-01..2025-06`);
+                }
+                return (series) => {
+                    const ts = Number(series.group_metadata && series.group_metadata.avg_modified_time);
+                    return Number.isFinite(ts) && clauses.every((clause) => clause(ts));
+                };
+            }
+            case 'file': return text((series) => (series.files || []).map((file) => file.filename || file.file_path || file.path || ''));
+            case 'source': return text((series) => metadata(series).sources || []);
+            case 'id': return text((series) => [series.metadata_id, series.title_id, metadata(series).id].filter(Boolean));
+            default: return null;
+        }
+    }
+
+    quoteSmartFilterValue(value) {
+        const text = String(value);
+        return /[\s"]/.test(text) ? `"${text.replace(/"/g, "'")}"` : text;
+    }
+
+    smartFilterSuggestionsFor(tokenInfo) {
+        const field = tokenInfo.separatorIndex > 0 ? this.canonicalSmartFilterField(tokenInfo.fieldName) : '';
+        if (!field) {
+            const query = (tokenInfo.separatorIndex > 0 ? tokenInfo.fieldName : tokenInfo.token).trim().toLowerCase();
+            return SMART_FILTER_FIELDS
+                .filter((entry) => !query || entry.name.includes(query) || (entry.aliases || []).some((alias) => alias.includes(query)))
+                .map((entry) => ({ insertText: `${entry.name}:`, displayText: `${entry.name}:`, matchText: query, hint: entry.hint }));
+        }
+
+        const query = tokenInfo.rawValue.replace(/^["']/, '').trim().toLowerCase();
+        let values;
+        let hint = 'Value';
+        if (SMART_FILTER_ENUMS[field]) {
+            values = SMART_FILTER_ENUMS[field].values;
+        } else if (field === 'title') {
+            values = this.seriesTitles;
+            hint = 'Series';
+        } else if (field === 'genre') {
+            values = this.seriesGenres;
+            hint = 'Genre';
+        } else if (field === 'tag') {
+            values = this.seriesTags;
+            hint = 'Tag';
+        } else if (field === 'type') {
+            values = this.seriesTypes;
+            hint = 'Type';
+        } else {
+            values = SMART_FILTER_VALUE_EXAMPLES[field] || [];
+            hint = 'Example';
+        }
+
+        return values
+            .filter((value) => !query || String(value).toLowerCase().includes(query))
+            .sort((left, right) => {
+                const leftStarts = query && String(left).toLowerCase().startsWith(query) ? 0 : 1;
+                const rightStarts = query && String(right).toLowerCase().startsWith(query) ? 0 : 1;
+                return leftStarts - rightStarts;
+            })
+            .slice(0, 12)
+            .map((value) => {
+                const insertText = `${field}:${this.quoteSmartFilterValue(value)}`;
+                return { insertText, displayText: `${field}:${value}`, matchText: query, hint };
+            });
+    }
+
+    renderSmartFilterSuggestions(rawValue) {
+        const container = document.getElementById('series-suggestions');
+        const searchInput = document.getElementById('search-input');
+        if (!container || !searchInput) {
+            return;
+        }
+
+        const caretIndex = searchInput.selectionStart ?? String(rawValue || '').length;
+        const tokenInfo = SmartFilterEngine.currentToken(rawValue, caretIndex);
+        const suggestions = this.smartFilterSuggestionsFor(tokenInfo);
+        this.smartFilterSuggestions = suggestions;
+
+        if (!suggestions.length) {
+            this.hideSeriesSuggestions();
+            return;
+        }
+
+        container.innerHTML = suggestions.map((suggestion, index) => `
+            <div class="series-suggestion-item smart-suggestion-item${index === 0 ? ' active' : ''}" data-index="${index}" role="option" aria-selected="${index === 0 ? 'true' : 'false'}">
+                <span>${this.getHighlightedText(suggestion.displayText, suggestion.matchText)}</span>
+                <span class="match-hint">${this.escapeHtml(suggestion.hint)}</span>
+            </div>
+        `).join('');
+        container.style.display = 'block';
+        this.activeSuggestionIndex = 0;
+        this.lastSuggestionKey = '';
+
+        container.querySelectorAll('.smart-suggestion-item').forEach((item) => {
+            item.addEventListener('click', () => {
+                this.applySmartFilterSuggestion(Number(item.getAttribute('data-index')));
+            });
+        });
+    }
+
+    applySmartFilterSuggestion(index) {
+        const searchInput = document.getElementById('search-input');
+        const suggestion = this.smartFilterSuggestions[index];
+        if (!searchInput || !suggestion) {
+            return;
+        }
+
+        const inputValue = String(searchInput.value || '');
+        const tokenInfo = SmartFilterEngine.currentToken(inputValue, searchInput.selectionStart ?? inputValue.length);
+        const before = inputValue.slice(0, tokenInfo.start);
+        const after = inputValue.slice(tokenInfo.end);
+        // A completed value gets a trailing space so the next clause can start right away.
+        const completesValue = !suggestion.insertText.endsWith(':');
+        const spacer = completesValue && !/^\s/.test(after) ? ' ' : '';
+        const nextValue = `${before}${suggestion.insertText}${spacer}${after}`;
+        const nextCaret = before.length + suggestion.insertText.length + spacer.length;
+
+        searchInput.value = nextValue;
+        searchInput.focus({ preventScroll: true });
+        searchInput.setSelectionRange(nextCaret, nextCaret);
+        this.handleSearchInput(nextValue);
+        if (completesValue) {
+            this.hideSeriesSuggestions();
+        } else {
+            this.renderSmartFilterSuggestions(nextValue);
+        }
+    }
+
+    renderActiveSuggestions(rawValue) {
+        if (this.smartFilterEnabled) {
+            this.renderSmartFilterSuggestions(rawValue);
+        } else {
+            this.renderSeriesSuggestions(rawValue);
+        }
+    }
+
+    toggleActiveSuggestions() {
+        if (this.areSeriesSuggestionsVisible()) {
+            this.hideSeriesSuggestions();
+            return;
+        }
+        const searchInput = document.getElementById('search-input');
+        this.renderActiveSuggestions(searchInput ? searchInput.value : '');
     }
 
     handleSearchInput(value) {
@@ -840,6 +1528,11 @@ class SeriesCompletenessApp {
             return;
         }
 
+        if (this.smartFilterEnabled) {
+            this.applySmartFilterSuggestion(Number(activeItem.getAttribute('data-index')));
+            return;
+        }
+
         this.applySuggestion(activeItem.getAttribute('data-value') || '', activeItem.getAttribute('data-prefix') || 'series');
     }
 
@@ -861,13 +1554,16 @@ class SeriesCompletenessApp {
             return;
         }
 
+        const query = this.smartFilterEnabled
+            ? `tag:${this.quoteSmartFilterValue(`=${normalizedTag}`)}`
+            : `tag:${normalizedTag}`;
         const searchInput = document.getElementById('search-input');
         if (searchInput) {
-            searchInput.value = `tag:${normalizedTag}`;
+            searchInput.value = query;
             searchInput.focus();
         }
 
-        this.applySearchNow(`tag:${normalizedTag}`);
+        this.applySearchNow(query);
         this.showListOnMobile();
     }
     
@@ -887,6 +1583,10 @@ class SeriesCompletenessApp {
     matchesCombinedQuery(series) {
         if (!this.combinedQuery) {
             return true;
+        }
+
+        if (this.smartFilterEnabled) {
+            return this.smartFilterPredicate(series);
         }
 
         const prefixMatch = this.combinedQuery.match(/^(series|tag|genre|type):\s*(.*)$/);

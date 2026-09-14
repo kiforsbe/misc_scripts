@@ -65,6 +65,32 @@
                         </button>
                         <div id="series-suggestions" class="series-suggestions" aria-label="Series suggestions" role="listbox" style="display: none;"></div>
                     </div>
+                    <div class="smart-filter-bar">
+                        <button type="button" id="smart-filter-toggle" class="smart-filter-toggle" aria-pressed="false"
+                            title="Switch the search box to smart filter queries like status:incomplete airing:ongoing">
+                            <i class="bi bi-funnel"></i><span>Smart filter</span>
+                        </button>
+                        <span id="smart-filter-status" class="smart-filter-status" role="status" hidden></span>
+                        <button type="button" id="smart-filter-help-btn" class="smart-filter-help-button" aria-expanded="false" aria-controls="smart-filter-help" hidden>
+                            <i class="bi bi-question-circle"></i><span>Help</span>
+                        </button>
+                    </div>
+                    <div id="smart-filter-help" class="smart-filter-help" hidden>
+                        <p class="smart-filter-help-label">Examples</p>
+                        <p class="smart-filter-help-text"><code>airing:ongoing missing:&gt;0</code></p>
+                        <p class="smart-filter-help-text"><code>status:incomplete mal:watching,plan-to-watch</code></p>
+                        <p class="smart-filter-help-text"><code>genre:comedy rating:&gt;=8 or tag:isekai</code></p>
+                        <p class="smart-filter-help-text"><code>not watch:fully size:&gt;20GB modified:&lt;30d</code></p>
+                        <p class="smart-filter-help-text"><code>title:"attack on" season:2..3 year:&gt;=2020</code></p>
+                        <p class="smart-filter-help-label">Syntax</p>
+                        <p class="smart-filter-help-text">Space = AND, <code>or</code> starts an alternative, <code>not</code> / <code>!</code> negates the next term. Words without a field search everything.</p>
+                        <p class="smart-filter-help-text">Text: substring by default, <code>=exact</code>, <code>*</code>/<code>?</code> globs, quotes for spaces.</p>
+                        <p class="smart-filter-help-text">Numbers: <code>8</code> <code>&gt;=8</code> <code>!=0</code> <code>1..5</code> <code>1,2,3</code> <code>~10±2</code>. Size units B/KB/MB/GB/TB (default GB), progress in %.</p>
+                        <p class="smart-filter-help-text">Modified: same as the Modified box (<code>7d</code>, <code>&gt;6m</code>, <code>2025-01..2025-06</code>).</p>
+                        <p class="smart-filter-help-label">Fields</p>
+                        <p class="smart-filter-help-text">title, season, status, airing, mal, watch, type, genre, tag, rating, votes, year, episodes, expected, missing, extra, watched, progress, size, modified, file, source, id</p>
+                        <p class="smart-filter-help-text">status / airing / mal / watch take comma lists of their values; autocomplete shows them.</p>
+                    </div>
                     <button id="filter-toggle" class="btn btn-sm btn-outline-primary" aria-expanded="true" style="display:none;">Filters</button>
                     <div id="filter-controls" class="filter-controls">
                         <div class="filter-row">
