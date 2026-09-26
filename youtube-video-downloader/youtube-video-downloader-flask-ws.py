@@ -399,10 +399,12 @@ async def _process_download(
     target_video_params: str | None,
     progress_hook=None,
     cancel_event: threading.Event | None = None,
+    split_chapters: bool = False,
 ) -> pathlib.Path:
     """
     Fetches info, selects formats, downloads the item into TEMP_DIR,
-    and returns the final path.
+    and returns the final path (a zip of per-chapter tracks when
+    split_chapters applies - see ytdl_core.download_item).
     """
     temp_dir_path = pathlib.Path(TEMP_DIR)
     item: ytdl_models.DownloadItem | None = None  # Initialize item
@@ -505,7 +507,9 @@ async def _process_download(
                         # so that's visible instead of looking stalled.
                         progress_hook(40, f"{cb_item.title} - {error}" if error else f"{cb_item.title} - downloading")
                     elif status.lower() in ("processing", "post-processing", "merging"):
-                        progress_hook(88, f"{cb_item.title} - processing")
+                        # error doubles as a detail message here too, e.g.
+                        # "Splitting into 12 chapter tracks".
+                        progress_hook(88, f"{cb_item.title} - {error}" if error else f"{cb_item.title} - processing")
                     elif status.lower() in ("finished", "completed"):
                         progress_hook(95, f"{cb_item.title} - finished")
                     elif status.lower() in ("error",):
@@ -556,6 +560,7 @@ async def _process_download(
             status_callback=status_callback,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
+            split_chapters=split_chapters,
         )
 
         # --- Verify result ---
@@ -638,6 +643,7 @@ def _run_download_deduped(
     job_id: str | None = None,
     on_downloading_started=None,
     title_hint: str | None = None,
+    split_chapters: bool = False,
 ) -> pathlib.Path:
     """
     Runs _process_download for this request, but if an identical request
@@ -664,13 +670,14 @@ def _run_download_deduped(
     after it has claimed a download_queue slot - which may be well after
     this function was entered if the queue was full.
     """
-    dedup_key = (
-        ytdl_core.clean_youtube_url(url),
+    dedup_key = _compute_dedup_key(
+        url,
         audio_format_id,
         video_format_id,
         target_format,
         target_audio_params,
         target_video_params,
+        split_chapters=split_chapters,
     )
 
     # Read cancel_requested and register into the dedup entry as one
@@ -761,6 +768,7 @@ def _run_download_deduped(
             job_id=job_id,
             on_downloading_started=on_downloading_started,
             title_hint=title_hint,
+            split_chapters=split_chapters,
         )
 
     queued_label = f"{title_hint} - " if title_hint else ""
@@ -789,6 +797,7 @@ def _run_download_deduped(
                     target_video_params,
                     progress_hook=_tracked_progress_hook,
                     cancel_event=entry["cancel_event"],
+                    split_chapters=split_chapters,
                 )
             )
             entry["result"] = result
@@ -834,6 +843,7 @@ def _compute_dedup_key(
     target_format: str | None,
     target_audio_params: str | None,
     target_video_params: str | None,
+    split_chapters: bool = False,
 ):
     return (
         ytdl_core.clean_youtube_url(url),
@@ -842,6 +852,7 @@ def _compute_dedup_key(
         target_format,
         target_audio_params,
         target_video_params,
+        split_chapters,
     )
 
 
@@ -898,6 +909,7 @@ def _background_job_runner(
     target_audio_params: str | None,
     target_video_params: str | None,
     title_hint: str | None = None,
+    split_chapters: bool = False,
 ) -> None:
     """Runs a /download/start job in the background and records its outcome."""
     sink, cleanup_progress = _build_progress_sink(f"Job {job_id[:8]}", job_id=job_id)
@@ -926,6 +938,7 @@ def _background_job_runner(
             job_id=job_id,
             on_downloading_started=_mark_downloading,
             title_hint=title_hint,
+            split_chapters=split_chapters,
         )
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -995,6 +1008,13 @@ def _clean_error_message(e: Exception) -> str:
     return message
 
 
+def _is_truthy(value) -> bool:
+    """Interprets a JSON bool or a form/query string flag ("1", "true", "on", ...)."""
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _parse_download_request(data):
     """
     Parses/validates the parameters shared by /download and /download/start.
@@ -1017,6 +1037,8 @@ def _parse_download_request(data):
     # _process_download fetches it, well after a job may have already been
     # sitting in the concurrency queue.
     title_hint = (data.get("title_hint") or "").strip() or None
+    # Audio-only: split into one tagged track per chapter, returned as a zip.
+    split_chapters = _is_truthy(data.get("split_chapters"))
 
     if not url:
         log.warning("Download request missing 'url' parameter.")
@@ -1057,6 +1079,7 @@ def _parse_download_request(data):
         "target_audio_params": target_audio_params,
         "target_video_params": target_video_params,
         "title_hint": title_hint,
+        "split_chapters": split_chapters,
     }, None
 
 
@@ -1094,6 +1117,9 @@ def index():
         <label for="target_format">Target Format:</label>
         <input type="text" id="target_format" name="target_format" placeholder="e.g., mp3, m4a, mp4, mkv"><br>
 
+        <label for="split_chapters">Split by chapters:</label>
+        <input type="checkbox" id="split_chapters" name="split_chapters" value="1"><br>
+
         <input type="submit" value="Download">
     </form>
     <hr>
@@ -1104,6 +1130,7 @@ def index():
         <li>Specify <b>only</b> Video ID for video download (it might already contain audio, or be video-only).</li>
         <li>Specify <b>both</b> Audio and Video ID if you want to force merging specific streams (requires FFmpeg).</li>
         <li>Use <b>Target Format</b> to convert the output (e.g., specify best audio ID and 'mp3' target; requires FFmpeg). Valid targets depend on FFmpeg capabilities (common: mp3, m4a, aac, ogg, opus, mp4, mkv, webm).</li>
+        <li><b>Split by chapters</b> (audio-only downloads): one track per chapter, tagged with artist/title parsed from the chapter name ("Artist - Title"), returned as a .zip. Videos with fewer than 2 chapters download as a single file.</li>
         <li>FFmpeg Status: <b>{ffmpeg_status}</b></li>
         <li>Files are temporarily stored in <code>{TEMP_DIR}</code> and automatically deleted after {DELETE_DELAY // 60} minutes.</li>
     </ul>
@@ -1162,6 +1189,7 @@ def download():
             target_video_params,
             progress_hook=progress_hook,
             title_hint=params["title_hint"],
+            split_chapters=params["split_chapters"],
         )
 
         if final_filepath and final_filepath.exists():
@@ -1250,6 +1278,7 @@ def download_start():
         params["target_format"],
         params["target_audio_params"],
         params["target_video_params"],
+        split_chapters=params["split_chapters"],
     )
     now = time.time()
     with _jobs_lock:
@@ -1277,6 +1306,7 @@ def download_start():
             params["target_audio_params"],
             params["target_video_params"],
             params["title_hint"],
+            params["split_chapters"],
         ),
         name=f"ytdl-job-{job_id[:8]}",
         daemon=True,
@@ -1405,6 +1435,14 @@ def list_formats():
             "url": item.url,
             "audio_formats": [f.to_dict() for f in item.audio_formats],
             "video_formats": [f.to_dict() for f in item.video_formats],
+            "chapters": [
+                {
+                    "title": c.get("title"),
+                    "start_time": c.get("start_time"),
+                    "end_time": c.get("end_time"),
+                }
+                for c in item.chapters
+            ],
         }
         return jsonify(response_data)
 

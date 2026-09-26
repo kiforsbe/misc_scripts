@@ -257,6 +257,49 @@ test('buildDownloadStartParams includes title_hint only when provided', () => {
   );
 });
 
+test('buildDownloadStartParams includes split_chapters only when requested', () => {
+  assert.deepEqual(
+    lib.buildDownloadStartParams('https://x/y', '140', null, 'mp3', null, null, null, true),
+    { url: 'https://x/y', audio_format_id: '140', target_format: 'mp3', split_chapters: 1 }
+  );
+  assert.deepEqual(
+    lib.buildDownloadStartParams('https://x/y', '140', null, 'mp3', null, null, null, false),
+    { url: 'https://x/y', audio_format_id: '140', target_format: 'mp3' }
+  );
+});
+
+// --- countSplittableChapters ---
+
+test('countSplittableChapters counts non-empty chapters when there are at least 2', () => {
+  const chapters = [
+    { title: 'A - One', start_time: 0, end_time: 60 },
+    { title: 'Empty', start_time: 60, end_time: 60 },
+    { title: 'B - Two', start_time: 60, end_time: 120 },
+    { title: 'C - Three', start_time: 120, end_time: 180 }
+  ];
+  assert.equal(lib.countSplittableChapters({ chapters }), 3);
+});
+
+test('countSplittableChapters is 0 when there is nothing worth splitting', () => {
+  assert.equal(lib.countSplittableChapters({ chapters: [{ title: 'Only', start_time: 0, end_time: 60 }] }), 0);
+  assert.equal(lib.countSplittableChapters({ chapters: [] }), 0);
+  assert.equal(lib.countSplittableChapters({}), 0);
+  assert.equal(lib.countSplittableChapters(null), 0);
+  assert.equal(lib.countSplittableChapters({ chapters: 'nope' }), 0);
+});
+
+// --- buildFallbackFilename ---
+
+test('buildFallbackFilename picks an extension from the request', () => {
+  assert.equal(lib.buildFallbackFilename('Song', 'mp3', null, false), 'Song.mp3');
+  assert.equal(lib.buildFallbackFilename('Clip', null, '137', false), 'Clip.mp4');
+  assert.equal(lib.buildFallbackFilename('Song', null, null, false), 'Song.mp3');
+});
+
+test('buildFallbackFilename uses .zip for chapter-split downloads', () => {
+  assert.equal(lib.buildFallbackFilename('Mix', 'mp3', null, true), 'Mix.zip');
+});
+
 // --- parseContentDispositionFilename ---
 
 test('parseContentDispositionFilename extracts a quoted filename', () => {

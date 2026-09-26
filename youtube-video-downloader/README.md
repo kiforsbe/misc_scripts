@@ -90,6 +90,7 @@ Can also be run directly: `python youtube-video-downloader/youtube-video-downloa
 - Provides download progress and status updates in JSON format.
 - Supports output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
 - Returns download progress and status updates in JSON format.
+- Split by chapters: for audio-only downloads, pass `split_chapters=1` (or pick "✂️🎧 Split N chapters" in the userscript dropdown, shown when a video has 2+ chapters) to get a `.zip` with one track per chapter. Each track is stream-copied (no re-encode) and tagged from its chapter name: `Artist - Title` sets artist and title (leading track numbers/timestamps are ignored); a chapter without a separator uses the album artist. Album/album artist come from an `Artist - Album (Full Album)` video title, else the video title and channel. Genre and cover art (mp3/m4a) carry over from the full file.
 - Logs activity to logs/youtube_downloader.log.
 
 #### Requires

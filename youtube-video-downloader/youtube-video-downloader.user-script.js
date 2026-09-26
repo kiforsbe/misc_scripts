@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.8.0
+// @version      1.9.0
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -398,7 +398,8 @@
         cfg.targetVideoParams,
         cfg.filenameHint,
         cfg.quickTrack,
-        clientId
+        clientId,
+        cfg.splitChapters
       );
     });
     actions.appendChild(cancelBtn);
@@ -571,9 +572,10 @@
     * @param {string|number|null} targetAudioParams - Optional audio conversion argument.
     * @param {string|number|null} targetVideoParams - Optional video conversion argument.
     * @param {string|null} titleHint - Best-effort video title, for display while queued server-side.
+    * @param {boolean} splitChapters - Split audio into one track per chapter (server returns a .zip).
    * @returns {Record<string, string|number>}
    */
-  function buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, titleHint) {
+  function buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, titleHint, splitChapters = false) {
     const params = { url };
     if (audioId) params.audio_format_id = audioId;
     if (videoId) params.video_format_id = videoId;
@@ -581,7 +583,38 @@
     if (targetAudioParams) params.target_audio_params = targetAudioParams;
     if (targetVideoParams) params.target_video_params = targetVideoParams;
     if (titleHint) params.title_hint = titleHint;
+    if (splitChapters) params.split_chapters = 1;
     return params;
+  }
+
+  /**
+   * Number of tracks a chapter split would produce for a /list_formats
+   * payload, or 0 when there's nothing worth splitting (fewer than 2
+   * non-empty chapters - the server falls back to a single file then).
+   * Pure/no side effects.
+    * @param {any} data - Parsed /list_formats payload.
+   * @returns {number}
+   */
+  function countSplittableChapters(data) {
+    const chapters = Array.isArray(data?.chapters) ? data.chapters : [];
+    const usable = chapters.filter((c) =>
+      c && typeof c === 'object' && Number(c.end_time) > Number(c.start_time)
+    ).length;
+    return usable >= 2 ? usable : 0;
+  }
+
+  /**
+   * Filename to save a result as when the server sends no usable
+   * Content-Disposition header. Pure/no side effects.
+    * @param {string} filenameHint - Preferred filename stem.
+    * @param {string|null} targetFormat - Requested conversion/output format.
+    * @param {string|null} videoId - Explicit video format ID, if any.
+    * @param {boolean} splitChapters - Whether this was a chapter-split (zip) download.
+   * @returns {string}
+   */
+  function buildFallbackFilename(filenameHint, targetFormat, videoId, splitChapters) {
+    const ext = splitChapters ? 'zip' : (targetFormat || (videoId ? 'mp4' : 'mp3'));
+    return `${filenameHint}.${ext}`;
   }
 
   /**
@@ -670,8 +703,10 @@
     * @param {string|number|null} targetVideoParams - Optional video conversion argument.
     * @param {string} filenameHint - Preferred fallback filename stem.
     * @param {{videoId?: string|null, kind?: 'video'|'audio'}|null} quickTrack - Optional tracking payload for persisted status updates.
+    * @param {string|null} existingClientId - Reuse this toast row (retry).
+    * @param {boolean} splitChapters - Split audio into one track per chapter (server returns a .zip).
    */
-  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null, existingClientId = null) {
+  function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null, existingClientId = null, splitChapters = false) {
     if (audioId !== null && audioId !== undefined && !isValidFormatId(audioId)) {
       console.error('[ytdl-ui] Blocked download: invalid audio format id', { url, audioId, videoId, targetFormat });
       showToast('Invalid audio stream id from format list. Please retry.', 'error', 6000);
@@ -702,13 +737,14 @@
         targetAudioParams,
         targetVideoParams,
         filenameHint,
-        quickTrack: quickTrack || null
+        quickTrack: quickTrack || null,
+        splitChapters
       };
     }
 
     updatePersistentToast(clientId, 0, 'Starting download...', 'running');
 
-    const paramsObj = buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, filenameHint);
+    const paramsObj = buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, filenameHint, splitChapters);
     const params = new URLSearchParams();
     Object.keys(paramsObj).forEach((key) => params.append(key, paramsObj[key]));
 
@@ -745,7 +781,7 @@
           try {
             if (res.status >= 200 && res.status < 300) {
               const blob = res.response;
-              const fallbackFilename = filenameHint + '.' + (targetFormat || (videoId ? 'mp4' : 'mp3'));
+              const fallbackFilename = buildFallbackFilename(filenameHint, targetFormat, videoId, splitChapters);
               const filename = parseContentDispositionFilename(res.responseHeaders || '', fallbackFilename);
               const link = document.createElement('a');
               link.href = URL.createObjectURL(blob);
@@ -1290,9 +1326,10 @@
       * @param {string|null} targetFormat - Optional conversion target format.
       * @param {string|number|null} targetAudioParams - Optional audio conversion parameter.
       * @param {string|number|null} targetVideoParams - Optional video conversion parameter.
+      * @param {boolean} splitChapters - Split audio into one track per chapter (.zip).
      * @returns {HTMLAnchorElement}
      */
-    const createItem = (text, audioId, videoId, targetFormat = null, targetAudioParams = null, targetVideoParams = null) => {
+    const createItem = (text, audioId, videoId, targetFormat = null, targetAudioParams = null, targetVideoParams = null, splitChapters = false) => {
       const item = document.createElement('a');
       item.href = '#';
       item.className = 'ytdl-dropdown-item';
@@ -1323,7 +1360,9 @@
           targetAudioParams,
           targetVideoParams,
           safeFilenameHint,
-          { videoId: pageVideoId, kind: trackKind }
+          { videoId: pageVideoId, kind: trackKind },
+          null,
+          splitChapters
         );
         // Find the menu again by ID in case it was re-created
         const currentMenu = document.getElementById('ytdl-dropdown-menu');
@@ -1389,6 +1428,15 @@
           menu.appendChild(createItem(mp3TargetText, bestAudio.format_id, null, "mp3", targetBr)); // Pass 'mp3' and target bitrate
         }
       });
+
+      // --- Options: Split by chapters (one tagged track per chapter, as a .zip) ---
+      const chapterCount = countSplittableChapters(data);
+      if (chapterCount) {
+        const splitMp3Text = `✂️🎧 Split ${chapterCount} chapters -> MP3 (Source) .zip`;
+        menu.appendChild(createItem(splitMp3Text, bestAudio.format_id, null, 'mp3', null, null, true));
+        const splitM4aText = `✂️🎧 Split ${chapterCount} chapters -> M4A .zip`;
+        menu.appendChild(createItem(splitM4aText, bestAudio.format_id, null, 'm4a', null, null, true));
+      }
     }
 
     // 4. Specific Video Resolutions with Best Audio (if available) or Video's own audio
@@ -2274,6 +2322,8 @@
       formatVideoDetails,
       getValidAudioFormats,
       buildDownloadStartParams,
+      countSplittableChapters,
+      buildFallbackFilename,
       parseContentDispositionFilename,
       decideJobStatusAction
     };

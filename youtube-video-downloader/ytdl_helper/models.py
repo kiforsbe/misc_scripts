@@ -74,6 +74,8 @@ class DownloadItem:
     artist: Optional[str] = None
     year: Optional[int] = None
     description: Optional[str] = None
+    # yt-dlp chapter dicts: {"start_time", "end_time", "title"}
+    chapters: List[Dict[str, Any]] = field(default_factory=list)
     # --- Format Information (populated after fetching info) ---
     # Store lists of FormatInfo objects
     audio_formats: List[FormatInfo] = field(default_factory=list)

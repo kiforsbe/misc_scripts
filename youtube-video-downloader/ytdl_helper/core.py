@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import zipfile
 from typing import Optional, Callable, Dict, Any
 
 from flask import json
@@ -18,6 +19,7 @@ import yt_dlp.utils
 
 from .models import DownloadItem, FormatInfo
 from .utils import sanitize_filename, check_ffmpeg
+from .chapter_split import build_track_plan, split_audio_by_chapters, pack_tracks_zip
 from .ffmpeg_genre_pp import FFmpegGenrePP, warm_up_genre_classifier
 
 # Set up module-level logger
@@ -203,6 +205,15 @@ def _is_existing_download_complete(path: pathlib.Path, ffmpeg_path: str) -> bool
     except OSError:
         return False
 
+    if path.suffix.lower() == ".zip":
+        # A chapter-split download; ffprobe can't validate an archive.
+        try:
+            with zipfile.ZipFile(path) as zf:
+                return bool(zf.namelist()) and zf.testzip() is None
+        except (OSError, zipfile.BadZipFile) as e:
+            logger.warning(f"Existing archive '{path}' is invalid/incomplete: {e}")
+            return False
+
     ffprobe_path = _find_ffprobe(ffmpeg_path)
     if not ffprobe_path:
         logger.debug(
@@ -352,6 +363,7 @@ async def fetch_info(url: str, use_cookies: bool = False) -> DownloadItem:
         )
         item.description = info_dict.get("description") # Fetch the description
         logger.debug(f"Fetched description for '{item.title}': '{str(item.description)[:100]}...'") # Log fetched description
+        item.chapters = info_dict.get("chapters") or []
 
         upload_date_str = info_dict.get("upload_date")  # Format typically 'YYYYMMDD'
         if (
@@ -459,6 +471,7 @@ async def download_item(
     status_callback: Optional[StatusCallbackType] = None,
     use_cookies: bool = False,
     cancel_event: Optional[threading.Event] = None,
+    split_chapters: bool = False,
 ) -> None:
     """
     Downloads the specified DownloadItem based on its selected formats,
@@ -474,6 +487,10 @@ async def download_item(
         status_callback: Function called when the overall status changes.
         cancel_event: Optional event checked on every yt-dlp progress tick;
                       when set, aborts the in-progress download.
+        split_chapters: For audio-only downloads with 2+ chapters, split
+                        into one tagged track per chapter and deliver them
+                        as a zip (final_filepath is the zip). Ignored for
+                        video, or when there are fewer than 2 chapters.
 
     Raises:
         ValueError: If required format selections are missing, FFmpeg is not found,
@@ -784,6 +801,25 @@ async def download_item(
                 else:
                     logging.info("Custom genre postprocessor is disabled.")
 
+            # --- Chapter splitting (audio only) ---
+            chapter_tracks = []
+            if split_chapters:
+                if not is_audio_only:
+                    logger.warning(
+                        f"Chapter splitting only applies to audio-only downloads; "
+                        f"ignoring it for '{item.title}'."
+                    )
+                else:
+                    chapter_tracks = build_track_plan(
+                        item.chapters, item.title, item.artist, item.year
+                    )
+                    if len(chapter_tracks) < 2:
+                        logger.info(
+                            f"'{item.title}' has fewer than 2 usable chapters; "
+                            "downloading as a single file."
+                        )
+                        chapter_tracks = []
+
             # --- Determine Final Output Path ---
             artist_part = item.artist or "Unknown Artist"
             title_part = item.title or "Unknown Title"
@@ -793,7 +829,10 @@ async def download_item(
                 logger.error("Internal error: Final file extension was not determined.")
                 final_extension = ".media"
 
-            final_filename = f"{safe_title_base}{final_extension}"
+            if chapter_tracks:
+                final_filename = sanitize_filename(f"{safe_title_base} (chapters).zip")
+            else:
+                final_filename = f"{safe_title_base}{final_extension}"
             item.final_filepath = output_dir / final_filename
 
             # Check for existing final file *before* download. This is the common
@@ -958,6 +997,19 @@ async def download_item(
                 temp_download_path = processed_files[0]
 
             logger.debug(f"Processed file found: {temp_download_path}")
+
+            if chapter_tracks:
+                _update_status(
+                    "Processing", f"Splitting into {len(chapter_tracks)} chapter tracks"
+                )
+                track_paths = split_audio_by_chapters(
+                    temp_download_path,
+                    chapter_tracks,
+                    temp_dir / "chapters",
+                    ffmpeg_path,
+                    cancel_event=cancel_event,
+                )
+                temp_download_path = pack_tracks_zip(track_paths, temp_dir / final_filename)
 
             # Move the final file (shutil.move handles the rename to final_filepath)
             logger.info(

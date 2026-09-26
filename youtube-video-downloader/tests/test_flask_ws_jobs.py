@@ -124,6 +124,7 @@ def test_job_lifecycle_reaches_complete_and_serves_result(mod, client, result_fi
     async def fake_process_download(
         url, audio_format_id, video_format_id, target_format,
         target_audio_params, target_video_params, progress_hook=None, cancel_event=None,
+        **kw,
     ):
         for pct in (20, 50, 90):
             if progress_hook:
