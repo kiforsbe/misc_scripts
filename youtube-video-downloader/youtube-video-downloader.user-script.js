@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.10.0
+// @version      1.10.1
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -40,11 +40,16 @@
   // --- Styles ---
   const STYLES = `
     /* Main watch-page controls */
-    .ytdl-custom-button-container { display: inline-flex; align-items: center; justify-content: center; margin-left: 8px; height: 36px; min-height: 36px; width: auto; min-width: 0; overflow: hidden; flex: 0 0 auto; flex-shrink: 0; box-sizing: border-box; isolation: isolate; border-radius: 18px; border: 1px solid var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.12)); background: transparent; box-shadow: none; outline: none !important; -webkit-tap-highlight-color: transparent; }
-    .ytdl-download-button, .ytdl-dropdown-arrow { height: 100%; display: inline-flex; align-items: center; justify-content: center; border: none; font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; cursor: pointer; flex: 0 0 auto; min-width: 0; box-sizing: border-box; appearance: none; background: transparent; color: var(--yt-spec-text-primary, #0f0f0f); transition: background-color 0.12s ease, color 0.12s ease; margin: 0; padding: 0; }
-    .ytdl-download-button { padding: 0 12px; border-radius: 18px 0 0 18px; }
-    .ytdl-dropdown-arrow { padding: 0 12px; border-left: 1px solid var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.12)); border-radius: 0 18px 18px 0; font-size: 13px; min-width: 34px; justify-content: center; }
-    .ytdl-download-button:hover, .ytdl-dropdown-arrow:hover, .ytdl-custom-button-container:hover { background-color: var(--yt-spec-menu-subtle-background, rgba(0,0,0,0.06)); }
+    /* Looks like YouTube's like/dislike pill. YouTube no longer exposes its
+       --yt-spec-* colors, so these are its light/dark theme values;
+       applyNativeButtonLook() fine-tunes them from a rendered native button. */
+    .ytdl-custom-button-container { --ytdl-bg: rgba(0, 0, 0, 0.05); --ytdl-bg-hover: rgba(0, 0, 0, 0.1); --ytdl-fg: #0f0f0f; --ytdl-divider: rgba(0, 0, 0, 0.1); --ytdl-height: 36px; display: inline-flex; align-items: center; justify-content: center; margin-left: 8px; height: var(--ytdl-height); min-height: var(--ytdl-height); width: auto; min-width: 0; overflow: hidden; flex: 0 0 auto; flex-shrink: 0; box-sizing: border-box; isolation: isolate; border-radius: calc(var(--ytdl-height) / 2); border: none; background: transparent; box-shadow: none; outline: none !important; -webkit-tap-highlight-color: transparent; }
+    html[dark] .ytdl-custom-button-container { --ytdl-bg: rgba(255, 255, 255, 0.1); --ytdl-bg-hover: rgba(255, 255, 255, 0.2); --ytdl-fg: #f1f1f1; --ytdl-divider: rgba(255, 255, 255, 0.2); }
+    .ytdl-download-button, .ytdl-dropdown-arrow { height: 100%; display: inline-flex; align-items: center; justify-content: center; border: none; font-family: "Roboto", "Arial", sans-serif; font-size: 14px; font-weight: 500; line-height: 1; cursor: pointer; flex: 0 0 auto; min-width: 0; box-sizing: border-box; appearance: none; background-color: var(--ytdl-bg); color: var(--ytdl-fg); transition: background-color 0.12s ease, color 0.12s ease; margin: 0; padding: 0; }
+    .ytdl-download-button { position: relative; padding: 0 16px; }
+    .ytdl-download-button::after { content: ""; position: absolute; right: 0; top: 50%; width: 1px; height: 24px; transform: translateY(-50%); background: var(--ytdl-divider); pointer-events: none; }
+    .ytdl-dropdown-arrow { padding: 0 12px; font-size: 13px; min-width: 34px; justify-content: center; }
+    .ytdl-download-button:hover, .ytdl-dropdown-arrow:hover { background-color: var(--ytdl-bg-hover); }
     .ytdl-download-button:focus, .ytdl-dropdown-arrow:focus { outline: none !important; box-shadow: none !important; -webkit-box-shadow: none !important; }
 
     /* Targeted focus/outline removal for our controls only.
@@ -63,7 +68,6 @@
       box-shadow: none !important;
       -webkit-box-shadow: none !important;
       -moz-box-shadow: none !important;
-      border-color: var(--yt-spec-10-percent-layer, rgba(15,15,15,0.12)) !important;
       background-clip: padding-box !important;
       -webkit-focus-ring-color: transparent !important;
     }
@@ -1578,7 +1582,35 @@
       if (color) return color;
     }
 
-    return 'var(--yt-spec-text-primary, rgb(15, 15, 15))';
+    return document.documentElement.hasAttribute('dark') ? '#f1f1f1' : '#0f0f0f';
+  }
+
+  /**
+   * Copies the look of YouTube's own action buttons (colors, height, font)
+   * onto our button group via its --ytdl-* properties. The stylesheet's theme
+   * defaults apply until this succeeds.
+   * @param {HTMLElement} container
+   * @returns {boolean} false if no native button is rendered yet.
+   */
+  function applyNativeButtonLook(container) {
+    const nativeButton = getNativeActionButton();
+    if (!nativeButton) return false;
+
+    const isVisible = (color) => color && color !== 'transparent' && color !== 'rgba(0, 0, 0, 0)';
+    const nativeStyle = getComputedStyle(nativeButton);
+    if (isVisible(nativeStyle.backgroundColor)) container.style.setProperty('--ytdl-bg', nativeStyle.backgroundColor);
+    if (isVisible(nativeStyle.color)) container.style.setProperty('--ytdl-fg', nativeStyle.color);
+    const height = parseFloat(nativeStyle.height);
+    if (height >= 24 && height <= 56) container.style.setProperty('--ytdl-height', `${height}px`);
+    const divider = getComputedStyle(nativeButton, '::after');
+    if (divider.content !== 'none' && isVisible(divider.backgroundColor)) container.style.setProperty('--ytdl-divider', divider.backgroundColor);
+
+    for (const button of container.querySelectorAll('.ytdl-download-button, .ytdl-dropdown-arrow')) {
+      button.style.fontFamily = nativeStyle.fontFamily || '';
+      button.style.fontSize = nativeStyle.fontSize || '';
+      button.style.fontWeight = nativeStyle.fontWeight || '';
+    }
+    return true;
   }
 
   /**
@@ -1630,7 +1662,6 @@
     container.id = 'ytdl-custom-button-container';
 
     const nativeButtonClassName = getNativeActionButtonClassName();
-    const nativeButton = getNativeActionButton();
 
     const downloadButton = document.createElement('button');
     downloadButton.textContent = 'Download';
@@ -1673,23 +1704,8 @@
     dropdownMenu.id = 'ytdl-dropdown-menu';
     const nativeTextColor = getNativeActionButtonTextColor();
     const dropdownItemHoverColor = getDropdownItemHoverColor();
-    downloadButton.style.color = nativeTextColor;
-    dropdownArrow.style.color = nativeTextColor;
     dropdownMenu.style.color = nativeTextColor;
     dropdownMenu.style.setProperty('--ytdl-dropdown-item-hover-color', dropdownItemHoverColor);
-
-    if (nativeButton) {
-      const nativeStyle = getComputedStyle(nativeButton);
-      const nativeBackground = nativeStyle.backgroundColor && nativeStyle.backgroundColor !== 'rgba(0, 0, 0, 0)' ? nativeStyle.backgroundColor : 'var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.06))';
-      downloadButton.style.fontFamily = nativeStyle.fontFamily || 'inherit';
-      downloadButton.style.fontSize = nativeStyle.fontSize || '14px';
-      downloadButton.style.fontWeight = nativeStyle.fontWeight || '500';
-      dropdownArrow.style.fontFamily = nativeStyle.fontFamily || 'inherit';
-      dropdownArrow.style.fontSize = nativeStyle.fontSize || '14px';
-      dropdownArrow.style.fontWeight = nativeStyle.fontWeight || '500';
-      container.style.borderColor = nativeStyle.borderColor || 'var(--yt-spec-10-percent-layer, rgba(15, 15, 15, 0.12))';
-      container.style.backgroundColor = nativeBackground;
-    }
 
     dropdownArrow.addEventListener('click', (e) => {
       e.stopPropagation(); // Prevent body click listener closing it immediately
@@ -1775,6 +1791,14 @@
     container.appendChild(downloadButton);
     container.appendChild(dropdownArrow);
     // Note: dropdownMenu is NOT appended to container
+
+    // YouTube's own buttons may not be drawn yet (common after in-page
+    // navigation): keep the theme defaults and retry for up to 10 s.
+    let lookAttempts = 0;
+    const applyLookWhenReady = () => {
+      if (!applyNativeButtonLook(container) && ++lookAttempts < 20) setTimeout(applyLookWhenReady, 500);
+    };
+    applyLookWhenReady();
 
     // Close dropdown if clicking outside
     // Consider moving this listener setup outside createDownloadButton to avoid duplicates
