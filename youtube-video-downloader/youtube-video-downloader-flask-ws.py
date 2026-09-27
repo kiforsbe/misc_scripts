@@ -403,7 +403,7 @@ async def _process_download(
 ) -> pathlib.Path:
     """
     Fetches info, selects formats, downloads the item into TEMP_DIR,
-    and returns the final path (a zip of per-chapter tracks when
+    and returns the final path (a zip of tracks when
     split_chapters applies - see ytdl_core.download_item).
     """
     temp_dir_path = pathlib.Path(TEMP_DIR)
@@ -508,7 +508,7 @@ async def _process_download(
                         progress_hook(40, f"{cb_item.title} - {error}" if error else f"{cb_item.title} - downloading")
                     elif status.lower() in ("processing", "post-processing", "merging"):
                         # error doubles as a detail message here too, e.g.
-                        # "Splitting into 12 chapter tracks".
+                        # "Splitting into 12 tracks (3/12)".
                         progress_hook(88, f"{cb_item.title} - {error}" if error else f"{cb_item.title} - processing")
                     elif status.lower() in ("finished", "completed"):
                         progress_hook(95, f"{cb_item.title} - finished")
@@ -1037,7 +1037,8 @@ def _parse_download_request(data):
     # _process_download fetches it, well after a job may have already been
     # sitting in the concurrency queue.
     title_hint = (data.get("title_hint") or "").strip() or None
-    # Audio-only: split into one tagged track per chapter, returned as a zip.
+    # Audio-only: split into tagged tracks (chapters, timestamps or silence),
+    # returned as a zip.
     split_chapters = _is_truthy(data.get("split_chapters"))
 
     if not url:
@@ -1117,7 +1118,7 @@ def index():
         <label for="target_format">Target Format:</label>
         <input type="text" id="target_format" name="target_format" placeholder="e.g., mp3, m4a, mp4, mkv"><br>
 
-        <label for="split_chapters">Split by chapters:</label>
+        <label for="split_chapters">Split into tracks:</label>
         <input type="checkbox" id="split_chapters" name="split_chapters" value="1"><br>
 
         <input type="submit" value="Download">
@@ -1130,7 +1131,7 @@ def index():
         <li>Specify <b>only</b> Video ID for video download (it might already contain audio, or be video-only).</li>
         <li>Specify <b>both</b> Audio and Video ID if you want to force merging specific streams (requires FFmpeg).</li>
         <li>Use <b>Target Format</b> to convert the output (e.g., specify best audio ID and 'mp3' target; requires FFmpeg). Valid targets depend on FFmpeg capabilities (common: mp3, m4a, aac, ogg, opus, mp4, mkv, webm).</li>
-        <li><b>Split by chapters</b> (audio-only downloads): one track per chapter, tagged with artist/title parsed from the chapter name ("Artist - Title"), returned as a .zip. Videos with fewer than 2 chapters download as a single file.</li>
+        <li><b>Split into tracks</b> (audio-only downloads): one tagged track per song, returned as a .zip. Tracks come from chapters; long stretches without chapters use timestamps in the description or comments, then the silence between songs. Repeats in looped mixes are dropped, names are parsed as "Artist - Title" (swapped for "Title - Artist" albums), unnamed tracks become "Track NN", and each track gets its own genre when music style recognition is on. Videos with fewer than 2 tracks download as a single file.</li>
         <li>FFmpeg Status: <b>{ffmpeg_status}</b></li>
         <li>Files are temporarily stored in <code>{TEMP_DIR}</code> and automatically deleted after {DELETE_DELAY // 60} minutes.</li>
     </ul>

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Downloader Service UI
 // @namespace    http://tampermonkey.net/
-// @version      1.9.0
+// @version      1.10.0
 // @description  Adds a download button to YouTube pages to interact with a local youtube-video-downloader-flask-ws service.
 // @author       Your Name Here
 // @match        https://www.youtube.com/*
@@ -572,7 +572,7 @@
     * @param {string|number|null} targetAudioParams - Optional audio conversion argument.
     * @param {string|number|null} targetVideoParams - Optional video conversion argument.
     * @param {string|null} titleHint - Best-effort video title, for display while queued server-side.
-    * @param {boolean} splitChapters - Split audio into one track per chapter (server returns a .zip).
+    * @param {boolean} splitChapters - Split audio into tracks (server returns a .zip).
    * @returns {Record<string, string|number>}
    */
   function buildDownloadStartParams(url, audioId, videoId, targetFormat, targetAudioParams, targetVideoParams, titleHint, splitChapters = false) {
@@ -603,13 +603,28 @@
     return usable >= 2 ? usable : 0;
   }
 
+  // A video at least this long may be a mix worth splitting even without
+  // chapters (the server then finds tracks from timestamps and silence).
+  const MIN_TRACK_SPLIT_DURATION_S = 600;
+
+  /**
+   * Whether to offer "split into tracks" for a /list_formats payload: the
+   * video has 2+ chapters, or is long enough to be a mix. Pure/no side
+   * effects.
+    * @param {any} data - Parsed /list_formats payload.
+   * @returns {boolean}
+   */
+  function shouldOfferTrackSplit(data) {
+    return countSplittableChapters(data) > 0 || Number(data?.duration) >= MIN_TRACK_SPLIT_DURATION_S;
+  }
+
   /**
    * Filename to save a result as when the server sends no usable
    * Content-Disposition header. Pure/no side effects.
     * @param {string} filenameHint - Preferred filename stem.
     * @param {string|null} targetFormat - Requested conversion/output format.
     * @param {string|null} videoId - Explicit video format ID, if any.
-    * @param {boolean} splitChapters - Whether this was a chapter-split (zip) download.
+    * @param {boolean} splitChapters - Whether this was a track-split (zip) download.
    * @returns {string}
    */
   function buildFallbackFilename(filenameHint, targetFormat, videoId, splitChapters) {
@@ -704,7 +719,7 @@
     * @param {string} filenameHint - Preferred fallback filename stem.
     * @param {{videoId?: string|null, kind?: 'video'|'audio'}|null} quickTrack - Optional tracking payload for persisted status updates.
     * @param {string|null} existingClientId - Reuse this toast row (retry).
-    * @param {boolean} splitChapters - Split audio into one track per chapter (server returns a .zip).
+    * @param {boolean} splitChapters - Split audio into tracks (server returns a .zip).
    */
   function triggerDownload(url, audioId = null, videoId = null, targetFormat = null, targetAudioParams = null, targetVideoParams = null, filenameHint = 'download', quickTrack = null, existingClientId = null, splitChapters = false) {
     if (audioId !== null && audioId !== undefined && !isValidFormatId(audioId)) {
@@ -1326,7 +1341,7 @@
       * @param {string|null} targetFormat - Optional conversion target format.
       * @param {string|number|null} targetAudioParams - Optional audio conversion parameter.
       * @param {string|number|null} targetVideoParams - Optional video conversion parameter.
-      * @param {boolean} splitChapters - Split audio into one track per chapter (.zip).
+      * @param {boolean} splitChapters - Split audio into tracks (.zip).
      * @returns {HTMLAnchorElement}
      */
     const createItem = (text, audioId, videoId, targetFormat = null, targetAudioParams = null, targetVideoParams = null, splitChapters = false) => {
@@ -1429,12 +1444,11 @@
         }
       });
 
-      // --- Options: Split by chapters (one tagged track per chapter, as a .zip) ---
-      const chapterCount = countSplittableChapters(data);
-      if (chapterCount) {
-        const splitMp3Text = `✂️🎧 Split ${chapterCount} chapters -> MP3 (Source) .zip`;
+      // --- Options: Split into tracks (chapters, timestamps or silence; one tagged track each, as a .zip) ---
+      if (shouldOfferTrackSplit(data)) {
+        const splitMp3Text = '✂️🎧 Split into tracks -> MP3 (Source) .zip';
         menu.appendChild(createItem(splitMp3Text, bestAudio.format_id, null, 'mp3', null, null, true));
-        const splitM4aText = `✂️🎧 Split ${chapterCount} chapters -> M4A .zip`;
+        const splitM4aText = '✂️🎧 Split into tracks -> M4A .zip';
         menu.appendChild(createItem(splitM4aText, bestAudio.format_id, null, 'm4a', null, null, true));
       }
     }
@@ -2323,6 +2337,7 @@
       getValidAudioFormats,
       buildDownloadStartParams,
       countSplittableChapters,
+      shouldOfferTrackSplit,
       buildFallbackFilename,
       parseContentDispositionFilename,
       decideJobStatusAction

@@ -111,7 +111,7 @@ def test_download_start_passes_split_chapters_through(mod):
 
 
 def test_process_download_forwards_split_chapters_and_reports_splitting(mod, tmp_path):
-    final = tmp_path / "Artist - Mix (chapters).zip"
+    final = tmp_path / "Artist - Mix (tracks).zip"
     final.write_bytes(b"zip")
     download_kwargs = {}
 
@@ -123,7 +123,7 @@ def test_process_download_forwards_split_chapters_and_reports_splitting(mod, tmp
 
     async def fake_download_item(item, **kwargs):
         download_kwargs.update(kwargs)
-        kwargs["status_callback"](item, "Processing", "Splitting into 2 chapter tracks")
+        kwargs["status_callback"](item, "Processing", "Splitting into 2 tracks (1/2)")
         item.status = "Complete"
         item.final_filepath = final
 
@@ -141,7 +141,7 @@ def test_process_download_forwards_split_chapters_and_reports_splitting(mod, tmp
 
     assert result == final
     assert download_kwargs["split_chapters"] is True
-    assert "Mix - Splitting into 2 chapter tracks" in messages
+    assert "Mix - Splitting into 2 tracks (1/2)" in messages
 
 
 def test_list_formats_includes_chapters(mod):

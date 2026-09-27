@@ -90,11 +90,15 @@ Can also be run directly: `python youtube-video-downloader/youtube-video-downloa
 - Provides download progress and status updates in JSON format.
 - Supports output formats (e.g., mp4, mp3) and allows users to specify desired resolution, audio bitrate, and target directory.
 - Returns download progress and status updates in JSON format.
-- Split by chapters: for audio-only downloads, pass `split_chapters=1` (or pick "✂️🎧 Split N chapters" in the userscript dropdown, shown when a video has 2+ chapters) to get a `.zip` with one track per chapter. Each track is stream-copied (no re-encode) and tagged from its chapter name: `Artist - Title` sets artist and title (leading track numbers/timestamps are ignored); a chapter without a separator uses the album artist. Album/album artist come from an `Artist - Album (Full Album)` video title, else the video title and channel. Genre and cover art (mp3/m4a) carry over from the full file.
+- Split into tracks: for audio-only downloads, pass `split_chapters=1` (or pick "✂️🎧 Split into tracks" in the userscript dropdown, shown for videos with 2+ chapters or at least 10 minutes long) to get a `.zip` with one track per song.
+  - Where tracks are: chapter markers first; stretches of 12+ minutes without chapters are filled from timestamps in the description or comments, then from the silence between songs (one ffmpeg pass: `silencedetect` plus a Chromaprint fingerprint). When chapter times don't line up with the real gaps, the gaps decide the cuts and the chapters only name the tracks. Repeated songs in looped mixes are dropped.
+  - Tags: each track is stream-copied (no re-encode). `Artist - Title` names set artist and title (swapped for the whole album when the uploader wrote `Title - Artist`); leading track numbers/timestamps are ignored; unnamed tracks become `Track NN` by the album artist. Album/album artist come from an `Artist - Album (Full Album)` video title, else the video title and channel. Each track gets its own genre when music style recognition is enabled (otherwise the whole file's). Cover art (mp3/m4a) carries over.
+  - Fewer than 2 tracks found: a single file instead of a zip.
 - Logs activity to logs/youtube_downloader.log.
 
 #### Requires
 - Flask
 - ytdl_helper (and its dependencies, likely yt-dlp)
-- ffmpeg (must be installed and in the system PATH)
+- ffmpeg (must be installed and in the system PATH; a build with Chromaprint, e.g. gyan.dev's full build, lets track splitting drop repeated songs)
+- numpy (track splitting; installed with librosa)
 - common/music_style_classifier.py

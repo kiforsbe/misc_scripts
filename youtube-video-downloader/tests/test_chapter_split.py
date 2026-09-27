@@ -2,8 +2,8 @@
 Tests for ytdl_helper.chapter_split: turning a video's chapter markers
 into separately-tagged audio tracks.
 
-The pure helpers (chapter-title parsing, album info, track planning) are
-tested directly. The ffmpeg-backed splitting is tested against a real,
+The pure helpers (chapter-title parsing, artist/title orientation, album
+info) are tested directly. The ffmpeg-backed splitting is tested against a real,
 tiny generated audio file (skipped if ffmpeg isn't on PATH) since whether
 stream-copy splitting keeps tags/cover art intact is exactly the kind of
 thing that can't be predicted from the command line alone.
@@ -24,8 +24,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from ytdl_helper.chapter_split import (
     ChapterTrack,
-    build_track_plan,
     derive_album_info,
+    orient_artist_title,
     pack_tracks_zip,
     parse_chapter_title,
     split_audio_by_chapters,
@@ -85,6 +85,45 @@ def test_parse_chapter_title_keeps_original_when_only_a_number_remains():
     assert parse_chapter_title("01.", fallback_artist=None) == (None, "01.")
 
 
+# --- orient_artist_title ---
+
+
+def test_orient_artist_title_swaps_when_the_title_part_repeats():
+    names = [
+        ("Photos in the Rain", "Luna Vale"),
+        ("Stay in My Arms", "Luna Vale"),
+        ("Back to Me", "luna vale"),
+    ]
+    assert orient_artist_title(names) == [
+        ("Luna Vale", "Photos in the Rain"),
+        ("Luna Vale", "Stay in My Arms"),
+        ("luna vale", "Back to Me"),
+    ]
+
+
+def test_orient_artist_title_keeps_artist_title_albums():
+    names = [("Daft Punk", "One More Time"), ("Daft Punk", "Aerodynamic"), ("Romanthony", "Too Long")]
+    assert orient_artist_title(names) == names
+
+
+def test_orient_artist_title_never_swaps_on_a_tie():
+    names = [("A", "X"), ("A", "X")]
+    assert orient_artist_title(names) == names
+
+
+def test_orient_artist_title_leaves_unsplit_names_alone():
+    names = [(None, "Intro"), ("Song One", "Luna Vale"), ("Song Two", "Luna Vale"), (None, "Track 04")]
+    assert orient_artist_title(names) == [
+        (None, "Intro"), ("Luna Vale", "Song One"), ("Luna Vale", "Song Two"), (None, "Track 04"),
+    ]
+
+
+def test_orient_artist_title_needs_a_real_repeat():
+    names = [("Song One", "Luna Vale"), ("Song Two", "Kai Mori")]
+    assert orient_artist_title(names) == names
+    assert orient_artist_title([]) == []
+
+
 # --- derive_album_info ---
 
 
@@ -104,50 +143,23 @@ def test_derive_album_info(video_title, channel, expected):
     assert derive_album_info(video_title, channel) == expected
 
 
-# --- build_track_plan ---
+# --- ChapterTrack ---
 
 
-def _chapters():
+def _tracks():
+    """Three tracks over the 5 s test tone: 0-2 s, 2-3 s, 3-5 s."""
+    spec = [
+        (0.0, 2.0, "Daft Punk", "One More Time"),
+        (2.0, 3.0, "Daft Punk", "Aerodynamic"),
+        (3.0, 5.0, "Romanthony", "Too Long"),
+    ]
     return [
-        {"start_time": 0.0, "end_time": 2.0, "title": "01. Daft Punk - One More Time"},
-        {"start_time": 2.0, "end_time": 3.0, "title": "Aerodynamic"},
-        {"start_time": 3.0, "end_time": 5.0, "title": "Romanthony - Too Long"},
+        ChapterTrack(
+            number=n, total=len(spec), start=start, end=end, artist=artist, title=title,
+            album="Discovery", album_artist="Daft Punk", year=2001,
+        )
+        for n, (start, end, artist, title) in enumerate(spec, start=1)
     ]
-
-
-def test_build_track_plan_tags_each_chapter():
-    tracks = build_track_plan(
-        _chapters(),
-        video_title="Daft Punk - Discovery (Full Album)",
-        channel="Some Uploader",
-        year=2001,
-    )
-
-    assert [(t.number, t.total) for t in tracks] == [(1, 3), (2, 3), (3, 3)]
-    assert [(t.artist, t.title) for t in tracks] == [
-        ("Daft Punk", "One More Time"),
-        ("Daft Punk", "Aerodynamic"),  # no separator -> album artist
-        ("Romanthony", "Too Long"),
-    ]
-    assert all(t.album == "Discovery" for t in tracks)
-    assert all(t.album_artist == "Daft Punk" for t in tracks)
-    assert all(t.year == 2001 for t in tracks)
-    assert [(t.start, t.end) for t in tracks] == [(0.0, 2.0), (2.0, 3.0), (3.0, 5.0)]
-
-
-def test_build_track_plan_skips_zero_length_chapters():
-    chapters = _chapters()
-    chapters.insert(1, {"start_time": 2.0, "end_time": 2.0, "title": "Empty"})
-
-    tracks = build_track_plan(chapters, video_title="Mix", channel="DJ", year=None)
-
-    assert [t.title for t in tracks] == ["One More Time", "Aerodynamic", "Too Long"]
-    assert [(t.number, t.total) for t in tracks] == [(1, 3), (2, 3), (3, 3)]
-
-
-def test_build_track_plan_empty_when_no_chapters():
-    assert build_track_plan([], video_title="Mix", channel="DJ", year=None) == []
-    assert build_track_plan(None, video_title="Mix", channel="DJ", year=None) == []
 
 
 def test_track_filename_stem_is_numbered_and_filesystem_safe():
@@ -220,12 +232,7 @@ def _tags(probe: dict) -> dict:
 @pytest.mark.parametrize("ext", [".mp3", ".m4a"])
 def test_split_audio_by_chapters_writes_tagged_tracks(tmp_path, ext):
     src = _make_source_audio(tmp_path, ext)
-    tracks = build_track_plan(
-        _chapters(),
-        video_title="Daft Punk - Discovery (Full Album)",
-        channel="Some Uploader",
-        year=2001,
-    )
+    tracks = _tracks()
     out_dir = tmp_path / "tracks"
 
     paths = split_audio_by_chapters(src, tracks, out_dir, ffmpeg_path=FFMPEG)
@@ -258,7 +265,7 @@ def test_split_audio_by_chapters_writes_tagged_tracks(tmp_path, ext):
 @needs_ffmpeg
 def test_split_audio_by_chapters_stops_when_cancelled(tmp_path):
     src = _make_source_audio(tmp_path, ".mp3")
-    tracks = build_track_plan(_chapters(), video_title="Mix", channel="DJ", year=None)
+    tracks = _tracks()
     cancel_event = threading.Event()
     cancel_event.set()
 
@@ -271,12 +278,60 @@ def test_split_audio_by_chapters_stops_when_cancelled(tmp_path):
 def test_split_audio_by_chapters_raises_when_ffmpeg_fails(tmp_path):
     src = tmp_path / "not-really-audio.mp3"
     src.write_bytes(b"garbage")
-    tracks = build_track_plan(_chapters(), video_title="Mix", channel="DJ", year=None)
+    tracks = _tracks()
     if not FFMPEG:
         pytest.skip("ffmpeg not on PATH")
 
     with pytest.raises(RuntimeError, match="One More Time"):
         split_audio_by_chapters(src, tracks, tmp_path / "tracks", ffmpeg_path=FFMPEG)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("ext", [".mp3", ".m4a"])
+def test_split_audio_by_chapters_tags_each_track_with_its_own_genre(tmp_path, ext):
+    src = _make_source_audio(tmp_path, ext)
+    genres = iter(["Synthwave", None, "Italo-Disco"])
+    classified = []
+
+    def classify(path):
+        classified.append(pathlib.Path(path).name)
+        return next(genres)
+
+    paths = split_audio_by_chapters(
+        src, _tracks(), tmp_path / "tracks", ffmpeg_path=FFMPEG, classify_genre=classify
+    )
+
+    assert classified == [p.name for p in paths]
+    # None keeps the full file's genre; re-tagging keeps the other tags.
+    assert [_tags(_probe(p))["genre"] for p in paths] == ["Synthwave", "Electronic", "Italo-Disco"]
+    assert _tags(_probe(paths[0]))["title"] == "One More Time"
+
+
+@needs_ffmpeg
+def test_split_audio_by_chapters_survives_a_failing_genre_classifier(tmp_path):
+    src = _make_source_audio(tmp_path, ".mp3")
+
+    def classify(path):
+        raise RuntimeError("model exploded")
+
+    paths = split_audio_by_chapters(
+        src, _tracks(), tmp_path / "tracks", ffmpeg_path=FFMPEG, classify_genre=classify
+    )
+
+    assert len(paths) == 3
+    assert _tags(_probe(paths[0]))["genre"] == "Electronic"
+
+
+@needs_ffmpeg
+def test_split_audio_by_chapters_reports_each_track(tmp_path):
+    src = _make_source_audio(tmp_path, ".mp3")
+    seen = []
+
+    split_audio_by_chapters(
+        src, _tracks(), tmp_path / "tracks", ffmpeg_path=FFMPEG, on_track=lambda t: seen.append(t.number)
+    )
+
+    assert seen == [1, 2, 3]
 
 
 def test_pack_tracks_zip_stores_files_flat(tmp_path):

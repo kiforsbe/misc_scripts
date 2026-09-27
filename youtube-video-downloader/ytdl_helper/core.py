@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import zipfile
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List
 
 from flask import json
 import yt_dlp
@@ -19,8 +19,14 @@ import yt_dlp.utils
 
 from .models import DownloadItem, FormatInfo
 from .utils import sanitize_filename, check_ffmpeg
-from .chapter_split import build_track_plan, split_audio_by_chapters, pack_tracks_zip
-from .ffmpeg_genre_pp import FFmpegGenrePP, warm_up_genre_classifier
+from .chapter_split import split_audio_by_chapters, pack_tracks_zip
+from .ffmpeg_genre_pp import (
+    FFmpegGenrePP,
+    get_music_genre,
+    is_classifier_available,
+    warm_up_genre_classifier,
+)
+from .track_plan import detect_tracks
 
 # Set up module-level logger
 logger = logging.getLogger(__name__)
@@ -206,7 +212,7 @@ def _is_existing_download_complete(path: pathlib.Path, ffmpeg_path: str) -> bool
         return False
 
     if path.suffix.lower() == ".zip":
-        # A chapter-split download; ffprobe can't validate an archive.
+        # A track-split download; ffprobe can't validate an archive.
         try:
             with zipfile.ZipFile(path) as zf:
                 return bool(zf.namelist()) and zf.testzip() is None
@@ -461,6 +467,118 @@ async def fetch_info(url: str, use_cookies: bool = False) -> DownloadItem:
         raise e  # Re-raise unexpected errors
 
 
+def _track_genre_classifier() -> Optional[Callable[[str], Optional[str]]]:
+    """
+    The genre classifier for tracks split out of a download, or None when
+    music style recognition is disabled or unavailable - tracks then keep
+    the whole file's genre.
+    """
+    if ENABLE_CUSTOM_GENRE_PP and is_classifier_available():
+        return get_music_genre
+    return None
+
+
+def _fetch_comments(url: str, use_cookies: bool = False) -> List[Dict[str, Any]]:
+    """
+    A video's top 30 top-level comments (no replies), for track-name hints
+    when a split download has no chapters or description tracklist. [] on
+    any failure - comments are only ever a nice-to-have.
+    """
+    opts: Dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "getcomments": True,
+        "extractor_args": {
+            "youtube": {"max_comments": ["30", "all", "0", "0"], "comment_sort": ["top"]}
+        },
+    }
+    if use_cookies:
+        cookies_config = get_cookies_from_browser()
+        if cookies_config:
+            opts["cookiesfrombrowser"] = cookies_config
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        logger.warning(f"Could not fetch comments for track names from '{url}': {e}")
+        return []
+    return list((info or {}).get("comments") or [])
+
+
+# Containers the original download of an audio format may come in.
+_ORIGINAL_AUDIO_SUFFIXES = {
+    ".webm", ".weba", ".m4a", ".mp4", ".opus", ".ogg", ".mka", ".mp3", ".aac", ".flac", ".wav",
+}
+
+
+def _original_download(converted: pathlib.Path) -> pathlib.Path:
+    """
+    The download as it came from YouTube, kept next to the converted file
+    (yt-dlp "keepvideo"), else the converted file itself (e.g. when no
+    conversion was needed). Tracks are found in the original because
+    converting can blur the shortest gaps between songs.
+    """
+    originals = [
+        p for p in converted.parent.iterdir()
+        if p.is_file() and p != converted and p.suffix.lower() in _ORIGINAL_AUDIO_SUFFIXES
+    ]
+    return max(originals, key=lambda p: p.stat().st_size, default=converted)
+
+
+def _split_into_tracks(
+    src: pathlib.Path,
+    item: DownloadItem,
+    work_dir: pathlib.Path,
+    zip_name: str,
+    ffmpeg_path: str,
+    use_cookies: bool,
+    update_status: Callable[[str, Optional[str]], None],
+    cancel_event: Optional[threading.Event],
+) -> Optional[pathlib.Path]:
+    """
+    Finds the tracks in a downloaded audio file (chapters, timestamps,
+    silence gaps, looped repeats - see track_plan; the audio analysed is the
+    original download), splits the converted src into them, genre-tags them,
+    and zips them as work_dir / zip_name. Returns the zip, or None when there
+    are fewer than 2 tracks (deliver src as a single file).
+    Blocking - run it in an executor.
+    """
+    try:
+        tracks = detect_tracks(
+            _original_download(src),
+            ffmpeg_path,
+            chapters=item.chapters,
+            description=item.description,
+            expected_duration=item.duration,
+            video_title=item.title,
+            channel=item.artist,
+            year=item.year,
+            fetch_comments=functools.partial(_fetch_comments, item.url, use_cookies),
+            status_cb=lambda message: update_status("Processing", message),
+            cancel_event=cancel_event,
+        )
+    except yt_dlp.utils.DownloadCancelled:
+        raise
+    except Exception as e:  # finding tracks must never fail a finished download
+        logger.warning(f"Could not find tracks in '{item.title}' ({e}); delivering a single file.", exc_info=True)
+        return None
+    if len(tracks) < 2:
+        return None
+    track_paths = split_audio_by_chapters(
+        src,
+        tracks,
+        work_dir / "tracks",
+        ffmpeg_path,
+        cancel_event=cancel_event,
+        classify_genre=_track_genre_classifier(),
+        on_track=lambda t: update_status(
+            "Processing", f"Splitting into {t.total} tracks ({t.number}/{t.total})"
+        ),
+    )
+    return pack_tracks_zip(track_paths, work_dir / zip_name)
+
+
 async def download_item(
     item: DownloadItem,
     output_dir: pathlib.Path,
@@ -487,10 +605,12 @@ async def download_item(
         status_callback: Function called when the overall status changes.
         cancel_event: Optional event checked on every yt-dlp progress tick;
                       when set, aborts the in-progress download.
-        split_chapters: For audio-only downloads with 2+ chapters, split
-                        into one tagged track per chapter and deliver them
-                        as a zip (final_filepath is the zip). Ignored for
-                        video, or when there are fewer than 2 chapters.
+        split_chapters: For audio-only downloads, split into one tagged
+                        track per song - found from chapters, description/
+                        comment timestamps and silence gaps, with looped
+                        repeats dropped - delivered as a zip (final_filepath
+                        is the zip). Falls back to a single file when fewer
+                        than 2 tracks are found. Ignored for video.
 
     Raises:
         ValueError: If required format selections are missing, FFmpeg is not found,
@@ -801,24 +921,19 @@ async def download_item(
                 else:
                     logging.info("Custom genre postprocessor is disabled.")
 
-            # --- Chapter splitting (audio only) ---
-            chapter_tracks = []
+            # --- Track splitting (audio only; tracks are found after download) ---
+            split_tracks = False
             if split_chapters:
                 if not is_audio_only:
                     logger.warning(
-                        f"Chapter splitting only applies to audio-only downloads; "
+                        f"Track splitting only applies to audio-only downloads; "
                         f"ignoring it for '{item.title}'."
                     )
                 else:
-                    chapter_tracks = build_track_plan(
-                        item.chapters, item.title, item.artist, item.year
-                    )
-                    if len(chapter_tracks) < 2:
-                        logger.info(
-                            f"'{item.title}' has fewer than 2 usable chapters; "
-                            "downloading as a single file."
-                        )
-                        chapter_tracks = []
+                    split_tracks = True
+                    # Keep the original download next to the converted file:
+                    # tracks are found in it (see _original_download).
+                    ydl_opts["keepvideo"] = True
 
             # --- Determine Final Output Path ---
             artist_part = item.artist or "Unknown Artist"
@@ -829,8 +944,8 @@ async def download_item(
                 logger.error("Internal error: Final file extension was not determined.")
                 final_extension = ".media"
 
-            if chapter_tracks:
-                final_filename = sanitize_filename(f"{safe_title_base} (chapters).zip")
+            if split_tracks:
+                final_filename = sanitize_filename(f"{safe_title_base} (tracks).zip")
             else:
                 final_filename = f"{safe_title_base}{final_extension}"
             item.final_filepath = output_dir / final_filename
@@ -998,18 +1113,28 @@ async def download_item(
 
             logger.debug(f"Processed file found: {temp_download_path}")
 
-            if chapter_tracks:
-                _update_status(
-                    "Processing", f"Splitting into {len(chapter_tracks)} chapter tracks"
+            if split_tracks:
+                zip_path = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        _split_into_tracks,
+                        temp_download_path,
+                        item,
+                        temp_dir,
+                        final_filename,
+                        ffmpeg_path,
+                        use_cookies,
+                        _update_status,
+                        cancel_event,
+                    ),
                 )
-                track_paths = split_audio_by_chapters(
-                    temp_download_path,
-                    chapter_tracks,
-                    temp_dir / "chapters",
-                    ffmpeg_path,
-                    cancel_event=cancel_event,
-                )
-                temp_download_path = pack_tracks_zip(track_paths, temp_dir / final_filename)
+                if zip_path is not None:
+                    temp_download_path = zip_path
+                else:
+                    logger.info(
+                        f"Found fewer than 2 tracks in '{item.title}'; delivering a single file."
+                    )
+                    item.final_filepath = output_dir / f"{safe_title_base}{final_extension}"
 
             # Move the final file (shutil.move handles the rename to final_filepath)
             logger.info(

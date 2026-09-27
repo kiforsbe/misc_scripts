@@ -288,6 +288,17 @@ test('countSplittableChapters is 0 when there is nothing worth splitting', () =>
   assert.equal(lib.countSplittableChapters({ chapters: 'nope' }), 0);
 });
 
+// --- shouldOfferTrackSplit ---
+
+test('shouldOfferTrackSplit offers chaptered videos and long videos', () => {
+  const chapters = [{ start_time: 0, end_time: 60 }, { start_time: 60, end_time: 120 }];
+  assert.equal(lib.shouldOfferTrackSplit({ chapters, duration: 120 }), true);
+  assert.equal(lib.shouldOfferTrackSplit({ chapters: [], duration: 600 }), true);
+  assert.equal(lib.shouldOfferTrackSplit({ duration: 599 }), false);
+  assert.equal(lib.shouldOfferTrackSplit({}), false);
+  assert.equal(lib.shouldOfferTrackSplit(null), false);
+});
+
 // --- buildFallbackFilename ---
 
 test('buildFallbackFilename picks an extension from the request', () => {

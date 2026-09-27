@@ -5,7 +5,8 @@ chapters are "01. Artist - Song").
 
 Splitting is ffmpeg stream-copy (no re-encode), so it is fast and lossless;
 tags on the full-length file (genre, description, cover art) carry over to
-each track, with title/artist/album/track number overridden per chapter.
+each track, with title/artist/album/track number overridden per chapter, and
+genre too when a per-track genre classifier is given.
 """
 
 import logging
@@ -14,8 +15,9 @@ import re
 import subprocess
 import threading
 import zipfile
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections import Counter
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import yt_dlp.utils
 
@@ -72,6 +74,30 @@ def parse_chapter_title(
     return fallback_artist, cleaned
 
 
+def orient_artist_title(
+    names: List[Tuple[Optional[str], str]]
+) -> List[Tuple[Optional[str], str]]:
+    """
+    Fixes an album whose names are "Title - Artist" instead of
+    "Artist - Title": among the (artist, title) pairs that came from a
+    split (artist not None), if the most repeated title (case-insensitive)
+    occurs at least twice and more often than the most repeated artist,
+    that repeated part must be the artist, so every split pair is swapped.
+    Pairs with artist None are left alone; a tie never swaps.
+    """
+    split = [(artist, title) for artist, title in names if artist]
+    if not split:
+        return list(names)
+
+    def most_repeated(values: Iterable[str]) -> int:
+        return max(Counter(v.casefold() for v in values).values())
+
+    title_repeats = most_repeated(title for _, title in split)
+    if title_repeats >= 2 and title_repeats > most_repeated(artist for artist, _ in split):
+        return [(title, artist) if artist else (artist, title) for artist, title in names]
+    return list(names)
+
+
 def derive_album_info(
     video_title: Optional[str], channel: Optional[str]
 ) -> Tuple[Optional[str], str]:
@@ -108,6 +134,7 @@ class ChapterTrack:
     album: str
     album_artist: Optional[str]
     year: Optional[int]
+    genre: Optional[str] = None  # None keeps the full file's genre
 
     @property
     def filename_stem(self) -> str:
@@ -117,43 +144,6 @@ class ChapterTrack:
             name += f"{self.artist} - "
         name += self.title
         return sanitize_filename(name)
-
-
-def build_track_plan(
-    chapters: Optional[Iterable[Dict[str, Any]]],
-    video_title: Optional[str],
-    channel: Optional[str],
-    year: Optional[int],
-) -> List[ChapterTrack]:
-    """Maps yt-dlp chapter dicts (start_time/end_time/title) to tracks,
-    dropping zero-length chapters."""
-    album_artist, album = derive_album_info(video_title, channel)
-    usable = [
-        c for c in (chapters or [])
-        if c.get("end_time") is not None
-        and c.get("start_time") is not None
-        and c["end_time"] > c["start_time"]
-    ]
-
-    tracks = []
-    for number, chapter in enumerate(usable, start=1):
-        artist, title = parse_chapter_title(
-            chapter.get("title") or f"Track {number}", album_artist
-        )
-        tracks.append(
-            ChapterTrack(
-                number=number,
-                total=len(usable),
-                start=float(chapter["start_time"]),
-                end=float(chapter["end_time"]),
-                artist=artist,
-                title=title,
-                album=album,
-                album_artist=album_artist,
-                year=year,
-            )
-        )
-    return tracks
 
 
 def _split_command(
@@ -170,6 +160,7 @@ def _split_command(
         "album_artist": track.album_artist,
         "track": f"{track.number}/{track.total}",
         "date": str(track.year) if track.year else None,
+        "genre": track.genre,
     }
     tag_args = []
     for key, value in tags.items():
@@ -190,16 +181,51 @@ def _split_command(
     ]
 
 
+def _run_split(
+    ffmpeg_path: str, src: pathlib.Path, track: ChapterTrack, out_path: pathlib.Path
+) -> None:
+    result = subprocess.run(
+        _split_command(ffmpeg_path, src, track, out_path),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        raise RuntimeError(
+            f"ffmpeg failed to split chapter {track.number} '{track.title}': "
+            f"{detail[-1] if detail else f'exit code {result.returncode}'}"
+        )
+
+
+def _classify_genre(
+    classify_genre: Callable[[str], Optional[str]], path: pathlib.Path
+) -> Optional[str]:
+    try:
+        return classify_genre(str(path)) or None
+    except Exception as e:  # a classifier failure must never fail the split
+        logger.warning(f"Genre classification failed for '{path.name}': {e}")
+        return None
+
+
 def split_audio_by_chapters(
     src: pathlib.Path,
     tracks: List[ChapterTrack],
     out_dir: pathlib.Path,
     ffmpeg_path: str,
     cancel_event: Optional[threading.Event] = None,
+    classify_genre: Optional[Callable[[str], Optional[str]]] = None,
+    on_track: Optional[Callable[[ChapterTrack], None]] = None,
 ) -> List[pathlib.Path]:
     """
     Writes one file per track into out_dir (same container as src) and
-    returns their paths in track order. Checks cancel_event between tracks.
+    returns their paths in track order. Checks cancel_event between tracks
+    and calls on_track before each one.
+
+    With classify_genre, each written track is classified on its own audio
+    and, if that gives a genre, written again with it; otherwise (None or
+    an exception) the track keeps the full file's genre.
 
     Raises:
         yt_dlp.utils.DownloadCancelled: If cancel_event is set.
@@ -211,22 +237,16 @@ def split_audio_by_chapters(
     for track in tracks:
         if cancel_event is not None and cancel_event.is_set():
             raise yt_dlp.utils.DownloadCancelled("Download cancelled by user request.")
+        if on_track:
+            on_track(track)
 
         out_path = out_dir / f"{track.filename_stem}{ext}"
         logger.debug(f"Splitting chapter {track.number}/{track.total} -> '{out_path.name}'")
-        result = subprocess.run(
-            _split_command(ffmpeg_path, src, track, out_path),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or "").strip().splitlines()
-            raise RuntimeError(
-                f"ffmpeg failed to split chapter {track.number} '{track.title}': "
-                f"{detail[-1] if detail else f'exit code {result.returncode}'}"
-            )
+        _run_split(ffmpeg_path, src, track, out_path)
+        if classify_genre:
+            genre = _classify_genre(classify_genre, out_path)
+            if genre:
+                _run_split(ffmpeg_path, src, replace(track, genre=genre), out_path)
         paths.append(out_path)
     return paths
 
