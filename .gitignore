@@ -26,6 +26,10 @@ __pycache__/
 .claude
 docs/superpowers/
 .superpowers/
+.song-title-cache/
+.venv-song-title/
+.venv-gpu/
+.superpowers-ollama*.log
 out
 cache
 

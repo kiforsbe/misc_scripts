@@ -1,0 +1,15 @@
+# Install the appropriate PyTorch CPU/CUDA build first; see README.md.
+torch
+transformers>=5.13.0,<6
+accelerate
+demucs>=4.1.0,<5
+# Transformers' optional librosa/numba path is incompatible with NumPy 2.5.
+numpy>=2.0,<2.5
+soundfile
+# Required by Transformers' Nemotron feature extractor.
+librosa>=0.11.0
+mutagen
+requests
+pydantic>=2,<3
+# Required to run this package's tests and included in repository checks.
+pytest

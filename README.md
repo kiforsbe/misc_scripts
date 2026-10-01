@@ -11,6 +11,7 @@ Miscellaneous scripts to automate common tasks.
   - [common](#common): Shared file grouping, presentation, thumbnail-generation, browser-launching, and filename-parsing helpers.
   - [metadatacommon](#metadatacommon): Shared metadata provider package (anime, IMDb, Plex, MyAnimeList) used across several tools.
 - [Projects](#projects): Larger multi-file tools with dedicated packages, helpers, tests, or service components.
+  - [song_title](song_title/README.md): Suggests titles from isolated vocals, formats lyric sidecars, updates audio tags safely, and supports automatic title-based renaming.
   - [plex_db_tool](#plex_db_tool): Package-backed Plex database transfer and playlist sync CLI with root shim.
   - [video-optimizer-v2](#video-optimizer-v2): Multi-file video transcoder using shared metadata providers, with tests.
   - [youtube-video-downloader](#youtube-video-downloader): Bundle of CLI, TUI, web, userscript, and helper download tools.

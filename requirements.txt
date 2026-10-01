@@ -11,6 +11,7 @@
 -r plex_db_tool/requirements.txt
 -r series_completeness_checker/requirements.txt
 -r simple_scraper_proxy/requirements.txt
+-r song_title/requirements.txt
 -r udio-flask-webservice/requirements.txt
 -r video-optimizer-v2/requirements.txt
 -r youtube-video-downloader/requirements.txt
