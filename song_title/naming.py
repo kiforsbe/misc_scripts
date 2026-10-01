@@ -44,6 +44,9 @@ def render_filename_template(template: str, metadata: dict, extension: str) -> P
     rendered = rendered.replace('\\', '/')
     parts = []
     for part in rendered.split('/'):
+        dash_parts = re.split(r'\s+-\s+', part)
+        if any(not segment.strip() for segment in dash_parts):
+            part = ' - '.join(segment.strip() for segment in dash_parts if segment.strip())
         part = _INVALID_COMPONENT.sub('_', part).strip(' .')
         part = re.sub(r'^[-_ ]+', '', part)
         if part in {'', '.', '..'}:
