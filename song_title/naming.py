@@ -8,7 +8,7 @@ import tempfile
 import unicodedata
 from pathlib import Path
 
-from .titles import shorten_filename_fields
+from .titles import shorten_filename_fields, valid_filename_shortening
 from .types import Settings
 
 DEFAULT_FILENAME_TEMPLATE = '%album% - %artist% - $num(%tracknumber%,2) - %title%'
@@ -148,8 +148,11 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
                 key = _filename_cache_key(field, original, settings, max_length)
                 cache_keys[field] = key
                 cached = cache.get(key)
-                if cached and _utf16_length(cached) < _utf16_length(original):
-                    working[field] = cached
+                if cached:
+                    if valid_filename_shortening(original, cached) and _utf16_length(cached) < _utf16_length(original):
+                        working[field] = cached
+                    else:
+                        cache.pop(key, None)
 
     for _attempt in range(4):
         target = _render_output_path(source, working, template)
