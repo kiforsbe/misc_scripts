@@ -119,7 +119,7 @@ def _rename_no_clobber(source: Path, destination: Path) -> Path:
 
 
 def _store_lyrics_file(path: Path, analysis, arguments) -> Path | None:
-    lyrics = format_lyrics(analysis.chunks)
+    lyrics = analysis.formatted_lyrics.strip() or format_lyrics(analysis.lyrics)
     if not lyrics:
         return None
     result = write_lyrics_file(path, lyrics, overwrite=arguments.force_lyrics)
@@ -131,7 +131,7 @@ def _store_lyrics_file(path: Path, analysis, arguments) -> Path | None:
 
 
 def _tag_lyrics(analysis, path: Path, arguments) -> str | None:
-    lyrics = format_lyrics(analysis.chunks)
+    lyrics = analysis.formatted_lyrics.strip() or format_lyrics(analysis.lyrics)
     if not lyrics:
         return None
     existing = str(analysis.metadata.get('lyrics', '')).strip()

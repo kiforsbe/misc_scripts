@@ -3,32 +3,26 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+import textwrap
 from pathlib import Path
 
 from .types import Chunk
 
 _SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
-_WORD = re.compile(r'\S+')
 
 
-def format_lyrics(chunks: list[Chunk], line_width: int = 48, stanza_lines: int = 4) -> str:
-    """Reflow ASR text into readable lyric lines without changing its words."""
-    text = ' '.join(' '.join(chunk.text.split()) for chunk in chunks if chunk.text.strip())
+def format_lyrics(source: list[Chunk] | str, line_width: int = 72, stanza_lines: int = 4) -> str:
+    """Conservatively format ASR text when the model did not return a valid layout."""
+    if isinstance(source, str):
+        text = ' '.join(source.split())
+    else:
+        text = ' '.join(' '.join(chunk.text.split()) for chunk in source if chunk.text.strip())
     if not text:
         return ''
     phrases = [phrase.strip() for phrase in _SENTENCE_END.split(text) if phrase.strip()]
     lines: list[str] = []
     for phrase in phrases:
-        current = ''
-        for word in _WORD.findall(phrase):
-            candidate = f'{current} {word}'.strip()
-            if current and len(candidate) > line_width:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
+        lines.extend(textwrap.wrap(phrase, width=line_width, break_long_words=False, break_on_hyphens=False) or [phrase])
     stanzas = ['\n'.join(lines[i:i + stanza_lines]) for i in range(0, len(lines), stanza_lines)]
     return '\n\n'.join(stanzas)
 

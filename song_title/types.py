@@ -67,3 +67,4 @@ class Analysis:
     report_path: Path | None = None
     selected_title: str | None = None
     runtime: dict = field(default_factory=dict)
+    formatted_lyrics: str = ''

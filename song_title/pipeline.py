@@ -56,7 +56,8 @@ def save_report(analysis: Analysis, settings: Settings, outcome='analyzed', back
     data.update(settings=asdict(settings),checkpoint=settings.checkpoint,outcome=outcome,backup=backup,
                 versions={name:_version(name) for name in ('torch','transformers','demucs')})
     atomic_json(path,data)
-    text = f'{analysis.source}\n\n{analysis.lyrics}\n\nTitle suggestions:\n'
+    lyrics_text = analysis.formatted_lyrics or analysis.lyrics
+    text = f'{analysis.source}\n\n{lyrics_text}\n\nTitle suggestions:\n'
     for number,candidate in enumerate(analysis.candidates,1):
         text += f'{number}. {candidate.title}\n   {candidate.rationale}\n'
     text += f'\nSelected title: {analysis.selected_title or "(none)"}\nOutcome: {outcome}\n'
@@ -176,4 +177,6 @@ def _analyze(analysis: Analysis, settings: Settings, progress):
     analysis.chunks, analysis.lyrics = chunks, lyrics
     save_report(analysis,settings)
     progress(f'Generating title suggestions with {settings.ollama_model}…')
-    analysis.candidates = suggest_titles(lyrics,metadata,settings)
+    suggestions = suggest_titles(lyrics,metadata,settings)
+    analysis.candidates = list(suggestions)
+    analysis.formatted_lyrics = getattr(suggestions, 'formatted_lyrics', '')
