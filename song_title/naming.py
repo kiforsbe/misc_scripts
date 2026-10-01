@@ -12,7 +12,7 @@ from .titles import shorten_filename_fields, valid_filename_shortening
 from .types import Settings
 
 DEFAULT_FILENAME_TEMPLATE = '%album% - %artist% - $num(%tracknumber%,2) - %title%'
-DEFAULT_MAX_FILENAME_LENGTH = 90
+DEFAULT_MAX_FILENAME_LENGTH = 120
 _FIELD = re.compile(r'%([A-Za-z0-9_]+)%')
 _NUM = re.compile(r'\$num\(\s*(%[A-Za-z0-9_]+%)\s*,\s*(\d+)\s*\)')
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -132,6 +132,7 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
     """Render a short filename, using Ollama to shorten template fields when needed."""
     if max_length < 1:
         raise ValueError('Maximum filename length must be positive')
+    target_length = max_length - min(20, max_length // 6)
     working = dict(metadata)
     number_fields = {match.group(1)[1:-1].casefold() for match in _NUM.finditer(template)}
     fields = list(dict.fromkeys(field.casefold() for field in _FIELD.findall(template)
@@ -157,9 +158,11 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
     unproductive_fields = set()
     for _attempt in range(6):
         target = _render_output_path(source, working, template)
-        if _utf16_length(target.name) <= max_length:
+        if _utf16_length(target.name) <= target_length:
             return target
         if settings is None:
+            if _utf16_length(target.name) <= max_length:
+                return target
             raise FilenameTooLongError(f'filename is {_utf16_length(target.name)} characters; maximum is {max_length}')
         untried = [field for field in fields if metadata_values.get(field) and field not in unproductive_fields]
         ranked_fields = sorted(untried, key=lambda field: _utf16_length(str(working.get(field, metadata_values.get(field, '')))), reverse=True)
@@ -174,10 +177,14 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
                 if selected_length >= overage:
                     break
         if not shorten:
+            if _utf16_length(target.name) <= max_length:
+                return target
             raise FilenameTooLongError(f'filename is too long ({_utf16_length(target.name)} > {max_length}) and has no shorten-able metadata fields')
         try:
-            replacements = shorten_filename_fields(shorten, target.name, max_length, settings)
+            replacements = shorten_filename_fields(shorten, target.name, target_length, settings)
         except RuntimeError as exc:
+            if _utf16_length(target.name) <= max_length:
+                return target
             raise FilenameTooLongError(f'could not shorten filename below {max_length} characters: {exc}') from exc
         changed = False
         changed_fields = set()

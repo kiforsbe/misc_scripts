@@ -44,7 +44,8 @@ def parser():
     result.add_argument('--refresh', action='store_true', help='Regenerate vocals and transcript')
     result.add_argument('--dry-run', action='store_true', help='Analyze and report without writing lyrics, tags, or filenames')
     result.add_argument('--backup', action='store_true', help='Save the original audio as .bak before changing its metadata')
-    result.add_argument('--force-lyrics', action='store_true', help='Overwrite existing embedded lyrics and .lyrics.txt sidecar')
+    result.add_argument('--force-lyrics', action='store_true', help='Overwrite existing embedded lyrics and, with --lyrics-file, the lyrics sidecar')
+    result.add_argument('--lyrics-file', action='store_true', help='Also write generated lyrics beside the audio as .lyrics.txt')
     result.add_argument('--auto', action='store_true', help='Use the first title suggestion, write tags, and rename without prompting')
     result.add_argument('--filename-template', help=f'MusicBrainz Picard-style rename template; default: {DEFAULT_FILENAME_TEMPLATE}')
     result.add_argument('--max-filename-length', type=int, default=DEFAULT_MAX_FILENAME_LENGTH,
@@ -147,7 +148,8 @@ def _tag_lyrics(analysis, path: Path, arguments) -> str | None:
         analysis.notes.append('Existing embedded lyrics kept; use --force-lyrics to replace them.')
         return None
     if not can_write(path):
-        analysis.notes.append(f'Embedded lyrics are unsupported for {path.suffix}; lyrics remain in the sidecar/report.')
+        extra = '; use --lyrics-file to export a .lyrics.txt sidecar' if not arguments.lyrics_file else '; lyrics can be exported to a .lyrics.txt sidecar'
+        analysis.notes.append(f'Embedded lyrics are unsupported for {path.suffix}{extra}.')
         return None
     return lyrics
 
@@ -275,7 +277,7 @@ def main(argv=None):
                     counts['renamed'] += 1
                     print(f'{_c("Renamed:", Colors.GREEN)} {destination}')
 
-                lyrics_file = _store_lyrics_file(destination, analysis, arguments)
+                lyrics_file = _store_lyrics_file(destination, analysis, arguments) if arguments.lyrics_file else None
                 if lyrics_file:
                     counts['lyrics_files'] += 1
                 if not title_to_write:
@@ -295,7 +297,8 @@ def main(argv=None):
                         if lyrics_to_write:
                             analysis.metadata['lyrics'] = lyrics_to_write
                             counts['lyrics_tags'] += 1
-                        _store_lyrics_file(source, analysis, arguments)
+                        if arguments.lyrics_file:
+                            _store_lyrics_file(source, analysis, arguments)
                         save_report(analysis, settings, 'input-ended', str(backup) if backup else None)
                     except Exception as exc:
                         analysis.notes.append(str(exc))
