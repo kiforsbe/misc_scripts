@@ -92,6 +92,7 @@ Run `python -m song_title --help` for all options:
 - `--backup`, `--force-lyrics`
 - `--filename-template TEMPLATE` (Picard-style syntax; default `%album% - %artist% - $num(%tracknumber%,2) - %title%`)
 - `--max-filename-length 90` (Ollama shortens template fields above this limit)
+- Previously saved titles are cached in `.song-title-cache/selected-titles.json`; exact normalized or very similar titles (90% or greater) are skipped in later selections.
 - `--color` / `--no-color` (default: detect terminal support)
 
 Model downloads or CPU processing can take longer than the default worker timeout; increase it when needed. For Qwen output truncation reduce `--chunk-seconds`. Ollama connection errors require starting its server; missing models require `ollama pull`. Transcripts and vocal stems are cached even if title generation fails, so rerunning resumes the expensive work.

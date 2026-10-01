@@ -14,6 +14,7 @@ from .lyrics import format_lyrics, write_lyrics_file
 from .metadata import can_write, update_metadata
 from .naming import DEFAULT_FILENAME_TEMPLATE, DEFAULT_MAX_FILENAME_LENGTH, FilenameTooLongError, output_path
 from .pipeline import analyze_file, save_report
+from .title_history import load_title_history, save_title_history, similar_title
 from .types import Settings
 
 _USE_COLOR = False
@@ -85,7 +86,7 @@ def _progress(message):
     print(_c(message, color), flush=True)
 
 
-def _choose(analysis):
+def _choose(analysis, previous_titles=()):
     while True:
         answer = input(_c('Choose a number, [e] enter a title, [s] skip, [q] quit: ', Colors.CYAN)).strip().lower()
         if answer in {'', 's', 'q'}:
@@ -93,8 +94,13 @@ def _choose(analysis):
         if answer == 'e':
             title = input(_c('Title: ', Colors.CYAN)).strip()
             if title and len(title) <= 250 and not any(ord(c) < 32 for c in title):
-                return title, False
-            print(_c('Enter a title of 1–250 characters without control characters.', Colors.YELLOW))
+                duplicate = similar_title(title, list(previous_titles))
+                if duplicate:
+                    print(_c(f'Title is too similar to a previously selected title: {duplicate}', Colors.YELLOW))
+                else:
+                    return title, False
+            else:
+                print(_c('Enter a title of 1–250 characters without control characters.', Colors.YELLOW))
         elif answer.isdigit() and 1 <= int(answer) <= len(analysis.candidates):
             return analysis.candidates[int(answer) - 1].title, False
         else:
@@ -165,6 +171,8 @@ def main(argv=None):
         if not inputs:
             raise ValueError('No supported audio files found')
         check_prerequisites(settings)
+        selected_titles_path = settings.cache_dir / 'selected-titles.json'
+        selected_titles = load_title_history(selected_titles_path)
     except (ValueError, RuntimeError) as exc:
         print(_c(f'Error: {exc}', Colors.RED), file=sys.stderr)
         return 2
@@ -177,6 +185,17 @@ def main(argv=None):
             try:
                 analysis = analyze_file(source, settings, progress=_progress)
                 counts['analyzed'] += 1
+                duplicate_titles = []
+                unique_candidates = []
+                for candidate in analysis.candidates:
+                    duplicate = similar_title(candidate.title, selected_titles)
+                    if duplicate:
+                        duplicate_titles.append(candidate.title)
+                    else:
+                        unique_candidates.append(candidate)
+                if duplicate_titles:
+                    analysis.candidates = unique_candidates
+                    analysis.notes.append(f'Filtered {len(duplicate_titles)} title suggestion(s) too similar to previously selected titles.')
                 _review(analysis)
                 if arguments.dry_run:
                     continue
@@ -192,7 +211,7 @@ def main(argv=None):
                     else:
                         analysis.notes.append('Auto mode found no writable title suggestion; title and filename were left unchanged.')
                 elif sys.stdin.isatty():
-                    chosen_title, quit_requested = _choose(analysis)
+                    chosen_title, quit_requested = _choose(analysis, selected_titles)
                     analysis.selected_title = chosen_title
                     if chosen_title and not can_write(source):
                         analysis.notes.append(f'Title writing is unsupported for {source.suffix}; suggestion retained in report.')
@@ -237,6 +256,13 @@ def main(argv=None):
                         analysis.metadata['title'] = title_to_write
                         counts['saved'] += 1
                         print(f'{_c("Saved title:", Colors.GREEN)} {title_to_write}')
+                        if not similar_title(title_to_write, selected_titles):
+                            selected_titles.append(title_to_write)
+                            try:
+                                save_title_history(selected_titles_path, selected_titles)
+                            except OSError as exc:
+                                analysis.notes.append(f'Could not save selected-title cache: {exc}')
+                                print(_c(f'Could not save selected-title cache: {exc}', Colors.YELLOW))
                     if backup:
                         print(f'{_c("Backup:", Colors.DIM)} {backup}')
                 elif title_to_write:
