@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DEFAULT_FILENAME_TEMPLATE = '$num(%tracknumber%,2) - %title%'
+DEFAULT_FILENAME_TEMPLATE = '%album% - %artist% - $num(%tracknumber%,2) - %title%'
 _FIELD = re.compile(r'%([A-Za-z0-9_]+)%')
 _NUM = re.compile(r'\$num\(\s*(%[A-Za-z0-9_]+%)\s*,\s*(\d+)\s*\)')
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

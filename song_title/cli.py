@@ -45,7 +45,7 @@ def parser():
     result.add_argument('--backup', action='store_true', help='Save the original audio as .bak before changing its metadata')
     result.add_argument('--force-lyrics', action='store_true', help='Overwrite existing embedded lyrics and .lyrics.txt sidecar')
     result.add_argument('--auto', action='store_true', help='Use the first title suggestion, write tags, and rename without prompting')
-    result.add_argument('--filename-template', help=f'MusicBrainz Picard-style rename template; --auto default: {DEFAULT_FILENAME_TEMPLATE}')
+    result.add_argument('--filename-template', help=f'MusicBrainz Picard-style rename template; default: {DEFAULT_FILENAME_TEMPLATE}')
     result.add_argument('--color', action=argparse.BooleanOptionalAction, default=None, help='Force ANSI colors on or off (default: detect terminal support)')
     return result
 
@@ -201,7 +201,7 @@ def main(argv=None):
 
                 title_to_write = chosen_title if title_confirmed else None
                 lyrics_to_write = _tag_lyrics(analysis, source, arguments)
-                template = arguments.filename_template or (DEFAULT_FILENAME_TEMPLATE if arguments.auto else None)
+                template = arguments.filename_template or DEFAULT_FILENAME_TEMPLATE
                 destination = source
                 if title_to_write and template:
                     naming_metadata = dict(analysis.metadata, title=title_to_write)

@@ -43,14 +43,14 @@ python -m song_title "D:\Original Songs" --recursive --asr nemotron
 python -m song_title "song.mp3" --asr qwen --asr-model Qwen/Qwen3-ASR-0.6B-hf
 python -m song_title "song.mp3" --device cpu --dry-run
 python -m song_title "song.mp3" --auto --backup
-python -m song_title "song.mp3" --auto --filename-template '$num(%tracknumber%,2) - %title%'
+python -m song_title "song.mp3" --auto --filename-template '%album% - %artist% - $num(%tracknumber%,2) - %title%'
 ```
 
 The CLI defaults to Nemotron with the English-specific [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b). `--asr qwen` uses [Qwen/Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf). Both use native Transformers; `transformers>=5.13` is required. Only the selected backend runs. To compare, rerun with the other backend; the isolated vocal stem is reused.
 
 The program offers up to three suggestions with reasons and verified lyric excerpts. Choose a number, enter your own title (`e`), skip (`s`), or quit (`q`). A separate confirmation, defaulting to no, is required to write a selected title. Ollama formats the transcript into phrase-based lyric lines and stanzas in the same request as title suggestions. The formatter may adjust layout, capitalization, and punctuation, but its word sequence is checked against the transcript; if it changes or omits words, conservative local formatting is used instead. Lyrics are written beside the audio as `song.lyrics.txt` and embedded when the file has no existing lyrics tag. Existing lyrics and sidecar files are kept unless `--force-lyrics` is supplied. `--dry-run` generates reports without interactive prompts or source updates.
 
-`--auto` accepts the first title suggestion, writes it to the tags, and renames the file without prompting. The default naming template is `$num(%tracknumber%,2) - %title%`, which produces album-style names such as `01 - Track Title.mp3`. A custom `--filename-template` uses MusicBrainz Picard-style `%field%` variables and `$num(%tracknumber%,2)`; template slashes create subfolders under the source folder. The current implementation supports `%title%`, `%artist%`, `%albumartist%`, `%album%`, `%tracknumber%`, `%discnumber%`, `%date%`, `%genre%`, and `%_extension%` variables plus `$num()`. A custom template also enables renaming after an interactively confirmed title change. Generated path components are sanitized and existing destinations are never overwritten.
+`--auto` accepts the first title suggestion, writes it to the tags, and renames the file without prompting. When a title is confirmed interactively, the file is renamed with the same default template. The default naming template is `%album% - %artist% - $num(%tracknumber%,2) - %title%`, which produces names such as `Album Name - Artist Name - 01 - Track Title.mp3`. A custom `--filename-template` uses MusicBrainz Picard-style `%field%` variables and `$num(%tracknumber%,2)`; template slashes create subfolders under the source folder. The current implementation supports `%title%`, `%artist%`, `%albumartist%`, `%album%`, `%tracknumber%`, `%discnumber%`, `%date%`, `%genre%`, and `%_extension%` variables plus `$num()`. Generated path components are sanitized and existing destinations are never overwritten.
 
 ## Files and reports
 
@@ -89,7 +89,7 @@ Run `python -m song_title --help` for all options:
 - `--connect-timeout 10`, `--inference-timeout 300`, `--worker-timeout 3600`
 - `--recursive`, `--dry-run`, `--auto`
 - `--backup`, `--force-lyrics`
-- `--filename-template TEMPLATE` (Picard-style syntax; auto default `$num(%tracknumber%,2) - %title%`)
+- `--filename-template TEMPLATE` (Picard-style syntax; default `%album% - %artist% - $num(%tracknumber%,2) - %title%`)
 - `--color` / `--no-color` (default: detect terminal support)
 
 Model downloads or CPU processing can take longer than the default worker timeout; increase it when needed. For Qwen output truncation reduce `--chunk-seconds`. Ollama connection errors require starting its server; missing models require `ollama pull`. Transcripts and vocal stems are cached even if title generation fails, so rerunning resumes the expensive work.
