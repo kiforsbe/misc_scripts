@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import tempfile
+import unicodedata
 from pathlib import Path
 
 from .titles import shorten_filename_fields
@@ -11,6 +16,14 @@ DEFAULT_MAX_FILENAME_LENGTH = 90
 _FIELD = re.compile(r'%([A-Za-z0-9_]+)%')
 _NUM = re.compile(r'\$num\(\s*(%[A-Za-z0-9_]+%)\s*,\s*(\d+)\s*\)')
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_SAFE_FILENAME_PUNCTUATION = frozenset(" _-.()[]'&,!+")
+
+
+def _sanitize_component(value: str) -> str:
+    value = _INVALID_COMPONENT.sub('', value)
+    value = ''.join(char for char in value
+                    if char.isalnum() or unicodedata.category(char).startswith('M') or char in _SAFE_FILENAME_PUNCTUATION)
+    return value.strip(' .')
 
 
 def _has_malformed_fields(value: str) -> bool:
@@ -30,7 +43,7 @@ def render_filename_template(template: str, metadata: dict, extension: str) -> P
 
     def value_for(field: str) -> str:
         value = values.get(field.casefold(), '')
-        return _INVALID_COMPONENT.sub('_', value).strip(' .')
+        return _sanitize_component(value)
 
     def number(match: re.Match) -> str:
         field, width = match.group(1)[1:-1].casefold(), int(match.group(2))
@@ -51,7 +64,7 @@ def render_filename_template(template: str, metadata: dict, extension: str) -> P
         dash_parts = re.split(r'\s+-\s+', part)
         if any(not segment.strip() for segment in dash_parts):
             part = ' - '.join(segment.strip() for segment in dash_parts if segment.strip())
-        part = _INVALID_COMPONENT.sub('_', part).strip(' .')
+        part = _sanitize_component(part)
         part = re.sub(r'^[-_ ]+', '', part)
         if part in {'', '.', '..'}:
             raise ValueError('Filename template produced an empty or unsafe path component')
@@ -74,12 +87,43 @@ def _utf16_length(value: str) -> int:
     return len(value.encode('utf-16-le')) // 2
 
 
+def _filename_cache_key(field: str, original: str, settings: Settings, max_length: int) -> str:
+    identity = json.dumps([settings.ollama_host.rstrip('/'), settings.ollama_model, max_length, field, original], ensure_ascii=False)
+    return hashlib.sha256(identity.encode('utf-8')).hexdigest()
+
+
+def _read_filename_cache(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if data.get('schema') == 1 and isinstance(data.get('entries'), dict):
+            return {key: value for key, value in data['entries'].items() if isinstance(key, str) and isinstance(value, str)}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return {}
+
+
+def _write_filename_cache(path: Path, entries: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, suffix='.tmp')
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump({'schema': 1, 'entries': entries}, stream, ensure_ascii=False, indent=2)
+        os.replace(temporary_name, path)
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+
+
 def _render_output_path(source: Path, metadata: dict, template: str) -> Path:
     source = Path(source).resolve()
     relative = render_filename_template(template, metadata, source.suffix)
     target = source.parent / relative
     if target.suffix.casefold() != source.suffix.casefold():
         target = target.with_name(target.name + source.suffix)
+    # Final gate after field interpolation, template cleanup, and extension handling.
+    safe_name = _sanitize_component(target.name)
+    if not safe_name:
+        raise ValueError('Filename template produced an empty filename after sanitization')
+    target = target.with_name(safe_name)
     return target
 
 
@@ -93,6 +137,19 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
     fields = list(dict.fromkeys(field.casefold() for field in _FIELD.findall(template)
                                 if field.casefold() not in number_fields and field.casefold() != '_extension'))
     metadata_values = {str(key).casefold(): str(value).strip() for key, value in working.items() if value is not None}
+    original_values = dict(metadata_values)
+    cache_path = settings.cache_dir / 'filename-shortening.json' if settings is not None else None
+    cache = _read_filename_cache(cache_path) if cache_path is not None else {}
+    cache_keys = {}
+    if settings is not None:
+        for field in fields:
+            original = original_values.get(field)
+            if original:
+                key = _filename_cache_key(field, original, settings, max_length)
+                cache_keys[field] = key
+                cached = cache.get(key)
+                if cached and _utf16_length(cached) < _utf16_length(original):
+                    working[field] = cached
 
     for _attempt in range(4):
         target = _render_output_path(source, working, template)
@@ -100,7 +157,10 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
             return target
         if settings is None:
             raise FilenameTooLongError(f'filename is {_utf16_length(target.name)} characters; maximum is {max_length}')
-        shorten = {field: metadata_values[field] for field in fields if metadata_values.get(field)}
+        uncached_fields = [field for field in fields if field in cache_keys and cache_keys[field] not in cache]
+        shorten_fields = uncached_fields or [field for field in fields if metadata_values.get(field)]
+        shorten = {field: str(working.get(field, metadata_values.get(field, ''))).strip()
+                   for field in shorten_fields if working.get(field, metadata_values.get(field, ''))}
         if not shorten:
             raise FilenameTooLongError(f'filename is too long ({_utf16_length(target.name)} > {max_length}) and has no shorten-able metadata fields')
         try:
@@ -109,10 +169,19 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
             raise FilenameTooLongError(f'could not shorten filename below {max_length} characters: {exc}') from exc
         changed = False
         for field, value in replacements.items():
-            if _utf16_length(value) < _utf16_length(shorten[field]):
-                working[field] = value
-                metadata_values[field] = value
+            safe_value = _sanitize_component(value)
+            if safe_value and _utf16_length(safe_value) < _utf16_length(shorten[field]):
+                working[field] = safe_value
+                metadata_values[field] = safe_value
                 changed = True
+                key = cache_keys.get(field)
+                if key is not None:
+                    cache[key] = safe_value
+        if changed and cache_path is not None:
+            try:
+                _write_filename_cache(cache_path, cache)
+            except OSError:
+                pass
         if not changed:
             raise FilenameTooLongError(f'Ollama could not shorten the filename below {max_length} characters')
     target = _render_output_path(source, working, template)
