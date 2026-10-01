@@ -12,7 +12,7 @@ from common.presentation import Colors
 from .audio import discover_inputs
 from .lyrics import format_lyrics, write_lyrics_file
 from .metadata import can_write, update_metadata
-from .naming import DEFAULT_FILENAME_TEMPLATE, output_path
+from .naming import DEFAULT_FILENAME_TEMPLATE, DEFAULT_MAX_FILENAME_LENGTH, FilenameTooLongError, output_path
 from .pipeline import analyze_file, save_report
 from .types import Settings
 
@@ -46,6 +46,8 @@ def parser():
     result.add_argument('--force-lyrics', action='store_true', help='Overwrite existing embedded lyrics and .lyrics.txt sidecar')
     result.add_argument('--auto', action='store_true', help='Use the first title suggestion, write tags, and rename without prompting')
     result.add_argument('--filename-template', help=f'MusicBrainz Picard-style rename template; default: {DEFAULT_FILENAME_TEMPLATE}')
+    result.add_argument('--max-filename-length', type=int, default=DEFAULT_MAX_FILENAME_LENGTH,
+                        help=f'Maximum filename length before Ollama shortens template metadata parts (default: {DEFAULT_MAX_FILENAME_LENGTH})')
     result.add_argument('--color', action=argparse.BooleanOptionalAction, default=None, help='Force ANSI colors on or off (default: detect terminal support)')
     return result
 
@@ -147,6 +149,8 @@ def _tag_lyrics(analysis, path: Path, arguments) -> str | None:
 def main(argv=None):
     global _USE_COLOR
     arguments = parser().parse_args(argv)
+    if arguments.max_filename_length < 1:
+        parser().error('--max-filename-length must be a positive integer')
     force_color = arguments.color
     if force_color is None and 'NO_COLOR' in os.environ:
         force_color = False
@@ -205,9 +209,14 @@ def main(argv=None):
                 destination = source
                 if title_to_write and template:
                     naming_metadata = dict(analysis.metadata, title=title_to_write)
-                    destination = output_path(source, naming_metadata, template)
-                    if os.path.normcase(str(destination.resolve())) != os.path.normcase(str(source.resolve())) and destination.exists():
-                        raise FileExistsError(f'Rename target already exists: {destination}')
+                    try:
+                        destination = output_path(source, naming_metadata, template, settings=settings,
+                                                  max_length=arguments.max_filename_length)
+                        if os.path.normcase(str(destination.resolve())) != os.path.normcase(str(source.resolve())) and destination.exists():
+                            raise FileExistsError(f'Rename target already exists: {destination}')
+                    except FilenameTooLongError as exc:
+                        analysis.notes.append(f'Rename skipped: {exc}')
+                        print(_c(f'Rename skipped: {exc}', Colors.YELLOW))
 
                 backup = None
                 if can_write(source) and (title_to_write or lyrics_to_write):
