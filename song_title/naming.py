@@ -9,6 +9,16 @@ _NUM = re.compile(r'\$num\(\s*(%[A-Za-z0-9_]+%)\s*,\s*(\d+)\s*\)')
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
+def _has_malformed_fields(value: str) -> bool:
+    """Reject stray percent signs while allowing both delimiters of each %field%."""
+    cursor = 0
+    for match in _FIELD.finditer(value):
+        if '%' in value[cursor:match.start()]:
+            return True
+        cursor = match.end()
+    return '%' in value[cursor:]
+
+
 def render_filename_template(template: str, metadata: dict, extension: str) -> Path:
     """Render the common MusicBrainz Picard titleformat subset used for filenames."""
     values = {str(key).casefold(): str(value).strip() for key, value in metadata.items() if value is not None}
@@ -25,7 +35,7 @@ def render_filename_template(template: str, metadata: dict, extension: str) -> P
         return found.group(1).zfill(min(width, 12)) if found else ''
 
     rendered = _NUM.sub(number, template)
-    if '$' in rendered or re.search(r'%(?![A-Za-z0-9_]+%)', rendered):
+    if '$' in rendered or _has_malformed_fields(rendered):
         raise ValueError('Unsupported or malformed filename-template expression; use Picard-style %field% tags and $num(%tracknumber%,2)')
     unknown = {field.casefold() for field in _FIELD.findall(rendered)} - set(values)
     if unknown:
