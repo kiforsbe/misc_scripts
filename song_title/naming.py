@@ -154,16 +154,25 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
                     else:
                         cache.pop(key, None)
 
-    for _attempt in range(4):
+    unproductive_fields = set()
+    for _attempt in range(6):
         target = _render_output_path(source, working, template)
         if _utf16_length(target.name) <= max_length:
             return target
         if settings is None:
             raise FilenameTooLongError(f'filename is {_utf16_length(target.name)} characters; maximum is {max_length}')
-        uncached_fields = [field for field in fields if field in cache_keys and cache_keys[field] not in cache]
-        shorten_fields = uncached_fields or [field for field in fields if metadata_values.get(field)]
-        shorten = {field: str(working.get(field, metadata_values.get(field, ''))).strip()
-                   for field in shorten_fields if working.get(field, metadata_values.get(field, ''))}
+        untried = [field for field in fields if metadata_values.get(field) and field not in unproductive_fields]
+        ranked_fields = sorted(untried, key=lambda field: _utf16_length(str(working.get(field, metadata_values.get(field, '')))), reverse=True)
+        overage = _utf16_length(target.name) - max_length
+        shorten = {}
+        selected_length = 0
+        for field in ranked_fields:
+            value = str(working.get(field, metadata_values.get(field, ''))).strip()
+            if value:
+                shorten[field] = value
+                selected_length += _utf16_length(_sanitize_component(value))
+                if selected_length >= overage:
+                    break
         if not shorten:
             raise FilenameTooLongError(f'filename is too long ({_utf16_length(target.name)} > {max_length}) and has no shorten-able metadata fields')
         try:
@@ -171,12 +180,14 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
         except RuntimeError as exc:
             raise FilenameTooLongError(f'could not shorten filename below {max_length} characters: {exc}') from exc
         changed = False
+        changed_fields = set()
         for field, value in replacements.items():
             safe_value = _sanitize_component(value)
             if safe_value and _utf16_length(safe_value) < _utf16_length(shorten[field]):
                 working[field] = safe_value
                 metadata_values[field] = safe_value
                 changed = True
+                changed_fields.add(field)
                 key = cache_keys.get(field)
                 if key is not None:
                     cache[key] = safe_value
@@ -186,7 +197,10 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
             except OSError:
                 pass
         if not changed:
-            raise FilenameTooLongError(f'Ollama could not shorten the filename below {max_length} characters')
+            unproductive_fields.update(shorten)
+        else:
+            unproductive_fields.update(set(shorten) - changed_fields)
+            unproductive_fields.difference_update(changed_fields)
     target = _render_output_path(source, working, template)
     if _utf16_length(target.name) <= max_length:
         return target

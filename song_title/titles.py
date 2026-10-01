@@ -113,7 +113,7 @@ def shorten_filename_fields(fields: dict[str, str], filename: str, max_length: i
                 value = data[field]
                 if not isinstance(value, str) or not value.strip():
                     invalid_fields.append(field)
-                elif not valid_filename_shortening(fields[field], value) or len(value.strip()) >= len(fields[field]):
+                elif not valid_filename_shortening(fields[field], value):
                     invalid_fields.append(field)
                 else:
                     shortened[field] = value.strip()
