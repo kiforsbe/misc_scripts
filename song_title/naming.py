@@ -7,9 +7,13 @@ import re
 import tempfile
 import unicodedata
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .titles import shorten_filename_fields, valid_filename_shortening
 from .types import Settings
+
+if TYPE_CHECKING:
+    from .worker_runtime import ModelRuntime
 
 DEFAULT_FILENAME_TEMPLATE = '%album% - %artist% - $num(%tracknumber%,2) - %title%'
 DEFAULT_MAX_FILENAME_LENGTH = 120
@@ -128,6 +132,7 @@ def _render_output_path(source: Path, metadata: dict, template: str) -> Path:
 
 
 def output_path(source: Path, metadata: dict, template: str, *, settings: Settings | None = None,
+                runtime: ModelRuntime | None = None,
                 max_length: int = DEFAULT_MAX_FILENAME_LENGTH) -> Path:
     """Render a short filename, using Ollama to shorten template fields when needed."""
     if max_length < 1:
@@ -181,7 +186,7 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
                 return target
             raise FilenameTooLongError(f'filename is too long ({_utf16_length(target.name)} > {max_length}) and has no shorten-able metadata fields')
         try:
-            replacements = shorten_filename_fields(shorten, target.name, target_length, settings)
+            replacements = shorten_filename_fields(shorten, target.name, target_length, settings, runtime=runtime)
         except RuntimeError as exc:
             if _utf16_length(target.name) <= max_length:
                 return target
