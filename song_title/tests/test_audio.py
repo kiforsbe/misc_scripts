@@ -17,13 +17,13 @@ def test_invalid_segments_rejected(seconds, overlap):
         chunk_ranges(60, seconds, overlap)
 
 
-def test_boundary_merge_preserves_later_chorus():
+def test_boundary_merge_removes_repeated_overlap_and_preserves_later_chorus():
     from song_title.audio import assemble_transcript
     from song_title.types import Chunk
     chunks = [Chunk(0, 30, 'We wait after the last train'),
               Chunk(26, 56, 'after the last train until dawn'),
               Chunk(52, 80, 'We wait after the last train')]
-    assert assemble_transcript(chunks) == 'We wait after the last train\nafter the last train until dawn\nWe wait after the last train'
+    assert assemble_transcript(chunks) == 'We wait after the last train\nuntil dawn\nWe wait after the last train'
 
 
 def test_adjacent_identical_choruses_are_preserved_without_word_timestamps():

@@ -76,7 +76,7 @@ Demucs and ASR use separate worker processes that start lazily and keep their mo
 
 Default ASR segments are 30 seconds with four seconds of overlap, processed one at a time. Demucs uses six-second internal segments. Automatic device mode retries CUDA memory errors with smaller segments, then CPU. Explicit `--device cuda` reports an error after its smaller-segment retry; `--device cpu` also requests CPU inference from Ollama. A 16 GB GPU is an upper testing target, not a minimum; actual memory needs depend on the checkpoint, free memory, and context size.
 
-Both vocal separation and ASR can make mistakes. All chunk text is preserved, including repeated choruses; overlapping chunks can introduce duplicate phrases because these adapters do not provide exact word timestamps. Review the raw transcript/vocal stem when suggestions seem wrong. The tool abstains from lyric-based suggestions for empty transcripts and accepts manual titles.
+Both vocal separation and ASR can make mistakes. Transcript assembly removes matching phrases from the shared boundary of overlapping chunks, while preserving repeats from non-overlapping audio and ambiguous matches that consume an entire chunk. Review the raw transcript/vocal stem when suggestions seem wrong. The tool abstains from lyric-based suggestions for empty transcripts and accepts manual titles.
 
 ## Options and troubleshooting
 

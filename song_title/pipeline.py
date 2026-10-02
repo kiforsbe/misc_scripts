@@ -193,7 +193,7 @@ def _analyze(analysis: Analysis, settings: Settings, progress, runtime: ModelRun
     lyrics = assemble_transcript(chunks)
     notes = analysis.notes
     if settings.overlap_seconds:
-        notes.append('Overlapping chunk text may repeat; phrases are preserved because exact word timings are unavailable.')
+        notes.append('Matching phrases are removed across overlapping chunks; ambiguous whole-chunk matches and non-overlapping repeats are preserved.')
     if not lyrics.strip():
         notes.append('No lyrics transcribed. Review the vocal stem or enter a manual title.')
     if prepare_lyrics(lyrics)[1]:
