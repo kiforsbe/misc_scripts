@@ -3,11 +3,18 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
 
 WRITABLE = {'.mp3', '.flac', '.m4a', '.mp4', '.ogg', '.opus'}
+_GENERIC_TRACK_TITLE = re.compile(r'track[\s._-]*\d+', re.IGNORECASE)
+
+
+def has_meaningful_title(value) -> bool:
+    title = str(value or '').strip()
+    return bool(title) and _GENERIC_TRACK_TITLE.fullmatch(title) is None
 
 
 def fingerprint(path: Path) -> str:

@@ -11,7 +11,7 @@ from common.presentation import Colors
 
 from .audio import discover_inputs
 from .lyrics import format_lyrics, write_lyrics_file
-from .metadata import can_write, update_metadata
+from .metadata import can_write, has_meaningful_title, update_metadata
 from .naming import DEFAULT_FILENAME_TEMPLATE, DEFAULT_MAX_FILENAME_LENGTH, FilenameTooLongError, output_path
 from .pipeline import analyze_file, save_report
 from .title_history import load_title_history, save_title_history, similar_title
@@ -208,7 +208,8 @@ def main(argv=None):
                     if arguments.dry_run:
                         continue
 
-                    existing_title = str(analysis.metadata.get('title') or '').strip()
+                    metadata_title = str(analysis.metadata.get('title') or '').strip()
+                    existing_title = metadata_title if has_meaningful_title(metadata_title) else ''
                     chosen_title = None
                     quit_requested = False
                     title_confirmed = False

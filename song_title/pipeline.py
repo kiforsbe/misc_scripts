@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from .asr import separate_vocals, transcribe_vocals
 from .audio import assemble_transcript
-from .metadata import fingerprint, read_metadata
+from .metadata import fingerprint, has_meaningful_title, read_metadata
 from .titles import format_lyrics as format_lyrics_with_model, prepare_lyrics, suggest_titles
 from .types import Analysis, Chunk, Settings
 
@@ -126,7 +126,10 @@ def _runtime(path):
 def _analyze(analysis: Analysis, settings: Settings, progress, runtime: ModelRuntime | None = None,
              force_lyrics: bool = False):
     path, digest, metadata = analysis.source, analysis.digest, analysis.metadata
-    title = str(metadata.get('title') or '').strip()
+    metadata_title = str(metadata.get('title') or '').strip()
+    title = metadata_title if has_meaningful_title(metadata_title) else ''
+    if metadata_title and not title:
+        analysis.notes.append(f'Metadata title {metadata_title!r} looks like a generic track number; title suggestions will be generated.')
     embedded_lyrics = str(metadata.get('lyrics') or '').strip()
     if title and embedded_lyrics and not force_lyrics:
         analysis.lyrics = embedded_lyrics
