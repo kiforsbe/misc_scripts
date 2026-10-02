@@ -208,11 +208,14 @@ class ModelRuntime:
             raise RuntimeError('Separator did not produce a vocal stem')
         return output
 
-    def transcribe(self, vocals: Path) -> list[Chunk]:
-        result = self._worker('asr').request({
+    def transcribe(self, vocals: Path, cached_chunks: list[Chunk] | None = None) -> list[Chunk]:
+        request = {
             'source': str(Path(vocals).resolve()),
             'settings': asdict(self.settings),
-        })
+        }
+        if cached_chunks is not None:
+            request['cached_chunks'] = [asdict(chunk) for chunk in cached_chunks]
+        result = self._worker('asr').request(request)
         runtime = result.pop('runtime', {})
         self._show_runtime('asr', runtime, self.settings.log_level)
         Path(vocals).parent.joinpath('transcript-worker.json.runtime.json').write_text(

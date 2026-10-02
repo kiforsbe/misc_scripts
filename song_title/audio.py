@@ -47,6 +47,17 @@ def _remove_repeated_overlap(previous: str, current: str, overlap_seconds: float
 
 
 def assemble_transcript(chunks: list[Chunk]) -> str:
+    nonempty = [chunk for chunk in chunks if chunk.text.strip()]
+    if nonempty and all(chunk.aligned_words for chunk in nonempty):
+        words = [word.text.strip() for chunk in nonempty for word in chunk.aligned_words if word.text.strip()]
+        if words:
+            text = ''
+            attach = set(',.;:!?%)]}’')
+            for word in words:
+                if text and word[0] not in attach and not word.startswith("'"):
+                    text += ' '
+                text += word
+            return text
     lines = []
     previous_chunk = None
     for chunk in chunks:

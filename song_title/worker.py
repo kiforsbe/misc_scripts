@@ -10,7 +10,7 @@ from contextlib import redirect_stdout
 from dataclasses import asdict
 from pathlib import Path
 
-from .types import Settings
+from .types import Chunk, Settings
 
 
 def _settings(data):
@@ -27,18 +27,28 @@ def _release_cuda(torch):
 
 def _serve(phase: str):
     import torch
-    from .asr import load_backend, transcribe_in_process, with_device_retry
+    from .asr import align_cached_chunks, load_backend, load_qwen_aligner, transcribe_in_process, with_device_retry
 
     backend = None
     backend_device = None
+    aligner = None
+    aligner_device = None
     separator = None
     separator_device = None
     preferred_configuration = None
 
     def release_backend():
-        nonlocal backend, backend_device
+        nonlocal backend, backend_device, aligner, aligner_device
         backend = None
         backend_device = None
+        aligner = None
+        aligner_device = None
+        _release_cuda(torch)
+
+    def release_aligner():
+        nonlocal aligner, aligner_device
+        aligner = None
+        aligner_device = None
         _release_cuda(torch)
 
     def release_separator():
@@ -59,18 +69,48 @@ def _serve(phase: str):
         used = {}
 
         def operation(device, reduced):
-            nonlocal backend, backend_device, separator, separator_device
+            nonlocal backend, backend_device, aligner, aligner_device, separator, separator_device
             used.update(device=device, reduced_segments=reduced)
             if device == 'cuda':
                 torch.cuda.reset_peak_memory_stats()
             try:
                 if phase == 'asr':
-                    if backend is None or backend_device != device:
-                        release_backend()
-                        backend = load_backend(settings, device)
-                        backend_device = device
-                    chunks = transcribe_in_process(
-                        Path(request['source']), settings, device, reduced, backend=backend)
+                    if request.get('cached_chunks') is not None:
+                        if aligner is None or aligner_device != device:
+                            try:
+                                aligner = load_qwen_aligner(settings, device)
+                            except RuntimeError as exc:
+                                if 'out of memory' in str(exc).casefold():
+                                    release_aligner()
+                                    raise
+                                aligner = (None, None)
+                            aligner_device = device
+                        cached_chunks = [Chunk(**item) for item in request['cached_chunks']]
+                        if aligner[0] is None:
+                            chunks = [Chunk(chunk.start, chunk.end, chunk.text, [],
+                                            'Qwen forced aligner could not be loaded.')
+                                      for chunk in cached_chunks]
+                        else:
+                            chunks = align_cached_chunks(Path(request['source']), settings,
+                                                         cached_chunks, device, aligner=aligner)
+                    else:
+                        if backend is None or backend_device != device:
+                            release_backend()
+                            backend = load_backend(settings, device)
+                            backend_device = device
+                        if settings.asr == 'qwen' and (aligner is None or aligner_device != device):
+                            try:
+                                aligner = load_qwen_aligner(settings, device)
+                            except RuntimeError as exc:
+                                if 'out of memory' in str(exc).casefold():
+                                    release_backend()
+                                    raise
+                                # A missing/unsupported aligner should not prevent text-only ASR.
+                                aligner = (None, None)
+                            aligner_device = device
+                        chunks = transcribe_in_process(
+                            Path(request['source']), settings, device, reduced, backend=backend,
+                            aligner=aligner if settings.asr == 'qwen' else None)
                     result = {'chunks': [asdict(chunk) for chunk in chunks]}
                 else:
                     if separator is None or separator_device != device:

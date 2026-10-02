@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -108,12 +109,15 @@ def _backup_original(path: Path) -> Path:
 
 
 def update_metadata(path: Path, expected_digest: str, *, title: str | None = None,
-                    lyrics: str | None = None, make_backup: bool = False) -> Path | None:
+                    lyrics: str | None = None, synchronized_lyrics=None,
+                    make_backup: bool = False) -> Path | None:
     """Update tags through a verified copy; optionally retain the original as .bak."""
-    from mutagen.id3 import ID3, TIT2, USLT
+    from mutagen.id3 import ID3, SYLT, TIT2, USLT
     path = Path(path).resolve()
-    if title is None and lyrics is None:
+    if title is None and lyrics is None and synchronized_lyrics is None:
         raise ValueError('At least one metadata field must be updated')
+    if synchronized_lyrics is not None and path.suffix.lower() != '.mp3':
+        raise ValueError('Synchronized lyric metadata is only supported for MP3 ID3 tags; use an LRC sidecar')
     if title is not None:
         title = title.strip()
         if not title or len(title) > 250 or any(ord(c) < 32 for c in title):
@@ -128,6 +132,8 @@ def update_metadata(path: Path, expected_digest: str, *, title: str | None = Non
     title_key = 'TIT2' if is_mp3 else ('\xa9nam' if is_mp4 else 'title')
     lyrics_key = 'USLT' if is_mp3 else ('\xa9lyr' if is_mp4 else 'lyrics')
     ignored = {key for value, key in ((title, title_key), (lyrics, lyrics_key)) if value is not None}
+    if synchronized_lyrics is not None:
+        ignored.add('SYLT')
     tags = audio if is_mp3 else audio.tags
     other = copy.deepcopy({key: value for key, value in tags.items() if key not in ignored})
     original_version = audio.version[1] if isinstance(audio, ID3) else None
@@ -143,6 +149,18 @@ def update_metadata(path: Path, expected_digest: str, *, title: str | None = Non
                 audio.setall('TIT2', [TIT2(encoding=3, text=[title])])
             if lyrics is not None:
                 audio.setall('USLT', [USLT(encoding=3, lang='eng', desc='', text=lyrics)])
+            if synchronized_lyrics is not None:
+                timed_entries = [(word.text, max(0, round(word.start * 1000)))
+                                 for word in synchronized_lyrics if word.text.strip()]
+                if any(not math.isfinite(word.start) or not math.isfinite(word.end)
+                       or word.start < 0 or word.end < word.start
+                       for word in synchronized_lyrics):
+                    raise ValueError('Synchronized lyrics contain invalid timestamps')
+                if not timed_entries or any(current[1] < previous[1]
+                                            for previous, current in zip(timed_entries, timed_entries[1:])):
+                    raise ValueError('Synchronized lyrics must contain ordered word timestamps')
+                audio.setall('SYLT', [SYLT(encoding=3, lang='eng', format=2, type=1,
+                                           desc='Lyrics', text=timed_entries)])
             audio.save(temporary, v2_version=3 if original_version == 3 else 4)
         else:
             if title is not None:
@@ -155,7 +173,7 @@ def update_metadata(path: Path, expected_digest: str, *, title: str | None = Non
         actual_other = {key: value for key, value in saved_tags.items() if key not in ignored}
         if actual_other != other:
             raise ValueError('Unrelated-tag preservation failed')
-        if title is not None and lyrics is None:
+        if title is not None and lyrics is None and synchronized_lyrics is None:
             _verify_copy(temporary, title, other, title_key)
         if title is not None:
             actual_title = str(saved_tags.get(title_key, '')) if is_mp3 else str((saved_tags.get(title_key) or [''])[0])
@@ -167,6 +185,13 @@ def update_metadata(path: Path, expected_digest: str, *, title: str | None = Non
                 actual_lyrics = str(saved_tags.getall('USLT')[0].text) if saved_tags.getall('USLT') else ''
             if actual_lyrics != lyrics:
                 raise ValueError('Lyrics verification failed')
+        if synchronized_lyrics is not None:
+            frames = saved_tags.getall('SYLT')
+            actual_timed = [(text, int(timestamp)) for text, timestamp in frames[0].text] if frames else []
+            expected_timed = [(word.text, max(0, round(word.start * 1000)))
+                              for word in synchronized_lyrics if word.text.strip()]
+            if actual_timed != expected_timed:
+                raise ValueError('Synchronized lyrics verification failed')
         if fingerprint(path) != expected_digest:
             raise ValueError('Source changed during save; original preserved')
         os.replace(temporary, path)

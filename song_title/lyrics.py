@@ -6,9 +6,13 @@ import tempfile
 import textwrap
 from pathlib import Path
 
-from .types import Chunk
+from .types import Chunk, TimedWord
 
 _SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
+_WORD = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+_TIMED_LINE_MAX_CHARS = 42
+_TIMED_LINE_MAX_WORDS = 8
+_TIMED_LINE_MAX_SECONDS = 6.0
 
 
 def format_lyrics(source: list[Chunk] | str, line_width: int = 72, stanza_lines: int = 4) -> str:
@@ -35,6 +39,107 @@ def lyrics_file_path(audio_path: Path) -> Path:
 def write_lyrics_file(audio_path: Path, lyrics: str, *, overwrite: bool = False) -> Path | None:
     """Atomically create an adjacent plain-text lyrics file; preserve it by default."""
     destination = lyrics_file_path(audio_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f'.{destination.name}.', suffix='.tmp', dir=destination.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+            stream.write(lyrics.rstrip() + '\n')
+        if overwrite:
+            os.replace(temporary, destination)
+        else:
+            try:
+                os.link(temporary, destination)
+            except FileExistsError:
+                return None
+        return destination
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _word_key(value: str) -> str:
+    return value.casefold().replace('’', "'")
+
+
+def _timed_lines(formatted_lyrics: str, words: list[TimedWord]):
+    """Pair lyric phrases with timings, splitting long formatter lines into short cues."""
+    word_index = 0
+    result = []
+    for line in formatted_lyrics.splitlines():
+        tokens = list(_WORD.finditer(line))
+        if not tokens:
+            continue
+        line_words = []
+        for token in tokens:
+            if word_index >= len(words) or _word_key(token.group()) != _word_key(words[word_index].text):
+                raise ValueError('Formatted lyrics do not match aligned transcript words in order')
+            line_words.append(words[word_index])
+            word_index += 1
+        group_start = 0
+        for index in range(1, len(tokens)):
+            current_text = line[tokens[group_start].start():tokens[index].end()]
+            gap = line[tokens[index - 1].end():tokens[index].start()]
+            elapsed = line_words[index].start - line_words[group_start].start
+            sentence_end = bool(re.search(r'[.!?]["\'’)]*$', gap))
+            pause = line_words[index].start - line_words[index - 1].end > 1.2
+            if (len(current_text) > _TIMED_LINE_MAX_CHARS
+                    or index - group_start >= _TIMED_LINE_MAX_WORDS
+                    or elapsed > _TIMED_LINE_MAX_SECONDS
+                    or sentence_end or pause):
+                first = tokens[group_start]
+                result.append((line[first.start():tokens[index].start()].strip(),
+                               line_words[group_start].start, line_words[index - 1].end))
+                group_start = index
+        first = tokens[group_start]
+        result.append((line[first.start():].strip(),
+                       line_words[group_start].start, line_words[-1].end))
+    if word_index != len(words) or not result:
+        raise ValueError('Formatted lyrics do not contain every aligned transcript word')
+    return result
+
+
+def _lrc_time(seconds: float) -> str:
+    centiseconds = max(0, round(seconds * 100))
+    minutes, remainder = divmod(centiseconds, 6000)
+    return f'[{minutes:02d}:{remainder // 100:02d}.{remainder % 100:02d}]'
+
+
+def format_lrc(formatted_lyrics: str, words: list[TimedWord]) -> str:
+    lines = _timed_lines(formatted_lyrics, words)
+    return '\n'.join(f'{_lrc_time(start)}{text}' for text, start, _ in lines) + '\n'
+
+
+def _subtitle_time(seconds: float, decimal_separator: str) -> str:
+    milliseconds = max(0, round(seconds * 1000))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, millis = divmod(remainder, 1000)
+    return f'{hours:02d}:{minutes:02d}:{whole_seconds:02d}{decimal_separator}{millis:03d}'
+
+
+def format_srt(formatted_lyrics: str, words: list[TimedWord]) -> str:
+    cues = []
+    for number, (text, start, end) in enumerate(_timed_lines(formatted_lyrics, words), 1):
+        end = max(end, start + 0.1)
+        cues.append(f'{number}\n{_subtitle_time(start, ",")} --> {_subtitle_time(end, ",")}\n{text}')
+    return '\n\n'.join(cues) + '\n'
+
+
+def format_vtt(formatted_lyrics: str, words: list[TimedWord]) -> str:
+    cues = ['WEBVTT', '']
+    for text, start, end in _timed_lines(formatted_lyrics, words):
+        end = max(end, start + 0.1)
+        cues.extend((f'{_subtitle_time(start, ".")} --> {_subtitle_time(end, ".")}', text, ''))
+    return '\n'.join(cues)
+
+
+def timed_lyrics_file_path(audio_path: Path) -> Path:
+    path = Path(audio_path)
+    return path.with_name(path.stem + '.lyrics.lrc')
+
+
+def write_timed_lyrics_file(audio_path: Path, lyrics: str, *, overwrite: bool = False) -> Path | None:
+    destination = timed_lyrics_file_path(audio_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f'.{destination.name}.', suffix='.tmp', dir=destination.parent)
     temporary = Path(temporary_name)

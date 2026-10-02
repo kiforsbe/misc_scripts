@@ -44,10 +44,23 @@ class Settings:
 
 
 @dataclass
+class TimedWord:
+    text: str
+    start: float
+    end: float
+
+
+@dataclass
 class Chunk:
     start: float
     end: float
     text: str
+    aligned_words: list[TimedWord] = field(default_factory=list)
+    alignment_error: str = ''
+
+    def __post_init__(self):
+        self.aligned_words = [word if isinstance(word, TimedWord) else TimedWord(**word)
+                              for word in self.aligned_words]
 
 
 @dataclass
@@ -71,3 +84,6 @@ class Analysis:
     selected_title: str | None = None
     runtime: dict = field(default_factory=dict)
     formatted_lyrics: str = ''
+    timed_lyrics: list[TimedWord] = field(default_factory=list)
+    timed_lyrics_formats: dict[str, str] = field(default_factory=dict)
+    timed_cache_path: str = ''

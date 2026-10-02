@@ -10,10 +10,10 @@ from pathlib import Path
 from common.presentation import Colors
 
 from .audio import discover_inputs
-from .lyrics import format_lyrics, write_lyrics_file
+from .lyrics import format_lyrics, write_lyrics_file, write_timed_lyrics_file
 from .metadata import can_write, has_meaningful_title, update_metadata
 from .naming import DEFAULT_FILENAME_TEMPLATE, DEFAULT_MAX_FILENAME_LENGTH, FilenameTooLongError, output_path
-from .pipeline import analyze_file, save_report
+from .pipeline import analyze_file, refresh_timed_cache_source, save_report
 from .title_history import load_title_history, save_title_history, similar_title
 from .types import Settings
 from .worker_runtime import ModelRuntime
@@ -49,6 +49,8 @@ def parser():
     result.add_argument('--backup', action='store_true', help='Save the original audio as .bak before changing its metadata')
     result.add_argument('--force-lyrics', action='store_true', help='Overwrite existing embedded lyrics and, with --lyrics-file, the lyrics sidecar')
     result.add_argument('--lyrics-file', action='store_true', help='Also write generated lyrics beside the audio as .lyrics.txt')
+    result.add_argument('--timed-lyrics-file', action='store_true', help='Write aligned lyrics beside the audio as .lyrics.lrc')
+    result.add_argument('--ensure-timed-lyrics', action='store_true', help='Generate timed lyrics only when a matching timed-lyrics cache entry is missing')
     result.add_argument('--auto', action='store_true', help='Use the first title suggestion, write tags, and rename without prompting')
     template_help = DEFAULT_FILENAME_TEMPLATE.replace('%', '%%')
     result.add_argument('--filename-template', help=f'MusicBrainz Picard-style rename template; default: {template_help}')
@@ -163,6 +165,20 @@ def _store_lyrics_file(path: Path, analysis, arguments) -> Path | None:
     return result
 
 
+def _store_timed_lyrics_file(path: Path, analysis, arguments) -> Path | None:
+    lyrics = analysis.timed_lyrics_formats.get('lrc', '')
+    if not lyrics:
+        if arguments.timed_lyrics_file:
+            analysis.notes.append('Timed lyrics sidecar was requested, but no matching word timestamps are available.')
+        return None
+    result = write_timed_lyrics_file(path, lyrics, overwrite=arguments.force_lyrics)
+    if result is None:
+        analysis.notes.append(f'Existing timed lyrics file kept: {path.with_name(path.stem + ".lyrics.lrc")}')
+    else:
+        print(f'{_c("Timed lyrics file:", Colors.GREEN)} {result}')
+    return result
+
+
 def _tag_lyrics(analysis, path: Path, arguments) -> str | None:
     lyrics = analysis.formatted_lyrics.strip() or format_lyrics(analysis.lyrics)
     if not lyrics:
@@ -214,7 +230,8 @@ def main(argv=None):
                 analysis = None
                 try:
                     analysis = analyze_file(source, settings, progress=_progress, runtime=runtime,
-                                            force_lyrics=arguments.force_lyrics)
+                                            force_lyrics=arguments.force_lyrics,
+                                            ensure_timed_lyrics=arguments.ensure_timed_lyrics or arguments.timed_lyrics_file)
                     counts['analyzed'] += 1
                     duplicate_titles = []
                     unique_candidates = []
@@ -260,6 +277,7 @@ def main(argv=None):
                     title_to_write = chosen_title if title_confirmed else None
                     title_for_rename = title_to_write or existing_title
                     lyrics_to_write = _tag_lyrics(analysis, source, arguments)
+                    timed_lyrics_to_write = analysis.timed_lyrics if source.suffix.lower() == '.mp3' else None
                     template = arguments.filename_template or DEFAULT_FILENAME_TEMPLATE
                     destination = source
                     if title_for_rename and template:
@@ -274,20 +292,17 @@ def main(argv=None):
                             print(_c(f'Rename skipped: {exc}', Colors.YELLOW))
 
                     backup = None
-                    if can_write(source) and (title_to_write or lyrics_to_write):
-                        if title_to_write:
-                            if lyrics_to_write:
-                                backup = write_title(source, title_to_write, analysis.digest, make_backup=arguments.backup, lyrics=lyrics_to_write)
-                            elif arguments.backup:
-                                backup = write_title(source, title_to_write, analysis.digest, make_backup=True)
-                            else:
-                                backup = write_title(source, title_to_write, analysis.digest)
-                        else:
-                            backup = update_metadata(source, analysis.digest, lyrics=lyrics_to_write, make_backup=arguments.backup)
+                    if can_write(source) and (title_to_write or lyrics_to_write or timed_lyrics_to_write):
+                        backup = update_metadata(source, analysis.digest, title=title_to_write,
+                                                 lyrics=lyrics_to_write,
+                                                 synchronized_lyrics=timed_lyrics_to_write,
+                                                 make_backup=arguments.backup)
                         if lyrics_to_write:
                             analysis.metadata['lyrics'] = lyrics_to_write
                             counts['lyrics_tags'] += 1
                             print(_c('Embedded lyrics updated.', Colors.GREEN))
+                        if title_to_write or lyrics_to_write or timed_lyrics_to_write:
+                            refresh_timed_cache_source(analysis, source, settings)
                         if title_to_write:
                             analysis.metadata['title'] = title_to_write
                             counts['saved'] += 1
@@ -307,6 +322,7 @@ def main(argv=None):
 
                     if title_for_rename and destination != source:
                         destination = _rename_no_clobber(source, destination)
+                        refresh_timed_cache_source(analysis, destination, settings)
                         analysis.metadata['output_path'] = str(destination)
                         counts['renamed'] += 1
                         print(f'{_c("Renamed:", Colors.GREEN)} {_display_path(destination, display_base)}')
@@ -314,10 +330,12 @@ def main(argv=None):
                     lyrics_file = _store_lyrics_file(destination, analysis, arguments) if arguments.lyrics_file else None
                     if lyrics_file:
                         counts['lyrics_files'] += 1
+                    timed_lyrics_file = (_store_timed_lyrics_file(destination, analysis, arguments)
+                                         if arguments.timed_lyrics_file else None)
                     if not title_to_write and destination == source:
                         counts['skipped'] += 1
                     outcome = ('saved' if title_to_write else
-                               'lyrics-saved' if lyrics_to_write or lyrics_file else
+                               'lyrics-saved' if lyrics_to_write or lyrics_file or timed_lyrics_file else
                                'renamed' if destination != source else 'skipped')
                     if quit_requested:
                         outcome = 'quit'
@@ -329,12 +347,19 @@ def main(argv=None):
                     if analysis is not None:
                         try:
                             lyrics_to_write = _tag_lyrics(analysis, source, arguments)
-                            backup = update_metadata(source, analysis.digest, lyrics=lyrics_to_write, make_backup=arguments.backup) if lyrics_to_write else None
+                            timed_lyrics_to_write = analysis.timed_lyrics if source.suffix.lower() == '.mp3' else None
+                            backup = update_metadata(source, analysis.digest, lyrics=lyrics_to_write,
+                                                     synchronized_lyrics=timed_lyrics_to_write,
+                                                     make_backup=arguments.backup) if lyrics_to_write or timed_lyrics_to_write else None
                             if lyrics_to_write:
                                 analysis.metadata['lyrics'] = lyrics_to_write
                                 counts['lyrics_tags'] += 1
+                            if backup or lyrics_to_write or timed_lyrics_to_write:
+                                refresh_timed_cache_source(analysis, source, settings)
                             if arguments.lyrics_file:
                                 _store_lyrics_file(source, analysis, arguments)
+                            if arguments.timed_lyrics_file:
+                                _store_timed_lyrics_file(source, analysis, arguments)
                             save_report(analysis, settings, 'input-ended', str(backup) if backup else None)
                         except Exception as exc:
                             analysis.notes.append(str(exc))
