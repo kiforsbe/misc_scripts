@@ -25,19 +25,23 @@ def fingerprint(path: Path) -> str:
 
 def read_metadata(path: Path) -> dict:
     from mutagen import File
-    from mutagen.id3 import ID3
+    from mutagen.id3 import ID3, ID3NoHeaderError
     result = {'filename': path.name}
     try:
         if path.suffix.lower() == '.mp3':
-            tags = ID3(path)
-            mapping = {'title':'TIT2','artist':'TPE1','albumartist':'TPE2','album':'TALB','genre':'TCON','tracknumber':'TRCK','discnumber':'TPOS','date':'TDRC'}
-            for name, key in mapping.items():
-                if key in tags:
-                    result[name] = str(tags[key])
-            for name, key in [('comments','COMM'), ('lyrics','USLT')]:
-                values = tags.getall(key)
-                if values:
-                    result[name] = '\n'.join(str(v.text) for v in values)
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                tags = None
+            if tags:
+                mapping = {'title':'TIT2','artist':'TPE1','albumartist':'TPE2','album':'TALB','genre':'TCON','tracknumber':'TRCK','discnumber':'TPOS','date':'TDRC'}
+                for name, key in mapping.items():
+                    if key in tags:
+                        result[name] = str(tags[key])
+                for name, key in [('comments','COMM'), ('lyrics','USLT')]:
+                    values = tags.getall(key)
+                    if values:
+                        result[name] = '\n'.join(str(v.text) for v in values)
             audio = File(path)
         else:
             audio = File(path)
@@ -79,10 +83,17 @@ def _load_tags(path):
     return audio
 
 
+def _is_ignored(key: str, ignored: set[str], is_mp3: bool) -> bool:
+    if is_mp3:
+        return key in ignored or key.split(':')[0] in ignored
+    return key in ignored
+
+
 def _other_tags(audio, key):
     from mutagen.id3 import ID3
     tags = audio if isinstance(audio, ID3) else audio.tags
-    return copy.deepcopy({k: v for k, v in tags.items() if k != key})
+    is_id3 = isinstance(audio, ID3)
+    return copy.deepcopy({k: v for k, v in tags.items() if not _is_ignored(k, {key}, is_id3)})
 
 
 def _verify_copy(path, title, original_other, title_key):
@@ -135,7 +146,7 @@ def update_metadata(path: Path, expected_digest: str, *, title: str | None = Non
     if synchronized_lyrics is not None:
         ignored.add('SYLT')
     tags = audio if is_mp3 else audio.tags
-    other = copy.deepcopy({key: value for key, value in tags.items() if key not in ignored})
+    other = copy.deepcopy({key: value for key, value in tags.items() if not _is_ignored(key, ignored, is_mp3)})
     original_version = audio.version[1] if isinstance(audio, ID3) else None
     backup = _backup_original(path) if make_backup else None
     fd, name = tempfile.mkstemp(prefix=f'.{path.stem}.song-title-', suffix=path.suffix, dir=path.parent)
@@ -170,7 +181,7 @@ def update_metadata(path: Path, expected_digest: str, *, title: str | None = Non
             audio.save()
         saved = _load_tags(temporary)
         saved_tags = saved if isinstance(saved, ID3) else saved.tags
-        actual_other = {key: value for key, value in saved_tags.items() if key not in ignored}
+        actual_other = {key: value for key, value in saved_tags.items() if not _is_ignored(key, ignored, is_mp3)}
         if actual_other != other:
             raise ValueError('Unrelated-tag preservation failed')
         if title is not None and lyrics is None and synchronized_lyrics is None:

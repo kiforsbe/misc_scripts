@@ -37,6 +37,28 @@ class CandidateResults(list):
         self.formatted_lyrics = formatted_lyrics
 
 
+def _parse_json(content: str) -> dict:
+    content = content.strip()
+    if content.startswith('```'):
+        content = re.sub(r'^```(?:json)?\s*', '', content, flags=re.IGNORECASE)
+        content = re.sub(r'\s*```$', '', content)
+    try:
+        return json.loads(content, strict=False)
+    except json.JSONDecodeError:
+        pass
+    cleaned = re.sub(r'[\x00-\x1f]+', lambda m: ''.join(f'\\u{ord(c):04x}' for c in m.group(0)), content)
+    try:
+        return json.loads(cleaned, strict=False)
+    except json.JSONDecodeError:
+        pass
+    for suffix in ['"', '"}', '"]}', '"}]}']:
+        try:
+            return json.loads(cleaned + suffix, strict=False)
+        except json.JSONDecodeError:
+            continue
+    return json.loads(content, strict=False)
+
+
 def _normalize(text: str) -> str:
     return ' '.join(re.findall(r"\w+(?:'\w+)?", text.casefold()))
 
@@ -124,7 +146,7 @@ def shorten_filename_fields(fields: dict[str, str], filename: str, max_length: i
     last_error = None
     for attempt in range(3):
         try:
-            data = json.loads(_chat_response(settings, payload, runtime)['message']['content'])
+            data = _parse_json(_chat_response(settings, payload, runtime)['message']['content'])
             if not isinstance(data, dict) or set(data) != set(fields):
                 raise ValueError('Ollama returned an unexpected set of filename fields')
             shortened = {}
@@ -206,7 +228,7 @@ def format_lyrics(lyrics: str, metadata: dict, settings: Settings, runtime: Mode
     for attempt in range(2):
         try:
             content = _chat_response(settings, payload, runtime)['message']['content']
-            data = json.loads(content)
+            data = _parse_json(content)
             parsed = LyricsFormatting.model_validate(data)
             formatted = validate_formatted_lyrics(parsed.formatted_lyrics, lyrics)
             if formatted:
@@ -265,7 +287,7 @@ def suggest_titles(lyrics: str, metadata: dict, settings: Settings,
     for attempt in range(2):
         try:
             content = _chat_response(settings, payload, runtime)['message']['content']
-            data = json.loads(content)
+            data = _parse_json(content)
             candidates = validate_candidates(data, lyrics)
             if not candidates:
                 raise ValueError('Ollama returned no suggestions with verified lyric evidence')

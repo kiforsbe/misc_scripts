@@ -83,3 +83,23 @@ def test_real_encoded_formats_title_only(tmp_path, ext, codec):
     assert read_metadata(path)['title'] == 'New'
     assert read_metadata(path)['artist'] == 'Artist'
     assert pcm() == before
+
+
+def test_mp3_update_metadata_lyrics_and_unrelated_tags(tmp_path):
+    from mutagen.id3 import ID3, TIT2, TPE1, USLT
+    from song_title.metadata import fingerprint, update_metadata, read_metadata
+    path = tmp_path / 'song_with_tags.mp3'
+    tags = ID3()
+    tags.add(TIT2(encoding=3, text=['Initial Title']))
+    tags.add(TPE1(encoding=3, text=['Artist Name']))
+    tags.add(USLT(encoding=3, lang='eng', desc='', text='Old lyrics'))
+    tags.save(path)
+
+    digest = fingerprint(path)
+    update_metadata(path, digest, title='Updated Title', lyrics='New lyrics content')
+
+    res = read_metadata(path)
+    assert res['title'] == 'Updated Title'
+    assert res['artist'] == 'Artist Name'
+    assert res['lyrics'] == 'New lyrics content'
+

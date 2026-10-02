@@ -57,3 +57,11 @@ def test_missing_ollama_model_is_actionable(monkeypatch):
     monkeypatch.setattr(requests, 'post', lambda *a, **k: response)
     with pytest.raises(RuntimeError, match='ollama pull qwen3.5:4b'):
         suggest_titles('last train', {}, Settings())
+
+
+def test_parse_json_handles_raw_linebreaks_and_markdown_fences():
+    from song_title.titles import _parse_json
+    raw_response = '```json\n{\n  "formatted_lyrics": "line 1\nline 2"\n}\n```'
+    parsed = _parse_json(raw_response)
+    assert parsed['formatted_lyrics'] == 'line 1\nline 2'
+
