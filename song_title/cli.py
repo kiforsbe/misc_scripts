@@ -91,6 +91,26 @@ def _progress(message):
     print(_c(message, color), flush=True)
 
 
+def _input_display_base(source: Path, input_paths) -> Path:
+    source = source.resolve()
+    matches = []
+    for value in input_paths:
+        root = Path(value).resolve()
+        if root.is_dir() and source.is_relative_to(root):
+            matches.append((len(root.parts), root))
+        elif source == root:
+            matches.append((len(root.parts), root.parent))
+    return max(matches, key=lambda match: match[0])[1] if matches else source.parent
+
+
+def _display_path(path: Path, base: Path) -> str:
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(base))
+    except ValueError:
+        return resolved.name
+
+
 def _choose(analysis, previous_titles=()):
     while True:
         answer = input(_c('Choose a number, [e] enter a title, [s] skip, [q] quit: ', Colors.CYAN)).strip().lower()
@@ -176,6 +196,7 @@ def main(argv=None):
         inputs = discover_inputs(arguments.inputs, arguments.recursive, [settings.cache_dir])
         if not inputs:
             raise ValueError('No supported audio files found')
+        display_bases = {source: _input_display_base(source, arguments.inputs) for source in inputs}
         check_prerequisites(settings)
         selected_titles_path = settings.cache_dir / 'selected-titles.json'
         selected_titles = load_title_history(selected_titles_path)
@@ -187,7 +208,9 @@ def main(argv=None):
     try:
         with ModelRuntime(settings) as runtime:
             for number, source in enumerate(inputs, 1):
-                print(f'\n{_c(f"[{number}/{len(inputs)}]", Colors.CYAN + Colors.BOLD)} {source}', flush=True)
+                display_base = display_bases[source]
+                display_source = _display_path(source, display_base)
+                print(f'\n{_c(f"[{number}/{len(inputs)}]", Colors.CYAN + Colors.BOLD)} {display_source}', flush=True)
                 analysis = None
                 try:
                     analysis = analyze_file(source, settings, progress=_progress, runtime=runtime,
@@ -286,7 +309,7 @@ def main(argv=None):
                         destination = _rename_no_clobber(source, destination)
                         analysis.metadata['output_path'] = str(destination)
                         counts['renamed'] += 1
-                        print(f'{_c("Renamed:", Colors.GREEN)} {destination}')
+                        print(f'{_c("Renamed:", Colors.GREEN)} {_display_path(destination, display_base)}')
 
                     lyrics_file = _store_lyrics_file(destination, analysis, arguments) if arguments.lyrics_file else None
                     if lyrics_file:

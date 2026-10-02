@@ -54,6 +54,8 @@ class Colors:
             return False
         if os.name != 'nt':
             return True
+        if os.environ.get('TERM_PROGRAM', '').casefold().startswith('vscode'):
+            return True
         return any(
             os.environ.get(name)
             for name in ('WT_SESSION', 'ANSICON', 'ConEmuANSI', 'TERM')
