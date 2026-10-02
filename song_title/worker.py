@@ -81,7 +81,13 @@ def _serve(phase: str):
                             split=True, overlap=0.25, segment=3 if reduced else 6,
                             jobs=0, progress=True,
                         )
+                        # Demucs loads checkpoints on CPU, then apply_model moves each
+                        # submodel back to its original device after separation. Put the
+                        # model on the selected device once so it stays resident there.
+                        separator._model.to(device)
                         separator_device = device
+                        print(f'Demucs model {settings.separator_model} loaded on {device} and kept resident.',
+                              flush=True)
                     else:
                         separator.update_parameter(device=device, segment=3 if reduced else 6)
                     result = self_separate(Path(request['source']), Path(request['output']), separator,
