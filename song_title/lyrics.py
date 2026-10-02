@@ -3,20 +3,21 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from difflib import SequenceMatcher
 import textwrap
 from pathlib import Path
 
 from .types import Chunk, TimedWord
 
-_SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
 _WORD = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+_SENTENCE_END = re.compile(r'(?<=[.!?])\s+')
 _TIMED_LINE_MAX_CHARS = 42
 _TIMED_LINE_MAX_WORDS = 8
 _TIMED_LINE_MAX_SECONDS = 6.0
 
 
-def format_lyrics(source: list[Chunk] | str, line_width: int = 72, stanza_lines: int = 4) -> str:
-    """Conservatively format ASR text when the model did not return a valid layout."""
+def format_lyrics(source: list[Chunk] | str, line_width: int = 42, stanza_lines: int = 4) -> str:
+    """Use simple wrapping only as a last-resort fallback when Ollama formatting fails."""
     if isinstance(source, str):
         text = ' '.join(source.split())
     else:
@@ -26,8 +27,10 @@ def format_lyrics(source: list[Chunk] | str, line_width: int = 72, stanza_lines:
     phrases = [phrase.strip() for phrase in _SENTENCE_END.split(text) if phrase.strip()]
     lines: list[str] = []
     for phrase in phrases:
-        lines.extend(textwrap.wrap(phrase, width=line_width, break_long_words=False, break_on_hyphens=False) or [phrase])
-    stanzas = ['\n'.join(lines[i:i + stanza_lines]) for i in range(0, len(lines), stanza_lines)]
+        lines.extend(textwrap.wrap(phrase, width=line_width, break_long_words=False,
+                                  break_on_hyphens=False) or [phrase])
+    stanzas = ['\n'.join(lines[index:index + stanza_lines])
+               for index in range(0, len(lines), stanza_lines)]
     return '\n\n'.join(stanzas)
 
 
@@ -59,6 +62,47 @@ def write_lyrics_file(audio_path: Path, lyrics: str, *, overwrite: bool = False)
 
 def _word_key(value: str) -> str:
     return value.casefold().replace('’', "'")
+
+
+def map_timed_words_to_formatted_lyrics(original: str, formatted: str,
+                                       words: list[TimedWord]) -> list[TimedWord]:
+    """Carry ASR timings onto a lightly corrected Ollama lyric transcript."""
+    source_tokens = list(_WORD.finditer(original))
+    formatted_tokens = list(_WORD.finditer(formatted))
+    if len(source_tokens) != len(words):
+        raise ValueError('Aligned word count does not match the source transcript')
+    source = [_word_key(token.group()) for token in source_tokens]
+    target = [_word_key(token.group()) for token in formatted_tokens]
+    matcher = SequenceMatcher(None, source, target, autojunk=False)
+    if (not source or not target or matcher.ratio() < .80
+            or not .88 <= len(target) / len(source) <= 1.12):
+        raise ValueError('Ollama lyric corrections differ too much to preserve word timings')
+    mapped: dict[int, TimedWord] = {}
+    for operation, source_start, source_end, target_start, target_end in matcher.get_opcodes():
+        if operation == 'equal':
+            for source_index, target_index in zip(range(source_start, source_end),
+                                                  range(target_start, target_end)):
+                mapped[target_index] = TimedWord(formatted_tokens[target_index].group(),
+                                                 words[source_index].start, words[source_index].end)
+        elif operation == 'replace' and source_end > source_start:
+            source_count = source_end - source_start
+            target_count = target_end - target_start
+            for offset, target_index in enumerate(range(target_start, target_end)):
+                source_index = source_start + min(source_count - 1, offset * source_count // target_count)
+                mapped[target_index] = TimedWord(formatted_tokens[target_index].group(),
+                                                 words[source_index].start, words[source_index].end)
+        elif operation == 'insert':
+            if source_start < len(words):
+                start = words[source_start].start
+            elif words:
+                start = words[-1].end
+            else:
+                raise ValueError('Cannot time inserted words without source timings')
+            for target_index in range(target_start, target_end):
+                mapped[target_index] = TimedWord(formatted_tokens[target_index].group(), start, start)
+    if len(mapped) != len(formatted_tokens):
+        raise ValueError('Could not map every formatted lyric word to source timing')
+    return [mapped[index] for index in range(len(formatted_tokens))]
 
 
 def _timed_lines(formatted_lyrics: str, words: list[TimedWord]):

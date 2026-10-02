@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 from .asr import separate_vocals, transcribe_vocals
 from .audio import assemble_transcript
 from .metadata import fingerprint, has_meaningful_title, read_metadata
-from .lyrics import format_lrc, format_srt, format_vtt
+from .lyrics import (format_lyrics as fallback_format_lyrics, format_lrc, format_srt, format_vtt,
+                     map_timed_words_to_formatted_lyrics)
 from .titles import format_lyrics as format_lyrics_with_model, prepare_lyrics, suggest_titles
 from .types import Analysis, Chunk, Settings, TimedWord
 
@@ -36,7 +37,7 @@ def _key(data):
 
 def _timed_cache_path(root: Path, source: Path, settings: Settings) -> Path:
     key = _key({'source': str(Path(source).resolve()).casefold(), 'backend': settings.asr,
-                'checkpoint': settings.checkpoint, 'timing': 'qwen-align-nemotron-duration-v1', 'format': 2})
+                'checkpoint': settings.checkpoint, 'timing': 'qwen-align-nemotron-duration-v1', 'format': 4})
     return root / 'timed-lyrics' / (key + '.manifest.json')
 
 
@@ -56,7 +57,7 @@ def _load_timed_cache(path: Path, source_digest: str):
         words_payload = json.loads(paths['words'].read_text(encoding='utf-8'))
         words = [TimedWord(**item) for item in words_payload['words']]
         formats = {name: paths[name].read_text(encoding='utf-8') for name in ('lrc', 'srt', 'vtt')}
-        if (value.get('format_version') != 2 or not words
+        if (value.get('format_version') != 4 or not words
                 or any(not word.text.strip() or not math.isfinite(word.start) or not math.isfinite(word.end)
                        or word.start < 0 or word.end < word.start for word in words)
                 or any(current.start < previous.start for previous, current in zip(words, words[1:]))
@@ -76,7 +77,7 @@ def _save_timed_cache(path: Path, source_digest: str, lyric_text: str, formatted
         _atomic_text(paths[name], text)
     atomic_json(paths['manifest'], {'schema': CACHE_SCHEMA, 'source_digest': source_digest,
                                     'lyrics': lyric_text, 'formatted_lyrics': formatted,
-                                    'format_version': 2})
+                                    'format_version': 4})
 
 
 def _atomic_text(path: Path, text: str):
@@ -323,17 +324,21 @@ def _analyze(analysis: Analysis, settings: Settings, progress, runtime: ModelRun
             progress(f'Formatting lyrics with {settings.ollama_model}…')
             try:
                 analysis.formatted_lyrics = format_lyrics_with_model(lyrics, metadata, settings, runtime)
-            except RuntimeError as exc:
-                analysis.notes.append(f'Lyric formatting failed; conservative local formatting will be used: {exc}')
+            except RuntimeError:
+                analysis.formatted_lyrics = ''
     else:
         progress(f'Generating title suggestions with {settings.ollama_model}…')
         suggestions = suggest_titles(lyrics, metadata, settings, runtime)
         analysis.candidates = list(suggestions)
         analysis.formatted_lyrics = getattr(suggestions, 'formatted_lyrics', '')
+    if lyrics.strip() and not analysis.formatted_lyrics.strip():
+        analysis.formatted_lyrics = fallback_format_lyrics(lyrics)
+        analysis.notes.append('Ollama did not return a lyric layout that passed transcript-similarity and line-length checks; simple local line wrapping was used as a fallback.')
     formatted_timed_lyrics = analysis.formatted_lyrics.strip() or lyrics
-    timed_words = [word for chunk in chunks for word in chunk.aligned_words]
-    if timed_words:
+    raw_timed_words = [word for chunk in chunks for word in chunk.aligned_words]
+    if raw_timed_words:
         try:
+            timed_words = map_timed_words_to_formatted_lyrics(lyrics, formatted_timed_lyrics, raw_timed_words)
             formats = {'lrc': format_lrc(formatted_timed_lyrics, timed_words),
                        'srt': format_srt(formatted_timed_lyrics, timed_words),
                        'vtt': format_vtt(formatted_timed_lyrics, timed_words)}
@@ -341,6 +346,6 @@ def _analyze(analysis: Analysis, settings: Settings, progress, runtime: ModelRun
             analysis.timed_lyrics_formats = formats
             _save_timed_cache(timed_path, digest, lyrics, formatted_timed_lyrics, timed_words, formats)
         except ValueError as exc:
-            notes.append(f'Timed lyric formatting failed; untimed lyrics are retained: {exc}')
+            notes.append(f'Timed lyrics could not follow Ollama formatting; untimed lyrics are retained: {exc}')
     elif ensure_timed_lyrics:
         notes.append('Timed lyrics were requested, but this ASR result did not contain usable word timestamps.')

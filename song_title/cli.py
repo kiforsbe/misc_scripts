@@ -10,7 +10,7 @@ from pathlib import Path
 from common.presentation import Colors
 
 from .audio import discover_inputs
-from .lyrics import format_lyrics, write_lyrics_file, write_timed_lyrics_file
+from .lyrics import write_lyrics_file, write_timed_lyrics_file
 from .metadata import can_write, has_meaningful_title, update_metadata
 from .naming import DEFAULT_FILENAME_TEMPLATE, DEFAULT_MAX_FILENAME_LENGTH, FilenameTooLongError, output_path
 from .pipeline import analyze_file, refresh_timed_cache_source, save_report
@@ -154,7 +154,7 @@ def _rename_no_clobber(source: Path, destination: Path) -> Path:
 
 
 def _store_lyrics_file(path: Path, analysis, arguments) -> Path | None:
-    lyrics = analysis.formatted_lyrics.strip() or format_lyrics(analysis.lyrics)
+    lyrics = analysis.formatted_lyrics.strip() or analysis.lyrics.strip()
     if not lyrics:
         return None
     result = write_lyrics_file(path, lyrics, overwrite=arguments.force_lyrics)
@@ -180,7 +180,7 @@ def _store_timed_lyrics_file(path: Path, analysis, arguments) -> Path | None:
 
 
 def _tag_lyrics(analysis, path: Path, arguments) -> str | None:
-    lyrics = analysis.formatted_lyrics.strip() or format_lyrics(analysis.lyrics)
+    lyrics = analysis.formatted_lyrics.strip() or analysis.lyrics.strip()
     if not lyrics:
         return None
     existing = str(analysis.metadata.get('lyrics', '')).strip()

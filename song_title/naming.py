@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from .worker_runtime import ModelRuntime
 
 DEFAULT_FILENAME_TEMPLATE = '%album% - %artist% - $num(%tracknumber%,2) - %title%'
-DEFAULT_MAX_FILENAME_LENGTH = 120
+DEFAULT_MAX_FILENAME_LENGTH = 140
+TARGET_FILENAME_LENGTH = 100
 _FIELD = re.compile(r'%([A-Za-z0-9_]+)%')
 _NUM = re.compile(r'\$num\(\s*(%[A-Za-z0-9_]+%)\s*,\s*(\d+)\s*\)')
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -137,7 +138,7 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
     """Render a short filename, using Ollama to shorten template fields when needed."""
     if max_length < 1:
         raise ValueError('Maximum filename length must be positive')
-    target_length = max_length - min(20, max_length // 6)
+    target_length = min(TARGET_FILENAME_LENGTH, max_length)
     working = dict(metadata)
     number_fields = {match.group(1)[1:-1].casefold() for match in _NUM.finditer(template)}
     fields = list(dict.fromkeys(field.casefold() for field in _FIELD.findall(template)
@@ -147,6 +148,7 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
     cache_path = settings.cache_dir / 'filename-shortening.json' if settings is not None else None
     cache = _read_filename_cache(cache_path) if cache_path is not None else {}
     cache_keys = {}
+    cached_fields = set()
     if settings is not None:
         for field in fields:
             original = original_values.get(field)
@@ -157,6 +159,7 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
                 if cached:
                     if valid_filename_shortening(original, cached) and _utf16_length(cached) < _utf16_length(original):
                         working[field] = cached
+                        cached_fields.add(field)
                     else:
                         cache.pop(key, None)
 
@@ -169,9 +172,14 @@ def output_path(source: Path, metadata: dict, template: str, *, settings: Settin
             if _utf16_length(target.name) <= max_length:
                 return target
             raise FilenameTooLongError(f'filename is {_utf16_length(target.name)} characters; maximum is {max_length}')
-        untried = [field for field in fields if metadata_values.get(field) and field not in unproductive_fields]
-        ranked_fields = sorted(untried, key=lambda field: _utf16_length(str(working.get(field, metadata_values.get(field, '')))), reverse=True)
-        overage = _utf16_length(target.name) - max_length
+        untried = [field for field in fields if metadata_values.get(field) and field not in unproductive_fields
+                   and field not in cached_fields]
+        # Track titles vary from song to song while album metadata is shared. Prefer
+        # shortening the per-track title so one unusually long title cannot create a
+        # second album-name variant for the rest of the album.
+        ranked_fields = sorted(untried, key=lambda field: (field != 'title',
+                                                           -_utf16_length(str(working.get(field, metadata_values.get(field, ''))))))
+        overage = _utf16_length(target.name) - target_length
         shorten = {}
         selected_length = 0
         for field in ranked_fields:
