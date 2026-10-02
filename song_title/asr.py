@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import gc
 import json
-import os
 import subprocess
-import sys
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
-
-from common.presentation import Colors
 
 from .audio import chunk_ranges
 from .types import Chunk, Settings
@@ -61,13 +57,16 @@ def with_device_retry(operation, requested: str, cuda_available: bool):
     raise RuntimeError('CUDA out of memory after reduced-segment retry; use --device cpu or a smaller Qwen checkpoint')
 
 
-def transcribe_in_process(vocals: Path, settings: Settings, device: str | None = None, reduced: bool = False) -> list[Chunk]:
+def transcribe_in_process(vocals: Path, settings: Settings, device: str | None = None, reduced: bool = False,
+                          backend: tuple | None = None) -> list[Chunk]:
     import numpy as np
     import soundfile as sf
     import torch
-    model = processor = None
+    owns_backend = backend is None
+    model, processor = backend or (None, None)
     try:
-        model, processor = load_backend(settings, device or settings.device)
+        if owns_backend:
+            model, processor = load_backend(settings, device or settings.device)
         sample_rate = int(processor.feature_extractor.sampling_rate)
         with tempfile.TemporaryDirectory(prefix='song-title-asr-') as folder:
             normalized = Path(folder)/'vocals-mono.wav'
@@ -95,42 +94,25 @@ def transcribe_in_process(vocals: Path, settings: Settings, device: str | None =
                 chunks.append(Chunk(start,end,text))
         return chunks
     finally:
-        del model, processor
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if owns_backend:
+            del model, processor
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def run_worker(phase: str, source: Path, output: Path, settings: Settings):
-    with tempfile.TemporaryDirectory(prefix='song-title-worker-') as folder:
-        request = Path(folder)/'request.json'
-        response = Path(folder)/'response.json'
-        request.write_text(json.dumps({'source':str(source.resolve()),'output':str(output.resolve()),'settings':asdict(settings)}, default=str), encoding='utf-8')
-        environment = os.environ.copy()
-        environment['PYTHONIOENCODING'] = 'utf-8'
-        # Resolve the package even when invoked outside the repository root.
-        environment['PYTHONPATH'] = str(Path(__file__).resolve().parent.parent) + os.pathsep + environment.get('PYTHONPATH','')
-        try:
-            result = subprocess.run([sys.executable,'-m','song_title.worker',phase,str(request),str(response)], capture_output=True, text=True, encoding='utf-8', errors='replace', env=environment, timeout=settings.worker_timeout)
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f'{phase} exceeded {settings.worker_timeout:g}s; increase --worker-timeout') from exc
-        if result.returncode or not response.exists():
-            detail = result.stderr[-4000:] or result.stdout[-4000:] or 'worker produced no response'
-            raise RuntimeError(f'{phase} failed: {detail.strip()}')
-        if result.stdout.strip():
-            use_color = Colors.should_use()
-            for line in result.stdout.splitlines():
-                lowered = line.casefold()
-                color = (Colors.YELLOW if 'memory exhausted' in lowered else
-                         Colors.CYAN if 'chunk ' in lowered else Colors.DIM)
-                print(Colors.wrap(line, color, use_color), flush=True)
-        data = json.loads(response.read_text(encoding='utf-8'))
-        runtime = data.get('runtime', {})
-        print(f'{phase}: device={runtime.get("device", "unknown")}, reduced segments={runtime.get("reduced_segments", False)}', flush=True)
-        if 'peak_vram_bytes' in runtime:
-            print(f'{phase}: peak PyTorch GPU allocation {runtime["peak_vram_bytes"] / 2**20:.0f} MiB', flush=True)
-        output.with_suffix(output.suffix + '.runtime.json').write_text(json.dumps(runtime), encoding='utf-8')
-        return data
+    from .worker_runtime import ModelRuntime
+    with ModelRuntime(settings) as runtime:
+        if phase == 'separate':
+            runtime.separate(source, output)
+            return {'runtime': json.loads(output.with_suffix(output.suffix + '.runtime.json').read_text(encoding='utf-8'))}
+        if phase == 'asr':
+            chunks = runtime.transcribe(source)
+            sidecar = Path(source).parent/'transcript-worker.json.runtime.json'
+            return {'chunks': [asdict(chunk) for chunk in chunks],
+                    'runtime': json.loads(sidecar.read_text(encoding='utf-8'))}
+        raise ValueError(f'Unknown worker phase: {phase}')
 
 
 def separate_vocals(source: Path, output: Path, settings: Settings) -> Path:
