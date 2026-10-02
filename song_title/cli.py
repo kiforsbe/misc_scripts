@@ -16,6 +16,7 @@ from .naming import DEFAULT_FILENAME_TEMPLATE, DEFAULT_MAX_FILENAME_LENGTH, File
 from .pipeline import analyze_file, save_report
 from .title_history import load_title_history, save_title_history, similar_title
 from .types import Settings
+from .worker_runtime import ModelRuntime
 
 _USE_COLOR = False
 
@@ -181,139 +182,145 @@ def main(argv=None):
 
     counts = {'analyzed': 0, 'saved': 0, 'lyrics_tags': 0, 'lyrics_files': 0, 'renamed': 0, 'skipped': 0, 'failed': 0}
     try:
-        for number, source in enumerate(inputs, 1):
-            print(f'\n{_c(f"[{number}/{len(inputs)}]", Colors.CYAN + Colors.BOLD)} {source}', flush=True)
-            analysis = None
-            try:
-                analysis = analyze_file(source, settings, progress=_progress)
-                counts['analyzed'] += 1
-                duplicate_titles = []
-                unique_candidates = []
-                for candidate in analysis.candidates:
-                    duplicate = similar_title(candidate.title, selected_titles)
-                    if duplicate:
-                        duplicate_titles.append(candidate.title)
-                    else:
-                        unique_candidates.append(candidate)
-                if duplicate_titles:
-                    analysis.candidates = unique_candidates
-                    analysis.notes.append(f'Filtered {len(duplicate_titles)} title suggestion(s) too similar to previously selected titles.')
-                _review(analysis)
-                if arguments.dry_run:
-                    continue
-
-                chosen_title = None
-                quit_requested = False
-                title_confirmed = False
-                if arguments.auto:
-                    if analysis.candidates and can_write(source):
-                        chosen_title = analysis.candidates[0].title
-                        analysis.selected_title = chosen_title
-                        title_confirmed = True
-                    else:
-                        analysis.notes.append('Auto mode found no writable title suggestion; title and filename were left unchanged.')
-                elif sys.stdin.isatty():
-                    chosen_title, quit_requested = _choose(analysis, selected_titles)
-                    analysis.selected_title = chosen_title
-                    if chosen_title and not can_write(source):
-                        analysis.notes.append(f'Title writing is unsupported for {source.suffix}; suggestion retained in report.')
-                        chosen_title = None
-                    if chosen_title:
-                        print(f'{_c("Title change:", Colors.YELLOW)} {analysis.metadata.get("title", "(missing)")} → {_c(chosen_title, Colors.GREEN)}')
-                        title_confirmed = input(_c('Save this title? [y/N]: ', Colors.CYAN)).strip().lower() in {'y', 'yes'}
-                else:
-                    analysis.notes.append('Noninteractive input: title selection requires --auto or an interactive terminal.')
-
-                title_to_write = chosen_title if title_confirmed else None
-                lyrics_to_write = _tag_lyrics(analysis, source, arguments)
-                template = arguments.filename_template or DEFAULT_FILENAME_TEMPLATE
-                destination = source
-                if title_to_write and template:
-                    naming_metadata = dict(analysis.metadata, title=title_to_write)
-                    try:
-                        destination = output_path(source, naming_metadata, template, settings=settings,
-                                                  max_length=arguments.max_filename_length)
-                        if os.path.normcase(str(destination.resolve())) != os.path.normcase(str(source.resolve())) and destination.exists():
-                            raise FileExistsError(f'Rename target already exists: {destination}')
-                    except FilenameTooLongError as exc:
-                        analysis.notes.append(f'Rename skipped: {exc}')
-                        print(_c(f'Rename skipped: {exc}', Colors.YELLOW))
-
-                backup = None
-                if can_write(source) and (title_to_write or lyrics_to_write):
-                    if title_to_write:
-                        if lyrics_to_write:
-                            backup = write_title(source, title_to_write, analysis.digest, make_backup=arguments.backup, lyrics=lyrics_to_write)
-                        elif arguments.backup:
-                            backup = write_title(source, title_to_write, analysis.digest, make_backup=True)
+        with ModelRuntime(settings) as runtime:
+            for number, source in enumerate(inputs, 1):
+                print(f'\n{_c(f"[{number}/{len(inputs)}]", Colors.CYAN + Colors.BOLD)} {source}', flush=True)
+                analysis = None
+                try:
+                    analysis = analyze_file(source, settings, progress=_progress, runtime=runtime,
+                                            force_lyrics=arguments.force_lyrics)
+                    counts['analyzed'] += 1
+                    duplicate_titles = []
+                    unique_candidates = []
+                    for candidate in analysis.candidates:
+                        duplicate = similar_title(candidate.title, selected_titles)
+                        if duplicate:
+                            duplicate_titles.append(candidate.title)
                         else:
-                            backup = write_title(source, title_to_write, analysis.digest)
+                            unique_candidates.append(candidate)
+                    if duplicate_titles:
+                        analysis.candidates = unique_candidates
+                        analysis.notes.append(f'Filtered {len(duplicate_titles)} title suggestion(s) too similar to previously selected titles.')
+                    _review(analysis)
+                    if arguments.dry_run:
+                        continue
+
+                    existing_title = str(analysis.metadata.get('title') or '').strip()
+                    chosen_title = None
+                    quit_requested = False
+                    title_confirmed = False
+                    if existing_title:
+                        print(f'{_c("Keeping metadata title:", Colors.DIM)} {existing_title}')
+                    elif arguments.auto:
+                        if analysis.candidates and can_write(source):
+                            chosen_title = analysis.candidates[0].title
+                            analysis.selected_title = chosen_title
+                            title_confirmed = True
+                        else:
+                            analysis.notes.append('Auto mode found no writable title suggestion; title and filename were left unchanged.')
+                    elif sys.stdin.isatty():
+                        chosen_title, quit_requested = _choose(analysis, selected_titles)
+                        analysis.selected_title = chosen_title
+                        if chosen_title and not can_write(source):
+                            analysis.notes.append(f'Title writing is unsupported for {source.suffix}; suggestion retained in report.')
+                            chosen_title = None
+                        if chosen_title:
+                            print(f'{_c("Title change:", Colors.YELLOW)} {analysis.metadata.get("title", "(missing)")} → {_c(chosen_title, Colors.GREEN)}')
+                            title_confirmed = input(_c('Save this title? [y/N]: ', Colors.CYAN)).strip().lower() in {'y', 'yes'}
                     else:
-                        backup = update_metadata(source, analysis.digest, lyrics=lyrics_to_write, make_backup=arguments.backup)
-                    if lyrics_to_write:
-                        analysis.metadata['lyrics'] = lyrics_to_write
-                        counts['lyrics_tags'] += 1
-                        print(_c('Embedded lyrics updated.', Colors.GREEN))
-                    if title_to_write:
-                        analysis.metadata['title'] = title_to_write
-                        counts['saved'] += 1
-                        print(f'{_c("Saved title:", Colors.GREEN)} {title_to_write}')
-                        if not similar_title(title_to_write, selected_titles):
-                            selected_titles.append(title_to_write)
-                            try:
-                                save_title_history(selected_titles_path, selected_titles)
-                            except OSError as exc:
-                                analysis.notes.append(f'Could not save selected-title cache: {exc}')
-                                print(_c(f'Could not save selected-title cache: {exc}', Colors.YELLOW))
-                    if backup:
-                        print(f'{_c("Backup:", Colors.DIM)} {backup}')
-                elif title_to_write:
-                    analysis.notes.append('Title was not written because this audio format is unsupported.')
-                    counts['skipped'] += 1
+                        analysis.notes.append('Noninteractive input: title selection requires --auto or an interactive terminal.')
 
-                if title_to_write and destination != source:
-                    destination = _rename_no_clobber(source, destination)
-                    analysis.metadata['output_path'] = str(destination)
-                    counts['renamed'] += 1
-                    print(f'{_c("Renamed:", Colors.GREEN)} {destination}')
+                    title_to_write = chosen_title if title_confirmed else None
+                    title_for_rename = title_to_write or existing_title
+                    lyrics_to_write = _tag_lyrics(analysis, source, arguments)
+                    template = arguments.filename_template or DEFAULT_FILENAME_TEMPLATE
+                    destination = source
+                    if title_for_rename and template:
+                        naming_metadata = dict(analysis.metadata, title=title_for_rename)
+                        try:
+                            destination = output_path(source, naming_metadata, template, settings=settings,
+                                                      runtime=runtime, max_length=arguments.max_filename_length)
+                            if os.path.normcase(str(destination.resolve())) != os.path.normcase(str(source.resolve())) and destination.exists():
+                                raise FileExistsError(f'Rename target already exists: {destination}')
+                        except FilenameTooLongError as exc:
+                            analysis.notes.append(f'Rename skipped: {exc}')
+                            print(_c(f'Rename skipped: {exc}', Colors.YELLOW))
 
-                lyrics_file = _store_lyrics_file(destination, analysis, arguments) if arguments.lyrics_file else None
-                if lyrics_file:
-                    counts['lyrics_files'] += 1
-                if not title_to_write:
-                    counts['skipped'] += 1
-                outcome = 'saved' if title_to_write else ('lyrics-saved' if lyrics_to_write or lyrics_file else 'skipped')
-                if quit_requested:
-                    outcome = 'quit'
-                save_report(analysis, settings, outcome, str(backup) if backup else None)
-                if quit_requested:
-                    break
-            except EOFError:
-                counts['skipped'] += 1
-                if analysis is not None:
-                    try:
-                        lyrics_to_write = _tag_lyrics(analysis, source, arguments)
-                        backup = update_metadata(source, analysis.digest, lyrics=lyrics_to_write, make_backup=arguments.backup) if lyrics_to_write else None
+                    backup = None
+                    if can_write(source) and (title_to_write or lyrics_to_write):
+                        if title_to_write:
+                            if lyrics_to_write:
+                                backup = write_title(source, title_to_write, analysis.digest, make_backup=arguments.backup, lyrics=lyrics_to_write)
+                            elif arguments.backup:
+                                backup = write_title(source, title_to_write, analysis.digest, make_backup=True)
+                            else:
+                                backup = write_title(source, title_to_write, analysis.digest)
+                        else:
+                            backup = update_metadata(source, analysis.digest, lyrics=lyrics_to_write, make_backup=arguments.backup)
                         if lyrics_to_write:
                             analysis.metadata['lyrics'] = lyrics_to_write
                             counts['lyrics_tags'] += 1
-                        if arguments.lyrics_file:
-                            _store_lyrics_file(source, analysis, arguments)
-                        save_report(analysis, settings, 'input-ended', str(backup) if backup else None)
-                    except Exception as exc:
+                            print(_c('Embedded lyrics updated.', Colors.GREEN))
+                        if title_to_write:
+                            analysis.metadata['title'] = title_to_write
+                            counts['saved'] += 1
+                            print(f'{_c("Saved title:", Colors.GREEN)} {title_to_write}')
+                            if not similar_title(title_to_write, selected_titles):
+                                selected_titles.append(title_to_write)
+                                try:
+                                    save_title_history(selected_titles_path, selected_titles)
+                                except OSError as exc:
+                                    analysis.notes.append(f'Could not save selected-title cache: {exc}')
+                                    print(_c(f'Could not save selected-title cache: {exc}', Colors.YELLOW))
+                        if backup:
+                            print(f'{_c("Backup:", Colors.DIM)} {backup}')
+                    elif title_to_write:
+                        analysis.notes.append('Title was not written because this audio format is unsupported.')
+                        counts['skipped'] += 1
+
+                    if title_for_rename and destination != source:
+                        destination = _rename_no_clobber(source, destination)
+                        analysis.metadata['output_path'] = str(destination)
+                        counts['renamed'] += 1
+                        print(f'{_c("Renamed:", Colors.GREEN)} {destination}')
+
+                    lyrics_file = _store_lyrics_file(destination, analysis, arguments) if arguments.lyrics_file else None
+                    if lyrics_file:
+                        counts['lyrics_files'] += 1
+                    if not title_to_write:
+                        counts['skipped'] += 1
+                    outcome = 'saved' if title_to_write else ('lyrics-saved' if lyrics_to_write or lyrics_file else 'skipped')
+                    if quit_requested:
+                        outcome = 'quit'
+                    save_report(analysis, settings, outcome, str(backup) if backup else None)
+                    if quit_requested:
+                        break
+                except EOFError:
+                    counts['skipped'] += 1
+                    if analysis is not None:
+                        try:
+                            lyrics_to_write = _tag_lyrics(analysis, source, arguments)
+                            backup = update_metadata(source, analysis.digest, lyrics=lyrics_to_write, make_backup=arguments.backup) if lyrics_to_write else None
+                            if lyrics_to_write:
+                                analysis.metadata['lyrics'] = lyrics_to_write
+                                counts['lyrics_tags'] += 1
+                            if arguments.lyrics_file:
+                                _store_lyrics_file(source, analysis, arguments)
+                            save_report(analysis, settings, 'input-ended', str(backup) if backup else None)
+                        except Exception as exc:
+                            analysis.notes.append(str(exc))
+                            save_report(analysis, settings, 'failed')
+                    print(_c('Input ended; title was not saved.', Colors.YELLOW))
+                    break
+                except Exception as exc:
+                    counts['failed'] += 1
+                    if analysis is not None:
                         analysis.notes.append(str(exc))
-                        save_report(analysis, settings, 'failed')
-                print(_c('Input ended; title was not saved.', Colors.YELLOW))
-                break
-            except Exception as exc:
-                counts['failed'] += 1
-                if analysis is not None:
-                    analysis.notes.append(str(exc))
-                    try:
-                        save_report(analysis, settings, 'failed')
-                    except OSError:
-                        pass
-                print(_c(f'Failed: {exc}', Colors.RED), file=sys.stderr)
+                        try:
+                            save_report(analysis, settings, 'failed')
+                        except OSError:
+                            pass
+                    print(_c(f'Failed: {exc}', Colors.RED), file=sys.stderr)
     except KeyboardInterrupt:
         print(_c('\nStopped; no further files processed.', Colors.YELLOW))
         return 130
