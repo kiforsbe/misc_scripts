@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -29,6 +30,7 @@ class _ResidentWorker:
         self.process: subprocess.Popen | None = None
         self.responses: queue.Queue = queue.Queue()
         self.stderr_tail: deque[str] = deque(maxlen=80)
+        self.reader_threads: list[threading.Thread] = []
 
     def _start(self):
         environment = os.environ.copy()
@@ -41,6 +43,8 @@ class _ResidentWorker:
             [sys.executable, '-m', 'song_title.worker', self.phase],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', errors='replace', bufsize=1, env=environment,
+            start_new_session=(os.name != 'nt'),
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0),
         )
         self.process = process
         responses = self.responses
@@ -65,8 +69,36 @@ class _ResidentWorker:
             except (OSError, ValueError):
                 pass
 
-        threading.Thread(target=read_responses, name=f'song-title-{self.phase}-stdout', daemon=True).start()
-        threading.Thread(target=read_errors, name=f'song-title-{self.phase}-stderr', daemon=True).start()
+        self.reader_threads = [
+            threading.Thread(target=read_responses, name=f'song-title-{self.phase}-stdout', daemon=True),
+            threading.Thread(target=read_errors, name=f'song-title-{self.phase}-stderr', daemon=True),
+        ]
+        for thread in self.reader_threads:
+            thread.start()
+
+    @staticmethod
+    def _terminate_tree(process):
+        if process.poll() is not None:
+            return
+        if os.name == 'nt':
+            try:
+                subprocess.run(
+                    ['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    check=False, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        if process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
     def _stop(self, *, force=False):
         process, self.process = self.process, None
@@ -79,21 +111,18 @@ class _ResidentWorker:
                 pass
         if process.poll() is None:
             if force:
-                try:
-                    process.terminate()
-                except OSError:
-                    pass
+                self._terminate_tree(process)
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
+                self._terminate_tree(process)
                 process.wait()
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
+        for thread in self.reader_threads:
+            thread.join(timeout=2)
+        for stream, thread in zip((process.stdout, process.stderr), self.reader_threads):
+            if stream is not None and not thread.is_alive():
                 stream.close()
+        self.reader_threads = []
 
     def request(self, request: dict) -> dict:
         if self.process is None or self.process.poll() is not None:
@@ -227,4 +256,3 @@ class ModelRuntime:
                     print(f'Could not stop {worker.phase} worker cleanly: {exc}', file=sys.stderr)
         finally:
             self._unload_ollama()
-

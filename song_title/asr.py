@@ -70,7 +70,8 @@ def transcribe_in_process(vocals: Path, settings: Settings, device: str | None =
         sample_rate = int(processor.feature_extractor.sampling_rate)
         with tempfile.TemporaryDirectory(prefix='song-title-asr-') as folder:
             normalized = Path(folder)/'vocals-mono.wav'
-            subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-i',str(vocals),'-ac','1','-ar',str(sample_rate),'-c:a','pcm_f32le',str(normalized)], check=True, capture_output=True)
+            subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-i',str(vocals),'-ac','1','-ar',str(sample_rate),'-c:a','pcm_f32le',str(normalized)], check=True, capture_output=True,
+                           timeout=max(1, settings.worker_timeout - 15))
             samples, rate = sf.read(normalized, dtype='float32')
         duration = len(samples)/rate
         seconds = settings.chunk_seconds / 2 if reduced else settings.chunk_seconds

@@ -33,6 +33,7 @@ def _serve(phase: str):
     backend_device = None
     separator = None
     separator_device = None
+    preferred_configuration = None
 
     def release_backend():
         nonlocal backend, backend_device
@@ -47,7 +48,7 @@ def _serve(phase: str):
         _release_cuda(torch)
 
     def run(request):
-        nonlocal backend, backend_device, separator, separator_device
+        nonlocal backend, backend_device, separator, separator_device, preferred_configuration
         settings = _settings(request['settings'])
         if phase == 'separate':
             requested = settings.separator_device or settings.device
@@ -83,7 +84,8 @@ def _serve(phase: str):
                         separator_device = device
                     else:
                         separator.update_parameter(device=device, segment=3 if reduced else 6)
-                    result = self_separate(Path(request['source']), Path(request['output']), separator)
+                    result = self_separate(Path(request['source']), Path(request['output']), separator,
+                                           settings.worker_timeout)
                 return result
             except RuntimeError as exc:
                 if device == 'cuda' and 'out of memory' in str(exc).casefold():
@@ -93,7 +95,17 @@ def _serve(phase: str):
                         release_separator()
                 raise
 
-        result = with_device_retry(operation, requested, torch.cuda.is_available())
+        if requested == 'auto' and preferred_configuration is not None:
+            try:
+                result = operation(*preferred_configuration)
+            except RuntimeError as exc:
+                if 'out of memory' not in str(exc).casefold():
+                    raise
+                result = with_device_retry(operation, requested, torch.cuda.is_available())
+        else:
+            result = with_device_retry(operation, requested, torch.cuda.is_available())
+        if requested == 'auto':
+            preferred_configuration = (used['device'], used['reduced_segments'])
         result['runtime'] = dict(used)
         if used.get('device') == 'cuda':
             result['runtime']['peak_vram_bytes'] = torch.cuda.max_memory_allocated()
@@ -117,14 +129,14 @@ def _serve(phase: str):
         release_separator()
 
 
-def self_separate(source: Path, output: Path, separator):
+def self_separate(source: Path, output: Path, separator, worker_timeout: float):
     """Decode consistently with the previous CLI path and save its vocal stem."""
     with tempfile.TemporaryDirectory(prefix='song-title-separate-') as folder:
         decoded = Path(folder) / 'decoded.wav'
         subprocess.run([
             'ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(source),
             '-ac', '2', '-ar', '44100', '-c:a', 'pcm_f32le', str(decoded),
-        ], check=True)
+        ], check=True, capture_output=True, timeout=max(1, worker_timeout - 15))
         _, stems = separator.separate_audio_file(decoded)
         vocals = stems.get('vocals')
         if vocals is None:

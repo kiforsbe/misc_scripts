@@ -287,9 +287,11 @@ def main(argv=None):
                     lyrics_file = _store_lyrics_file(destination, analysis, arguments) if arguments.lyrics_file else None
                     if lyrics_file:
                         counts['lyrics_files'] += 1
-                    if not title_to_write:
+                    if not title_to_write and destination == source:
                         counts['skipped'] += 1
-                    outcome = 'saved' if title_to_write else ('lyrics-saved' if lyrics_to_write or lyrics_file else 'skipped')
+                    outcome = ('saved' if title_to_write else
+                               'lyrics-saved' if lyrics_to_write or lyrics_file else
+                               'renamed' if destination != source else 'skipped')
                     if quit_requested:
                         outcome = 'quit'
                     save_report(analysis, settings, outcome, str(backup) if backup else None)
