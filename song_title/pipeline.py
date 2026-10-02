@@ -8,12 +8,16 @@ import os
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .asr import separate_vocals, transcribe_vocals
 from .audio import assemble_transcript
 from .metadata import fingerprint, read_metadata
-from .titles import prepare_lyrics, suggest_titles
+from .titles import format_lyrics as format_lyrics_with_model, prepare_lyrics, suggest_titles
 from .types import Analysis, Chunk, Settings
+
+if TYPE_CHECKING:
+    from .worker_runtime import ModelRuntime
 
 CACHE_SCHEMA = 1
 
@@ -68,7 +72,8 @@ def save_report(analysis: Analysis, settings: Settings, outcome='analyzed', back
     path.with_suffix('.txt').write_text(text,encoding='utf-8')
 
 
-def analyze_file(path: Path, settings: Settings, progress=print) -> Analysis:
+def analyze_file(path: Path, settings: Settings, progress=print, runtime: ModelRuntime | None = None,
+                 force_lyrics: bool = False) -> Analysis:
     path = path.resolve()
     digest = fingerprint(path)
     metadata = read_metadata(path)
@@ -78,7 +83,7 @@ def analyze_file(path: Path, settings: Settings, progress=print) -> Analysis:
     analysis = Analysis(path,digest,metadata,[], '', [],report_path=root/'reports'/(report_key+'.json'))
     save_report(analysis,settings,'processing')
     try:
-        _analyze(analysis,settings,progress)
+        _analyze(analysis, settings, progress, runtime, force_lyrics)
     except Exception as exc:
         analysis.notes.append(str(exc))
         try:
@@ -118,8 +123,23 @@ def _runtime(path):
         return {}
 
 
-def _analyze(analysis: Analysis, settings: Settings, progress):
+def _analyze(analysis: Analysis, settings: Settings, progress, runtime: ModelRuntime | None = None,
+             force_lyrics: bool = False):
     path, digest, metadata = analysis.source, analysis.digest, analysis.metadata
+    title = str(metadata.get('title') or '').strip()
+    embedded_lyrics = str(metadata.get('lyrics') or '').strip()
+    if title and embedded_lyrics and not force_lyrics:
+        analysis.lyrics = embedded_lyrics
+        analysis.formatted_lyrics = embedded_lyrics
+        analysis.notes.append('Title retained from metadata; embedded lyrics already exist, so model inference was skipped.')
+        if metadata.get('metadata_warning'):
+            analysis.notes.append('Metadata read warning: ' + metadata['metadata_warning'])
+        progress('Title and embedded lyrics already exist; skipping model inference.')
+        return
+    if title:
+        analysis.notes.append('Title retained from metadata; title suggestions are skipped.')
+        if embedded_lyrics and force_lyrics:
+            analysis.notes.append('Lyrics will be regenerated because --force-lyrics was supplied.')
     root = settings.cache_dir.resolve()
     stem_key = _key({'schema':CACHE_SCHEMA,'source':digest,'separator':settings.separator_model,'demucs':_version('demucs'),'decode':'stereo-44100-f32'})
     folder = root/'vocals'/stem_key
@@ -130,7 +150,10 @@ def _analyze(analysis: Analysis, settings: Settings, progress):
     if not cached or not vocals.is_file() or cached.get('digest') != fingerprint(vocals):
         progress('Separating vocals with Demucs…')
         manifest.unlink(missing_ok=True)
-        separate_vocals(path,vocals,settings)
+        if runtime is None:
+            separate_vocals(path,vocals,settings)
+        else:
+            runtime.separate(path, vocals)
         if fingerprint(path) != digest:
             raise ValueError('Source changed during separation')
         stem_digest = fingerprint(vocals)
@@ -155,7 +178,7 @@ def _analyze(analysis: Analysis, settings: Settings, progress):
             chunks = None
     if chunks is None:
         progress(f'Transcribing isolated vocals with {settings.asr}…')
-        chunks = transcribe_vocals(vocals,settings)
+        chunks = transcribe_vocals(vocals, settings) if runtime is None else runtime.transcribe(vocals)
         if not valid_chunks(chunks,duration):
             raise ValueError('ASR chunks do not cover the complete vocal stem')
         cached = {'schema':CACHE_SCHEMA,'chunks':[asdict(c) for c in chunks],
@@ -176,7 +199,15 @@ def _analyze(analysis: Analysis, settings: Settings, progress):
         notes.append('Metadata read warning: ' + metadata['metadata_warning'])
     analysis.chunks, analysis.lyrics = chunks, lyrics
     save_report(analysis,settings)
-    progress(f'Generating title suggestions with {settings.ollama_model}…')
-    suggestions = suggest_titles(lyrics,metadata,settings)
-    analysis.candidates = list(suggestions)
-    analysis.formatted_lyrics = getattr(suggestions, 'formatted_lyrics', '')
+    if title:
+        if lyrics.strip():
+            progress(f'Formatting lyrics with {settings.ollama_model}…')
+            try:
+                analysis.formatted_lyrics = format_lyrics_with_model(lyrics, metadata, settings, runtime)
+            except RuntimeError as exc:
+                analysis.notes.append(f'Lyric formatting failed; conservative local formatting will be used: {exc}')
+    else:
+        progress(f'Generating title suggestions with {settings.ollama_model}…')
+        suggestions = suggest_titles(lyrics, metadata, settings, runtime)
+        analysis.candidates = list(suggestions)
+        analysis.formatted_lyrics = getattr(suggestions, 'formatted_lyrics', '')
