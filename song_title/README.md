@@ -42,6 +42,7 @@ python -m song_title "song1.mp3" "song2.flac"
 python -m song_title "D:\Original Songs" --recursive --asr nemotron
 python -m song_title "song.mp3" --asr qwen --asr-model Qwen/Qwen3-ASR-0.6B-hf
 python -m song_title "song.mp3" --device cpu --dry-run
+python -m song_title "song.mp3" --log-level debug
 python -m song_title "song.mp3" --auto --backup
 python -m song_title "song.mp3" --auto --filename-template '%album% - %artist% - $num(%tracknumber%,2) - %title%'
 ```
@@ -88,6 +89,7 @@ Run `python -m song_title --help` for all options:
 - `--ollama-model qwen3.5:4b`, `--ollama-host http://localhost:11434`
 - `--output-dir .song-title-cache`, `--refresh`
 - `--connect-timeout 10`, `--inference-timeout 300`, `--worker-timeout 3600`
+- `--log-level info|debug` (default `info`; debug enables Demucs progress, ASR chunk updates, and model/device diagnostics)
 - `--recursive`, `--dry-run`, `--auto`
 - `--backup`, `--force-lyrics`
 - `--lyrics-file` (also write generated lyrics to a `.lyrics.txt` sidecar)

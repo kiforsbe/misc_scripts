@@ -79,15 +79,16 @@ def _serve(phase: str):
                         separator = Separator(
                             model=settings.separator_model, device=device, shifts=1,
                             split=True, overlap=0.25, segment=3 if reduced else 6,
-                            jobs=0, progress=True,
+                            jobs=0, progress=settings.log_level == 'debug',
                         )
                         # Demucs loads checkpoints on CPU, then apply_model moves each
                         # submodel back to its original device after separation. Put the
                         # model on the selected device once so it stays resident there.
                         separator._model.to(device)
                         separator_device = device
-                        print(f'Demucs model {settings.separator_model} loaded on {device} and kept resident.',
-                              flush=True)
+                        if settings.log_level == 'debug':
+                            print(f'Demucs model {settings.separator_model} loaded on {device} and kept resident.',
+                                  flush=True)
                     else:
                         separator.update_parameter(device=device, segment=3 if reduced else 6)
                     result = self_separate(Path(request['source']), Path(request['output']), separator,
@@ -107,9 +108,11 @@ def _serve(phase: str):
             except RuntimeError as exc:
                 if 'out of memory' not in str(exc).casefold():
                     raise
-                result = with_device_retry(operation, requested, torch.cuda.is_available())
+                result = with_device_retry(operation, requested, torch.cuda.is_available(),
+                                           verbose=settings.log_level == 'debug')
         else:
-            result = with_device_retry(operation, requested, torch.cuda.is_available())
+            result = with_device_retry(operation, requested, torch.cuda.is_available(),
+                                       verbose=settings.log_level == 'debug')
         if requested == 'auto':
             preferred_configuration = (used['device'], used['reduced_segments'])
         result['runtime'] = dict(used)

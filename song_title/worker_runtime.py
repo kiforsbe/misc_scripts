@@ -187,7 +187,9 @@ class ModelRuntime:
         return self._workers[phase]
 
     @staticmethod
-    def _show_runtime(phase: str, runtime: dict):
+    def _show_runtime(phase: str, runtime: dict, log_level: str):
+        if log_level != 'debug':
+            return
         print(f'{phase}: device={runtime.get("device", "unknown")}, reduced segments={runtime.get("reduced_segments", False)}', flush=True)
         if 'peak_vram_bytes' in runtime:
             print(f'{phase}: peak PyTorch GPU allocation {runtime["peak_vram_bytes"] / 2**20:.0f} MiB', flush=True)
@@ -198,7 +200,7 @@ class ModelRuntime:
             'settings': asdict(self.settings),
         })
         runtime = result.pop('runtime', {})
-        self._show_runtime('separate', runtime)
+        self._show_runtime('separate', runtime, self.settings.log_level)
         output = Path(output)
         output.with_suffix(output.suffix + '.runtime.json').write_text(json.dumps(runtime), encoding='utf-8')
         if not output.is_file():
@@ -211,7 +213,7 @@ class ModelRuntime:
             'settings': asdict(self.settings),
         })
         runtime = result.pop('runtime', {})
-        self._show_runtime('asr', runtime)
+        self._show_runtime('asr', runtime, self.settings.log_level)
         Path(vocals).parent.joinpath('transcript-worker.json.runtime.json').write_text(
             json.dumps(runtime), encoding='utf-8')
         return [Chunk(**item) for item in result['chunks']]

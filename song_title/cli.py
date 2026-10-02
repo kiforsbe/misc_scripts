@@ -41,6 +41,8 @@ def parser():
     result.add_argument('--connect-timeout', type=float, default=10, help='Seconds to wait for a connection to Ollama')
     result.add_argument('--inference-timeout', type=float, default=300, help='Seconds to wait for Ollama to return a title suggestion')
     result.add_argument('--worker-timeout', type=float, default=3600, help='Seconds allowed for each separation or transcription worker')
+    result.add_argument('--log-level', choices=['info', 'debug'], default='info',
+                        help='Output detail; debug shows model, device, and per-chunk progress')
     result.add_argument('--output-dir', type=Path, default=Path('.song-title-cache'), help='Vocal/transcript cache and JSON/TXT reports')
     result.add_argument('--refresh', action='store_true', help='Regenerate vocals and transcript')
     result.add_argument('--dry-run', action='store_true', help='Analyze and report without writing lyrics, tags, or filenames')
@@ -48,7 +50,8 @@ def parser():
     result.add_argument('--force-lyrics', action='store_true', help='Overwrite existing embedded lyrics and, with --lyrics-file, the lyrics sidecar')
     result.add_argument('--lyrics-file', action='store_true', help='Also write generated lyrics beside the audio as .lyrics.txt')
     result.add_argument('--auto', action='store_true', help='Use the first title suggestion, write tags, and rename without prompting')
-    result.add_argument('--filename-template', help=f'MusicBrainz Picard-style rename template; default: {DEFAULT_FILENAME_TEMPLATE}')
+    template_help = DEFAULT_FILENAME_TEMPLATE.replace('%', '%%')
+    result.add_argument('--filename-template', help=f'MusicBrainz Picard-style rename template; default: {template_help}')
     result.add_argument('--max-filename-length', type=int, default=DEFAULT_MAX_FILENAME_LENGTH,
                         help=f'Maximum filename length before Ollama shortens template metadata parts (default: {DEFAULT_MAX_FILENAME_LENGTH})')
     result.add_argument('--color', action=argparse.BooleanOptionalAction, default=None, help='Force ANSI colors on or off (default: detect terminal support)')
@@ -169,7 +172,7 @@ def main(argv=None):
                             separator_model=arguments.separator_model, chunk_seconds=arguments.chunk_seconds, overlap_seconds=arguments.overlap_seconds,
                             ollama_model=arguments.ollama_model, ollama_host=arguments.ollama_host, connect_timeout=arguments.connect_timeout,
                             inference_timeout=arguments.inference_timeout, worker_timeout=arguments.worker_timeout, cache_dir=arguments.output_dir,
-                            refresh=arguments.refresh)
+                            refresh=arguments.refresh, log_level=arguments.log_level)
         inputs = discover_inputs(arguments.inputs, arguments.recursive, [settings.cache_dir])
         if not inputs:
             raise ValueError('No supported audio files found')

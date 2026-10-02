@@ -19,6 +19,7 @@ class Settings:
     connect_timeout: float = 10
     inference_timeout: float = 300
     worker_timeout: float = 3600
+    log_level: str = 'info'
     cache_dir: Path = field(default_factory=lambda: Path('.song-title-cache'))
     refresh: bool = False
 
@@ -27,6 +28,8 @@ class Settings:
             raise ValueError('ASR must be qwen or nemotron')
         if self.device not in {'auto', 'cpu', 'cuda'} or self.separator_device not in {None, 'auto', 'cpu', 'cuda'}:
             raise ValueError('Device must be auto, cpu or cuda')
+        if self.log_level not in {'info', 'debug'}:
+            raise ValueError('Log level must be info or debug')
         values = (self.chunk_seconds, self.overlap_seconds, self.connect_timeout, self.inference_timeout, self.worker_timeout)
         if not all(math.isfinite(v) for v in values):
             raise ValueError('Durations must be finite')

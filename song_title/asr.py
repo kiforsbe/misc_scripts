@@ -43,7 +43,7 @@ def load_backend(settings: Settings, device: str):
     return model, processor
 
 
-def with_device_retry(operation, requested: str, cuda_available: bool):
+def with_device_retry(operation, requested: str, cuda_available: bool, *, verbose: bool = False):
     if requested == 'cuda' and not cuda_available:
         raise RuntimeError('CUDA requested but unavailable; use --device cpu')
     device = 'cuda' if requested != 'cpu' and cuda_available else 'cpu'
@@ -53,7 +53,8 @@ def with_device_retry(operation, requested: str, cuda_available: bool):
         except RuntimeError as exc:
             if 'out of memory' not in str(exc).lower() or current == 'cpu':
                 raise
-            print(f'{current} memory exhausted; retrying with smaller segments or CPU.', flush=True)
+            if verbose:
+                print(f'{current} memory exhausted; retrying with smaller segments or CPU.', flush=True)
     raise RuntimeError('CUDA out of memory after reduced-segment retry; use --device cpu or a smaller Qwen checkpoint')
 
 
@@ -81,7 +82,8 @@ def transcribe_in_process(vocals: Path, settings: Settings, device: str | None =
         with torch.inference_mode():
             for number, (start,end) in enumerate(ranges, 1):
                 data = samples[round(start*rate):round(end*rate)]
-                print(f'{settings.asr}: chunk {number}/{len(ranges)} ({start:.1f}–{end:.1f}s)', flush=True)
+                if settings.log_level == 'debug':
+                    print(f'{settings.asr}: chunk {number}/{len(ranges)} ({start:.1f}–{end:.1f}s)', flush=True)
                 if not data.size or np.max(np.abs(data)) < 1e-7:
                     text = ''
                 elif settings.asr == 'qwen':
