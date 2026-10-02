@@ -65,7 +65,8 @@ class _ResidentWorker:
             try:
                 for line in process.stderr:
                     stderr_tail.append(line.rstrip())
-                    print(line, end='', file=sys.stderr, flush=True)
+                    if self.settings.log_level == 'debug':
+                        print(line, end='', file=sys.stderr, flush=True)
             except (OSError, ValueError):
                 pass
 
