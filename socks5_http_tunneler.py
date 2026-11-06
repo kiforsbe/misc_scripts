@@ -95,14 +95,24 @@ REWRITE_ATTR_PATTERN = re.compile(
     r"(?P<name>href|src|action|poster|formaction|manifest)\s*=\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
     re.IGNORECASE | re.DOTALL,
 )
+REWRITE_LINK_PATTERN = re.compile(r"<link\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", re.IGNORECASE)
+LINK_ATTRIBUTE_PATTERN = re.compile(
+    r"\s+(?P<name>[\w:-]+)(?:\s*=\s*(?:"
+    r'"(?P<double>[^"]*)"'
+    r"|'(?P<single>[^']*)'|(?P<bare>[^\s>]+)))?"
+)
 REWRITE_SRCSET_PATTERN = re.compile(
     r"(?P<name>srcset)\s*=\s*(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
     re.IGNORECASE | re.DOTALL,
 )
 REWRITE_CSS_URL_PATTERN = re.compile(
-    r"url\(\s*(?P<quote>['\"]?)(?P<value>.*?)(?P=quote)\s*\)",
+    r"(?<![\w-])url\(\s*(?:"
+    r'"(?P<double>(?:\\[\s\S]|[^"\\])*)"'
+    r"|'(?P<single>(?:\\[\s\S]|[^'\\])*)'"
+    r"|(?P<bare>(?:\\[0-9a-fA-F]{1,6}(?:\r\n|[ \t\r\n\f])?|\\[^\r\n\f]|[^\\\s\"'()])*))\s*\)",
     re.IGNORECASE | re.DOTALL,
 )
+CSS_ESCAPE_PATTERN = re.compile(r"\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \t\r\n\f])?|(\r\n|[\r\n\f])|([\s\S]))")
 REWRITE_META_REFRESH_PATTERN = re.compile(
     r"(?P<prefix><meta\b[^>]*http-equiv\s*=\s*['\"]?refresh['\"]?[^>]*content\s*=\s*['\"])(?P<value>.*?)(?P<suffix>['\"])",
     re.IGNORECASE | re.DOTALL,
@@ -983,7 +993,12 @@ class ProxyApplication:
 
     def rewrite_embedded_url(self, value: str, base_url: str, local_origin: Optional[str] = None) -> str:
         candidate = html.unescape(value.strip())
-        if not candidate or candidate.startswith(("#", "data:", "javascript:", "mailto:", "tel:", "about:")):
+        # Rewrite HTTP(S) and schemeless links; preserve other schemes verbatim.
+        if (
+            not candidate
+            or candidate.startswith("#")
+            or urllib.parse.urlsplit(candidate).scheme not in {"", "http", "https"}
+        ):
             return value
 
         # Preserve absolute form only when the source was already absolute; relative links stay local-path based.
@@ -1015,15 +1030,55 @@ class ProxyApplication:
         return ", ".join(rewritten_entries)
 
     def rewrite_css_urls(self, text: str, base_url: str, local_origin: Optional[str] = None) -> str:
+        def unescape(match: re.Match[str]) -> str:
+            if match.group(1):
+                codepoint = int(match.group(1), 16)
+                return chr(codepoint) if 0 < codepoint <= 0x10FFFF and not 0xD800 <= codepoint <= 0xDFFF else "\ufffd"
+            return match.group(3) or ""
+
         def replace(match: re.Match[str]) -> str:
-            value = match.group("value")
+            group = next(name for name in ("double", "single", "bare") if match.group(name) is not None)
+            value = CSS_ESCAPE_PATTERN.sub(unescape, match.group(group))
             rewritten = self.rewrite_embedded_url(value, base_url, local_origin)
-            quote = match.group("quote")
-            return f"url({quote}{rewritten}{quote})"
+            if rewritten == value:
+                return match.group(0)
+            # Keep the result valid in quoted and unquoted CSS, even when the
+            # original filename used escapes for spaces, quotes or parentheses.
+            rewritten = urllib.parse.quote(rewritten, safe="/:%?&=#+@!$*,;~-._[]")
+            start, end = match.span(group)
+            original = match.group(0)
+            return original[:start - match.start()] + rewritten + original[end - match.start():]
 
         return REWRITE_CSS_URL_PATTERN.sub(replace, text)
 
     def rewrite_html(self, text: str, base_url: str, local_origin: Optional[str] = None) -> str:
+        def replace_stylesheet_link(match: re.Match[str]) -> str:
+            tag = match.group(0)
+            # The URL attribute rewriter below handles quoted attributes only.
+            if not any(
+                attr.group("name").lower() == "href" and attr.group("bare") is None
+                for attr in LINK_ATTRIBUTE_PATTERN.finditer(tag)
+            ):
+                return tag
+            attributes = {
+                attr.group("name").lower(): html.unescape(
+                    next((attr.group(name) for name in ("double", "single", "bare") if attr.group(name) is not None), "")
+                )
+                for attr in LINK_ATTRIBUTE_PATTERN.finditer(tag)
+            }
+            rel = attributes.get("rel", "").lower().split()
+            is_stylesheet = "stylesheet" in rel or (
+                "preload" in rel and attributes.get("as", "").lower() == "style"
+            )
+            href = attributes.get("href", "")
+            if not is_stylesheet or self.rewrite_embedded_url(href, base_url, local_origin) == href:
+                return tag
+            # CSS URL rewriting changes the response bytes, invalidating the
+            # upstream SRI hash. Keep integrity on unchanged resource types.
+            return LINK_ATTRIBUTE_PATTERN.sub(
+                lambda attr: "" if attr.group("name").lower() == "integrity" else attr.group(0), tag
+            )
+
         def replace_attr(match: re.Match[str]) -> str:
             name = match.group("name")
             quote = match.group("quote")
@@ -1046,7 +1101,8 @@ class ProxyApplication:
                 return f"{match.group('prefix')}{parts[0]}{parts[1]}{rewritten}{match.group('suffix')}"
             return match.group(0)
 
-        rewritten = REWRITE_ATTR_PATTERN.sub(replace_attr, text)
+        rewritten = REWRITE_LINK_PATTERN.sub(replace_stylesheet_link, text)
+        rewritten = REWRITE_ATTR_PATTERN.sub(replace_attr, rewritten)
         rewritten = REWRITE_SRCSET_PATTERN.sub(replace_srcset, rewritten)
         rewritten = self.rewrite_css_urls(rewritten, base_url, local_origin)
         rewritten = REWRITE_META_REFRESH_PATTERN.sub(replace_meta_refresh, rewritten)
@@ -1159,6 +1215,9 @@ class ProxyApplication:
     def rewrite_header_url(self, value: str, base_url: str, local_origin: Optional[str] = None) -> str:
         candidate = value.strip()
         if not candidate:
+            return value
+        scheme = urllib.parse.urlsplit(candidate).scheme
+        if scheme and scheme not in {"http", "https"}:
             return value
         preserve_absolute = self.is_http_url(candidate)
         if not preserve_absolute:
